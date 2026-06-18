@@ -562,7 +562,7 @@ export function DbDraftFlow() {
           <div className="screen-heading">
             <div>
               <p className="eyebrow">Admin</p>
-              <h1>Đăng nhập organizer</h1>
+              <h1>Đăng nhập</h1>
               <p className="screen-copy">
                 Backend lưu session, player list, slot thay phiên, captains và kết quả draft.
               </p>

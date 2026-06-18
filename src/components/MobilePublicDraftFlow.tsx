@@ -373,9 +373,9 @@ export function MobilePublicDraftFlow() {
         {selectedSession && !hasEnoughPlayers && (
           <div className="tool-panel mobile-waiting-panel">
             <Badge tone="orange">Đang chờ</Badge>
-            <h2>Đang đợi sắp xếp từ admin</h2>
+            <h2>Đang đợi sắp xếp từ Long</h2>
             <p className="screen-copy">
-              Admin chưa lưu đủ danh sách người tham gia. Hiện có {savedPlayerCount}/
+              Long chưa lưu đủ danh sách người tham gia. Hiện có {savedPlayerCount}/
               {requiredPlayerCount} người chơi.
             </p>
           </div>
