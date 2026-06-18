@@ -22,4 +22,5 @@ public sealed class MatchSession
     public List<DraftRound> DraftRounds { get; set; } = [];
     public List<BlindBag> BlindBags { get; set; } = [];
     public List<DraftTurn> DraftTurns { get; set; } = [];
+    public List<TeamPreferenceGroup> TeamPreferenceGroups { get; set; } = [];
 }

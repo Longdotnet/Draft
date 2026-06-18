@@ -3,11 +3,16 @@ import type { RevealRarity } from "../../lib/revealRarity";
 import {
   backgroundStreaks,
   featuredStars,
+  liteBackgroundStreaks,
+  liteFeaturedStars,
+  liteRarityBurstStars,
+  liteTwinkleStars,
   rarityBurstStars,
   rarityVisuals,
   shootingCometSettings,
   twinkleStars,
 } from "./shootingStarRevealConfig";
+import type { RevealPerformanceMode } from "./revealPerformance";
 
 export type GachaRevealPhase = "charging" | "star-flight" | "flash" | "result";
 
@@ -15,20 +20,31 @@ type ShootingStarTrailProps = {
   rarity: RevealRarity;
   phase: GachaRevealPhase;
   isReducedMotion?: boolean;
+  performanceMode?: RevealPerformanceMode;
 };
 
 export function ShootingStarTrail({
   rarity,
   phase,
   isReducedMotion = false,
+  performanceMode = "full",
 }: ShootingStarTrailProps) {
   const colors = rarityVisuals[rarity];
+  const isReducedReveal = isReducedMotion || performanceMode === "reduced";
+  const activeTwinkleStars =
+    performanceMode === "lite" ? liteTwinkleStars : performanceMode === "reduced" ? [] : twinkleStars;
+  const activeFeaturedStars =
+    performanceMode === "lite" ? liteFeaturedStars : performanceMode === "reduced" ? [] : featuredStars;
+  const activeBackgroundStreaks =
+    performanceMode === "lite" ? liteBackgroundStreaks : performanceMode === "reduced" ? [] : backgroundStreaks;
+  const activeBurstStars =
+    performanceMode === "lite" ? liteRarityBurstStars : performanceMode === "reduced" ? [] : rarityBurstStars;
   const showMainStar = phase === "star-flight" || phase === "flash";
   const showStreaks = phase !== "result";
 
   return (
     <div
-      className="shooting-star-scene"
+      className={`shooting-star-scene shooting-star-scene--${performanceMode}`}
       style={
         {
           "--shooting-core": colors.core,
@@ -58,7 +74,7 @@ export function ShootingStarTrail({
       aria-hidden="true"
     >
       <div className="shooting-star-twinkle-field">
-        {twinkleStars.map((star, index) => (
+        {activeTwinkleStars.map((star, index) => (
           <span
             className="shooting-star-twinkle"
             key={index}
@@ -78,7 +94,7 @@ export function ShootingStarTrail({
 
       {showStreaks && (
         <div className="shooting-featured-star-field">
-          {featuredStars.map((star, index) => (
+          {activeFeaturedStars.map((star, index) => (
             <span
               className="shooting-featured-star"
               key={index}
@@ -99,7 +115,7 @@ export function ShootingStarTrail({
 
       {showStreaks && (
         <div className="shooting-star-streak-field">
-          {backgroundStreaks.map((streak, index) => (
+          {activeBackgroundStreaks.map((streak, index) => (
             <span
               className="shooting-star-streak"
               key={index}
@@ -130,9 +146,9 @@ export function ShootingStarTrail({
         </div>
       )}
 
-      {showMainStar && !isReducedMotion && (
+      {showMainStar && !isReducedReveal && (
         <div className="shooting-rarity-burst-field">
-          {rarityBurstStars.map((star, index) => (
+          {activeBurstStars.map((star, index) => (
             <span
               className="shooting-rarity-burst-star"
               key={index}
@@ -150,7 +166,7 @@ export function ShootingStarTrail({
         </div>
       )}
 
-      {showMainStar && !isReducedMotion && (
+      {showMainStar && !isReducedReveal && (
         <div className="shooting-star-wrapper">
           <div className="shooting-star-outer-glow" />
           <div className="shooting-star-trail" />

@@ -18,4 +18,5 @@ public sealed class SessionPlayer
     public MatchSession Session { get; set; } = null!;
     public User? User { get; set; }
     public List<DraftSlotPlayer> DraftSlotPlayers { get; set; } = [];
+    public List<TeamPreferenceGroupPlayer> TeamPreferenceGroupPlayers { get; set; } = [];
 }

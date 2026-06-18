@@ -6,6 +6,7 @@ public sealed class BlindBag
     public string SessionId { get; set; } = string.Empty;
     public string RoundId { get; set; } = string.Empty;
     public string DraftSlotId { get; set; } = string.Empty;
+    public string? PreparedDraftSlotId { get; set; }
     public int BagNumber { get; set; }
     public bool IsOpened { get; set; }
     public string? OpenedByUserId { get; set; }
@@ -15,6 +16,7 @@ public sealed class BlindBag
     public MatchSession Session { get; set; } = null!;
     public DraftRound Round { get; set; } = null!;
     public DraftSlot DraftSlot { get; set; } = null!;
+    public DraftSlot? PreparedDraftSlot { get; set; }
     public User? OpenedByUser { get; set; }
     public Team? OpenedForTeam { get; set; }
 }

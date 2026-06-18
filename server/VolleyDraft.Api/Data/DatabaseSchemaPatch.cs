@@ -14,6 +14,8 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "MatchSessions", "UpdatedAt", "\"UpdatedAt\" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'");
             await EnsureSqliteColumn(db, "SessionPlayers", "Gender", "\"Gender\" TEXT NOT NULL DEFAULT 'Male'");
             await EnsureSqliteColumn(db, "DraftSlots", "Gender", "\"Gender\" TEXT NOT NULL DEFAULT 'Male'");
+            await EnsureSqliteColumn(db, "BlindBags", "PreparedDraftSlotId", "\"PreparedDraftSlotId\" TEXT NULL");
+            await EnsureSqliteTeamPreferenceTables(db);
             return;
         }
 
@@ -23,6 +25,8 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "MatchSessions", "UpdatedAt", "\"UpdatedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
             await EnsurePostgresColumn(db, "SessionPlayers", "Gender", "\"Gender\" text NOT NULL DEFAULT 'Male'");
             await EnsurePostgresColumn(db, "DraftSlots", "Gender", "\"Gender\" text NOT NULL DEFAULT 'Male'");
+            await EnsurePostgresColumn(db, "BlindBags", "PreparedDraftSlotId", "\"PreparedDraftSlotId\" text NULL");
+            await EnsurePostgresTeamPreferenceTables(db);
         }
     }
 
@@ -77,6 +81,66 @@ public static class DatabaseSchemaPatch
             var sql = "ALTER TABLE \"" + tableName + "\" ADD COLUMN " + columnDefinition;
             await db.Database.ExecuteSqlRawAsync(sql);
         }
+    }
+
+    private static async Task EnsureSqliteTeamPreferenceTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TeamPreferenceGroups" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_TeamPreferenceGroups" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00',
+                CONSTRAINT "FK_TeamPreferenceGroups_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TeamPreferenceGroupPlayers" (
+                "TeamPreferenceGroupId" TEXT NOT NULL,
+                "SessionPlayerId" TEXT NOT NULL,
+                "RotationOrder" INTEGER NOT NULL,
+                CONSTRAINT "PK_TeamPreferenceGroupPlayers"
+                    PRIMARY KEY ("TeamPreferenceGroupId", "SessionPlayerId"),
+                CONSTRAINT "FK_TeamPreferenceGroupPlayers_TeamPreferenceGroups_TeamPreferenceGroupId"
+                    FOREIGN KEY ("TeamPreferenceGroupId") REFERENCES "TeamPreferenceGroups" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_TeamPreferenceGroupPlayers_SessionPlayers_SessionPlayerId"
+                    FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE RESTRICT
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_TeamPreferenceGroups_SessionId" ON "TeamPreferenceGroups" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_TeamPreferenceGroupPlayers_SessionPlayerId" ON "TeamPreferenceGroupPlayers" ("SessionPlayerId");""");
+    }
+
+    private static async Task EnsurePostgresTeamPreferenceTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TeamPreferenceGroups" (
+                "Id" text NOT NULL CONSTRAINT "PK_TeamPreferenceGroups" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT "FK_TeamPreferenceGroups_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TeamPreferenceGroupPlayers" (
+                "TeamPreferenceGroupId" text NOT NULL,
+                "SessionPlayerId" text NOT NULL,
+                "RotationOrder" integer NOT NULL,
+                CONSTRAINT "PK_TeamPreferenceGroupPlayers"
+                    PRIMARY KEY ("TeamPreferenceGroupId", "SessionPlayerId"),
+                CONSTRAINT "FK_TeamPreferenceGroupPlayers_TeamPreferenceGroups_TeamPreferenceGroupId"
+                    FOREIGN KEY ("TeamPreferenceGroupId") REFERENCES "TeamPreferenceGroups" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_TeamPreferenceGroupPlayers_SessionPlayers_SessionPlayerId"
+                    FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE RESTRICT
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_TeamPreferenceGroups_SessionId" ON "TeamPreferenceGroups" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_TeamPreferenceGroupPlayers_SessionPlayerId" ON "TeamPreferenceGroupPlayers" ("SessionPlayerId");""");
     }
 
     private static async Task OpenIfNeeded(VolleyDraftDbContext db)

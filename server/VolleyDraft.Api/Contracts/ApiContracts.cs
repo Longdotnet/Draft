@@ -69,6 +69,9 @@ public sealed record CreateSharedSlotRequest(
     IReadOnlyList<string> SessionPlayerIds,
     PlayerRole Role);
 
+public sealed record CreateTeamPreferenceGroupRequest(
+    IReadOnlyList<string> SessionPlayerIds);
+
 public sealed record SessionPlayerResponse(
     string Id,
     string DisplayName,
@@ -89,6 +92,12 @@ public sealed record SharedSlotResponse(
     double AverageScore,
     IReadOnlyList<string> SessionPlayerIds,
     IReadOnlyList<string> PlayerNames);
+
+public sealed record TeamPreferenceGroupResponse(
+    string Id,
+    IReadOnlyList<string> SessionPlayerIds,
+    IReadOnlyList<string> PlayerNames,
+    double AverageScore);
 
 public sealed record ManualCaptainsRequest(IReadOnlyList<string> CaptainSessionPlayerIds);
 

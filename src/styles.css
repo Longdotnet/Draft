@@ -848,6 +848,77 @@
     height: 100%;
   }
 
+  .shooting-star-scene--lite .shooting-star-twinkle {
+    box-shadow: 0 0 6px rgba(186, 230, 253, 0.42);
+  }
+
+  .shooting-star-scene--lite .shooting-star-twinkle::after {
+    width: calc(var(--twinkle-size) * 2.2);
+    opacity: 0.58;
+  }
+
+  .shooting-star-scene--lite .shooting-featured-star {
+    filter: drop-shadow(0 0 8px var(--shooting-glow));
+  }
+
+  .shooting-star-scene--lite .shooting-star-streak {
+    filter: none;
+    mix-blend-mode: normal;
+    animation-name: shooting-background-streak-lite;
+  }
+
+  .shooting-star-scene--lite .shooting-star-streak::before {
+    filter: none;
+    opacity: 0.42;
+  }
+
+  .shooting-star-scene--lite .shooting-star-streak::after {
+    box-shadow: 0 0 8px var(--shooting-streak-color);
+  }
+
+  .shooting-star-scene--lite .shooting-star-streak-head {
+    box-shadow:
+      0 0 10px var(--shooting-streak-color),
+      0 0 22px var(--shooting-streak-glow);
+  }
+
+  .shooting-star-scene--lite .shooting-star-wrapper {
+    height: 58px;
+    animation-name: shooting-star-flight-lite;
+  }
+
+  .shooting-star-scene--lite .shooting-star-trail {
+    height: 8px;
+    filter: none;
+    animation-duration: 720ms;
+  }
+
+  .shooting-star-scene--lite .shooting-star-core {
+    width: 21px;
+    height: 21px;
+    box-shadow:
+      0 0 16px var(--shooting-core),
+      0 0 44px var(--shooting-glow);
+  }
+
+  .shooting-star-scene--lite .shooting-star-core::before {
+    width: 52px;
+    height: 2px;
+  }
+
+  .shooting-star-scene--lite .shooting-star-core::after {
+    width: 2px;
+    height: 52px;
+  }
+
+  .shooting-star-scene--lite .shooting-star-outer-glow {
+    display: none;
+  }
+
+  .shooting-star-scene--lite .shooting-rarity-burst-star {
+    filter: drop-shadow(0 0 7px var(--shooting-glow));
+  }
+
   .rarity-screen-flash {
     @apply pointer-events-none absolute inset-0 z-30;
     background: radial-gradient(circle at 42% 48%, var(--rarity-flash), transparent 68%);
@@ -1027,6 +1098,32 @@
   }
 }
 
+@keyframes shooting-star-flight-lite {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--comet-start-x), var(--comet-start-y), 0) scale(var(--comet-start-scale)) rotate(var(--comet-angle));
+  }
+
+  10% {
+    opacity: 1;
+  }
+
+  45% {
+    opacity: 1;
+    transform: translate3d(var(--comet-middle-x), var(--comet-middle-y), 0) scale(var(--comet-middle-scale)) rotate(var(--comet-angle));
+  }
+
+  68% {
+    opacity: 1;
+    transform: translate3d(var(--comet-late-x), var(--comet-late-y), 0) scale(var(--comet-late-scale)) rotate(var(--comet-angle));
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--comet-end-x), var(--comet-end-y), 0) scale(var(--comet-end-scale)) rotate(var(--comet-angle));
+  }
+}
+
 @keyframes shooting-star-twinkle {
   0%,
   100% {
@@ -1121,6 +1218,36 @@
     filter:
       blur(2px)
       drop-shadow(0 0 8px var(--shooting-streak-glow));
+  }
+}
+
+@keyframes shooting-background-streak-lite {
+  0% {
+    opacity: 0;
+    transform:
+      translate3d(var(--shooting-streak-start-x), var(--shooting-streak-start-y), 0)
+      rotate(var(--shooting-streak-angle))
+      scaleX(0.42);
+  }
+
+  14% {
+    opacity: var(--shooting-streak-opacity);
+  }
+
+  58% {
+    opacity: var(--shooting-streak-opacity);
+    transform:
+      translate3d(0, 0, 0)
+      rotate(var(--shooting-streak-angle))
+      scaleX(1.04);
+  }
+
+  100% {
+    opacity: 0;
+    transform:
+      translate3d(var(--shooting-streak-end-x), var(--shooting-streak-end-y), 0)
+      rotate(var(--shooting-streak-angle))
+      scaleX(1.12);
   }
 }
 

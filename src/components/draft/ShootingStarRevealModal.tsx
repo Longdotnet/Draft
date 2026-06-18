@@ -1,6 +1,7 @@
 import { CSSProperties, useEffect, useMemo, useState } from "react";
 import type { RevealRarity } from "../../lib/revealRarity";
 import AnimatedShaderBackground from "../ui/animated-shader-background";
+import { useRevealPerformanceMode } from "./revealPerformance";
 import { ShootingStarTrail, type GachaRevealPhase } from "./ShootingStarTrail";
 import { rarityVisuals, shootingRevealTiming } from "./shootingStarRevealConfig";
 
@@ -24,7 +25,11 @@ type ShootingStarRevealModalProps = {
 };
 
 function useReducedMotion() {
-  const [isReducedMotion, setIsReducedMotion] = useState(false);
+  const [isReducedMotion, setIsReducedMotion] = useState(() =>
+    typeof window === "undefined"
+      ? false
+      : window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -49,6 +54,8 @@ export function ShootingStarRevealModal({
 }: ShootingStarRevealModalProps) {
   const [phase, setPhase] = useState<GachaRevealPhase>("charging");
   const isReducedMotion = useReducedMotion();
+  const performanceMode = useRevealPerformanceMode(isOpen, isReducedMotion);
+  const isReducedReveal = performanceMode === "reduced";
   const rarityInfo = rarityVisuals[rarity];
   const scoreLabel = revealedSlot
     ? Number.isInteger(revealedSlot.averageScore)
@@ -72,7 +79,7 @@ export function ShootingStarRevealModal({
     }
 
     setPhase("charging");
-    const timings = isReducedMotion
+    const timings = isReducedReveal
       ? [
           window.setTimeout(() => setPhase("flash"), shootingRevealTiming.reducedFlashDelayMs),
           window.setTimeout(() => setPhase("result"), shootingRevealTiming.reducedResultDelayMs),
@@ -84,7 +91,7 @@ export function ShootingStarRevealModal({
         ];
 
     return () => timings.forEach((timer) => window.clearTimeout(timer));
-  }, [isOpen, isReducedMotion, revealedSlot?.id]);
+  }, [isOpen, isReducedReveal, revealedSlot?.id]);
 
   if (!isOpen) {
     return null;
@@ -97,11 +104,20 @@ export function ShootingStarRevealModal({
       aria-modal="true"
       aria-label="Màn hình khui túi mù"
     >
-      <AnimatedShaderBackground />
-      <div className="absolute inset-0 bg-black/45" />
+      {performanceMode === "full" ? (
+        <AnimatedShaderBackground />
+      ) : (
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(14,165,233,0.18),transparent_34%),linear-gradient(135deg,#020617,#0f172a_52%,#1e1b4b)]" />
+      )}
+      <div className={performanceMode === "full" ? "absolute inset-0 bg-black/45" : "absolute inset-0 bg-black/30"} />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_68%_12%,rgba(255,255,255,0.16),transparent_18%),radial-gradient(circle_at_48%_54%,rgba(14,165,233,0.12),transparent_32%)]" />
 
-      <ShootingStarTrail rarity={rarity} phase={phase} isReducedMotion={isReducedMotion} />
+      <ShootingStarTrail
+        rarity={rarity}
+        phase={phase}
+        isReducedMotion={isReducedMotion}
+        performanceMode={performanceMode}
+      />
 
       {phase === "flash" && (
         <div

@@ -15,6 +15,8 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<DraftRound> DraftRounds => Set<DraftRound>();
     public DbSet<BlindBag> BlindBags => Set<BlindBag>();
     public DbSet<DraftTurn> DraftTurns => Set<DraftTurn>();
+    public DbSet<TeamPreferenceGroup> TeamPreferenceGroups => Set<TeamPreferenceGroup>();
+    public DbSet<TeamPreferenceGroupPlayer> TeamPreferenceGroupPlayers => Set<TeamPreferenceGroupPlayer>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -125,6 +127,10 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
                 .WithOne(slot => slot.BlindBag)
                 .HasForeignKey<BlindBag>(bag => bag.DraftSlotId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(bag => bag.PreparedDraftSlot)
+                .WithMany()
+                .HasForeignKey(bag => bag.PreparedDraftSlotId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(bag => bag.OpenedByUser)
                 .WithMany()
                 .HasForeignKey(bag => bag.OpenedByUserId)
@@ -164,6 +170,32 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.HasOne(turn => turn.OpenedBag)
                 .WithMany()
                 .HasForeignKey(turn => turn.OpenedBagId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<TeamPreferenceGroup>(entity =>
+        {
+            entity.HasOne(group => group.Session)
+                .WithMany(session => session.TeamPreferenceGroups)
+                .HasForeignKey(group => group.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TeamPreferenceGroupPlayer>(entity =>
+        {
+            entity.HasKey(groupPlayer => new
+            {
+                groupPlayer.TeamPreferenceGroupId,
+                groupPlayer.SessionPlayerId
+            });
+            entity.HasIndex(groupPlayer => groupPlayer.SessionPlayerId).IsUnique();
+            entity.HasOne(groupPlayer => groupPlayer.TeamPreferenceGroup)
+                .WithMany(group => group.Players)
+                .HasForeignKey(groupPlayer => groupPlayer.TeamPreferenceGroupId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(groupPlayer => groupPlayer.SessionPlayer)
+                .WithMany(player => player.TeamPreferenceGroupPlayers)
+                .HasForeignKey(groupPlayer => groupPlayer.SessionPlayerId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
     }

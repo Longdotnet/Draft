@@ -469,7 +469,6 @@ export function MobilePublicDraftFlow() {
                 <div className="screen-stack draft-screen">
                   <div className="screen-heading inverted">
                     <div>
-                      <p className="eyebrow">One-device draft</p>
                       <h1>Đưa điện thoại cho captain hiện tại</h1>
                     </div>
                     <div className="heading-icon">

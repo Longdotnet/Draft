@@ -45,3 +45,4 @@ Thumbs.db
 
 # Accidental local scratch file
 /git
+.editorconfig

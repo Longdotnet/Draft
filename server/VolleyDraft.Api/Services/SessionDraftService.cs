@@ -129,6 +129,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .Where(slot => slot.SessionId == sessionId)
             .Select(slot => slot.Id)
             .ToListAsync();
+        var preferenceGroupIds = await db.TeamPreferenceGroups
+            .Where(group => group.SessionId == sessionId)
+            .Select(group => group.Id)
+            .ToListAsync();
 
         await db.DraftTurns.Where(turn => turn.SessionId == sessionId).ExecuteDeleteAsync();
         await db.BlindBags.Where(bag => bag.SessionId == sessionId).ExecuteDeleteAsync();
@@ -137,6 +141,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .Where(slotPlayer => slotIds.Contains(slotPlayer.DraftSlotId))
             .ExecuteDeleteAsync();
         await db.DraftSlots.Where(slot => slot.SessionId == sessionId).ExecuteDeleteAsync();
+        await db.TeamPreferenceGroupPlayers
+            .Where(groupPlayer => preferenceGroupIds.Contains(groupPlayer.TeamPreferenceGroupId))
+            .ExecuteDeleteAsync();
+        await db.TeamPreferenceGroups.Where(group => group.SessionId == sessionId).ExecuteDeleteAsync();
         await db.Teams.Where(team => team.SessionId == sessionId).ExecuteDeleteAsync();
         await db.SessionPlayers.Where(player => player.SessionId == sessionId).ExecuteDeleteAsync();
         await db.MatchSessions.Where(item => item.Id == sessionId).ExecuteDeleteAsync();
@@ -439,6 +447,11 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return BadRequest<DeleteResponse>("Remove the shared slot before deleting this player.");
         }
 
+        if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => groupPlayer.SessionPlayerId == player.Id))
+        {
+            return BadRequest<DeleteResponse>("Xóa nhóm muốn chung team trước khi xóa player này.");
+        }
+
         var captainTeam = session.Teams.SingleOrDefault(team => team.CaptainSessionPlayerId == player.Id);
         if (captainTeam is not null)
         {
@@ -603,6 +616,140 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return ServiceResult<DeleteResponse>.Success(new DeleteResponse("Shared slot deleted."));
     }
 
+    public async Task<ServiceResult<IReadOnlyList<TeamPreferenceGroupResponse>>> GetTeamPreferenceGroupsAsync(
+        string adminUserId,
+        string sessionId)
+    {
+        if (!await IsSessionAdmin(adminUserId, sessionId))
+        {
+            return NotFound<IReadOnlyList<TeamPreferenceGroupResponse>>("Không tìm thấy session.");
+        }
+
+        var groups = await db.TeamPreferenceGroups
+            .Include(group => group.Players.OrderBy(player => player.RotationOrder))
+            .ThenInclude(groupPlayer => groupPlayer.SessionPlayer)
+            .Where(group => group.SessionId == sessionId)
+            .OrderBy(group => group.CreatedAt)
+            .ToListAsync();
+
+        return ServiceResult<IReadOnlyList<TeamPreferenceGroupResponse>>.Success(
+            groups.Select(ToTeamPreferenceGroupResponse).ToList());
+    }
+
+    public async Task<ServiceResult<TeamPreferenceGroupResponse>> CreateTeamPreferenceGroupAsync(
+        string adminUserId,
+        string sessionId,
+        CreateTeamPreferenceGroupRequest request)
+    {
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null)
+        {
+            return NotFound<TeamPreferenceGroupResponse>("Không tìm thấy session.");
+        }
+
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Không thể tạo nhóm muốn chung team sau khi draft đã bắt đầu.");
+        }
+
+        var playerIds = request.SessionPlayerIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct()
+            .ToList();
+        if (playerIds.Count < 2)
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Cần chọn ít nhất 2 người muốn chung team.");
+        }
+
+        if (playerIds.Count >= session.TeamSize)
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Nhóm muốn chung team phải nhỏ hơn số slot của một team.");
+        }
+
+        var players = await db.SessionPlayers
+            .Where(player => player.SessionId == sessionId && playerIds.Contains(player.Id))
+            .ToListAsync();
+
+        if (players.Count != playerIds.Count)
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Một hoặc nhiều player không thuộc session này.");
+        }
+
+        if (players.Any(player => !player.IsPresent))
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Player phải có mặt.");
+        }
+
+        if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => playerIds.Contains(groupPlayer.SessionPlayerId)))
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Một player chỉ được nằm trong một nhóm muốn chung team.");
+        }
+
+        var captainIds = await db.Teams
+            .Where(team => team.SessionId == sessionId && team.CaptainSessionPlayerId != null)
+            .Select(team => team.CaptainSessionPlayerId!)
+            .ToListAsync();
+
+        if (players.Any(player => captainIds.Contains(player.Id)))
+        {
+            return BadRequest<TeamPreferenceGroupResponse>("Captain đã chọn không thể nằm trong nhóm muốn chung team.");
+        }
+
+        var group = new TeamPreferenceGroup
+        {
+            SessionId = sessionId
+        };
+
+        for (var index = 0; index < playerIds.Count; index += 1)
+        {
+            group.Players.Add(new TeamPreferenceGroupPlayer
+            {
+                TeamPreferenceGroupId = group.Id,
+                SessionPlayerId = playerIds[index],
+                SessionPlayer = players.Single(player => player.Id == playerIds[index]),
+                RotationOrder = index + 1
+            });
+        }
+
+        db.TeamPreferenceGroups.Add(group);
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        return ServiceResult<TeamPreferenceGroupResponse>.Created(ToTeamPreferenceGroupResponse(group));
+    }
+
+    public async Task<ServiceResult<DeleteResponse>> DeleteTeamPreferenceGroupAsync(
+        string adminUserId,
+        string sessionId,
+        string groupId)
+    {
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null)
+        {
+            return NotFound<DeleteResponse>("Không tìm thấy session.");
+        }
+
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+        {
+            return BadRequest<DeleteResponse>("Không thể xóa nhóm muốn chung team sau khi draft đã bắt đầu.");
+        }
+
+        var group = await db.TeamPreferenceGroups
+            .Include(item => item.Players)
+            .SingleOrDefaultAsync(item => item.Id == groupId && item.SessionId == sessionId);
+        if (group is null)
+        {
+            return NotFound<DeleteResponse>("Không tìm thấy nhóm muốn chung team.");
+        }
+
+        db.TeamPreferenceGroupPlayers.RemoveRange(group.Players);
+        db.TeamPreferenceGroups.Remove(group);
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        return ServiceResult<DeleteResponse>.Success(new DeleteResponse("Đã xóa nhóm muốn chung team."));
+    }
+
     public async Task<ServiceResult<CaptainsResponse>> AutoSelectCaptainsAsync(
         string adminUserId,
         string sessionId)
@@ -679,6 +826,11 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         if (session.Teams.Any(team => !IsValidCaptain(team.CaptainSessionPlayer!)))
         {
             return BadRequest<DraftStateResponse>("Đại diện phải có mặt, hợp lệ và không nằm trong slot thay phiên.");
+        }
+
+        if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => captainIds.Contains(groupPlayer.SessionPlayerId)))
+        {
+            return BadRequest<DraftStateResponse>("Captain không được nằm trong nhóm muốn chung team. Hãy xóa nhóm đó hoặc chọn captain khác.");
         }
 
         await ClearDraftRunArtifacts(sessionId);
@@ -832,10 +984,33 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                         : null))
                 .ToListAsync();
 
+        if (activeTurn is not null)
+        {
+            var preparedBagRows = await db.BlindBags
+                .Include(bag => bag.DraftSlot)
+                .Include(bag => bag.PreparedDraftSlot)
+                .Where(bag => bag.RoundId == activeTurn.RoundId)
+                .OrderBy(bag => bag.BagNumber)
+                .ToListAsync();
+
+            bags = preparedBagRows
+                .Select(bag =>
+                {
+                    var revealedSlot = bag.PreparedDraftSlot ?? bag.DraftSlot;
+                    return new BlindBagStateResponse(
+                        bag.Id,
+                        $"Túi {bag.BagNumber}",
+                        bag.IsOpened,
+                        bag.IsOpened ? ToRevealedSlot(revealedSlot) : null);
+                })
+                .ToList();
+        }
+
         var teamPreview = await BuildTeamPreview(sessionId);
         var lastOpened = await db.BlindBags
             .Include(bag => bag.Round)
             .Include(bag => bag.DraftSlot)
+            .Include(bag => bag.PreparedDraftSlot)
             .Include(bag => bag.OpenedForTeam)
             .Where(bag => bag.SessionId == sessionId && bag.IsOpened)
             .OrderByDescending(bag => bag.Round.RoundNumber)
@@ -848,6 +1023,15 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 $"{GetCaptainNameForTeam(teamPreview, lastOpened.OpenedForTeamId)} đã khui túi và bốc được {lastOpened.DraftSlot.DisplayName} cho {lastOpened.OpenedForTeam.Name}.",
                 ToRevealedSlot(lastOpened.DraftSlot),
                 new TeamSummary(lastOpened.OpenedForTeam.Id, lastOpened.OpenedForTeam.Name));
+
+        if (lastOpened is not null && lastOpened.OpenedForTeam is not null)
+        {
+            var lastOpenedSlot = lastOpened.PreparedDraftSlot ?? lastOpened.DraftSlot;
+            lastOpenedResponse = new OpenedBagResultResponse(
+                $"{GetCaptainNameForTeam(teamPreview, lastOpened.OpenedForTeamId)} đã khui túi và bốc được {lastOpenedSlot.DisplayName} cho {lastOpened.OpenedForTeam.Name}.",
+                ToRevealedSlot(lastOpenedSlot),
+                new TeamSummary(lastOpened.OpenedForTeam.Id, lastOpened.OpenedForTeam.Name));
+        }
 
         var canOpen = session.Status == SessionStatus.Drafting && activeTurn is not null;
         var message = activeTurn is null
@@ -905,6 +1089,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var activeTurn = activeTurns[0];
         var bag = await db.BlindBags
             .Include(item => item.DraftSlot)
+            .Include(item => item.PreparedDraftSlot)
             .SingleOrDefaultAsync(item => item.Id == bagId && item.SessionId == sessionId);
 
         if (bag is null)
@@ -922,9 +1107,20 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return Conflict<OpenBagResponse>("Túi đã được mở. Vui lòng tải lại trạng thái draft.");
         }
 
-        if (bag.DraftSlot.AssignedTeamId is not null)
+        if (false && bag.DraftSlot.AssignedTeamId is not null)
         {
             return Conflict<OpenBagResponse>("Slot trong túi đã được xếp vào team khác.");
+        }
+
+        var preparedSlot = bag.PreparedDraftSlot;
+        if (preparedSlot is null || preparedSlot.AssignedTeamId is not null)
+        {
+            preparedSlot = await PrepareSlotForBagAsync(session, activeTurn.TeamId, bag);
+        }
+
+        if (preparedSlot is null)
+        {
+            return Conflict<OpenBagResponse>("Không còn slot hợp lệ để khui cho team hiện tại.");
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -940,7 +1136,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 .SetProperty(item => item.OpenedAt, now));
 
         var slotRows = await db.DraftSlots
-            .Where(slot => slot.Id == bag.DraftSlotId && slot.AssignedTeamId == null)
+            .Where(slot => slot.Id == preparedSlot.Id && slot.AssignedTeamId == null)
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(slot => slot.AssignedTeamId, activeTurn.TeamId));
 
@@ -959,47 +1155,16 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         await RecalculateTeamScore(activeTurn.TeamId);
 
-        var nextTurn = await db.DraftTurns
-            .Include(turn => turn.Team)
-            .Include(turn => turn.Round)
-            .Include(turn => turn.CaptainSessionPlayer)
-            .Where(turn => turn.SessionId == sessionId && turn.Status == DraftTurnStatus.Waiting)
-            .OrderBy(turn => turn.TurnOrder)
-            .FirstOrDefaultAsync();
-
-        if (nextTurn is null)
-        {
-            await db.DraftRounds
-                .Where(round => round.SessionId == sessionId && round.Status != DraftRoundStatus.Completed)
-                .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Completed));
-            session.Status = SessionStatus.Finished;
-            session.CurrentRoundNumber = null;
-            session.CurrentTurnTeamId = null;
-            session.CurrentTurnCaptainSessionPlayerId = null;
-        }
-        else
-        {
-            await db.DraftTurns
-                .Where(turn => turn.Id == nextTurn.Id && turn.Status == DraftTurnStatus.Waiting)
-                .ExecuteUpdateAsync(updates => updates.SetProperty(turn => turn.Status, DraftTurnStatus.Active));
-            await db.DraftRounds
-                .Where(round => round.SessionId == sessionId && round.RoundNumber < nextTurn.Round.RoundNumber)
-                .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Completed));
-            await db.DraftRounds
-                .Where(round => round.Id == nextTurn.RoundId)
-                .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Active));
-
-            session.CurrentRoundNumber = nextTurn.Round.RoundNumber;
-            session.CurrentTurnTeamId = nextTurn.TeamId;
-            session.CurrentTurnCaptainSessionPlayerId = nextTurn.CaptainSessionPlayerId;
-        }
+        var nextTurn = await ActivateNextAvailableTurn(session, sessionId, now);
 
         session.UpdatedAt = now;
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
 
         var assignedTeam = new TeamSummary(activeTurn.Team.Id, activeTurn.Team.Name);
-        var revealedSlot = ToRevealedSlot(bag.DraftSlot);
+        var revealedSlot = ToRevealedSlot(preparedSlot);
+        var groupedNames = new List<string>();
+        var groupedText = string.Empty;
         var response = new OpenBagResponse(
             $"{activeTurn.CaptainSessionPlayer.DisplayName} đã khui túi và bốc được {bag.DraftSlot.DisplayName} cho {activeTurn.Team.Name}.",
             revealedSlot,
@@ -1010,6 +1175,16 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     nextTurn.Team.Name,
                     nextTurn.CaptainSessionPlayer.DisplayName,
                     nextTurn.Round.RoundNumber));
+
+        response = response with
+        {
+            Message = $"{activeTurn.CaptainSessionPlayer.DisplayName} đã khui túi và bốc được {preparedSlot.DisplayName} cho {activeTurn.Team.Name}."
+        };
+
+        if (groupedNames.Count > 0)
+        {
+            response = response with { Message = $"{response.Message}{groupedText}" };
+        }
 
         return ServiceResult<OpenBagResponse>.Success(response);
     }
@@ -1022,12 +1197,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
         if (session is null)
         {
-            return NotFound<PrepareRevealResponse>("Khﾃｴng tﾃｬm th蘯･y session.");
+            return NotFound<PrepareRevealResponse>("Không tìm thấy session.");
         }
 
         if (session.Status != SessionStatus.Drafting)
         {
-            return BadRequest<PrepareRevealResponse>("Session chﾆｰa 盻・tr蘯｡ng thﾃ｡i Drafting.");
+            return BadRequest<PrepareRevealResponse>("Session chưa ở trạng thái Drafting.");
         }
 
         var activeTurns = await db.DraftTurns
@@ -1041,36 +1216,48 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         {
             return ServiceResult<PrepareRevealResponse>.Failure(
                 StatusCodes.Status409Conflict,
-                "Tr蘯｡ng thﾃ｡i lﾆｰ盻｣t b盻祖 khﾃｴng h盻｣p l盻・ Vui lﾃｲng t蘯｣i l蘯｡i.");
+                "Trạng thái lượt bốc không hợp lệ. Vui lòng tải lại.");
         }
 
         var activeTurn = activeTurns[0];
         var bag = await db.BlindBags
             .Include(item => item.DraftSlot)
+            .Include(item => item.PreparedDraftSlot)
             .SingleOrDefaultAsync(item => item.Id == bagId && item.SessionId == sessionId);
 
         if (bag is null)
         {
-            return NotFound<PrepareRevealResponse>("Khﾃｴng tﾃｬm th蘯･y tﾃｺi.");
+            return NotFound<PrepareRevealResponse>("Không tìm thấy túi.");
         }
 
         if (bag.RoundId != activeTurn.RoundId)
         {
-            return BadRequest<PrepareRevealResponse>("Tﾃｺi nﾃy khﾃｴng thu盻冂 vﾃｲng b盻祖 hi盻㌻ t蘯｡i.");
+            return BadRequest<PrepareRevealResponse>("Túi này không thuộc vòng bốc hiện tại.");
         }
 
         if (bag.IsOpened)
         {
-            return Conflict<PrepareRevealResponse>("Tﾃｺi ﾄ妥｣ ﾄ柁ｰ盻｣c m盻・ Vui lﾃｲng t蘯｣i l蘯｡i tr蘯｡ng thﾃ｡i draft.");
+            return Conflict<PrepareRevealResponse>("Túi đã được mở. Vui lòng tải lại trạng thái draft.");
         }
 
-        if (bag.DraftSlot.AssignedTeamId is not null)
+        if (false && bag.DraftSlot.AssignedTeamId is not null)
         {
-            return Conflict<PrepareRevealResponse>("Slot trong tﾃｺi ﾄ妥｣ ﾄ柁ｰ盻｣c x蘯ｿp vﾃo team khﾃ｡c.");
+            return Conflict<PrepareRevealResponse>("Slot trong túi đã được xếp vào team khác.");
+        }
+
+        var preparedSlot = bag.PreparedDraftSlot;
+        if (preparedSlot is null || preparedSlot.AssignedTeamId is not null)
+        {
+            preparedSlot = await PrepareSlotForBagAsync(session, activeTurn.TeamId, bag);
+        }
+
+        if (preparedSlot is null)
+        {
+            return Conflict<PrepareRevealResponse>("Không còn slot hợp lệ để khui cho team hiện tại.");
         }
 
         var response = new PrepareRevealResponse(
-            ToRevealedSlot(bag.DraftSlot),
+            ToRevealedSlot(preparedSlot),
             new TeamSummary(activeTurn.Team.Id, activeTurn.Team.Name),
             new CaptainSummary(activeTurn.CaptainSessionPlayer.Id, activeTurn.CaptainSessionPlayer.DisplayName));
 
@@ -1114,6 +1301,11 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         if (players.Any(player => !IsValidCaptain(player)))
         {
             return BadRequest<CaptainsResponse>("Đại diện phải có mặt, hợp lệ và không nằm trong slot thay phiên.");
+        }
+
+        if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => ids.Contains(groupPlayer.SessionPlayerId)))
+        {
+            return BadRequest<CaptainsResponse>("Captain không được nằm trong nhóm muốn chung team. Hãy xóa nhóm đó hoặc chọn captain khác.");
         }
 
         await ClearDraftRunArtifacts(sessionId);
@@ -1194,12 +1386,21 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return null;
         }
 
+        var preferencePlayerIds = await db.TeamPreferenceGroupPlayers
+            .Join(
+                db.TeamPreferenceGroups.Where(group => group.SessionId == sessionId),
+                groupPlayer => groupPlayer.TeamPreferenceGroupId,
+                group => group.Id,
+                (groupPlayer, _) => groupPlayer.SessionPlayerId)
+            .ToListAsync();
+
         return await db.SessionPlayers
             .Where(player =>
                 player.SessionId == sessionId &&
                 player.IsPresent &&
                 player.IsCaptainEligible &&
-                !player.IsInsideSharedSlot)
+                !player.IsInsideSharedSlot &&
+                !preferencePlayerIds.Contains(player.Id))
             .ToListAsync();
     }
 
@@ -1310,6 +1511,284 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         await db.Teams
             .Where(team => team.Id == teamId)
             .ExecuteUpdateAsync(updates => updates.SetProperty(team => team.TotalAverageScore, total));
+    }
+
+    private async Task<DraftSlot?> PrepareSlotForBagAsync(
+        MatchSession session,
+        string teamId,
+        BlindBag bag)
+    {
+        var slot = await PickPreparedSlotForTeamAsync(session, teamId);
+        if (slot is null)
+        {
+            return null;
+        }
+
+        bag.PreparedDraftSlotId = slot.Id;
+        bag.PreparedDraftSlot = slot;
+        await db.SaveChangesAsync();
+        return slot;
+    }
+
+    private async Task<DraftSlot?> PickPreparedSlotForTeamAsync(MatchSession session, string teamId)
+    {
+        var assignedSlotCount = await db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == teamId);
+        var remainingCapacity = session.TeamSize - assignedSlotCount;
+        if (remainingCapacity <= 0)
+        {
+            return null;
+        }
+
+        var allSlots = await db.DraftSlots
+            .Include(slot => slot.Players)
+            .Where(slot => slot.SessionId == session.Id && !slot.IsCaptainSlot)
+            .ToListAsync();
+        var unassignedSlots = allSlots
+            .Where(slot => slot.AssignedTeamId is null)
+            .ToList();
+
+        if (unassignedSlots.Count == 0)
+        {
+            return null;
+        }
+
+        var groupPlayers = await db.TeamPreferenceGroupPlayers
+            .Join(
+                db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id),
+                groupPlayer => groupPlayer.TeamPreferenceGroupId,
+                group => group.Id,
+                (groupPlayer, _) => new
+                {
+                    groupPlayer.TeamPreferenceGroupId,
+                    groupPlayer.SessionPlayerId
+                })
+            .ToListAsync();
+
+        if (groupPlayers.Count == 0)
+        {
+            return Shuffle(unassignedSlots).First();
+        }
+
+        var groupIdByPlayerId = groupPlayers.ToDictionary(
+            item => item.SessionPlayerId,
+            item => item.TeamPreferenceGroupId);
+        var playerIdsByGroupId = groupPlayers
+            .GroupBy(item => item.TeamPreferenceGroupId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(item => item.SessionPlayerId).ToHashSet());
+
+        HashSet<string> GetGroupIdsForSlot(DraftSlot slot)
+        {
+            return slot.Players
+                .Select(slotPlayer => slotPlayer.SessionPlayerId)
+                .Where(groupIdByPlayerId.ContainsKey)
+                .Select(playerId => groupIdByPlayerId[playerId])
+                .ToHashSet();
+        }
+
+        List<DraftSlot> GetSlotsForGroup(string groupId)
+        {
+            var playerIds = playerIdsByGroupId[groupId];
+            return allSlots
+                .Where(slot => slot.Players.Any(slotPlayer => playerIds.Contains(slotPlayer.SessionPlayerId)))
+                .ToList();
+        }
+
+        var groupTeamAssignments = playerIdsByGroupId.Keys.ToDictionary(
+            groupId => groupId,
+            groupId => GetSlotsForGroup(groupId)
+                .Where(slot => slot.AssignedTeamId is not null)
+                .Select(slot => slot.AssignedTeamId!)
+                .Distinct()
+                .ToList());
+
+        var groupsReservedForCurrentTeam = groupTeamAssignments
+            .Where(item => item.Value.Contains(teamId))
+            .Select(item => item.Key)
+            .ToHashSet();
+
+        var requiredGroupSlots = unassignedSlots
+            .Where(slot => GetGroupIdsForSlot(slot).Any(groupsReservedForCurrentTeam.Contains))
+            .ToList();
+        if (requiredGroupSlots.Count > 0)
+        {
+            return Shuffle(requiredGroupSlots).First();
+        }
+
+        var validSlots = unassignedSlots
+            .Where(slot =>
+            {
+                var slotGroupIds = GetGroupIdsForSlot(slot);
+                if (slotGroupIds.Count == 0)
+                {
+                    return true;
+                }
+
+                foreach (var groupId in slotGroupIds)
+                {
+                    var assignedTeams = groupTeamAssignments[groupId];
+                    if (assignedTeams.Any(assignedTeamId => assignedTeamId != teamId))
+                    {
+                        return false;
+                    }
+
+                    if (assignedTeams.Count == 0)
+                    {
+                        var unassignedGroupSlotCount = GetSlotsForGroup(groupId)
+                            .Count(groupSlot => groupSlot.AssignedTeamId is null);
+                        if (unassignedGroupSlotCount > remainingCapacity)
+                        {
+                            return false;
+                        }
+                    }
+                }
+
+                return true;
+            })
+            .ToList();
+
+        return validSlots.Count == 0
+            ? null
+            : Shuffle(validSlots).First();
+    }
+
+    private async Task<TeamPreferenceAssignmentResult> ApplyTeamPreferenceGroupAsync(
+        MatchSession session,
+        string openedDraftSlotId,
+        string teamId,
+        string adminUserId,
+        DateTimeOffset now)
+    {
+        var openedPlayerIds = await db.DraftSlotPlayers
+            .Where(slotPlayer => slotPlayer.DraftSlotId == openedDraftSlotId)
+            .Select(slotPlayer => slotPlayer.SessionPlayerId)
+            .ToListAsync();
+
+        if (openedPlayerIds.Count == 0)
+        {
+            return TeamPreferenceAssignmentResult.Success([]);
+        }
+
+        var groupIds = await db.TeamPreferenceGroupPlayers
+            .Where(groupPlayer => openedPlayerIds.Contains(groupPlayer.SessionPlayerId))
+            .Select(groupPlayer => groupPlayer.TeamPreferenceGroupId)
+            .Distinct()
+            .ToListAsync();
+
+        if (groupIds.Count == 0)
+        {
+            return TeamPreferenceAssignmentResult.Success([]);
+        }
+
+        var groupedPlayerIds = await db.TeamPreferenceGroupPlayers
+            .Where(groupPlayer => groupIds.Contains(groupPlayer.TeamPreferenceGroupId))
+            .Select(groupPlayer => groupPlayer.SessionPlayerId)
+            .Distinct()
+            .ToListAsync();
+
+        var linkedSlots = await db.DraftSlots
+            .Include(slot => slot.Players)
+            .Where(slot =>
+                slot.SessionId == session.Id &&
+                slot.Id != openedDraftSlotId &&
+                !slot.IsCaptainSlot &&
+                slot.AssignedTeamId == null &&
+                slot.Players.Any(slotPlayer => groupedPlayerIds.Contains(slotPlayer.SessionPlayerId)))
+            .ToListAsync();
+
+        if (linkedSlots.Count == 0)
+        {
+            return TeamPreferenceAssignmentResult.Success([]);
+        }
+
+        var assignedSlotCount = await db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == teamId);
+        var openCapacity = session.TeamSize - assignedSlotCount;
+        if (linkedSlots.Count > openCapacity)
+        {
+            return TeamPreferenceAssignmentResult.Failure("Team này không còn đủ slot để kéo cả nhóm muốn chung team.");
+        }
+
+        foreach (var slot in linkedSlots)
+        {
+            slot.AssignedTeamId = teamId;
+        }
+
+        var linkedSlotIds = linkedSlots.Select(slot => slot.Id).ToList();
+        await db.BlindBags
+            .Where(bag => linkedSlotIds.Contains(bag.DraftSlotId) && !bag.IsOpened)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(bag => bag.IsOpened, true)
+                .SetProperty(bag => bag.OpenedByUserId, adminUserId)
+                .SetProperty(bag => bag.OpenedForTeamId, teamId)
+                .SetProperty(bag => bag.OpenedAt, now));
+
+        await db.SaveChangesAsync();
+        return TeamPreferenceAssignmentResult.Success(linkedSlots);
+    }
+
+    private async Task<DraftTurn?> ActivateNextAvailableTurn(
+        MatchSession session,
+        string sessionId,
+        DateTimeOffset now)
+    {
+        while (true)
+        {
+            var nextTurn = await db.DraftTurns
+                .Include(turn => turn.Team)
+                .Include(turn => turn.Round)
+                .Include(turn => turn.CaptainSessionPlayer)
+                .Where(turn => turn.SessionId == sessionId && turn.Status == DraftTurnStatus.Waiting)
+                .OrderBy(turn => turn.TurnOrder)
+                .FirstOrDefaultAsync();
+
+            if (nextTurn is null)
+            {
+                await FinishDraft(session, sessionId);
+                return null;
+            }
+
+            var teamSlotCount = await db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == nextTurn.TeamId);
+            var roundHasUnopenedBags = await db.BlindBags.AnyAsync(bag =>
+                bag.RoundId == nextTurn.RoundId &&
+                !bag.IsOpened);
+
+            if (teamSlotCount >= session.TeamSize || !roundHasUnopenedBags)
+            {
+                await db.DraftTurns
+                    .Where(turn => turn.Id == nextTurn.Id && turn.Status == DraftTurnStatus.Waiting)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(turn => turn.Status, DraftTurnStatus.Skipped)
+                        .SetProperty(turn => turn.CompletedAt, now));
+                continue;
+            }
+
+            await db.DraftTurns
+                .Where(turn => turn.Id == nextTurn.Id && turn.Status == DraftTurnStatus.Waiting)
+                .ExecuteUpdateAsync(updates => updates.SetProperty(turn => turn.Status, DraftTurnStatus.Active));
+            await db.DraftRounds
+                .Where(round => round.SessionId == sessionId && round.RoundNumber < nextTurn.Round.RoundNumber)
+                .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Completed));
+            await db.DraftRounds
+                .Where(round => round.Id == nextTurn.RoundId)
+                .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Active));
+
+            session.CurrentRoundNumber = nextTurn.Round.RoundNumber;
+            session.CurrentTurnTeamId = nextTurn.TeamId;
+            session.CurrentTurnCaptainSessionPlayerId = nextTurn.CaptainSessionPlayerId;
+            return nextTurn;
+        }
+    }
+
+    private async Task FinishDraft(MatchSession session, string sessionId)
+    {
+        await db.DraftRounds
+            .Where(round => round.SessionId == sessionId && round.Status != DraftRoundStatus.Completed)
+            .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Completed));
+        session.Status = SessionStatus.Finished;
+        session.CurrentRoundNumber = null;
+        session.CurrentTurnTeamId = null;
+        session.CurrentTurnCaptainSessionPlayerId = null;
     }
 
     private async Task<IReadOnlyList<TeamPreviewResponse>> BuildTeamPreview(string sessionId)
@@ -1535,6 +2014,20 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             orderedPlayers.Select(player => player.DisplayName).ToList());
     }
 
+    private static TeamPreferenceGroupResponse ToTeamPreferenceGroupResponse(TeamPreferenceGroup group)
+    {
+        var orderedPlayers = group.Players
+            .OrderBy(player => player.RotationOrder)
+            .Select(player => player.SessionPlayer)
+            .ToList();
+
+        return new TeamPreferenceGroupResponse(
+            group.Id,
+            orderedPlayers.Select(player => player.Id).ToList(),
+            orderedPlayers.Select(player => player.DisplayName).ToList(),
+            orderedPlayers.Count == 0 ? 0 : orderedPlayers.Average(player => player.Score));
+    }
+
     private static RevealedSlotResponse ToRevealedSlot(DraftSlot slot)
     {
         return new RevealedSlotResponse(
@@ -1551,6 +2044,22 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         string? teamId)
     {
         return teams.FirstOrDefault(team => team.TeamId == teamId)?.CaptainName ?? "Đại diện";
+    }
+
+    private sealed record TeamPreferenceAssignmentResult(
+        bool IsSuccess,
+        string? ErrorMessage,
+        IReadOnlyList<DraftSlot> AssignedSlots)
+    {
+        public static TeamPreferenceAssignmentResult Success(IReadOnlyList<DraftSlot> assignedSlots)
+        {
+            return new TeamPreferenceAssignmentResult(true, null, assignedSlots);
+        }
+
+        public static TeamPreferenceAssignmentResult Failure(string message)
+        {
+            return new TeamPreferenceAssignmentResult(false, message, []);
+        }
     }
 
     private static ServiceResult<T> BadRequest<T>(string message)

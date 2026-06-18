@@ -74,6 +74,13 @@ export type SharedSlotResponse = {
   playerNames: string[];
 };
 
+export type TeamPreferenceGroupResponse = {
+  id: string;
+  sessionPlayerIds: string[];
+  playerNames: string[];
+  averageScore: number;
+};
+
 export type CaptainsResponse = {
   captains: CaptainTeamResponse[];
   balance: {

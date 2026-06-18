@@ -17,6 +17,7 @@ import {
   type SessionPlayerResponse,
   type SessionResponse,
   type SharedSlotResponse,
+  type TeamPreferenceGroupResponse,
 } from "../api/dbClient";
 import { BlindBagCard } from "./draft/BlindBagCard";
 import { ShootingStarRevealModal } from "./draft/ShootingStarRevealModal";
@@ -106,10 +107,12 @@ export function DbDraftFlow() {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [players, setPlayers] = useState<SessionPlayerResponse[]>([]);
   const [sharedSlots, setSharedSlots] = useState<SharedSlotResponse[]>([]);
+  const [teamPreferenceGroups, setTeamPreferenceGroups] = useState<TeamPreferenceGroupResponse[]>([]);
   const [captains, setCaptains] = useState<CaptainsResponse | null>(null);
   const [draftState, setDraftState] = useState<DraftStateResponse | null>(null);
   const [manualCaptainIds, setManualCaptainIds] = useState<string[]>(["", "", ""]);
   const [selectedSharedIds, setSelectedSharedIds] = useState<string[]>([]);
+  const [selectedTeamPreferenceIds, setSelectedTeamPreferenceIds] = useState<string[]>([]);
   const [playerForm, setPlayerForm] = useState({
     displayName: "",
     role: "Attack" as DbRole,
@@ -133,6 +136,14 @@ export function DbDraftFlow() {
   const availableForShared = useMemo(
     () => players.filter((player) => !player.isInsideSharedSlot),
     [players],
+  );
+  const teamPreferencePlayerIds = useMemo(
+    () => new Set(teamPreferenceGroups.flatMap((group) => group.sessionPlayerIds)),
+    [teamPreferenceGroups],
+  );
+  const availableForTeamPreference = useMemo(
+    () => players.filter((player) => !teamPreferencePlayerIds.has(player.id)),
+    [players, teamPreferencePlayerIds],
   );
   const draftReady = draftState?.sessionStatus === "Drafting";
   const canEditRoster = session?.status !== "Drafting" && session?.status !== "Finished";
@@ -204,8 +215,10 @@ export function DbDraftFlow() {
     setSession(null);
     setPlayers([]);
     setSharedSlots([]);
+    setTeamPreferenceGroups([]);
     setCaptains(null);
     setDraftState(null);
+    setSelectedTeamPreferenceIds([]);
     localStorage.removeItem("volleyDraftToken");
     localStorage.removeItem("volleyDraftUser");
   }
@@ -222,6 +235,7 @@ export function DbDraftFlow() {
       setSessionName(createdSession.name);
       setPlayers([]);
       setSharedSlots([]);
+      setTeamPreferenceGroups([]);
       setCaptains(null);
       setDraftState(null);
       return createdSession;
@@ -257,10 +271,12 @@ export function DbDraftFlow() {
       setSession(null);
       setPlayers([]);
       setSharedSlots([]);
+      setTeamPreferenceGroups([]);
       setCaptains(null);
       setDraftState(null);
       setManualCaptainIds(["", "", ""]);
       setSelectedSharedIds([]);
+      setSelectedTeamPreferenceIds([]);
       setEditingPlayerId(null);
       setStatusMessage(response.message);
       await loadLatestSession();
@@ -270,15 +286,17 @@ export function DbDraftFlow() {
 
   async function refreshSessionData(targetSession = session) {
     if (!token || !targetSession) return;
-    const [freshSession, freshPlayers, freshSharedSlots] = await Promise.all([
+    const [freshSession, freshPlayers, freshSharedSlots, freshTeamPreferenceGroups] = await Promise.all([
       apiFetch<SessionResponse>(`/sessions/${targetSession.id}`, { token }),
       apiFetch<SessionPlayerResponse[]>(`/sessions/${targetSession.id}/players`, { token }),
       apiFetch<SharedSlotResponse[]>(`/sessions/${targetSession.id}/shared-slots`, { token }),
+      apiFetch<TeamPreferenceGroupResponse[]>(`/sessions/${targetSession.id}/team-preferences`, { token }),
     ]);
     setSession(freshSession);
     setSessionName(freshSession.name);
     setPlayers(freshPlayers);
     setSharedSlots(freshSharedSlots);
+    setTeamPreferenceGroups(freshTeamPreferenceGroups);
   }
 
   async function loadLatestSession() {
@@ -433,6 +451,14 @@ export function DbDraftFlow() {
     );
   }
 
+  function toggleTeamPreferencePlayer(playerId: string) {
+    setSelectedTeamPreferenceIds((current) =>
+      current.includes(playerId)
+        ? current.filter((id) => id !== playerId)
+        : [...current, playerId],
+    );
+  }
+
   async function createSharedSlot() {
     if (!token || !session || selectedSharedIds.length < 2) return;
     await runAction(async () => {
@@ -459,6 +485,34 @@ export function DbDraftFlow() {
       await refreshSessionData();
       return response;
     }, "Da xoa shared slot.");
+  }
+
+  async function createTeamPreferenceGroup() {
+    if (!token || !session || selectedTeamPreferenceIds.length < 2) return;
+    await runAction(async () => {
+      await apiFetch<TeamPreferenceGroupResponse>(`/sessions/${session.id}/team-preferences`, {
+        method: "POST",
+        token,
+        body: { sessionPlayerIds: selectedTeamPreferenceIds },
+      });
+      setSelectedTeamPreferenceIds([]);
+      await refreshSessionData();
+    }, "Đã lưu nhóm muốn chung team.");
+  }
+
+  async function deleteTeamPreferenceGroup(group: TeamPreferenceGroupResponse) {
+    if (!token || !session) return;
+    const confirmed = window.confirm(`Xóa nhóm chung team "${group.playerNames.join(" / ")}"?`);
+    if (!confirmed) return;
+
+    await runAction(async () => {
+      const response = await apiFetch<DeleteResponse>(
+        `/sessions/${session.id}/team-preferences/${group.id}`,
+        { method: "DELETE", token },
+      );
+      await refreshSessionData();
+      return response;
+    }, "Đã xóa nhóm muốn chung team.");
   }
 
   async function autoSelectCaptains() {
@@ -1050,6 +1104,67 @@ export function DbDraftFlow() {
               </div>
             </div>
 
+            <div className="tool-panel desktop-setup-panel">
+              <div className="card-title-row">
+                <div>
+                  <h2>Muốn chung team</h2>
+                  <p className="muted">
+                    Dàn xếp nhẹ: nếu một người trong nhóm được bóc túi, các người còn lại sẽ vào cùng team.
+                  </p>
+                </div>
+                <Badge tone="orange">{teamPreferenceGroups.length} nhóm</Badge>
+              </div>
+              <div className="chip-grid">
+                {availableForTeamPreference.map((player) => (
+                  <button
+                    className={
+                      selectedTeamPreferenceIds.includes(player.id) ? "select-chip active" : "select-chip"
+                    }
+                    key={player.id}
+                    type="button"
+                    onClick={() => toggleTeamPreferencePlayer(player.id)}
+                  >
+                    {player.displayName}
+                    <small>{player.score}</small>
+                  </button>
+                ))}
+              </div>
+              <button
+                className="button-primary"
+                type="button"
+                onClick={createTeamPreferenceGroup}
+                disabled={!canEditRoster || selectedTeamPreferenceIds.length < 2 || isBusy}
+              >
+                <Plus size={18} aria-hidden="true" />
+                Lưu nhóm chung team
+              </button>
+              <div className="card-grid">
+                {teamPreferenceGroups.map((group) => (
+                  <article className="feature-card" key={group.id}>
+                    <div className="card-title-row">
+                      <h3>{group.playerNames.join(" / ")}</h3>
+                      <div className="admin-card-actions">
+                        <ScorePill score={group.averageScore} label="avg" />
+                        <button
+                          className="icon-button danger"
+                          type="button"
+                          onClick={() => deleteTeamPreferenceGroup(group)}
+                          disabled={!canEditRoster || isBusy}
+                          title="Xóa nhóm chung team"
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="badge-row">
+                      <Badge tone="orange">Chung team</Badge>
+                      <Badge tone="neutral">{group.playerNames.length} người</Badge>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+
             <div className="tool-panel">
               <div className="card-title-row">
                 <div>
@@ -1085,7 +1200,11 @@ export function DbDraftFlow() {
                     >
                       <option value="">Chọn đại diện</option>
                       {players
-                        .filter((player) => player.isCaptainEligible && !player.isInsideSharedSlot)
+                        .filter((player) =>
+                          player.isCaptainEligible &&
+                          !player.isInsideSharedSlot &&
+                          !teamPreferencePlayerIds.has(player.id)
+                        )
                         .map((player) => (
                           <option key={player.id} value={player.id}>
                             {player.displayName} - {player.score}

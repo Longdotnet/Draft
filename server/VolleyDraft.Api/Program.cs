@@ -278,6 +278,38 @@ sessions.MapDelete("/{sessionId}/shared-slots/{slotId}", async (
         ? Results.Unauthorized()
         : (await service.DeleteSharedSlotAsync(userId, sessionId, slotId)).ToHttpResult();
 });
+sessions.MapPost("/{sessionId}/team-preferences", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateTeamPreferenceGroupRequest request,
+    SessionDraftService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.CreateTeamPreferenceGroupAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/team-preferences", async (
+    HttpContext httpContext,
+    string sessionId,
+    SessionDraftService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetTeamPreferenceGroupsAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapDelete("/{sessionId}/team-preferences/{groupId}", async (
+    HttpContext httpContext,
+    string sessionId,
+    string groupId,
+    SessionDraftService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.DeleteTeamPreferenceGroupAsync(userId, sessionId, groupId)).ToHttpResult();
+});
 sessions.MapPost("/{sessionId}/captains/auto-select", async (
     HttpContext httpContext,
     string sessionId,

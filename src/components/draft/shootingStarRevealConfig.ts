@@ -183,6 +183,28 @@ export const backgroundStreaks: StreakSetting[] = Array.from({ length: 18 }, (_,
   };
 });
 
+export const liteBackgroundStreaks: StreakSetting[] = Array.from({ length: 7 }, (_, index) => {
+  const palette = neonStreakPalette[index % neonStreakPalette.length];
+  const isHeroStreak = index === 0;
+
+  return {
+    left: `${-12 + ((index * 37) % 118)}%`,
+    top: `${-10 + ((index * 29) % 112)}%`,
+    delay: `${index * 210 - 900}ms`,
+    duration: `${3000 + (index % 3) * 360}ms`,
+    width: `${isHeroStreak ? 320 : 150 + (index % 4) * 42}px`,
+    thickness: `${isHeroStreak ? 2 : 1 + (index % 2) * 0.35}px`,
+    opacity: `${isHeroStreak ? 0.34 : 0.14 + (index % 3) * 0.04}`,
+    angle: `${-36 + (index % 3) * 2}deg`,
+    blur: "0px",
+    startX: `${18 + (index % 3) * 5}vw`,
+    startY: `${-14 - (index % 2) * 3}vh`,
+    endX: `${-24 - (index % 4) * 5}vw`,
+    endY: `${18 + (index % 3) * 4}vh`,
+    ...palette,
+  };
+});
+
 export const twinkleStars: TwinkleStarSetting[] = Array.from({ length: 92 }, (_, index) => ({
   left: `${(index * 37 + 9) % 98}%`,
   top: `${(index * 61 + 7) % 96}%`,
@@ -192,10 +214,33 @@ export const twinkleStars: TwinkleStarSetting[] = Array.from({ length: 92 }, (_,
   opacity: `${0.34 + (index % 5) * 0.10}`,
 }));
 
+export const liteTwinkleStars: TwinkleStarSetting[] = Array.from({ length: 24 }, (_, index) => ({
+  left: `${(index * 41 + 11) % 96}%`,
+  top: `${(index * 67 + 8) % 94}%`,
+  size: `${2 + (index % 3)}px`,
+  delay: `${(index * 230) % 2100}ms`,
+  duration: `${1500 + (index % 4) * 320}ms`,
+  opacity: `${0.34 + (index % 4) * 0.08}`,
+}));
+
+export const liteFeaturedStars: FeaturedStarSetting[] = [
+  { left: "12%", top: "13%", size: "13px", delay: "900ms", duration: "2400ms", opacity: "0.84" },
+  { left: "76%", top: "24%", size: "11px", delay: "1700ms", duration: "2600ms", opacity: "0.72" },
+  { left: "36%", top: "68%", size: "10px", delay: "2500ms", duration: "2500ms", opacity: "0.76" },
+];
+
 export const rarityBurstStars: BurstStarSetting[] = Array.from({ length: 18 }, (_, index) => ({
   left: `${12 + ((index * 23) % 78)}%`,
   top: `${9 + ((index * 31) % 78)}%`,
   size: `${7 + (index % 5) * 2}px`,
   delay: `${900 + index * 135}ms`,
   duration: `${1650 + (index % 4) * 220}ms`,
+}));
+
+export const liteRarityBurstStars: BurstStarSetting[] = Array.from({ length: 6 }, (_, index) => ({
+  left: `${18 + ((index * 19) % 64)}%`,
+  top: `${16 + ((index * 27) % 64)}%`,
+  size: `${7 + (index % 3) * 2}px`,
+  delay: `${1050 + index * 230}ms`,
+  duration: `${1550 + (index % 3) * 180}ms`,
 }));
