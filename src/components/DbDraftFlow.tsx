@@ -43,21 +43,21 @@ const genderOptions: Array<{ value: DbGender; label: string }> = [
 ];
 
 const samplePlayers: Array<{ displayName: string; role: DbRole; level: DbLevel; gender: DbGender }> = [
-  { displayName: "Nick", role: "Attack", level: "Good", gender: "Male" },
-  { displayName: "Sin", role: "FullStack", level: "Good", gender: "Male" },
-  { displayName: "Duy", role: "Setter", level: "Average", gender: "Male" },
-  { displayName: "Long", role: "Defense", level: "Average", gender: "Male" },
+  { displayName: "Nick Tran", role: "Defense", level: "Average", gender: "Male" },
+  { displayName: "Đặng Thế Nguyễn", role: "Setter", level: "Average", gender: "Male" },
+  { displayName: "Thanh Trúc", role: "Defense", level: "Good", gender: "Female" },
+  { displayName: "Longg", role: "FullStack", level: "Average", gender: "Male" },
   { displayName: "Bảo", role: "New", level: "New", gender: "Male" },
   { displayName: "Bình", role: "Attack", level: "Good", gender: "Male" },
   { displayName: "Nam", role: "Defense", level: "Average", gender: "Male" },
-  { displayName: "Huy", role: "New", level: "New", gender: "Male" },
-  { displayName: "An", role: "Attack", level: "Average", gender: "Female" },
-  { displayName: "Cường", role: "FullStack", level: "Good", gender: "Male" },
-  { displayName: "Minh", role: "Setter", level: "Good", gender: "Male" },
-  { displayName: "Khoa", role: "Defense", level: "Average", gender: "Male" },
-  { displayName: "Linh", role: "Setter", level: "Average", gender: "Female" },
-  { displayName: "Tú", role: "FullStack", level: "Average", gender: "Female" },
-  { displayName: "Sơn", role: "New", level: "New", gender: "Male" },
+  { displayName: "Anh Duy", role: "Attack", level: "Average", gender: "Male" },
+  { displayName: "Tô An", role: "FullStack", level: "Good", gender: "Male" },
+  { displayName: "Duy Nam", role: "FullStack", level: "Good", gender: "Male" },
+  { displayName: "Vinh", role: "Defense", level: "New", gender: "Male" },
+  { displayName: "Nghuy", role: "FullStack", level: "Good", gender: "Male" },
+  { displayName: "Minh Nam", role: "FullStack", level: "Average", gender: "Male" },
+  { displayName: "Quỳnh Mai", role: "Defense", level: "Good", gender: "Female" },
+  { displayName: "Phương Duy Đỗ", role: "FullStack", level: "Good", gender: "Male" },
   { displayName: "Phúc", role: "Attack", level: "Good", gender: "Male" },
   { displayName: "Quân", role: "Defense", level: "Average", gender: "Male" },
   { displayName: "Vy", role: "Setter", level: "Average", gender: "Female" },
@@ -897,7 +897,7 @@ export function DbDraftFlow() {
                   className="button-secondary"
                   type="button"
                   onClick={seedSampleRoster}
-                  disabled={!canEditRoster || isBusy || players.length > 0}
+                  
                 >
                   <Save size={17} aria-hidden="true" />
                   Seed roster mẫu

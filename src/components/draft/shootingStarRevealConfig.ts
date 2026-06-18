@@ -161,7 +161,7 @@ const neonStreakPalette = [
   },
 ];
 
-export const backgroundStreaks: StreakSetting[] = Array.from({ length: 60 }, (_, index) => {
+export const backgroundStreaks: StreakSetting[] = Array.from({ length: 18 }, (_, index) => {
   const palette = neonStreakPalette[index % neonStreakPalette.length];
   const isHeroStreak = index % 13 === 0;
 
