@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Services;
@@ -34,7 +35,9 @@ builder.Services.AddCors(options =>
 });
 builder.Services.AddDbContext<VolleyDraftDbContext>(options =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("Default")
+    var connectionString = NormalizePostgresConnectionString(
+        builder.Configuration.GetConnectionString("Default")
+        ?? builder.Configuration["DATABASE_URL"])
         ?? "Data Source=volley-draft.db";
     var provider = builder.Configuration["Database:Provider"];
     var usePostgres = string.Equals(provider, "Postgres", StringComparison.OrdinalIgnoreCase)
@@ -77,6 +80,8 @@ builder.Services
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
+
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 if (app.Environment.IsDevelopment())
 {
@@ -348,3 +353,30 @@ sessions.MapPost("/{sessionId}/blind-bags/{bagId}/open", async (
 });
 
 app.Run();
+
+static string? NormalizePostgresConnectionString(string? connectionString)
+{
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        return connectionString;
+    }
+
+    if (!Uri.TryCreate(connectionString, UriKind.Absolute, out var uri) ||
+        (uri.Scheme != "postgres" && uri.Scheme != "postgresql"))
+    {
+        return connectionString;
+    }
+
+    var userInfo = uri.UserInfo.Split(':', 2);
+    var builder = new NpgsqlConnectionStringBuilder
+    {
+        Host = uri.Host,
+        Port = uri.Port > 0 ? uri.Port : 5432,
+        Database = uri.AbsolutePath.TrimStart('/'),
+        Username = Uri.UnescapeDataString(userInfo.ElementAtOrDefault(0) ?? string.Empty),
+        Password = Uri.UnescapeDataString(userInfo.ElementAtOrDefault(1) ?? string.Empty),
+        SslMode = SslMode.Require
+    };
+
+    return builder.ConnectionString;
+}

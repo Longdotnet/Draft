@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: volley-draft-api
+    runtime: docker
+    plan: free
+    dockerfilePath: server/VolleyDraft.Api/Dockerfile
+    dockerContext: server/VolleyDraft.Api
+    healthCheckPath: /health
+    envVars:
+      - key: Database__Provider
+        value: Postgres
+      - key: ConnectionStrings__Default
+        fromDatabase:
+          name: volley-draft-db
+          property: connectionString
+      - key: Jwt__Issuer
+        value: VolleyDraft
+      - key: Jwt__Audience
+        value: VolleyDraftClient
+      - key: Jwt__Key
+        generateValue: true
+      - key: Cors__Origins__0
+        sync: false
+
+  - type: web
+    name: volley-draft-web
+    runtime: static
+    plan: free
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+databases:
+  - name: volley-draft-db
+    databaseName: volley_draft
+    user: volley_user
+    plan: free

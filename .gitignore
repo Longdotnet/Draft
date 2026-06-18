@@ -42,3 +42,6 @@ appsettings.Production.json
 # OS files
 .DS_Store
 Thumbs.db
+
+# Accidental local scratch file
+/git
