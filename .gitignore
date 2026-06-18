@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Frontend build/cache
+dist/
+.vite/
+
+# .NET build output
+bin/
+obj/
+**/bin/
+**/obj/
+
+# Local databases and SQLite sidecar files
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+server/VolleyDraft.Api/volley-draft.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+appsettings.Production.json
+
+# IDE/editor files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS files
+.DS_Store
+Thumbs.db

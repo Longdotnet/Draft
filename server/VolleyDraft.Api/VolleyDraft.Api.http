@@ -1,0 +1,6 @@
+@VolleyDraft.Api_HostAddress = http://localhost:5030
+
+GET {{VolleyDraft.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
