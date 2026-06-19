@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Gift, LogOut, Pencil, Plus, RefreshCw, Save, ShieldCheck, Trash2, UsersRound, X } from "lucide-react";
+import { Gift, LogOut, Pencil, Plus, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2, UsersRound, X } from "lucide-react";
 import {
   apiFetch,
   ApiRequestError,
@@ -207,6 +207,7 @@ export function DbDraftFlow() {
     [players, teamPreferencePlayerIds],
   );
   const draftReady = draftState?.sessionStatus === "Drafting";
+  const captainsReady = (captains?.captains.length ?? 0) === (session?.teamCount ?? 3);
   const canEditRoster = session?.status !== "Drafting" && session?.status !== "Finished";
 
   useEffect(() => {
@@ -678,6 +679,41 @@ export function DbDraftFlow() {
       token,
     });
     setDraftState(response);
+  }
+
+  async function undoLastDraftPick() {
+    if (!token || !session) return;
+
+    await runAction(async () => {
+      const response = await apiFetch<DraftStateResponse>(`/sessions/${session.id}/undo-last-pick`, {
+        method: "POST",
+        token,
+      });
+      setDraftState(response);
+      await refreshSessionData();
+      await loadSessionPage(sessionPage);
+      return response;
+    }, "Đã quay lại lượt bốc gần nhất.");
+  }
+
+  async function resetDraftFromStart() {
+    if (!token || !session) return;
+    const confirmed = window.confirm(
+      "Reset toàn bộ draft từ đầu? Tất cả túi đã khui và kết quả chia đội hiện tại sẽ bị xóa, sau đó app random lại rounds/bags/turns.",
+    );
+    if (!confirmed) return;
+
+    await runAction(async () => {
+      const response = await apiFetch<DraftStateResponse>(`/sessions/${session.id}/reset-draft`, {
+        method: "POST",
+        token,
+      });
+      setPendingReveal(null);
+      setDraftState(response);
+      await refreshSessionData();
+      await loadSessionPage(sessionPage);
+      return response;
+    }, "Đã reset draft và random lại từ đầu.");
   }
 
   async function prepareReveal(bagId: string) {
@@ -1419,8 +1455,23 @@ export function DbDraftFlow() {
                   >
                     Bắt đầu draft
                   </button>
-                  <button className="button-secondary" type="button" onClick={refreshDraftState}>
-                    Refresh draft-state
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick={undoLastDraftPick}
+                    disabled={isBusy || !draftState?.lastOpenedBag}
+                  >
+                    <RotateCcw size={17} aria-hidden="true" />
+                    Quay lại lượt vừa khui
+                  </button>
+                  <button
+                    className="button-danger"
+                    type="button"
+                    onClick={resetDraftFromStart}
+                    disabled={isBusy || !captainsReady}
+                  >
+                    <RefreshCw size={17} aria-hidden="true" />
+                    Reset draft từ đầu
                   </button>
                 </div>
 

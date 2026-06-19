@@ -353,6 +353,26 @@ sessions.MapPost("/{sessionId}/start-draft", async (
         ? Results.Unauthorized()
         : (await service.StartDraftAsync(userId, sessionId)).ToHttpResult();
 });
+sessions.MapPost("/{sessionId}/undo-last-pick", async (
+    HttpContext httpContext,
+    string sessionId,
+    SessionDraftService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UndoLastDraftPickAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/reset-draft", async (
+    HttpContext httpContext,
+    string sessionId,
+    SessionDraftService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.ResetDraftAsync(userId, sessionId)).ToHttpResult();
+});
 sessions.MapGet("/{sessionId}/draft-state", async (
     HttpContext httpContext,
     string sessionId,

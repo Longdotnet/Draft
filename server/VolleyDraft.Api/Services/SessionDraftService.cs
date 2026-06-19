@@ -824,6 +824,21 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         string adminUserId,
         string sessionId)
     {
+        return await StartDraftRunAsync(adminUserId, sessionId, allowRestart: false);
+    }
+
+    public async Task<ServiceResult<DraftStateResponse>> ResetDraftAsync(
+        string adminUserId,
+        string sessionId)
+    {
+        return await StartDraftRunAsync(adminUserId, sessionId, allowRestart: true);
+    }
+
+    private async Task<ServiceResult<DraftStateResponse>> StartDraftRunAsync(
+        string adminUserId,
+        string sessionId,
+        bool allowRestart)
+    {
         await using var transaction = await db.Database.BeginTransactionAsync();
         var session = await LoadSessionForAdmin(adminUserId, sessionId)
             .Include(item => item.Teams)
@@ -835,7 +850,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return NotFound<DraftStateResponse>("Không tìm thấy session.");
         }
 
-        if (session.Status == SessionStatus.Drafting)
+        if (session.Status == SessionStatus.Drafting && !allowRestart)
         {
             return BadRequest<DraftStateResponse>("Draft đang chạy.");
         }
@@ -965,6 +980,104 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         session.CurrentTurnTeamId = firstTeam.Id;
         session.CurrentTurnCaptainSessionPlayerId = firstTeam.CaptainSessionPlayerId;
         session.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        return await GetDraftStateAsync(adminUserId, sessionId);
+    }
+
+    public async Task<ServiceResult<DraftStateResponse>> UndoLastDraftPickAsync(
+        string adminUserId,
+        string sessionId)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null)
+        {
+            return NotFound<DraftStateResponse>("Không tìm thấy session.");
+        }
+
+        if (session.Status is not (SessionStatus.Drafting or SessionStatus.Finished))
+        {
+            return BadRequest<DraftStateResponse>("Chỉ có thể hoàn tác khi draft đang chạy hoặc vừa hoàn tất.");
+        }
+
+        var lastCompletedTurn = await db.DraftTurns
+            .Include(turn => turn.Round)
+            .Include(turn => turn.Team)
+            .Include(turn => turn.CaptainSessionPlayer)
+            .Include(turn => turn.OpenedBag)
+            .Where(turn =>
+                turn.SessionId == sessionId &&
+                turn.Status == DraftTurnStatus.Completed &&
+                turn.OpenedBagId != null)
+            .OrderByDescending(turn => turn.CompletedAt)
+            .ThenByDescending(turn => turn.TurnOrder)
+            .FirstOrDefaultAsync();
+
+        if (lastCompletedTurn is null || lastCompletedTurn.OpenedBag is null)
+        {
+            return BadRequest<DraftStateResponse>("Chưa có lượt bốc nào để hoàn tác.");
+        }
+
+        var openedBag = lastCompletedTurn.OpenedBag;
+        var assignedSlotId = openedBag.PreparedDraftSlotId ?? openedBag.DraftSlotId;
+        var now = DateTimeOffset.UtcNow;
+
+        await db.DraftTurns
+            .Where(turn =>
+                turn.SessionId == sessionId &&
+                turn.TurnOrder > lastCompletedTurn.TurnOrder &&
+                turn.Status != DraftTurnStatus.Completed)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(turn => turn.Status, DraftTurnStatus.Waiting)
+                .SetProperty(turn => turn.OpenedBagId, (string?)null)
+                .SetProperty(turn => turn.CompletedAt, (DateTimeOffset?)null));
+
+        var bagRows = await db.BlindBags
+            .Where(bag => bag.Id == openedBag.Id && bag.IsOpened)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(bag => bag.IsOpened, false)
+                .SetProperty(bag => bag.OpenedByUserId, (string?)null)
+                .SetProperty(bag => bag.OpenedForTeamId, (string?)null)
+                .SetProperty(bag => bag.OpenedAt, (DateTimeOffset?)null)
+                .SetProperty(bag => bag.PreparedDraftSlotId, (string?)null));
+
+        var slotRows = await db.DraftSlots
+            .Where(slot => slot.Id == assignedSlotId && slot.AssignedTeamId == lastCompletedTurn.TeamId)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(slot => slot.AssignedTeamId, (string?)null));
+
+        var turnRows = await db.DraftTurns
+            .Where(turn => turn.Id == lastCompletedTurn.Id && turn.Status == DraftTurnStatus.Completed)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(turn => turn.Status, DraftTurnStatus.Active)
+                .SetProperty(turn => turn.OpenedBagId, (string?)null)
+                .SetProperty(turn => turn.CompletedAt, (DateTimeOffset?)null));
+
+        if (bagRows != 1 || slotRows != 1 || turnRows != 1)
+        {
+            await transaction.RollbackAsync();
+            return Conflict<DraftStateResponse>("Không thể hoàn tác lượt bốc này. Vui lòng tải lại trạng thái draft.");
+        }
+
+        await db.DraftRounds
+            .Where(round => round.SessionId == sessionId && round.RoundNumber < lastCompletedTurn.Round.RoundNumber)
+            .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Completed));
+        await db.DraftRounds
+            .Where(round => round.Id == lastCompletedTurn.RoundId)
+            .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Active));
+        await db.DraftRounds
+            .Where(round => round.SessionId == sessionId && round.RoundNumber > lastCompletedTurn.Round.RoundNumber)
+            .ExecuteUpdateAsync(updates => updates.SetProperty(round => round.Status, DraftRoundStatus.Waiting));
+
+        session.Status = SessionStatus.Drafting;
+        session.CurrentRoundNumber = lastCompletedTurn.Round.RoundNumber;
+        session.CurrentTurnTeamId = lastCompletedTurn.TeamId;
+        session.CurrentTurnCaptainSessionPlayerId = lastCompletedTurn.CaptainSessionPlayerId;
+        session.UpdatedAt = now;
+
+        await RecalculateTeamScore(lastCompletedTurn.TeamId);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
 
@@ -1445,6 +1558,14 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         db.DraftRounds.RemoveRange(rounds);
         db.DraftSlots.RemoveRange(generatedSingleSlots);
         await db.SaveChangesAsync();
+
+        await db.DraftSlots
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                !slot.IsCaptainSlot)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(slot => slot.AssignedTeamId, (string?)null));
     }
 
     private async Task RemoveCaptainSlots(string sessionId)
