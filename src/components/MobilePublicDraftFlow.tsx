@@ -375,7 +375,7 @@ export function MobilePublicDraftFlow() {
     }
   }
 
-  async function speakFinalTeams() {
+  function speakFinalTeams() {
     if (!finalTeamSpeechText) return;
 
     if (!("speechSynthesis" in window)) {
@@ -383,31 +383,35 @@ export function MobilePublicDraftFlow() {
       return;
     }
 
-    window.speechSynthesis.cancel();
+    const synthesis = window.speechSynthesis;
     const utterance = new SpeechSynthesisUtterance(finalTeamSpeechText);
-    await applyFinalResultSpeechConfig(utterance);
-    window.speechSynthesis.speak(utterance);
+    applyFinalResultSpeechConfig(utterance);
+    utterance.onerror = () => {
+      setError("Điện thoại đang chặn âm thanh đọc. Hãy bấm Đọc lại kết quả một lần nữa.");
+    };
+
+    synthesis.cancel();
+    synthesis.resume();
+    synthesis.speak(utterance);
   }
 
   function openFinalResultPanel() {
     setIsResultPanelOpen(true);
     setStatusMessage(null);
     setError(null);
-    void speakFinalTeams();
+    speakFinalTeams();
   }
 
   async function shareFinalTeamsToZalo() {
     if (!finalTeamShareText) return;
 
-    const shareUrl = window.location.href;
     try {
       if (navigator.share) {
         await navigator.share({
           title: selectedSession?.name ?? "Volley Draft",
           text: finalTeamShareText,
-          url: shareUrl,
         });
-        setStatusMessage("Đã mở bảng chia sẻ. Chọn Zalo nếu máy có hỗ trợ.");
+        setStatusMessage("Đã mở bảng chia sẻ. Chọn Zalo trong danh sách ứng dụng.");
         return;
       }
     } catch (caught) {
@@ -417,8 +421,7 @@ export function MobilePublicDraftFlow() {
     }
 
     await copyFinalTeams();
-    window.open(`https://zalo.me/share?u=${encodeURIComponent(shareUrl)}`, "_blank", "noopener,noreferrer");
-    setStatusMessage("Đã mở Zalo share. Nội dung đội hình cũng đã được copy để dán vào Zalo.");
+    setStatusMessage("Trình duyệt này không mở được bảng chia sẻ. Nội dung đã copy, hãy mở Zalo và dán vào nhóm.");
   }
 
   return (

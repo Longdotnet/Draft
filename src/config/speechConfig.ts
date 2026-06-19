@@ -48,32 +48,8 @@ export function logAvailableSpeechVoices() {
   return rows;
 }
 
-function waitForSpeechVoices(timeoutMs = 800) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    return Promise.resolve([] as SpeechSynthesisVoice[]);
-  }
-
-  const initialVoices = window.speechSynthesis.getVoices();
-  if (initialVoices.length > 0) {
-    return Promise.resolve(initialVoices);
-  }
-
-  return new Promise<SpeechSynthesisVoice[]>((resolve) => {
-    let isResolved = false;
-    const finish = () => {
-      if (isResolved) return;
-      isResolved = true;
-      window.speechSynthesis.removeEventListener("voiceschanged", finish);
-      resolve(window.speechSynthesis.getVoices());
-    };
-
-    window.speechSynthesis.addEventListener("voiceschanged", finish);
-    window.setTimeout(finish, timeoutMs);
-  });
-}
-
-async function getConfiguredSpeechVoice(config: SpeechVoiceConfig) {
-  const voices = await waitForSpeechVoices();
+function getConfiguredSpeechVoice(config: SpeechVoiceConfig) {
+  const voices = getAvailableSpeechVoices();
   const normalizedName = config.voiceName.trim().toLowerCase();
   const normalizedNameIncludes = config.voiceNameIncludes.trim().toLowerCase();
   const normalizedLang = config.voiceLang.trim().toLowerCase();
@@ -104,9 +80,9 @@ async function getConfiguredSpeechVoice(config: SpeechVoiceConfig) {
   return languageVoices[0];
 }
 
-export async function applyFinalResultSpeechConfig(utterance: SpeechSynthesisUtterance) {
+export function applyFinalResultSpeechConfig(utterance: SpeechSynthesisUtterance) {
   const config = finalResultSpeechConfig;
-  const voice = await getConfiguredSpeechVoice(config);
+  const voice = getConfiguredSpeechVoice(config);
 
   utterance.lang = voice?.lang ?? config.lang;
   utterance.voice = voice;
