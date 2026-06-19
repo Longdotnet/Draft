@@ -164,12 +164,14 @@ sessions.MapPost("/", async (
 });
 sessions.MapGet("/", async (
     HttpContext httpContext,
+    int? page,
+    int? pageSize,
     SessionDraftService service) =>
 {
     var userId = httpContext.User.GetUserId();
     return userId is null
         ? Results.Unauthorized()
-        : (await service.GetSessionsAsync(userId)).ToHttpResult();
+        : (await service.GetSessionsAsync(userId, page ?? 1, pageSize ?? 5)).ToHttpResult();
 });
 sessions.MapGet("/{sessionId}", async (
     HttpContext httpContext,

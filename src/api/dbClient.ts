@@ -39,6 +39,8 @@ export type PublicSessionSummaryResponse = {
   updatedAt: string;
 };
 
+export type AdminSessionSummaryResponse = PublicSessionSummaryResponse;
+
 export type PagedResponse<T> = {
   items: T[];
   page: number;

@@ -74,18 +74,44 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             : ServiceResult<SessionResponse>.Success(ToSessionResponse(session));
     }
 
-    public async Task<ServiceResult<IReadOnlyList<SessionResponse>>> GetSessionsAsync(string adminUserId)
+    public async Task<ServiceResult<PagedResponse<AdminSessionSummaryResponse>>> GetSessionsAsync(
+        string adminUserId,
+        int page,
+        int pageSize)
     {
-        var sessions = await db.MatchSessions
-            .Include(session => session.Teams)
-            .Where(session => session.AdminUserId == adminUserId)
-            .ToListAsync();
+        page = Math.Max(1, page);
+        pageSize = pageSize <= 0 ? 5 : Math.Clamp(pageSize, 1, 20);
 
-        return ServiceResult<IReadOnlyList<SessionResponse>>.Success(
-            sessions
-                .OrderByDescending(session => session.UpdatedAt)
-                .Select(ToSessionResponse)
-                .ToList());
+        var query = db.MatchSessions
+            .AsNoTracking()
+            .Where(session => session.AdminUserId == adminUserId)
+            .OrderByDescending(session => session.UpdatedAt)
+            .ThenByDescending(session => session.CreatedAt);
+
+        var totalItems = await query.CountAsync();
+        var sessions = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+        var sessionIds = sessions.Select(session => session.Id).ToList();
+        var playerCounts = await db.SessionPlayers
+            .AsNoTracking()
+            .Where(player => sessionIds.Contains(player.SessionId) && player.IsPresent)
+            .GroupBy(player => player.SessionId)
+            .Select(group => new { SessionId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(group => group.SessionId, group => group.Count);
+        var totalPages = totalItems == 0
+            ? 0
+            : (int)Math.Ceiling(totalItems / (double)pageSize);
+
+        var items = sessions
+            .Select(session => ToAdminSessionSummaryResponse(
+                session,
+                playerCounts.GetValueOrDefault(session.Id)))
+            .ToList();
+
+        return ServiceResult<PagedResponse<AdminSessionSummaryResponse>>.Success(
+            new PagedResponse<AdminSessionSummaryResponse>(items, page, pageSize, totalItems, totalPages));
     }
 
     public async Task<ServiceResult<SessionResponse>> UpdateSessionAsync(
@@ -1963,6 +1989,23 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             session.TotalSets,
             session.AdminUserId,
             session.Teams.OrderBy(team => team.Name).Select(team => new TeamSummary(team.Id, team.Name)).ToList());
+    }
+
+    private static AdminSessionSummaryResponse ToAdminSessionSummaryResponse(
+        MatchSession session,
+        int playerCount)
+    {
+        return new AdminSessionSummaryResponse(
+            session.Id,
+            session.Name,
+            session.Status,
+            session.TeamCount,
+            session.TeamSize,
+            session.TotalSets,
+            playerCount,
+            session.TeamCount * session.TeamSize,
+            session.CreatedAt,
+            session.UpdatedAt);
     }
 
     private static PublicSessionSummaryResponse ToPublicSessionSummaryResponse(

@@ -3,6 +3,7 @@ import { Gift, LogOut, Pencil, Plus, RefreshCw, Save, ShieldCheck, Trash2, Users
 import {
   apiFetch,
   ApiRequestError,
+  type AdminSessionSummaryResponse,
   type AuthResponse,
   type AuthUser,
   type CaptainsResponse,
@@ -13,9 +14,11 @@ import {
   type DraftSlotType,
   type DraftStateResponse,
   type OpenBagResponse,
+  type PagedResponse,
   type PrepareRevealResponse,
   type SessionPlayerResponse,
   type SessionResponse,
+  type SessionStatus,
   type SharedSlotResponse,
   type TeamPreferenceGroupResponse,
 } from "../api/dbClient";
@@ -75,6 +78,61 @@ const genderLabel = (gender: DbGender) =>
   genderOptions.find((option) => option.value === gender)?.label ?? gender;
 
 const toRevealSlotType = (type: DraftSlotType) => (type === "Shared" ? "shared" : "single");
+const adminSessionPageSize = 5;
+
+const statusLabels: Record<SessionStatus, string> = {
+  Setup: "Đang xếp",
+  CaptainSelection: "Đã chọn captain",
+  Drafting: "Đang bốc túi",
+  Finished: "Đã hoàn tất",
+  Cancelled: "Đã hủy",
+};
+
+function formatAdminSessionDate(value: string) {
+  return new Intl.DateTimeFormat("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+type PaginationControlsProps = {
+  page: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+};
+
+function PaginationControls({ page, totalPages, onPageChange }: PaginationControlsProps) {
+  if (totalPages <= 1) {
+    return null;
+  }
+
+  return (
+    <div className="pagination-row">
+      <button
+        className="button-secondary"
+        type="button"
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+      >
+        Trước
+      </button>
+      <span>
+        {page} / {totalPages}
+      </span>
+      <button
+        className="button-secondary"
+        type="button"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+      >
+        Sau
+      </button>
+    </div>
+  );
+}
 
 type PendingDbReveal = {
   bagId: string;
@@ -105,6 +163,9 @@ export function DbDraftFlow() {
   });
   const [sessionName, setSessionName] = useState("Kèo bóng chuyền tối nay");
   const [session, setSession] = useState<SessionResponse | null>(null);
+  const [sessionPage, setSessionPage] = useState(1);
+  const [savedSessions, setSavedSessions] =
+    useState<PagedResponse<AdminSessionSummaryResponse> | null>(null);
   const [players, setPlayers] = useState<SessionPlayerResponse[]>([]);
   const [sharedSlots, setSharedSlots] = useState<SharedSlotResponse[]>([]);
   const [teamPreferenceGroups, setTeamPreferenceGroups] = useState<TeamPreferenceGroupResponse[]>([]);
@@ -161,12 +222,12 @@ export function DbDraftFlow() {
   }, [token, session, draftState?.sessionStatus]);
 
   useEffect(() => {
-    if (!token || !user || session) {
+    if (!token || !user) {
       return;
     }
 
-    void loadLatestSession();
-  }, [token, user, session]);
+    void loadSessionPage(sessionPage, !session);
+  }, [token, user, sessionPage]);
 
   async function runAction<T>(action: () => Promise<T>, successMessage?: string) {
     setIsBusy(true);
@@ -213,6 +274,8 @@ export function DbDraftFlow() {
     setToken(null);
     setUser(null);
     setSession(null);
+    setSavedSessions(null);
+    setSessionPage(1);
     setPlayers([]);
     setSharedSlots([]);
     setTeamPreferenceGroups([]);
@@ -238,6 +301,8 @@ export function DbDraftFlow() {
       setTeamPreferenceGroups([]);
       setCaptains(null);
       setDraftState(null);
+      setSessionPage(1);
+      await loadSessionPage(1);
       return createdSession;
     }, "Đã tạo match session trong database.");
   }
@@ -252,6 +317,7 @@ export function DbDraftFlow() {
       });
       setSession(updatedSession);
       setSessionName(updatedSession.name);
+      await loadSessionPage(sessionPage);
       return updatedSession;
     }, "Đã cập nhật dữ liệu");
   }
@@ -268,23 +334,33 @@ export function DbDraftFlow() {
         method: "DELETE",
         token,
       });
-      setSession(null);
-      setPlayers([]);
-      setSharedSlots([]);
-      setTeamPreferenceGroups([]);
-      setCaptains(null);
-      setDraftState(null);
-      setManualCaptainIds(["", "", ""]);
-      setSelectedSharedIds([]);
-      setSelectedTeamPreferenceIds([]);
-      setEditingPlayerId(null);
+      const nextPage =
+        savedSessions && savedSessions.items.length === 1 && sessionPage > 1
+          ? sessionPage - 1
+          : sessionPage;
+      clearSessionData();
+      setSessionPage(nextPage);
       setStatusMessage(response.message);
-      await loadLatestSession();
+      await loadSessionPage(nextPage, true);
       return response;
     });
   }
 
-  async function refreshSessionData(targetSession = session) {
+  function clearSessionData() {
+    setSession(null);
+    setPlayers([]);
+    setSharedSlots([]);
+    setTeamPreferenceGroups([]);
+    setCaptains(null);
+    setDraftState(null);
+    setManualCaptainIds(["", "", ""]);
+    setSelectedSharedIds([]);
+    setSelectedTeamPreferenceIds([]);
+    setEditingPlayerId(null);
+    setPendingReveal(null);
+  }
+
+  async function refreshSessionData(targetSession: Pick<SessionResponse, "id"> | null = session) {
     if (!token || !targetSession) return;
     const [freshSession, freshPlayers, freshSharedSlots, freshTeamPreferenceGroups] = await Promise.all([
       apiFetch<SessionResponse>(`/sessions/${targetSession.id}`, { token }),
@@ -297,40 +373,73 @@ export function DbDraftFlow() {
     setPlayers(freshPlayers);
     setSharedSlots(freshSharedSlots);
     setTeamPreferenceGroups(freshTeamPreferenceGroups);
+    return freshSession;
   }
 
-  async function loadLatestSession() {
+  async function loadSessionRuntimeState(targetSession: SessionResponse) {
     if (!token) return;
 
     try {
-      const savedSessions = await apiFetch<SessionResponse[]>("/sessions", { token });
-      const latestSession = savedSessions[0];
-      if (!latestSession) {
-        return;
+      const captainResponse = await apiFetch<CaptainsResponse>(
+        `/sessions/${targetSession.id}/captains`,
+        { token },
+      );
+      setCaptains(captainResponse);
+      setManualCaptainIds(captainResponse.captains.map((captain) => captain.sessionPlayerId));
+    } catch {
+      setCaptains(null);
+      setManualCaptainIds(["", "", ""]);
+    }
+
+    if (targetSession.status === "Drafting" || targetSession.status === "Finished") {
+      const state = await apiFetch<DraftStateResponse>(`/sessions/${targetSession.id}/draft-state`, {
+        token,
+      });
+      setDraftState(state);
+    } else {
+      setDraftState(null);
+    }
+  }
+
+  async function selectSession(sessionId: string) {
+    if (!token) return;
+
+    await runAction(async () => {
+      setStatusMessage(null);
+      setError(null);
+      setSelectedSharedIds([]);
+      setSelectedTeamPreferenceIds([]);
+      setEditingPlayerId(null);
+      setPendingReveal(null);
+
+      const freshSession = await refreshSessionData({ id: sessionId });
+      if (freshSession) {
+        await loadSessionRuntimeState(freshSession);
       }
 
-      setSession(latestSession);
-      setSessionName(latestSession.name);
-      await refreshSessionData(latestSession);
-      try {
-        const captainResponse = await apiFetch<CaptainsResponse>(
-          `/sessions/${latestSession.id}/captains`,
-          { token },
-        );
-        setCaptains(captainResponse);
-        setManualCaptainIds(captainResponse.captains.map((captain) => captain.sessionPlayerId));
-      } catch {
-        setCaptains(null);
+      return freshSession;
+    });
+  }
+
+  async function loadSessionPage(page: number, autoSelectFirst = false) {
+    if (!token) return;
+
+    try {
+      const response = await apiFetch<PagedResponse<AdminSessionSummaryResponse>>(
+        `/sessions?page=${page}&pageSize=${adminSessionPageSize}`,
+        { token },
+      );
+      setSavedSessions(response);
+
+      if (autoSelectFirst && response.items[0]) {
+        await selectSession(response.items[0].id);
       }
 
-      if (latestSession.status === "Drafting" || latestSession.status === "Finished") {
-        const state = await apiFetch<DraftStateResponse>(`/sessions/${latestSession.id}/draft-state`, {
-          token,
-        });
-        setDraftState(state);
+      if (!response.items.length && page > 1) {
+        setSessionPage(page - 1);
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Không tải được session đã lưu.");
+      setError(caught instanceof Error ? caught.message : "Không tải được danh sách buổi thi đấu.");
     }
   }
 
@@ -345,6 +454,7 @@ export function DbDraftFlow() {
       });
       setPlayerForm({ displayName: "", role: "Attack", level: "Average", gender: "Male" });
       await refreshSessionData();
+      await loadSessionPage(sessionPage);
     }, "Đã lưu người chơi vào database.");
   }
 
@@ -393,6 +503,7 @@ export function DbDraftFlow() {
       setEditingPlayerId(null);
       await refreshSessionData();
       await reloadCaptains();
+      await loadSessionPage(sessionPage);
       return response;
     }, "Đã cập nhật player.");
   }
@@ -412,6 +523,7 @@ export function DbDraftFlow() {
       }
       await refreshSessionData();
       await reloadCaptains();
+      await loadSessionPage(sessionPage);
       return response;
     }, "Đã xóa player.");
   }
@@ -440,6 +552,7 @@ export function DbDraftFlow() {
       }
 
       await refreshSessionData();
+      await loadSessionPage(sessionPage);
     }, "Đã seed 19 người chơi và slot Bảo / Bình vào database.");
   }
 
@@ -474,7 +587,7 @@ export function DbDraftFlow() {
 
   async function deleteSharedSlot(slot: SharedSlotResponse) {
     if (!token || !session) return;
-    const confirmed = window.confirm(`Xoa shared slot "${slot.displayName}"?`);
+    const confirmed = window.confirm(`Xóa shared slot "${slot.displayName}"?`);
     if (!confirmed) return;
 
     await runAction(async () => {
@@ -484,7 +597,7 @@ export function DbDraftFlow() {
       );
       await refreshSessionData();
       return response;
-    }, "Da xoa shared slot.");
+    }, "Đã xóa shared slot.");
   }
 
   async function createTeamPreferenceGroup() {
@@ -525,6 +638,7 @@ export function DbDraftFlow() {
       setCaptains(response);
       setManualCaptainIds(response.captains.map((captain) => captain.sessionPlayerId));
       await refreshSessionData();
+      await loadSessionPage(sessionPage);
       return response;
     }, "Đã chọn 3 đại diện cân bằng.");
   }
@@ -539,6 +653,7 @@ export function DbDraftFlow() {
       });
       setCaptains(response);
       await refreshSessionData();
+      await loadSessionPage(sessionPage);
       return response;
     }, "Đã lưu đại diện thủ công.");
   }
@@ -552,6 +667,7 @@ export function DbDraftFlow() {
       });
       setDraftState(response);
       await refreshSessionData();
+      await loadSessionPage(sessionPage);
       return response;
     }, "Draft đã bắt đầu. Admin đưa điện thoại cho đại diện hiện tại.");
   }
@@ -604,6 +720,7 @@ export function DbDraftFlow() {
       setStatusMessage(null);
       await refreshDraftState();
       await refreshSessionData();
+      await loadSessionPage(sessionPage);
       setPendingReveal(null);
       return response;
     });
@@ -755,6 +872,56 @@ export function DbDraftFlow() {
                 Xóa buổi thi đấu
               </button>
             )}
+          </div>
+
+          <div className="admin-session-browser">
+            <div className="card-title-row">
+              <div>
+                <h3>Buổi thi đấu đã lưu</h3>
+                <p className="muted">Chọn lại buổi đang làm dở hoặc xem kết quả buổi đã draft.</p>
+              </div>
+              <Badge tone="neutral">{savedSessions?.totalItems ?? 0} buổi</Badge>
+            </div>
+
+            {savedSessions?.items.length ? (
+              <div className="admin-session-list">
+                {savedSessions.items.map((item) => {
+                  const isActive = session?.id === item.id;
+                  const isRosterReady = item.playerCount >= item.requiredPlayerCount;
+
+                  return (
+                    <button
+                      className={["admin-session-card", isActive ? "active" : ""].join(" ")}
+                      key={item.id}
+                      type="button"
+                      onClick={() => selectSession(item.id)}
+                    >
+                      <div>
+                        <strong>{item.name}</strong>
+                        <small>Cập nhật {formatAdminSessionDate(item.updatedAt)}</small>
+                      </div>
+                      <div className="badge-row">
+                        <Badge tone={item.status === "Drafting" ? "orange" : "sky"}>
+                          {statusLabels[item.status]}
+                        </Badge>
+                        <Badge tone={isRosterReady ? "sky" : "orange"}>
+                          {item.playerCount}/{item.requiredPlayerCount} người
+                        </Badge>
+                        {isActive && <Badge tone="neutral">Đang mở</Badge>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="notice notice-soft">Chưa có buổi thi đấu nào được lưu.</div>
+            )}
+
+            <PaginationControls
+              page={savedSessions?.page ?? sessionPage}
+              totalPages={savedSessions?.totalPages ?? 0}
+              onPageChange={setSessionPage}
+            />
           </div>
         </div>
 
@@ -1089,7 +1256,7 @@ export function DbDraftFlow() {
                           type="button"
                           onClick={() => deleteSharedSlot(slot)}
                           disabled={!canEditRoster || isBusy}
-                          title="Xoa shared slot"
+                          title="Xóa shared slot"
                         >
                           <Trash2 size={16} aria-hidden="true" />
                         </button>

@@ -305,6 +305,34 @@
     @apply text-sm font-black text-slate-700;
   }
 
+  .admin-session-browser {
+    @apply mt-5 grid gap-3 border-t border-slate-200 pt-4;
+  }
+
+  .admin-session-browser h3 {
+    @apply text-lg font-black text-slate-950;
+  }
+
+  .admin-session-list {
+    @apply grid gap-2;
+  }
+
+  .admin-session-card {
+    @apply flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-left transition hover:border-sky-300 hover:bg-sky-50;
+  }
+
+  .admin-session-card.active {
+    @apply border-orange-300 bg-orange-50 shadow-sm;
+  }
+
+  .admin-session-card strong {
+    @apply block text-base font-black text-slate-950;
+  }
+
+  .admin-session-card small {
+    @apply mt-1 block text-xs font-bold text-slate-500;
+  }
+
   .mobile-waiting-panel {
     @apply border-orange-200 bg-orange-50;
   }

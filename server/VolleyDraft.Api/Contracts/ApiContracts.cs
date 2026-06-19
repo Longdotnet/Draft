@@ -42,6 +42,18 @@ public sealed record PublicSessionSummaryResponse(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+public sealed record AdminSessionSummaryResponse(
+    string Id,
+    string Name,
+    SessionStatus Status,
+    int TeamCount,
+    int TeamSize,
+    int TotalSets,
+    int PlayerCount,
+    int RequiredPlayerCount,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
 public sealed record PagedResponse<T>(
     IReadOnlyList<T> Items,
     int Page,
