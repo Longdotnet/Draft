@@ -163,7 +163,7 @@ export function MobilePublicDraftFlow() {
 
     const teamLines = draftState.teamPreview.map((team, index) => {
       const memberNames = team.slots
-        .map((slot) => slot.displayName.replace(/\s*\/\s*/g, " và "))
+        .map((slot) => slot.displayName.replace(/\s*\/\s*/g, " share slots với "))
         .join(", ");
       return `Team ${index + 1}: ${memberNames || "chưa có thành viên"}.`;
     });
