@@ -168,7 +168,7 @@ export function MobilePublicDraftFlow() {
       return `Team ${index + 1}: ${memberNames || "chưa có thành viên"}.`;
     });
 
-    return `${teamLines.join(" ")} Chúc mọi người chơi vui vẻ.`;
+    return `${teamLines.join(" ")}`;
   }, [canShareFinalTeams, draftState]);
 
   const selectedSessionIds = useMemo(
