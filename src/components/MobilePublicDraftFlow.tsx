@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Gift, RefreshCw, UsersRound } from "lucide-react";
+import { Copy, Gift, RefreshCw, Share2, UsersRound, Volume2, X } from "lucide-react";
 import {
   apiFetch,
   type CaptainsResponse,
@@ -17,6 +17,8 @@ import { getRevealRarity, type RevealRarity } from "../lib/revealRarity";
 import { Badge, ScorePill } from "./ui";
 import { BlindBagCard } from "./draft/BlindBagCard";
 import { ShootingStarRevealModal } from "./draft/ShootingStarRevealModal";
+import SendButton from "./ui/send-button";
+import { applyFinalResultSpeechConfig } from "../config/speechConfig";
 
 const sessionPageSize = 3;
 const playerPageSize = 6;
@@ -64,6 +66,13 @@ type PaginationControlsProps = {
 };
 
 const toRevealSlotType = (type: DraftSlotType) => (type === "Shared" ? "shared" : "single");
+
+const getMentionLines = (displayName: string) =>
+  displayName
+    .split(/\s*\/\s*/)
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => `@${name}`);
 
 function formatSessionDate(value: string) {
   return new Intl.DateTimeFormat("vi-VN", {
@@ -114,6 +123,7 @@ export function MobilePublicDraftFlow() {
   const [captains, setCaptains] = useState<CaptainsResponse | null>(null);
   const [draftState, setDraftState] = useState<DraftStateResponse | null>(null);
   const [pendingReveal, setPendingReveal] = useState<PendingDbReveal | null>(null);
+  const [isResultPanelOpen, setIsResultPanelOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -130,6 +140,36 @@ export function MobilePublicDraftFlow() {
     selectedSession?.status !== "Finished";
   const canShowDraft =
     draftState?.sessionStatus === "Drafting" || draftState?.sessionStatus === "Finished";
+  const canShareFinalTeams =
+    draftState?.sessionStatus === "Finished" && (draftState.teamPreview.length ?? 0) > 0;
+
+  const finalTeamShareText = useMemo(() => {
+    if (!canShareFinalTeams || !draftState) {
+      return "";
+    }
+
+    const teamLines = draftState.teamPreview.map((team, index) => {
+      const members = team.slots.flatMap((slot) => getMentionLines(slot.displayName));
+      return [`Team ${index + 1}`, ...(members.length ? members : ["Chưa có thành viên"])].join("\n");
+    });
+
+    return `${teamLines.join("\n\n")}\n`;
+  }, [canShareFinalTeams, draftState]);
+
+  const finalTeamSpeechText = useMemo(() => {
+    if (!canShareFinalTeams || !draftState) {
+      return "";
+    }
+
+    const teamLines = draftState.teamPreview.map((team, index) => {
+      const memberNames = team.slots
+        .map((slot) => slot.displayName.replace(/\s*\/\s*/g, " và "))
+        .join(", ");
+      return `Team ${index + 1}: ${memberNames || "chưa có thành viên"}.`;
+    });
+
+    return `${teamLines.join(" ")} Chúc mọi người chơi vui vẻ.`;
+  }, [canShareFinalTeams, draftState]);
 
   const selectedSessionIds = useMemo(
     () => new Set(sessions?.items.map((session) => session.id) ?? []),
@@ -227,6 +267,7 @@ export function MobilePublicDraftFlow() {
   function chooseSession(nextSession: PublicSessionSummaryResponse) {
     setSelectedSession(nextSession);
     setPlayerPage(1);
+    setIsResultPanelOpen(false);
     setStatusMessage(null);
     setError(null);
   }
@@ -297,10 +338,87 @@ export function MobilePublicDraftFlow() {
         { method: "POST" },
       );
       setPendingReveal(null);
+      if (response.nextTurn) {
+        setIsResultPanelOpen(false);
+      }
       setStatusMessage(null);
       await refreshSelectedSession();
       return response;
     });
+  }
+
+  async function copyFinalTeams() {
+    if (!finalTeamShareText) return false;
+
+    try {
+      await navigator.clipboard.writeText(finalTeamShareText);
+      setStatusMessage("Đã sao chép nội dung đội hình.");
+      return true;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = finalTeamShareText;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.top = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+
+      if (copied) {
+        setStatusMessage("Đã sao chép nội dung đội hình.");
+      } else {
+        setError("Không sao chép được. Hãy nhấn giữ nội dung và copy thủ công.");
+      }
+
+      return copied;
+    }
+  }
+
+  async function speakFinalTeams() {
+    if (!finalTeamSpeechText) return;
+
+    if (!("speechSynthesis" in window)) {
+      setError("Máy này chưa hỗ trợ đọc kết quả bằng giọng nói.");
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(finalTeamSpeechText);
+    await applyFinalResultSpeechConfig(utterance);
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function openFinalResultPanel() {
+    setIsResultPanelOpen(true);
+    setStatusMessage(null);
+    setError(null);
+    void speakFinalTeams();
+  }
+
+  async function shareFinalTeamsToZalo() {
+    if (!finalTeamShareText) return;
+
+    const shareUrl = window.location.href;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: selectedSession?.name ?? "Volley Draft",
+          text: finalTeamShareText,
+          url: shareUrl,
+        });
+        setStatusMessage("Đã mở bảng chia sẻ. Chọn Zalo nếu máy có hỗ trợ.");
+        return;
+      }
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        return;
+      }
+    }
+
+    await copyFinalTeams();
+    window.open(`https://zalo.me/share?u=${encodeURIComponent(shareUrl)}`, "_blank", "noopener,noreferrer");
+    setStatusMessage("Đã mở Zalo share. Nội dung đội hình cũng đã được copy để dán vào Zalo.");
   }
 
   return (
@@ -538,6 +656,17 @@ export function MobilePublicDraftFlow() {
                       </article>
                     ))}
                   </div>
+
+                  {canShareFinalTeams && (
+                    <div className="final-share-panel">
+                      <div>
+                        <Badge tone="orange">Đã khui hết</Badge>
+                        <h2>Kết quả chia đội đã sẵn sàng</h2>
+                        <p>Gửi đội hình vào Zalo và đọc tên thành viên cho mọi người nghe.</p>
+                      </div>
+                      <SendButton label="Gửi vào Zalo" onClick={openFinalResultPanel} />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -556,6 +685,55 @@ export function MobilePublicDraftFlow() {
         teamName={pendingReveal?.teamName ?? draftState?.currentTeam?.name ?? "Team"}
         onContinue={continueReveal}
       />
+
+      {isResultPanelOpen && (
+        <div className="final-share-modal-backdrop" role="presentation">
+          <div
+            className="final-share-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Chia sẻ kết quả đội hình"
+          >
+            <div className="card-title-row">
+              <div>
+                <Badge tone="sky">Zalo</Badge>
+                <h2>Gửi kết quả đội hình</h2>
+                <p>Nội dung này có thể copy hoặc chia sẻ sang Zalo.</p>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setIsResultPanelOpen(false)}
+                aria-label="Đóng"
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            <textarea
+              className="final-share-textarea"
+              value={finalTeamShareText}
+              readOnly
+              rows={12}
+            />
+
+            <div className="final-share-actions">
+              <button className="button-secondary" type="button" onClick={copyFinalTeams}>
+                <Copy size={17} aria-hidden="true" />
+                Sao chép nội dung
+              </button>
+              <button className="button-primary" type="button" onClick={shareFinalTeamsToZalo}>
+                <Share2 size={17} aria-hidden="true" />
+                Chia sẻ qua Zalo
+              </button>
+              <button className="button-ghost" type="button" onClick={speakFinalTeams}>
+                <Volume2 size={17} aria-hidden="true" />
+                Đọc lại kết quả
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
