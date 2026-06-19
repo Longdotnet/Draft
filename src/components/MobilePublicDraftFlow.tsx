@@ -67,12 +67,19 @@ type PaginationControlsProps = {
 
 const toRevealSlotType = (type: DraftSlotType) => (type === "Shared" ? "shared" : "single");
 
-const getMentionLines = (displayName: string) =>
-  displayName
+const getShareMentionLine = (displayName: string) => {
+  const mentions = displayName
     .split(/\s*\/\s*/)
     .map((name) => name.trim())
     .filter(Boolean)
     .map((name) => `@${name}`);
+
+  if (mentions.length <= 1) {
+    return mentions[0] ?? "";
+  }
+
+  return `${mentions[0]} share slot với ${mentions[1]}`;
+};
 
 function formatSessionDate(value: string) {
   return new Intl.DateTimeFormat("vi-VN", {
@@ -149,7 +156,7 @@ export function MobilePublicDraftFlow() {
     }
 
     const teamLines = draftState.teamPreview.map((team, index) => {
-      const members = team.slots.flatMap((slot) => getMentionLines(slot.displayName));
+      const members = team.slots.map((slot) => getShareMentionLine(slot.displayName)).filter(Boolean);
       return [`Team ${index + 1}`, ...(members.length ? members : ["Chưa có thành viên"])].join("\n");
     });
 
@@ -163,7 +170,7 @@ export function MobilePublicDraftFlow() {
 
     const teamLines = draftState.teamPreview.map((team, index) => {
       const memberNames = team.slots
-        .map((slot) => slot.displayName.replace(/\s*\/\s*/g, " share slots với "))
+        .map((slot) => slot.displayName.replace(/\s*\/\s*/g, " chia sẻ với "))
         .join(", ");
       return `Team ${index + 1}: ${memberNames || "chưa có thành viên"}.`;
     });
