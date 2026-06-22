@@ -533,16 +533,6 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return BadRequest<SharedSlotResponse>("Người chơi phải có mặt và chưa nằm trong slot thay phiên khác.");
         }
 
-        var captainIds = await db.Teams
-            .Where(team => team.SessionId == sessionId && team.CaptainSessionPlayerId != null)
-            .Select(team => team.CaptainSessionPlayerId!)
-            .ToListAsync();
-
-        if (players.Any(player => captainIds.Contains(player.Id)))
-        {
-            return BadRequest<SharedSlotResponse>("Đại diện đã chọn không thể đưa vào slot thay phiên.");
-        }
-
         var slot = new DraftSlot
         {
             SessionId = sessionId,
@@ -565,7 +555,6 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 RotationOrder = index + 1
             });
             players[index].IsInsideSharedSlot = true;
-            players[index].IsCaptainEligible = false;
         }
 
         db.DraftSlots.Add(slot);
@@ -709,16 +698,6 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => playerIds.Contains(groupPlayer.SessionPlayerId)))
         {
             return BadRequest<TeamPreferenceGroupResponse>("Một player chỉ được nằm trong một nhóm muốn chung team.");
-        }
-
-        var captainIds = await db.Teams
-            .Where(team => team.SessionId == sessionId && team.CaptainSessionPlayerId != null)
-            .Select(team => team.CaptainSessionPlayerId!)
-            .ToListAsync();
-
-        if (players.Any(player => captainIds.Contains(player.Id)))
-        {
-            return BadRequest<TeamPreferenceGroupResponse>("Captain đã chọn không thể nằm trong nhóm muốn chung team.");
         }
 
         var group = new TeamPreferenceGroup
@@ -866,20 +845,27 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         if (session.Teams.Any(team => !IsValidCaptain(team.CaptainSessionPlayer!)))
         {
-            return BadRequest<DraftStateResponse>("Đại diện phải có mặt, hợp lệ và không nằm trong slot thay phiên.");
+            return BadRequest<DraftStateResponse>("Đại diện phải có mặt và hợp lệ.");
         }
 
-        if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => captainIds.Contains(groupPlayer.SessionPlayerId)))
+        var teamIdByCaptainId = session.Teams.ToDictionary(
+            team => team.CaptainSessionPlayerId!,
+            team => team.Id);
+        var preferenceError = await ValidateCaptainPreferenceGroupsAsync(sessionId, teamIdByCaptainId);
+        if (preferenceError is not null)
         {
-            return BadRequest<DraftStateResponse>("Captain không được nằm trong nhóm muốn chung team. Hãy xóa nhóm đó hoặc chọn captain khác.");
+            return BadRequest<DraftStateResponse>(preferenceError);
+        }
+        var sharedSlotError = await ValidateCaptainSharedSlotsAsync(sessionId, teamIdByCaptainId);
+        if (sharedSlotError is not null)
+        {
+            return BadRequest<DraftStateResponse>(sharedSlotError);
         }
 
         await ClearDraftRunArtifacts(sessionId);
         await EnsureCaptainSlots(session);
+        await AttachCaptainSharedSlots(sessionId, teamIdByCaptainId);
 
-        var existingSharedSlots = await db.DraftSlots
-            .Where(slot => slot.SessionId == sessionId && slot.Type == DraftSlotType.Shared)
-            .ToListAsync();
         var players = await db.SessionPlayers
             .Where(player => player.SessionId == sessionId && player.IsPresent)
             .ToListAsync();
@@ -1439,16 +1425,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         if (players.Any(player => !IsValidCaptain(player)))
         {
-            return BadRequest<CaptainsResponse>("Đại diện phải có mặt, hợp lệ và không nằm trong slot thay phiên.");
+            return BadRequest<CaptainsResponse>("Đại diện phải có mặt và hợp lệ.");
         }
-
-        if (await db.TeamPreferenceGroupPlayers.AnyAsync(groupPlayer => ids.Contains(groupPlayer.SessionPlayerId)))
-        {
-            return BadRequest<CaptainsResponse>("Captain không được nằm trong nhóm muốn chung team. Hãy xóa nhóm đó hoặc chọn captain khác.");
-        }
-
-        await ClearDraftRunArtifacts(sessionId);
-        await RemoveCaptainSlots(sessionId);
 
         var orderedTeams = session.Teams.OrderBy(team => team.Name).ToList();
         if (orderedTeams.Count == 0)
@@ -1460,6 +1438,23 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 orderedTeams.Add(team);
             }
         }
+
+        var teamIdByCaptainId = ids
+            .Select((id, index) => new { CaptainId = id, TeamId = orderedTeams[index].Id })
+            .ToDictionary(item => item.CaptainId, item => item.TeamId);
+        var preferenceError = await ValidateCaptainPreferenceGroupsAsync(sessionId, teamIdByCaptainId);
+        if (preferenceError is not null)
+        {
+            return BadRequest<CaptainsResponse>(preferenceError);
+        }
+        var sharedSlotError = await ValidateCaptainSharedSlotsAsync(sessionId, teamIdByCaptainId);
+        if (sharedSlotError is not null)
+        {
+            return BadRequest<CaptainsResponse>(sharedSlotError);
+        }
+
+        await ClearDraftRunArtifacts(sessionId);
+        await RemoveCaptainSlots(sessionId);
 
         for (var index = 0; index < ids.Count; index += 1)
         {
@@ -1525,22 +1520,98 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return null;
         }
 
-        var preferencePlayerIds = await db.TeamPreferenceGroupPlayers
-            .Join(
-                db.TeamPreferenceGroups.Where(group => group.SessionId == sessionId),
-                groupPlayer => groupPlayer.TeamPreferenceGroupId,
-                group => group.Id,
-                (groupPlayer, _) => groupPlayer.SessionPlayerId)
-            .ToListAsync();
-
         return await db.SessionPlayers
             .Where(player =>
                 player.SessionId == sessionId &&
                 player.IsPresent &&
-                player.IsCaptainEligible &&
-                !player.IsInsideSharedSlot &&
-                !preferencePlayerIds.Contains(player.Id))
+                (player.IsCaptainEligible || player.IsInsideSharedSlot))
             .ToListAsync();
+    }
+
+    private async Task<string?> ValidateCaptainPreferenceGroupsAsync(
+        string sessionId,
+        IReadOnlyDictionary<string, string> teamIdByCaptainId)
+    {
+        var groups = await db.TeamPreferenceGroups
+            .Include(group => group.Players)
+            .Where(group => group.SessionId == sessionId)
+            .ToListAsync();
+
+        foreach (var group in groups)
+        {
+            var captainTeamIds = group.Players
+                .Select(groupPlayer => groupPlayer.SessionPlayerId)
+                .Where(teamIdByCaptainId.ContainsKey)
+                .Select(playerId => teamIdByCaptainId[playerId])
+                .Distinct()
+                .ToList();
+
+            if (captainTeamIds.Count > 1)
+            {
+                return "Một nhóm muốn chung team đang có nhiều captain ở các team khác nhau. Hãy chỉ để tối đa một captain trong nhóm đó.";
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> ValidateCaptainSharedSlotsAsync(
+        string sessionId,
+        IReadOnlyDictionary<string, string> teamIdByCaptainId)
+    {
+        var captainIds = teamIdByCaptainId.Keys.ToHashSet();
+        var sharedSlots = await db.DraftSlots
+            .Include(slot => slot.Players)
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                slot.Players.Any(slotPlayer => captainIds.Contains(slotPlayer.SessionPlayerId)))
+            .ToListAsync();
+
+        foreach (var slot in sharedSlots)
+        {
+            var captainTeamIds = slot.Players
+                .Select(slotPlayer => slotPlayer.SessionPlayerId)
+                .Where(teamIdByCaptainId.ContainsKey)
+                .Select(playerId => teamIdByCaptainId[playerId])
+                .Distinct()
+                .ToList();
+
+            if (captainTeamIds.Count > 1)
+            {
+                return "Một slot thay phiên đang có nhiều captain ở các team khác nhau. Hãy chỉ để tối đa một captain trong slot đó.";
+            }
+        }
+
+        return null;
+    }
+
+    private async Task AttachCaptainSharedSlots(
+        string sessionId,
+        IReadOnlyDictionary<string, string> teamIdByCaptainId)
+    {
+        var captainIds = teamIdByCaptainId.Keys.ToHashSet();
+        var sharedSlots = await db.DraftSlots
+            .Include(slot => slot.Players)
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                !slot.IsCaptainSlot &&
+                slot.Players.Any(slotPlayer => captainIds.Contains(slotPlayer.SessionPlayerId)))
+            .ToListAsync();
+
+        foreach (var slot in sharedSlots)
+        {
+            var captainId = slot.Players
+                .Select(slotPlayer => slotPlayer.SessionPlayerId)
+                .First(captainIds.Contains);
+            slot.AssignedTeamId = teamIdByCaptainId[captainId];
+            slot.IsCaptainSlot = true;
+
+            await RemoveSingleCaptainSlotForPlayer(sessionId, captainId);
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private async Task ClearDraftRunArtifacts(string sessionId)
@@ -1562,15 +1633,27 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         await db.DraftSlots
             .Where(slot =>
                 slot.SessionId == sessionId &&
-                slot.Type == DraftSlotType.Shared &&
-                !slot.IsCaptainSlot)
+                slot.Type == DraftSlotType.Shared)
             .ExecuteUpdateAsync(updates => updates
-                .SetProperty(slot => slot.AssignedTeamId, (string?)null));
+                .SetProperty(slot => slot.AssignedTeamId, (string?)null)
+                .SetProperty(slot => slot.IsCaptainSlot, false));
     }
 
     private async Task RemoveCaptainSlots(string sessionId)
     {
-        var captainSlots = db.DraftSlots.Where(slot => slot.SessionId == sessionId && slot.IsCaptainSlot);
+        await db.DraftSlots
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                slot.IsCaptainSlot)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(slot => slot.AssignedTeamId, (string?)null)
+                .SetProperty(slot => slot.IsCaptainSlot, false));
+
+        var captainSlots = db.DraftSlots.Where(slot =>
+            slot.SessionId == sessionId &&
+            slot.Type == DraftSlotType.Single &&
+            slot.IsCaptainSlot);
         db.DraftSlots.RemoveRange(captainSlots);
         await db.SaveChangesAsync();
     }
@@ -1580,6 +1663,31 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var captainSlotIds = await db.DraftSlots
             .Where(slot =>
                 slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Single &&
+                slot.IsCaptainSlot &&
+                slot.Players.Any(slotPlayer => slotPlayer.SessionPlayerId == playerId))
+            .Select(slot => slot.Id)
+            .ToListAsync();
+
+        if (captainSlotIds.Count == 0)
+        {
+            return;
+        }
+
+        await db.DraftSlotPlayers
+            .Where(slotPlayer => captainSlotIds.Contains(slotPlayer.DraftSlotId))
+            .ExecuteDeleteAsync();
+        await db.DraftSlots
+            .Where(slot => captainSlotIds.Contains(slot.Id))
+            .ExecuteDeleteAsync();
+    }
+
+    private async Task RemoveSingleCaptainSlotForPlayer(string sessionId, string playerId)
+    {
+        var captainSlotIds = await db.DraftSlots
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Single &&
                 slot.IsCaptainSlot &&
                 slot.Players.Any(slotPlayer => slotPlayer.SessionPlayerId == playerId))
             .Select(slot => slot.Id)
@@ -1688,10 +1796,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         var allSlots = await db.DraftSlots
             .Include(slot => slot.Players)
-            .Where(slot => slot.SessionId == session.Id && !slot.IsCaptainSlot)
+            .Where(slot => slot.SessionId == session.Id)
             .ToListAsync();
         var unassignedSlots = allSlots
-            .Where(slot => slot.AssignedTeamId is null)
+            .Where(slot => !slot.IsCaptainSlot && slot.AssignedTeamId is null)
             .ToList();
 
         if (unassignedSlots.Count == 0)
@@ -1713,7 +1821,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         if (groupPlayers.Count == 0)
         {
-            return Shuffle(unassignedSlots).First();
+            return await PickBalancedSlotForTeamAsync(session, teamId, unassignedSlots);
         }
 
         var groupIdByPlayerId = groupPlayers.ToDictionary(
@@ -1760,7 +1868,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .ToList();
         if (requiredGroupSlots.Count > 0)
         {
-            return Shuffle(requiredGroupSlots).First();
+            return await PickBalancedSlotForTeamAsync(session, teamId, requiredGroupSlots);
         }
 
         var validSlots = unassignedSlots
@@ -1797,7 +1905,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         return validSlots.Count == 0
             ? null
-            : Shuffle(validSlots).First();
+            : await PickBalancedSlotForTeamAsync(session, teamId, validSlots);
     }
 
     private async Task<TeamPreferenceAssignmentResult> ApplyTeamPreferenceGroupAsync(
@@ -2081,9 +2189,63 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return scores.Max() - scores.Min();
     }
 
+    private async Task<DraftSlot?> PickBalancedSlotForTeamAsync(
+        MatchSession session,
+        string teamId,
+        IReadOnlyList<DraftSlot> candidates)
+    {
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        var sessionSlots = await db.DraftSlots
+            .AsNoTracking()
+            .Where(slot => slot.SessionId == session.Id)
+            .ToListAsync();
+        var assignedSlots = sessionSlots
+            .Where(slot => slot.AssignedTeamId is not null)
+            .ToList();
+        var currentTeamSlots = assignedSlots
+            .Where(slot => slot.AssignedTeamId == teamId)
+            .ToList();
+
+        var targetTeamScore = sessionSlots.Count == 0
+            ? 0
+            : sessionSlots.Sum(slot => slot.AverageScore) / session.TeamCount;
+        var targetFemaleSlots = sessionSlots.Count(slot => slot.Gender == PlayerGender.Female) / (double)session.TeamCount;
+        var currentTeamScore = currentTeamSlots.Sum(slot => slot.AverageScore);
+        var currentFemaleSlots = currentTeamSlots.Count(slot => slot.Gender == PlayerGender.Female);
+
+        var scoredCandidates = candidates
+            .Select(slot =>
+            {
+                var scoreDistance = Math.Abs(currentTeamScore + slot.AverageScore - targetTeamScore);
+                var femaleDistance = Math.Abs(
+                    currentFemaleSlots + (slot.Gender == PlayerGender.Female ? 1 : 0) - targetFemaleSlots);
+                var randomNoise = Random.Shared.NextDouble() * 0.12;
+
+                return new
+                {
+                    Slot = slot,
+                    BalanceScore = scoreDistance + femaleDistance * 0.9 + randomNoise
+                };
+            })
+            .OrderBy(candidate => candidate.BalanceScore)
+            .ToList();
+
+        var topCount = Math.Min(
+            scoredCandidates.Count,
+            Math.Max(1, Math.Min(5, (int)Math.Ceiling(scoredCandidates.Count / 3.0))));
+
+        return Shuffle(scoredCandidates.Take(topCount))
+            .Select(candidate => candidate.Slot)
+            .First();
+    }
+
     private static bool IsValidCaptain(SessionPlayer player)
     {
-        return player.IsPresent && player.IsCaptainEligible && !player.IsInsideSharedSlot;
+        return player.IsPresent && (player.IsCaptainEligible || player.IsInsideSharedSlot);
     }
 
     private static double CalculateScore(PlayerRole role, PlayerLevel level)

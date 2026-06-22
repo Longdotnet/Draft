@@ -1,6 +1,5 @@
 import type { Player } from "../types/player";
 import type { SharedSlot } from "../types/slot";
-import { getSharedPlayerIds } from "./draftRounds";
 
 export type CaptainBalance = {
   difference: number;
@@ -10,8 +9,8 @@ export type CaptainBalance = {
 };
 
 export function getCaptainEligiblePlayers(players: Player[], sharedSlots: SharedSlot[]) {
-  const sharedPlayerIds = getSharedPlayerIds(sharedSlots);
-  return players.filter((player) => !sharedPlayerIds.has(player.id));
+  void sharedSlots;
+  return players;
 }
 
 function combinations<T>(items: T[], size: number): T[][] {

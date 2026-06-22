@@ -47,25 +47,25 @@ const genderOptions: Array<{ value: DbGender; label: string }> = [
 ];
 
 const samplePlayers: Array<{ displayName: string; role: DbRole; level: DbLevel; gender: DbGender }> = [
-  { displayName: "Nick Tran", role: "Defense", level: "Average", gender: "Male" },
+  { displayName: "Nick Tran", role: "Defense", level: "New", gender: "Male" },
   { displayName: "Đặng Thế Nguyễn", role: "Setter", level: "Average", gender: "Male" },
-  { displayName: "Thanh Trúc", role: "Defense", level: "Good", gender: "Female" },
+  { displayName: "Thanh Trúc", role: "Defense", level: "New", gender: "Female" },
   { displayName: "Longg", role: "FullStack", level: "Average", gender: "Male" },
   { displayName: "Bảo", role: "New", level: "New", gender: "Male" },
   { displayName: "Bình", role: "Attack", level: "Good", gender: "Male" },
   { displayName: "Nam", role: "Defense", level: "Average", gender: "Male" },
   { displayName: "Anh Duy", role: "Attack", level: "Average", gender: "Male" },
-  { displayName: "Tô An", role: "FullStack", level: "Good", gender: "Male" },
-  { displayName: "Duy Nam", role: "FullStack", level: "Good", gender: "Male" },
+  { displayName: "Tô An", role: "FullStack", level: "Average", gender: "Male" },
+  { displayName: "Duy Nam", role: "Attack", level: "Good", gender: "Male" },
   { displayName: "Vinh", role: "Defense", level: "New", gender: "Male" },
-  { displayName: "Nghuy", role: "FullStack", level: "Good", gender: "Male" },
-  { displayName: "Minh Nam", role: "FullStack", level: "Average", gender: "Male" },
-  { displayName: "Quỳnh Mai", role: "Defense", level: "Good", gender: "Female" },
-  { displayName: "Phương Duy Đỗ", role: "FullStack", level: "Good", gender: "Male" },
-  { displayName: "Phúc", role: "Attack", level: "Good", gender: "Male" },
-  { displayName: "Quân", role: "Defense", level: "Average", gender: "Male" },
-  { displayName: "Vy", role: "Setter", level: "Average", gender: "Female" },
-  { displayName: "Hải", role: "FullStack", level: "New", gender: "Male" },
+  { displayName: "Nghuy", role: "Attack", level: "Good", gender: "Male" },
+  { displayName: "Minh Nam", role: "Defense", level: "New", gender: "Male" },
+  { displayName: "Quỳnh Mai", role: "Defense", level: "Average", gender: "Female" },
+  { displayName: "Phương Duy Đỗ", role: "FullStack", level: "Average", gender: "Male" },
+  { displayName: "Hồ Quang Tùng", role: "Attack", level: "Good", gender: "Male" },
+  { displayName: "Vivian", role: "Defense", level: "New", gender: "Female" },
+  { displayName: "Nguyễn Trí Nhân", role: "Defense", level: "New", gender: "Male" },
+  { displayName: "Cẩm Thế", role: "Defense", level: "New", gender: "Female" },
 ];
 
 const roleLabel = (role: DbRole) =>
@@ -1372,7 +1372,9 @@ export function DbDraftFlow() {
               <div className="card-title-row">
                 <div>
                   <h2>Captain selection</h2>
-                  <p className="muted">Captains are session players, not separate logins.</p>
+                  <p className="muted">
+                    Người trong slot thay phiên hoặc nhóm chung team vẫn có thể làm captain.
+                  </p>
                 </div>
                 {captains && <Badge tone="orange">{captains.balance.status}</Badge>}
               </div>
@@ -1403,14 +1405,12 @@ export function DbDraftFlow() {
                     >
                       <option value="">Chọn đại diện</option>
                       {players
-                        .filter((player) =>
-                          player.isCaptainEligible &&
-                          !player.isInsideSharedSlot &&
-                          !teamPreferencePlayerIds.has(player.id)
-                        )
+                        .filter((player) => player.isPresent && (player.isCaptainEligible || player.isInsideSharedSlot))
                         .map((player) => (
                           <option key={player.id} value={player.id}>
                             {player.displayName} - {player.score}
+                            {player.isInsideSharedSlot ? " · slot thay phiên" : ""}
+                            {teamPreferencePlayerIds.has(player.id) ? " · chung team" : ""}
                           </option>
                         ))}
                     </select>
