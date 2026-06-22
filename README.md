@@ -98,6 +98,77 @@ Admin có 2 cách chọn captain:
 
 Người trong slot thay phiên hoặc nhóm muốn chung team vẫn có thể làm captain.
 
+## Logic khi bóc túi mù
+
+App không chia từng người một cách hoàn toàn độc lập. App chia theo `slot`.
+
+Một slot có thể là:
+
+- Một người bình thường.
+- Một slot thay phiên gồm 2 hoặc nhiều người.
+- Một captain slot đã được gán sẵn cho team.
+
+Khi bắt đầu draft:
+
+- Captain được gán sẵn vào team của mình.
+- Người chơi bình thường còn lại được đưa vào túi mù.
+- Slot thay phiên còn lại được đưa vào túi mù như 1 slot.
+- Slot thay phiên có captain sẽ được gán sẵn vào team của captain đó, không đưa vào túi mù.
+
+Ví dụ:
+
+```text
+Shared slot: Bảo / Bình
+Captain: Bảo
+```
+
+Kết quả:
+
+```text
+Team của Bảo có slot Bảo / Bình
+Túi mù không còn hiện Bảo / Bình
+Bình không bị tách ra thành người lẻ
+```
+
+Khi captain chọn 1 túi mù:
+
+- App chọn slot ẩn bên trong.
+- App ưu tiên slot giúp team cân hơn về tổng điểm.
+- App ưu tiên chia nữ đều hơn giữa các team.
+- Trong nhóm slot phù hợp, app vẫn random để giữ cảm giác bóc túi.
+- Sau animation, app mới hiện kết quả.
+
+## Cẩn thận khi cấu hình
+
+Trước khi bấm bắt đầu draft, admin nên kiểm tra kỹ:
+
+- Tổng số slot phải vừa đủ với số team.
+- Với MVP hiện tại, mặc định là 3 team x 6 slot.
+- Captain tính là 1 slot trong team.
+- Shared slot tính là 1 slot, dù bên trong có 2 hoặc nhiều người.
+- Nếu shared slot có captain, cả shared slot được tính sẵn vào team của captain.
+- Nhóm muốn chung team có thể làm team bị đầy nhanh hơn, nên đừng tạo nhóm quá lớn.
+- Một người không nên nằm trong nhiều nhóm muốn chung team.
+- Không nên đưa cùng một người vào nhiều shared slot.
+- Nếu một shared slot có 2 captain thuộc 2 team khác nhau, app sẽ báo lỗi.
+- Nếu một nhóm muốn chung team có 2 captain thuộc 2 team khác nhau, app sẽ báo lỗi.
+
+Ví dụ nên tránh:
+
+```text
+Nhóm chung team: Longg / Hồ Quang Tùng
+Longg là captain Team A
+Hồ Quang Tùng là captain Team B
+```
+
+Trường hợp này không hợp lệ vì 2 người vừa muốn chung team, vừa là captain của 2 team khác nhau.
+
+## Seed roster mẫu
+
+Nút `Seed roster mẫu` dùng để tạo nhanh danh sách người chơi thử nghiệm.
+
+Lưu ý: seed roster mẫu có thể tạo sẵn một số người và shared slot để test logic. Admin vẫn nên kiểm tra lại danh sách trước khi bấm chọn captain hoặc bắt đầu draft.
+
 ## Cách dùng trên mobile tại sân
 
 1. Admin mở app trên điện thoại.
@@ -152,4 +223,3 @@ Nên dùng các nút này từ giao diện admin.
 5. Mở mobile tại sân.
 6. Cho từng captain bóc túi theo lượt.
 7. Sau khi hoàn tất, copy hoặc chia sẻ đội hình lên nhóm Zalo.
-
