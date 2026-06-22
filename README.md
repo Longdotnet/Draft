@@ -19,7 +19,7 @@ Nếu link thay đổi, hãy hỏi người quản lý app để lấy link mớ
 
 ## Vai trò trong app
 
-Admin/organizer:
+Admin:
 
 - Đăng nhập trên website.
 - Tạo buổi thi đấu.
