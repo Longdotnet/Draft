@@ -14,6 +14,7 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<PollImport> PollImports => Set<PollImport>();
     public DbSet<ZaloGroupMessage> ZaloGroupMessages => Set<ZaloGroupMessage>();
     public DbSet<ZaloBotLearnedRule> ZaloBotLearnedRules => Set<ZaloBotLearnedRule>();
+    public DbSet<ZaloBotImageAsset> ZaloBotImageAssets => Set<ZaloBotImageAsset>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
     public DbSet<DraftSlotPlayer> DraftSlotPlayers => Set<DraftSlotPlayer>();
@@ -123,6 +124,17 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.HasOne(rule => rule.ZaloConnection)
                 .WithMany()
                 .HasForeignKey(rule => rule.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloBotImageAsset>(entity =>
+        {
+            entity.Property(asset => asset.FileName).HasMaxLength(160);
+            entity.Property(asset => asset.ContentType).HasMaxLength(80);
+            entity.HasIndex(asset => new { asset.AdminUserId, asset.CreatedAt });
+            entity.HasOne(asset => asset.AdminUser)
+                .WithMany()
+                .HasForeignKey(asset => asset.AdminUserId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

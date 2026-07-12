@@ -58,6 +58,15 @@ export type ZaloBotSettingsResponse = {
   lastReminderAt: string | null;
 };
 
+export type ZaloBotImageAssetResponse = {
+  id: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  createdAt: string;
+  url: string;
+};
+
 export type PublicSessionSummaryResponse = {
   id: string;
   name: string;
@@ -331,5 +340,25 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}) {
     throw new ApiRequestError(message, response.status);
   }
 
+  return payload as T;
+}
+
+export async function apiUpload<T>(path: string, file: File, token: string) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${apiBaseUrl}/api${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const payload = contentType.includes("application/json") ? await response.json() : null;
+  if (!response.ok) {
+    const message = payload?.message ?? `Upload failed with status ${response.status}`;
+    throw new ApiRequestError(message, response.status);
+  }
   return payload as T;
 }

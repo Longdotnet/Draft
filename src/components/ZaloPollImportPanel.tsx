@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { Bell, Bot, CheckCircle2, Link2, MapPin, QrCode, RefreshCw, Save, UserPlus, Vote } from "lucide-react";
 import {
   apiFetch,
+  apiUpload,
   type DbGender,
   type DbLevel,
   type DbRole,
@@ -9,6 +10,7 @@ import {
   type StartZaloQrLoginResponse,
   type ZaloConnectionResponse,
   type ZaloBotSettingsResponse,
+  type ZaloBotImageAssetResponse,
   type ZaloGroupResponse,
   type ZaloImportCandidateResponse,
   type ZaloImportPreviewResponse,
@@ -68,6 +70,7 @@ export function ZaloPollImportPanel({
   const [qrLoginId, setQrLoginId] = useState<string | null>(null);
   const [qrStatus, setQrStatus] = useState<ZaloQrLoginStatusResponse | null>(null);
   const [groups, setGroups] = useState<ZaloGroupResponse[]>([]);
+  const [botImages, setBotImages] = useState<ZaloBotImageAssetResponse[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState(session.zaloGroupId ?? "");
   const [polls, setPolls] = useState<ZaloPollResponse[]>([]);
   const [pollPage, setPollPage] = useState(1);
@@ -109,6 +112,7 @@ export function ZaloPollImportPanel({
 
   useEffect(() => {
     void loadConnections();
+    void loadBotImages();
   }, [token]);
 
   useEffect(() => {
@@ -161,6 +165,33 @@ export function ZaloPollImportPanel({
       setConnections(result);
       if (!selectedConnectionId && result.length === 1) setSelectedConnectionId(result[0].id);
     }
+  }
+
+  async function loadBotImages() {
+    const result = await run(() =>
+      apiFetch<ZaloBotImageAssetResponse[]>("/zalo/bot-images", { token }),
+    );
+    if (result) setBotImages(result);
+  }
+
+  async function uploadBotImage(
+    field: "locationImageUrl" | "paymentQrImageUrl",
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      setError("Ảnh không được lớn hơn 10 MB.");
+      return;
+    }
+    const result = await run(() =>
+      apiUpload<ZaloBotImageAssetResponse>("/zalo/bot-images", file, token),
+    );
+    if (!result) return;
+    setBotImages((current) => [result, ...current.filter((item) => item.id !== result.id)]);
+    setBotSettings((current) => ({ ...current, [field]: result.url }));
+    setMessage(`Đã lưu ảnh ${result.fileName} vào thư viện. Bấm Lưu cấu hình bot để gắn ảnh cho session này.`);
   }
 
   async function startQrLogin() {
@@ -482,15 +513,32 @@ export function ZaloPollImportPanel({
             />
           </label>
           <label className="field zalo-settings-wide">
-            <span>URL ảnh vị trí / sơ đồ gửi xe</span>
-            <small className="field-help">Phải là link http/https mà bridge có thể tải được. Bot sẽ gửi ảnh này khi trả lời location.</small>
+            <span>Ảnh vị trí / sơ đồ gửi xe</span>
+            <small className="field-help">Chọn ảnh từ máy/album để lưu vào thư viện DB, hoặc dán URL public cũ. Bridge sẽ gửi ảnh này khi trả lời location.</small>
+            {botImages.length > 0 && (
+              <select
+                className="input"
+                value={botImages.some((image) => image.url === botSettings.locationImageUrl) ? botSettings.locationImageUrl : ""}
+                onChange={(event) => setBotSettings((current) => ({ ...current, locationImageUrl: event.target.value }))}
+              >
+                <option value="">Chọn ảnh đã lưu trong thư viện</option>
+                {botImages.map((image) => <option key={image.id} value={image.url}>{image.fileName}</option>)}
+              </select>
+            )}
+            <input
+              className="input"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(event) => void uploadBotImage("locationImageUrl", event)}
+            />
             <input
               className="input"
               type="url"
-              placeholder="https://.../so-do-san.jpg"
+              placeholder="Hoặc dán https://.../so-do-san.jpg"
               value={botSettings.locationImageUrl}
               onChange={(event) => setBotSettings((current) => ({ ...current, locationImageUrl: event.target.value }))}
             />
+            {botSettings.locationImageUrl && <img className="zalo-image-preview" src={botSettings.locationImageUrl} alt="Ảnh sơ đồ gửi xe" />}
           </label>
           <label className="field zalo-settings-wide">
             <span>Hướng dẫn thanh toán</span>
@@ -504,15 +552,32 @@ export function ZaloPollImportPanel({
             />
           </label>
           <label className="field zalo-settings-wide">
-            <span>URL ảnh QR thanh toán</span>
-            <small className="field-help">Phải là link ảnh public http/https. Bridge tải ảnh này rồi gửi vào group khi nhận @bot 6.</small>
+            <span>Ảnh QR thanh toán</span>
+            <small className="field-help">Chọn QR từ máy/album để lưu vào thư viện DB, hoặc dán URL public cũ. Bot gửi ảnh này khi nhận @bot 6.</small>
+            {botImages.length > 0 && (
+              <select
+                className="input"
+                value={botImages.some((image) => image.url === botSettings.paymentQrImageUrl) ? botSettings.paymentQrImageUrl : ""}
+                onChange={(event) => setBotSettings((current) => ({ ...current, paymentQrImageUrl: event.target.value }))}
+              >
+                <option value="">Chọn ảnh đã lưu trong thư viện</option>
+                {botImages.map((image) => <option key={image.id} value={image.url}>{image.fileName}</option>)}
+              </select>
+            )}
+            <input
+              className="input"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(event) => void uploadBotImage("paymentQrImageUrl", event)}
+            />
             <input
               className="input"
               type="url"
-              placeholder="https://.../qr-thanh-toan.jpg"
+              placeholder="Hoặc dán https://.../qr-thanh-toan.jpg"
               value={botSettings.paymentQrImageUrl}
               onChange={(event) => setBotSettings((current) => ({ ...current, paymentQrImageUrl: event.target.value }))}
             />
+            {botSettings.paymentQrImageUrl && <img className="zalo-image-preview" src={botSettings.paymentQrImageUrl} alt="Ảnh QR thanh toán" />}
           </label>
           <label className="field">
             <span>Bắt đầu nhắc trước trận (giờ)</span>

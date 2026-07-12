@@ -39,6 +39,8 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloTables(db);
             await EnsureSqliteZaloBotTables(db);
             await EnsureSqliteZaloBotLearningTables(db);
+            await EnsureSqliteZaloBotImageTables(db);
+            await EnsureSqliteColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" TEXT NULL");
             return;
@@ -75,6 +77,8 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloTables(db);
             await EnsurePostgresZaloBotTables(db);
             await EnsurePostgresZaloBotLearningTables(db);
+            await EnsurePostgresZaloBotImageTables(db);
+            await EnsurePostgresColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" bigint NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" integer NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" timestamp with time zone NULL");
         }
@@ -533,5 +537,43 @@ public static class DatabaseSchemaPatch
             """);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotLearnedRules_Connection_Group_Trigger" ON "ZaloBotLearnedRules" ("ZaloConnectionId", "GroupId", "NormalizedTrigger");""");
+    }
+
+    private static async Task EnsureSqliteZaloBotImageTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotImageAssets" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloBotImageAssets" PRIMARY KEY,
+                "AdminUserId" TEXT NOT NULL,
+                "FileName" TEXT NOT NULL,
+                "ContentType" TEXT NOT NULL,
+                "Size" INTEGER NOT NULL,
+                "Data" BLOB NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloBotImageAssets_Users_AdminUserId"
+                    FOREIGN KEY ("AdminUserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotImageAssets_AdminUserId_CreatedAt" ON "ZaloBotImageAssets" ("AdminUserId", "CreatedAt");""");
+    }
+
+    private static async Task EnsurePostgresZaloBotImageTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotImageAssets" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloBotImageAssets" PRIMARY KEY,
+                "AdminUserId" text NOT NULL,
+                "FileName" text NOT NULL,
+                "ContentType" text NOT NULL,
+                "Size" bigint NOT NULL,
+                "Data" bytea NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloBotImageAssets_Users_AdminUserId"
+                    FOREIGN KEY ("AdminUserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotImageAssets_AdminUserId_CreatedAt" ON "ZaloBotImageAssets" ("AdminUserId", "CreatedAt");""");
     }
 }

@@ -175,6 +175,14 @@ public sealed record ZaloBotSettingsResponse(
     int ReminderIntervalHours,
     DateTimeOffset? LastReminderAt);
 
+public sealed record ZaloBotImageAssetResponse(
+    string Id,
+    string FileName,
+    string ContentType,
+    long Size,
+    DateTimeOffset CreatedAt,
+    string Url);
+
 public sealed record ZaloIncomingMessageEvent(
     string AccountId,
     string BotId,

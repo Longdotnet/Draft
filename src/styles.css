@@ -1191,6 +1191,10 @@
     @apply rounded-md border border-sky-200 bg-white px-2 py-1 text-sky-800;
   }
 
+  .zalo-image-preview {
+    @apply mt-2 max-h-40 max-w-full rounded-lg border border-slate-200 bg-white object-contain p-1;
+  }
+
   .zalo-qr-box {
     @apply flex flex-col items-center gap-4 rounded-lg border border-sky-200 bg-white p-4 sm:flex-row;
   }

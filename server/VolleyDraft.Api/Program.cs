@@ -59,6 +59,7 @@ builder.Services.AddScoped<PasswordService>();
 builder.Services.AddScoped<SessionDraftService>();
 builder.Services.AddScoped<ZaloIntegrationService>();
 builder.Services.AddScoped<ZaloBotService>();
+builder.Services.AddScoped<ZaloBotImageService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
 builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = TimeSpan.FromSeconds(30));
@@ -187,6 +188,41 @@ zalo.MapGet("/connections/{connectionId}/groups", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.GetGroupsAsync(userId, connectionId)).ToHttpResult();
+});
+
+zalo.MapGet("/bot-images", async (
+    HttpContext httpContext,
+    ZaloBotImageService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetAssetsAsync(userId, GetPublicOrigin(httpContext, configuration), cancellationToken)).ToHttpResult();
+});
+zalo.MapPost("/bot-images", async (
+    HttpContext httpContext,
+    IFormFile file,
+    ZaloBotImageService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UploadAsync(userId, file, GetPublicOrigin(httpContext, configuration), cancellationToken)).ToHttpResult();
+}).DisableAntiforgery();
+
+app.MapGet("/api/public/bot-images/{assetId}", async (
+    string assetId,
+    ZaloBotImageService service,
+    CancellationToken cancellationToken) =>
+{
+    var image = await service.GetPublicAsync(assetId, cancellationToken);
+    return image is null
+        ? Results.NotFound()
+        : Results.File(image.Data, image.ContentType, enableRangeProcessing: true);
 });
 
 var publicSessions = app.MapGroup("/api/public/sessions");
@@ -574,4 +610,19 @@ static string? NormalizePostgresConnectionString(string? connectionString)
     };
 
     return builder.ConnectionString;
+}
+
+static string GetPublicOrigin(HttpContext httpContext, IConfiguration configuration)
+{
+    var configuredOrigin = configuration["Public:BaseUrl"];
+    if (!string.IsNullOrWhiteSpace(configuredOrigin))
+    {
+        return configuredOrigin.TrimEnd('/');
+    }
+
+    var forwardedProto = httpContext.Request.Headers["X-Forwarded-Proto"].FirstOrDefault();
+    var forwardedHost = httpContext.Request.Headers["X-Forwarded-Host"].FirstOrDefault();
+    var scheme = string.IsNullOrWhiteSpace(forwardedProto) ? httpContext.Request.Scheme : forwardedProto;
+    var host = string.IsNullOrWhiteSpace(forwardedHost) ? httpContext.Request.Host.Value : forwardedHost;
+    return $"{scheme}://{host}".TrimEnd('/');
 }
