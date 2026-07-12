@@ -22,6 +22,8 @@ type CandidateDraft = Omit<ZaloImportCandidateResponse, "gender"> & {
   include: boolean;
 };
 
+const POLLS_PER_PAGE = 3;
+
 const genderOptions: Array<{ value: DbGender; label: string }> = [
   { value: "Male", label: "Nam" },
   { value: "Female", label: "Nữ" },
@@ -60,6 +62,7 @@ export function ZaloPollImportPanel({
   const [groups, setGroups] = useState<ZaloGroupResponse[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState(session.zaloGroupId ?? "");
   const [polls, setPolls] = useState<ZaloPollResponse[]>([]);
+  const [pollPage, setPollPage] = useState(1);
   const [selectedPollId, setSelectedPollId] = useState("");
   const [selectedOptionIds, setSelectedOptionIds] = useState<string[]>([]);
   const [preview, setPreview] = useState<ZaloImportPreviewResponse | null>(null);
@@ -69,6 +72,13 @@ export function ZaloPollImportPanel({
   const [message, setMessage] = useState<string | null>(null);
 
   const selectedPoll = polls.find((poll) => poll.id === selectedPollId) ?? null;
+  const totalPollPages = Math.max( 1, Math.ceil(polls.length / POLLS_PER_PAGE),);
+
+  const visiblePolls = useMemo(() => {
+    const startIndex = (pollPage - 1) * POLLS_PER_PAGE;
+
+    return polls.slice(startIndex,startIndex + POLLS_PER_PAGE,);
+  }, [polls, pollPage]);
   const canEditRoster = session.status !== "Drafting" && session.status !== "Finished";
   const includedCandidates = candidateDrafts.filter((candidate) => candidate.include);
   const unresolvedGenderCount = includedCandidates.filter((candidate) => candidate.gender === null).length;
@@ -84,6 +94,7 @@ export function ZaloPollImportPanel({
     setSelectedConnectionId(session.zaloConnectionId ?? "");
     setSelectedGroupId(session.zaloGroupId ?? "");
     setPolls([]);
+    setPollPage(1);
     setPreview(null);
   }, [session.id, session.zaloConnectionId, session.zaloGroupId]);
 
@@ -181,6 +192,7 @@ export function ZaloPollImportPanel({
     onSessionUpdated(result);
     setMessage(`Đã liên kết với nhóm ${result.zaloGroupName}.`);
     setPolls([]);
+    setPollPage(1);
     setPreview(null);
   }
 
@@ -190,6 +202,7 @@ export function ZaloPollImportPanel({
     );
     if (result) {
       setPolls(result);
+      setPollPage(1);
       setSelectedPollId("");
       setSelectedOptionIds([]);
       setPreview(null);
@@ -199,6 +212,19 @@ export function ZaloPollImportPanel({
 
   function choosePoll(pollId: string) {
     setSelectedPollId(pollId);
+    setSelectedOptionIds([]);
+    setPreview(null);
+  }
+  function changePollPage(nextPage: number) {
+    const safePage = Math.min(
+      Math.max(nextPage, 1),
+      totalPollPages,
+    );
+
+    setPollPage(safePage);
+
+    // Tránh trường hợp poll đang chọn bị ẩn ở trang khác.
+    setSelectedPollId("");
     setSelectedOptionIds([]);
     setPreview(null);
   }
@@ -353,25 +379,75 @@ export function ZaloPollImportPanel({
         </button>
 
         {polls.length > 0 && (
-          <div className="zalo-poll-list">
-            {polls.map((poll) => (
-              <button
-                className={selectedPollId === poll.id ? "zalo-poll-card active" : "zalo-poll-card"}
-                key={poll.id}
-                type="button"
-                onClick={() => choosePoll(poll.id)}
-                disabled={poll.isAnonymous}
-              >
-                <strong>{poll.question}</strong>
-                <small>{poll.options.length} option · {poll.uniqueVoteCount} người vote</small>
-                <div className="badge-row">
-                  {poll.allowMultipleChoices && <Badge tone="violet">Chọn nhiều</Badge>}
-                  {poll.isClosed && <Badge tone="neutral">Đã đóng</Badge>}
-                  {poll.isAnonymous && <Badge tone="orange">Ẩn danh · không import được</Badge>}
-                </div>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="zalo-poll-list">
+              {visiblePolls.map((poll) => (
+                <button
+                  key={poll.id}
+                  type="button"
+                  className={
+                    selectedPollId === poll.id
+                      ? "zalo-poll-card active"
+                      : "zalo-poll-card"
+                  }
+                  onClick={() => choosePoll(poll.id)}
+                  disabled={poll.isAnonymous}
+                >
+                  <strong>{poll.question}</strong>
+                  <small>
+                    {poll.options.length} option · {poll.uniqueVoteCount} người vote
+                  </small>
+
+                    <div className="badge-row">
+                      {poll.allowMultipleChoices && (
+                        <Badge tone="violet">Chọn nhiều</Badge>
+                      )}
+
+                      {poll.isClosed && (
+                        <Badge tone="neutral">Đã đóng</Badge>
+                      )}
+
+                      {poll.isAnonymous && (
+                        <Badge tone="orange">
+                          Ẩn danh · không import được
+                        </Badge>
+                      )}
+                    </div>
+                </button>
+              ))}
+            </div>
+
+            {totalPollPages > 1 && (
+              <div className="pagination-row">
+                <button
+                  type="button"
+                  className="button-ghost"
+                  disabled={pollPage === 1 || isBusy}
+                  onClick={() => changePollPage(pollPage - 1)}
+                >
+                  ← Trước
+                </button>
+
+                <span>
+                  Trang {pollPage}/{totalPollPages}
+                  {" · "}
+                  {polls.length} poll
+                </span>
+
+                <button
+                  type="button"
+                  className="button-ghost"
+                  disabled={
+                    pollPage === totalPollPages ||
+                    isBusy
+                  }
+                  onClick={() => changePollPage(pollPage + 1)}
+                >
+                  Sau →
+                </button>
+              </div>
+            )}
+          </>
         )}
 
         {selectedPoll && (
