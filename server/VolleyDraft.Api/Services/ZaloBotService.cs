@@ -171,7 +171,7 @@ public sealed class ZaloBotService(
         if (DetectIntent(normalizedQuestion) == BotIntent.TrainingHelp)
         {
             return new BotAnswer(
-                "Bot không tự ghi nhớ mọi câu hỏi bình thường. Bot sẽ hiểu và ghi nhớ khi bạn nói tự nhiên với ý muốn áp dụng về sau, ví dụ: “từ giờ ai đẹp trai nhất nhóm thì khen người đang hỏi”, “lần sau hỏi vị trí thì nhắc luôn chỗ gửi xe”, hoặc “nhớ là sân UTE có chỗ gửi xe bên trái”. Dữ liệu trận, sân, giờ và danh sách vẫn lấy trực tiếp từ hệ thống.",
+                "Đúng, các cú pháp cũ để học/sửa/xoá đã được gỡ khỏi luồng sử dụng. Bot hiện hiểu ghi nhớ tự nhiên khi bạn nói rõ muốn áp dụng về sau, ví dụ: “từ giờ ai đẹp trai nhất nhóm thì khen người đang hỏi”, “lần sau hỏi vị trí thì nhắc luôn chỗ gửi xe”, hoặc “nhớ là sân UTE có chỗ gửi xe bên trái”. Dữ liệu trận, sân, giờ và danh sách vẫn lấy trực tiếp từ hệ thống.",
                 null);
         }
 
@@ -314,7 +314,9 @@ public sealed class ZaloBotService(
 
         var recentMessages = await db.ZaloGroupMessages
             .AsNoTracking()
-            .Where(message => connectionIds.Contains(message.ZaloConnectionId) && message.GroupId == groupId)
+            .Where(message => connectionIds.Contains(message.ZaloConnectionId) &&
+                              message.GroupId == groupId &&
+                              !message.IsFromBot)
             .OrderByDescending(message => message.SentAt)
             .Take(20)
             .OrderBy(message => message.SentAt)
@@ -568,6 +570,15 @@ public sealed class ZaloBotService(
             "hoc nhu the nao",
             "ghi nho nhu the nao",
             "bot co nho khong",
+            "check lai system",
+            "system cua ban",
+            "da xoa sua hoc",
+            "xoa sua hoc",
+            "sua hoc xoa",
+            "con lenh",
+            "con command",
+            "da bo",
+            "van con",
             "sua cau tra loi");
 
     private static BotIntent DetectIntent(string normalizedQuestion)
