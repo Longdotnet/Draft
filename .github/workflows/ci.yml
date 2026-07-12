@@ -48,11 +48,39 @@ jobs:
       - name: Build backend
         run: dotnet build server/VolleyDraft.Api/VolleyDraft.Api.csproj -c Release --no-restore
 
+  zalo-bridge:
+    name: Zalo Bridge build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/ZaloBridge/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server/ZaloBridge
+        run: npm ci
+
+      - name: Build bridge
+        working-directory: server/ZaloBridge
+        run: npm run build
+
+      - name: Test bridge
+        working-directory: server/ZaloBridge
+        run: npm test
+
   docker:
     name: API Docker build
     runs-on: ubuntu-latest
     needs:
       - backend
+      - zalo-bridge
 
     steps:
       - name: Checkout
@@ -60,3 +88,6 @@ jobs:
 
       - name: Build API Docker image
         run: docker build -t volley-draft-api:test server/VolleyDraft.Api
+
+      - name: Build Zalo Bridge Docker image
+        run: docker build -t volley-draft-zalo-bridge:test server/ZaloBridge

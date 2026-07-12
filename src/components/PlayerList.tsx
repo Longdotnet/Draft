@@ -41,8 +41,9 @@ export function PlayerList({
     [sharedSlots],
   );
   const slotCount = players.length - sharedPlayerIds.size + sharedSlots.length;
-  const targetSlots = 18;
-  const canDivide = slotCount === targetSlots;
+  const teamCount = 3;
+  const minimumSlots = teamCount * 2;
+  const canDivide = slotCount >= minimumSlots && slotCount % teamCount === 0;
   const scorePreview = calculatePlayerScore(draft.role, draft.level);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -126,14 +127,14 @@ export function PlayerList({
         </div>
         <div className="stat-card">
           <span>Slot mỗi team</span>
-          <strong>6</strong>
+          <strong>{canDivide ? slotCount / teamCount : "—"}</strong>
         </div>
       </div>
 
       <div className={canDivide ? "notice notice-good" : "notice notice-warn"}>
         {canDivide
-          ? `${slotCount} slot có thể chia 3 team x 6.`
-          : `${slotCount} slot chưa đủ để chia 3 team x 6.`}
+          ? `${slotCount} slot có thể chia 3 team (${slotCount / teamCount} slot/team).`
+          : `${slotCount} slot chưa thể chia 3 team. Cần từ ${minimumSlots} slot và chia hết cho 3.`}
       </div>
 
       <form className="tool-panel" onSubmit={handleSubmit}>

@@ -9,6 +9,9 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<User> Users => Set<User>();
     public DbSet<MatchSession> MatchSessions => Set<MatchSession>();
     public DbSet<SessionPlayer> SessionPlayers => Set<SessionPlayer>();
+    public DbSet<PlayerProfile> PlayerProfiles => Set<PlayerProfile>();
+    public DbSet<ZaloConnection> ZaloConnections => Set<ZaloConnection>();
+    public DbSet<PollImport> PollImports => Set<PollImport>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
     public DbSet<DraftSlotPlayer> DraftSlotPlayers => Set<DraftSlotPlayer>();
@@ -31,20 +34,69 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
         modelBuilder.Entity<MatchSession>(entity =>
         {
             entity.Property(session => session.Name).HasMaxLength(160);
+            entity.Property(session => session.ZaloGroupId).HasMaxLength(80);
+            entity.Property(session => session.ZaloGroupName).HasMaxLength(160);
+            entity.Property(session => session.ZaloGroupAvatarUrl).HasMaxLength(2048);
             entity.Property(session => session.Status).HasConversion<string>();
             entity.HasOne(session => session.AdminUser)
                 .WithMany(user => user.AdminSessions)
                 .HasForeignKey(session => session.AdminUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(session => session.ZaloConnection)
+                .WithMany(connection => connection.MatchSessions)
+                .HasForeignKey(session => session.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<PlayerProfile>(entity =>
+        {
+            entity.Property(profile => profile.ZaloUserId).HasMaxLength(100);
+            entity.Property(profile => profile.DisplayName).HasMaxLength(160);
+            entity.Property(profile => profile.AvatarUrl).HasMaxLength(2048);
+            entity.Property(profile => profile.Gender).HasConversion<string>();
+            entity.Property(profile => profile.DefaultRole).HasConversion<string>();
+            entity.Property(profile => profile.DefaultLevel).HasConversion<string>();
+            entity.HasIndex(profile => profile.ZaloUserId).IsUnique();
+        });
+
+        modelBuilder.Entity<ZaloConnection>(entity =>
+        {
+            entity.Property(connection => connection.AccountZaloId).HasMaxLength(100);
+            entity.Property(connection => connection.DisplayName).HasMaxLength(160);
+            entity.Property(connection => connection.AvatarUrl).HasMaxLength(2048);
+            entity.Property(connection => connection.Status).HasConversion<string>();
+            entity.HasIndex(connection => new { connection.AdminUserId, connection.AccountZaloId }).IsUnique();
+            entity.HasOne(connection => connection.AdminUser)
+                .WithMany(user => user.ZaloConnections)
+                .HasForeignKey(connection => connection.AdminUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PollImport>(entity =>
+        {
+            entity.Property(import => import.ZaloGroupId).HasMaxLength(100);
+            entity.Property(import => import.PollId).HasMaxLength(100);
+            entity.Property(import => import.PollQuestion).HasMaxLength(500);
+            entity.HasIndex(import => new { import.SessionId, import.PollId });
+            entity.HasOne(import => import.Session)
+                .WithMany(session => session.PollImports)
+                .HasForeignKey(import => import.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(import => import.ImportedByUser)
+                .WithMany()
+                .HasForeignKey(import => import.ImportedByUserId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<SessionPlayer>(entity =>
         {
             entity.Property(player => player.DisplayName).HasMaxLength(120);
+            entity.Property(player => player.AvatarUrl).HasMaxLength(2048);
             entity.Property(player => player.Role).HasConversion<string>();
             entity.Property(player => player.Level).HasConversion<string>();
             entity.Property(player => player.Gender).HasConversion<string>();
             entity.HasIndex(player => new { player.SessionId, player.UserId });
+            entity.HasIndex(player => new { player.SessionId, player.PlayerProfileId }).IsUnique();
             entity.HasOne(player => player.Session)
                 .WithMany(session => session.Players)
                 .HasForeignKey(player => player.SessionId)
@@ -53,6 +105,10 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
                 .WithMany(user => user.SessionPlayers)
                 .HasForeignKey(player => player.UserId)
                 .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(player => player.PlayerProfile)
+                .WithMany(profile => profile.SessionPlayers)
+                .HasForeignKey(player => player.PlayerProfileId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<Team>(entity =>

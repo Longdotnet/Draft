@@ -1114,6 +1114,99 @@
     transform-origin: left;
     animation: splash-progress 5s linear forwards;
   }
+
+  .zalo-import-panel {
+    @apply grid gap-5 border-sky-200 bg-sky-50/40;
+  }
+
+  .zalo-step {
+    @apply grid gap-3 rounded-lg border border-slate-200 bg-white p-4;
+  }
+
+  .zalo-step-heading {
+    @apply flex items-center gap-3 text-slate-950;
+  }
+
+  .zalo-step-heading > span {
+    @apply grid h-7 w-7 place-items-center rounded-full bg-sky-600 text-xs font-black text-white;
+  }
+
+  .zalo-qr-box {
+    @apply flex flex-col items-center gap-4 rounded-lg border border-sky-200 bg-white p-4 sm:flex-row;
+  }
+
+  .zalo-qr-box img {
+    @apply h-44 w-44 rounded-lg border border-slate-200 bg-white object-contain p-2;
+  }
+
+  .zalo-poll-list {
+    @apply grid gap-3 md:grid-cols-2;
+  }
+
+  .zalo-poll-card {
+    @apply grid gap-2 rounded-lg border border-slate-200 bg-white p-4 text-left text-slate-950 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .zalo-poll-card.active {
+    @apply border-sky-500 bg-sky-50 ring-4 ring-sky-100;
+  }
+
+  .zalo-poll-card small {
+    @apply text-sm font-semibold text-slate-500;
+  }
+
+  .zalo-option-list,
+  .zalo-candidate-list {
+    @apply grid gap-2;
+  }
+
+  .zalo-option-row {
+    @apply grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-800;
+  }
+
+  .zalo-candidate {
+    @apply grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 opacity-60 lg:grid-cols-[minmax(260px,1fr)_minmax(420px,1.4fr)];
+  }
+
+  .zalo-candidate.active {
+    @apply border-sky-200 bg-white opacity-100;
+  }
+
+  .zalo-candidate-main {
+    @apply flex items-center gap-3;
+  }
+
+  .zalo-candidate-main img,
+  .zalo-avatar-placeholder {
+    @apply grid h-12 w-12 shrink-0 place-items-center rounded-full border border-slate-200 bg-slate-100 object-cover font-black text-slate-600;
+  }
+
+  .zalo-candidate-main strong,
+  .zalo-candidate-main small {
+    @apply block;
+  }
+
+  .zalo-candidate-main small {
+    @apply mt-1 text-xs font-semibold text-slate-500;
+  }
+
+  .zalo-candidate-fields {
+    @apply grid gap-2 sm:grid-cols-3;
+  }
+
+  .zalo-ready {
+    @apply inline-flex items-center gap-2 text-sm font-bold text-emerald-700;
+  }
+
+  .spin {
+    animation: zalo-spin 1s linear infinite;
+  }
+}
+
+@keyframes zalo-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes splash-progress {

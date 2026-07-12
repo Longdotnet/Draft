@@ -48,6 +48,14 @@ public enum PlayerLevel
 
 public enum PlayerGender
 {
+    Unknown,
     Male,
     Female
+}
+
+public enum ZaloConnectionStatus
+{
+    Connected,
+    Invalid,
+    Disconnected
 }

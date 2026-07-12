@@ -26,6 +26,7 @@ import { BlindBagCard } from "./draft/BlindBagCard";
 import { ShootingStarRevealModal } from "./draft/ShootingStarRevealModal";
 import { Badge, ScorePill } from "./ui";
 import { getRevealRarity, type RevealRarity } from "../lib/revealRarity";
+import { ZaloPollImportPanel } from "./ZaloPollImportPanel";
 
 const roleOptions: Array<{ value: DbRole; label: string }> = [
   { value: "Attack", label: "Tấn công" },
@@ -42,6 +43,7 @@ const levelOptions: Array<{ value: DbLevel; label: string }> = [
 ];
 
 const genderOptions: Array<{ value: DbGender; label: string }> = [
+  { value: "Unknown", label: "Chưa xác định" },
   { value: "Male", label: "Nam" },
   { value: "Female", label: "Nữ" },
 ];
@@ -178,14 +180,14 @@ export function DbDraftFlow() {
     displayName: "",
     role: "Attack" as DbRole,
     level: "Average" as DbLevel,
-    gender: "Male" as DbGender,
+    gender: "Unknown" as DbGender,
   });
   const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
   const [playerEditForm, setPlayerEditForm] = useState({
     displayName: "",
     role: "Attack" as DbRole,
     level: "Average" as DbLevel,
-    gender: "Male" as DbGender,
+    gender: "Unknown" as DbGender,
     isPresent: true,
     isCaptainEligible: true,
   });
@@ -453,7 +455,7 @@ export function DbDraftFlow() {
         token,
         body: playerForm,
       });
-      setPlayerForm({ displayName: "", role: "Attack", level: "Average", gender: "Male" });
+      setPlayerForm({ displayName: "", role: "Attack", level: "Average", gender: "Unknown" });
       await refreshSessionData();
       await loadSessionPage(sessionPage);
     }, "Đã lưu người chơi vào database.");
@@ -923,7 +925,9 @@ export function DbDraftFlow() {
               <div className="admin-session-list">
                 {savedSessions.items.map((item) => {
                   const isActive = session?.id === item.id;
-                  const isRosterReady = item.playerCount >= item.requiredPlayerCount;
+                  const isRosterReady =
+                    item.playerCount >= item.requiredPlayerCount &&
+                    item.playerCount % item.teamCount === 0;
 
                   return (
                     <button
@@ -963,6 +967,19 @@ export function DbDraftFlow() {
 
         {session && (
           <>
+            <ZaloPollImportPanel
+              token={token}
+              session={session}
+              onSessionUpdated={(updatedSession) => {
+                setSession(updatedSession);
+                setSessionName(updatedSession.name);
+              }}
+              onImported={async () => {
+                await refreshSessionData();
+                await loadSessionPage(sessionPage);
+              }}
+            />
+
             <div className="tool-panel desktop-setup-panel">
               <div className="card-title-row">
                 <div>

@@ -10,4 +10,5 @@ public sealed class User
 
     public List<MatchSession> AdminSessions { get; set; } = [];
     public List<SessionPlayer> SessionPlayers { get; set; } = [];
+    public List<ZaloConnection> ZaloConnections { get; set; } = [];
 }

@@ -57,6 +57,19 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<JwtTokenService>();
 builder.Services.AddScoped<PasswordService>();
 builder.Services.AddScoped<SessionDraftService>();
+builder.Services.AddScoped<ZaloIntegrationService>();
+builder.Services.AddSingleton<ZaloCredentialProtector>();
+builder.Services.AddSingleton<ZaloQrLoginRegistry>();
+builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
+{
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var baseUrl = configuration["Zalo:BridgeBaseUrl"] ?? "http://localhost:3000";
+    client.BaseAddress = new Uri($"{baseUrl.TrimEnd('/')}/");
+    client.Timeout = TimeSpan.FromSeconds(45);
+    client.DefaultRequestHeaders.Add(
+        "x-internal-key",
+        configuration["Zalo:BridgeInternalKey"] ?? "development-zalo-bridge-key");
+});
 builder.Services.AddOpenApi();
 
 var jwtSection = builder.Configuration.GetSection("Jwt");
@@ -111,6 +124,46 @@ auth.MapGet("/me", async (HttpContext httpContext, AuthService service) =>
         ? Results.Unauthorized()
         : (await service.MeAsync(userId)).ToHttpResult();
 }).RequireAuthorization();
+
+var zalo = app.MapGroup("/api/zalo").RequireAuthorization();
+zalo.MapPost("/connections/qr", async (
+    HttpContext httpContext,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.StartQrLoginAsync(userId)).ToHttpResult();
+});
+zalo.MapGet("/connections/qr/{loginId}", async (
+    HttpContext httpContext,
+    string loginId,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetQrLoginStatusAsync(userId, loginId)).ToHttpResult();
+});
+zalo.MapGet("/connections", async (
+    HttpContext httpContext,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetConnectionsAsync(userId)).ToHttpResult();
+});
+zalo.MapGet("/connections/{connectionId}/groups", async (
+    HttpContext httpContext,
+    string connectionId,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetGroupsAsync(userId, connectionId)).ToHttpResult();
+});
 
 var publicSessions = app.MapGroup("/api/public/sessions");
 publicSessions.MapGet("/", async (
@@ -203,6 +256,49 @@ sessions.MapDelete("/{sessionId}", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.DeleteSessionAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/zalo-group", async (
+    HttpContext httpContext,
+    string sessionId,
+    LinkZaloGroupRequest request,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.LinkGroupAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/zalo-polls", async (
+    HttpContext httpContext,
+    string sessionId,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetPollsAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/zalo-import-preview", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateZaloImportPreviewRequest request,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.CreateImportPreviewAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/zalo-import", async (
+    HttpContext httpContext,
+    string sessionId,
+    ConfirmZaloPollImportRequest request,
+    ZaloIntegrationService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.ConfirmImportAsync(userId, sessionId, request)).ToHttpResult();
 });
 sessions.MapPost("/{sessionId}/players", async (
     HttpContext httpContext,

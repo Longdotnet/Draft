@@ -1,6 +1,6 @@
 export type DbRole = "Attack" | "Defense" | "Setter" | "FullStack" | "New";
 export type DbLevel = "Good" | "Average" | "New";
-export type DbGender = "Male" | "Female";
+export type DbGender = "Unknown" | "Male" | "Female";
 export type SessionStatus = "Setup" | "CaptainSelection" | "Drafting" | "Finished" | "Cancelled";
 export type DraftSlotType = "Single" | "Shared";
 
@@ -23,6 +23,10 @@ export type SessionResponse = {
   teamSize: number;
   totalSets: number;
   adminUserId: string;
+  zaloConnectionId: string | null;
+  zaloGroupId: string | null;
+  zaloGroupName: string | null;
+  zaloGroupAvatarUrl: string | null;
   teams: TeamSummary[];
 };
 
@@ -57,6 +61,9 @@ export type SessionPlayerResponse = {
   id: string;
   displayName: string;
   userId: string | null;
+  playerProfileId: string | null;
+  zaloUserId: string | null;
+  avatarUrl: string | null;
   role: DbRole;
   level: DbLevel;
   gender: DbGender;
@@ -64,6 +71,90 @@ export type SessionPlayerResponse = {
   isPresent: boolean;
   isCaptainEligible: boolean;
   isInsideSharedSlot: boolean;
+};
+
+export type ZaloConnectionResponse = {
+  id: string;
+  accountZaloId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  status: "Connected" | "Invalid" | "Disconnected";
+  lastValidatedAt: string;
+};
+
+export type StartZaloQrLoginResponse = {
+  loginId: string;
+  status: string;
+  expiresAt: string;
+};
+
+export type ZaloQrLoginStatusResponse = {
+  loginId: string;
+  status: string;
+  qrImageBase64: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  error: string | null;
+  connection: ZaloConnectionResponse | null;
+};
+
+export type ZaloGroupResponse = {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  totalMembers: number;
+};
+
+export type ZaloPollOptionResponse = {
+  id: string;
+  content: string;
+  voteCount: number;
+};
+
+export type ZaloPollResponse = {
+  id: string;
+  question: string;
+  options: ZaloPollOptionResponse[];
+  allowMultipleChoices: boolean;
+  isAnonymous: boolean;
+  isClosed: boolean;
+  hideVotePreview: boolean;
+  uniqueVoteCount: number;
+  createdAtUnixMs: number;
+  updatedAtUnixMs: number;
+  expiredAtUnixMs: number;
+};
+
+export type ZaloImportCandidateResponse = {
+  zaloUserId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  gender: DbGender | null;
+  needsGenderSelection: boolean;
+  role: DbRole;
+  level: DbLevel;
+  alreadyInSession: boolean;
+  optionIds: string[];
+  optionNames: string[];
+};
+
+export type ZaloImportPreviewResponse = {
+  pollId: string;
+  pollQuestion: string;
+  selectedOptions: ZaloPollOptionResponse[];
+  candidates: ZaloImportCandidateResponse[];
+  uniqueVoterCount: number;
+  canDivideIntoTeams: boolean;
+  playersPerTeam: number | null;
+  pollUpdatedAtUnixMs: number;
+};
+
+export type ZaloPollImportResultResponse = {
+  addedCount: number;
+  updatedProfileCount: number;
+  skippedExistingCount: number;
+  sessionPlayerCount: number;
+  message: string;
 };
 
 export type SharedSlotResponse = {

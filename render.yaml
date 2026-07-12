@@ -21,6 +21,25 @@ services:
         generateValue: true
       - key: Cors__Origins__0
         sync: false
+      - key: Zalo__BridgeBaseUrl
+        sync: false
+      - key: Zalo__BridgeInternalKey
+        sync: false
+      - key: Zalo__CredentialEncryptionKey
+        sync: false
+
+  - type: web
+    name: volley-draft-zalo-bridge
+    runtime: docker
+    plan: free
+    dockerfilePath: server/ZaloBridge/Dockerfile
+    dockerContext: server/ZaloBridge
+    healthCheckPath: /health
+    envVars:
+      - key: ZALO_BRIDGE_INTERNAL_KEY
+        sync: false
+      - key: ZALO_BRIDGE_MOCK
+        value: "false"
 
   - type: web
     name: volley-draft-web

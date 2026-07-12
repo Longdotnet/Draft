@@ -5,6 +5,10 @@ public sealed class MatchSession
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
     public string Name { get; set; } = string.Empty;
     public string AdminUserId { get; set; } = string.Empty;
+    public string? ZaloConnectionId { get; set; }
+    public string? ZaloGroupId { get; set; }
+    public string? ZaloGroupName { get; set; }
+    public string? ZaloGroupAvatarUrl { get; set; }
     public SessionStatus Status { get; set; } = SessionStatus.Setup;
     public int TeamCount { get; set; } = 3;
     public int TeamSize { get; set; } = 6;
@@ -16,6 +20,7 @@ public sealed class MatchSession
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public User AdminUser { get; set; } = null!;
+    public ZaloConnection? ZaloConnection { get; set; }
     public List<SessionPlayer> Players { get; set; } = [];
     public List<Team> Teams { get; set; } = [];
     public List<DraftSlot> DraftSlots { get; set; } = [];
@@ -23,4 +28,5 @@ public sealed class MatchSession
     public List<BlindBag> BlindBags { get; set; } = [];
     public List<DraftTurn> DraftTurns { get; set; } = [];
     public List<TeamPreferenceGroup> TeamPreferenceGroups { get; set; } = [];
+    public List<PollImport> PollImports { get; set; } = [];
 }

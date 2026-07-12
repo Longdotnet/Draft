@@ -32,6 +32,7 @@ const roleLabels: Record<DbRole, string> = {
 };
 
 const genderLabels: Record<DbGender, string> = {
+  Unknown: "Chưa xác định",
   Male: "Nam",
   Female: "Nữ",
 };
@@ -135,10 +136,12 @@ export function MobilePublicDraftFlow() {
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
-  const requiredPlayerCount = selectedSession?.requiredPlayerCount ?? 18;
+  const teamCount = selectedSession?.teamCount ?? 3;
+  const minimumPlayerCount = teamCount * 2;
   const savedPlayerCount = players?.totalItems ?? selectedSession?.playerCount ?? 0;
-  const hasEnoughPlayers = savedPlayerCount >= requiredPlayerCount;
-  const captainsReady = (captains?.captains.length ?? 0) === (selectedSession?.teamCount ?? 3);
+  const hasEnoughPlayers =
+    savedPlayerCount >= minimumPlayerCount && savedPlayerCount % teamCount === 0;
+  const captainsReady = (captains?.captains.length ?? 0) === teamCount;
   const canStartDraft =
     Boolean(selectedSession) &&
     hasEnoughPlayers &&
@@ -475,7 +478,7 @@ export function MobilePublicDraftFlow() {
                   <span>{item.name}</span>
                   <small>{formatSessionDate(item.createdAt)}</small>
                   <strong>
-                    {item.playerCount}/{item.requiredPlayerCount} người
+                    {item.playerCount} người · {item.teamCount} team
                   </strong>
                   <Badge tone={item.status === "Drafting" ? "orange" : "sky"}>
                     {statusLabels[item.status]}
@@ -503,8 +506,8 @@ export function MobilePublicDraftFlow() {
             <Badge tone="orange">Đang chờ</Badge>
             <h2>Đang đợi sắp xếp từ Long</h2>
             <p className="screen-copy">
-              Long chưa lưu đủ danh sách người tham gia. Hiện có {savedPlayerCount}/
-              {requiredPlayerCount} người chơi.
+              Long chưa lưu đủ danh sách người tham gia hợp lệ. Hiện có {savedPlayerCount} người chơi.
+              Cần từ {minimumPlayerCount} người và tổng số phải chia hết cho {teamCount}.
             </p>
           </div>
         )}
@@ -516,7 +519,8 @@ export function MobilePublicDraftFlow() {
                 <div>
                   <h2>Danh sách tham gia</h2>
                   <p className="muted">
-                    {savedPlayerCount}/{requiredPlayerCount} người đã đăng ký trên Zalo.
+                    {savedPlayerCount} người đã đăng ký · chia {teamCount} team (
+                    {savedPlayerCount / teamCount} người/team).
                   </p>
                 </div>
                 <Badge tone="sky">{statusLabels[selectedSession.status]}</Badge>

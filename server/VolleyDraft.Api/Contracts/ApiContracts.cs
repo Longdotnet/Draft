@@ -28,6 +28,10 @@ public sealed record SessionResponse(
     int TeamSize,
     int TotalSets,
     string AdminUserId,
+    string? ZaloConnectionId,
+    string? ZaloGroupId,
+    string? ZaloGroupName,
+    string? ZaloGroupAvatarUrl,
     IReadOnlyList<TeamSummary> Teams);
 
 public sealed record PublicSessionSummaryResponse(
@@ -65,7 +69,7 @@ public sealed record AddPlayerRequest(
     string DisplayName,
     PlayerRole Role,
     PlayerLevel Level,
-    PlayerGender Gender = PlayerGender.Male,
+    PlayerGender Gender = PlayerGender.Unknown,
     bool IsPresent = true,
     bool IsCaptainEligible = true);
 
@@ -73,7 +77,7 @@ public sealed record UpdatePlayerRequest(
     string DisplayName,
     PlayerRole Role,
     PlayerLevel Level,
-    PlayerGender Gender = PlayerGender.Male,
+    PlayerGender Gender = PlayerGender.Unknown,
     bool IsPresent = true,
     bool IsCaptainEligible = true);
 
@@ -88,6 +92,9 @@ public sealed record SessionPlayerResponse(
     string Id,
     string DisplayName,
     string? UserId,
+    string? PlayerProfileId,
+    string? ZaloUserId,
+    string? AvatarUrl,
     PlayerRole Role,
     PlayerLevel Level,
     PlayerGender Gender,
@@ -95,6 +102,102 @@ public sealed record SessionPlayerResponse(
     bool IsPresent,
     bool IsCaptainEligible,
     bool IsInsideSharedSlot);
+
+public sealed record StartZaloQrLoginResponse(
+    string LoginId,
+    string Status,
+    DateTimeOffset ExpiresAt);
+
+public sealed record ZaloQrLoginStatusResponse(
+    string LoginId,
+    string Status,
+    string? QrImageBase64,
+    string? DisplayName,
+    string? AvatarUrl,
+    string? Error,
+    ZaloConnectionResponse? Connection);
+
+public sealed record ZaloConnectionResponse(
+    string Id,
+    string AccountZaloId,
+    string DisplayName,
+    string? AvatarUrl,
+    ZaloConnectionStatus Status,
+    DateTimeOffset LastValidatedAt);
+
+public sealed record ZaloGroupResponse(
+    string Id,
+    string Name,
+    string? AvatarUrl,
+    int TotalMembers);
+
+public sealed record LinkZaloGroupRequest(
+    string ConnectionId,
+    string GroupId);
+
+public sealed record ZaloPollOptionResponse(
+    string Id,
+    string Content,
+    int VoteCount);
+
+public sealed record ZaloPollResponse(
+    string Id,
+    string Question,
+    IReadOnlyList<ZaloPollOptionResponse> Options,
+    bool AllowMultipleChoices,
+    bool IsAnonymous,
+    bool IsClosed,
+    bool HideVotePreview,
+    int UniqueVoteCount,
+    long CreatedAtUnixMs,
+    long UpdatedAtUnixMs,
+    long ExpiredAtUnixMs);
+
+public sealed record CreateZaloImportPreviewRequest(
+    string PollId,
+    IReadOnlyList<string> SelectedOptionIds);
+
+public sealed record ZaloImportPreviewResponse(
+    string PollId,
+    string PollQuestion,
+    IReadOnlyList<ZaloPollOptionResponse> SelectedOptions,
+    IReadOnlyList<ZaloImportCandidateResponse> Candidates,
+    int UniqueVoterCount,
+    bool CanDivideIntoTeams,
+    int? PlayersPerTeam,
+    long PollUpdatedAtUnixMs);
+
+public sealed record ZaloImportCandidateResponse(
+    string ZaloUserId,
+    string DisplayName,
+    string? AvatarUrl,
+    PlayerGender? Gender,
+    bool NeedsGenderSelection,
+    PlayerRole Role,
+    PlayerLevel Level,
+    bool AlreadyInSession,
+    IReadOnlyList<string> OptionIds,
+    IReadOnlyList<string> OptionNames);
+
+public sealed record ConfirmZaloPollImportRequest(
+    string PollId,
+    IReadOnlyList<string> SelectedOptionIds,
+    long ExpectedPollUpdatedAtUnixMs,
+    IReadOnlyList<ZaloImportCandidateDecision> Candidates);
+
+public sealed record ZaloImportCandidateDecision(
+    string ZaloUserId,
+    bool Include,
+    PlayerGender Gender,
+    PlayerRole Role,
+    PlayerLevel Level);
+
+public sealed record ZaloPollImportResultResponse(
+    int AddedCount,
+    int UpdatedProfileCount,
+    int SkippedExistingCount,
+    int SessionPlayerCount,
+    string Message);
 
 public sealed record SharedSlotResponse(
     string Id,

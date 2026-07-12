@@ -61,6 +61,55 @@ Khi nhập người chơi, cần chọn:
 
 App dùng các thông tin này để tính điểm và chia team cân hơn.
 
+## Nhập người chơi từ bình chọn Zalo
+
+Tính năng Zalo chạy qua ba lớp: website React gọi Volley Draft API, API gọi `server/ZaloBridge`, còn credential Zalo được mã hóa trước khi lưu vào database. Cookie, IMEI và user-agent không bao giờ được trả về trình duyệt.
+
+Flow sử dụng:
+
+1. Admin tạo hoặc mở một buổi đấu.
+2. Trong panel `Nhập người chơi từ bình chọn Zalo`, bấm `Kết nối bằng QR`.
+3. Quét QR và xác nhận đăng nhập trên điện thoại.
+4. Bấm lấy danh sách nhóm, chọn nhóm rồi liên kết với buổi đấu.
+5. Bấm `Lấy thông tin bình chọn từ Zalo` và chọn một poll.
+6. Chọn một hoặc nhiều option cần import.
+7. Kiểm tra preview, bỏ chọn người không tham gia và bổ sung giới tính/role/level.
+8. Bấm xác nhận import.
+
+Người vote nhiều option chỉ xuất hiện một lần. Tên và avatar được đồng bộ lại từ Zalo, còn giới tính chỉ lấy từ hồ sơ đã lưu hoặc do admin xác nhận. `null` có nghĩa là chưa từng xác nhận; `Unknown` có nghĩa admin đã chọn `Chưa xác định`. Import lại cùng người trong cùng buổi sẽ cập nhật hồ sơ nhưng không tạo bản ghi trùng.
+
+Poll ẩn danh hoặc poll không trả danh sách voter sẽ bị từ chối. Nếu poll thay đổi sau màn hình preview, API yêu cầu tải preview lại. Sau import, giao diện cảnh báo nếu tổng người chưa đủ hoặc chưa chia hết cho ba.
+
+### Chạy local với Zalo mock
+
+Terminal 1:
+
+```powershell
+cd server/ZaloBridge
+npm install
+$env:ZALO_BRIDGE_MOCK="true"
+$env:ZALO_BRIDGE_INTERNAL_KEY="development-zalo-bridge-key"
+npm run dev
+```
+
+Terminal 2:
+
+```powershell
+cd server/VolleyDraft.Api
+$env:Database__Provider="Sqlite"
+$env:ConnectionStrings__Default="Data Source=volley-draft.db"
+dotnet run
+```
+
+Terminal 3:
+
+```powershell
+npm install
+npm run dev
+```
+
+Để dùng Zalo thật, đặt `ZALO_BRIDGE_MOCK=false`. Khi deploy Render, cấu hình cùng một giá trị bí mật cho `ZALO_BRIDGE_INTERNAL_KEY` và `Zalo__BridgeInternalKey`; đặt URL bridge vào `Zalo__BridgeBaseUrl`; đặt khóa mã hóa ổn định vào `Zalo__CredentialEncryptionKey`. Không đổi khóa mã hóa sau khi đã lưu connection, nếu không credential cũ sẽ không giải mã được.
+
 ## Slot thay phiên
 
 Slot thay phiên dùng khi 2 hoặc nhiều người dùng chung 1 vị trí trong team.
@@ -150,7 +199,7 @@ Khi captain chọn 1 túi mù:
 Trước khi bấm bắt đầu draft, admin nên kiểm tra kỹ:
 
 - Tổng số slot phải vừa đủ với số team.
-- Với MVP hiện tại, mặc định là 3 team x 6 slot.
+- App chia đều theo 3 team. Tổng số slot phải từ 6 trở lên và chia hết cho 3, nên các mốc như 12, 15 hoặc 18 người đều có thể bốc túi; số slot mỗi team sẽ tự tính theo danh sách thực tế.
 - Captain tính là 1 slot trong team.
 - Shared slot tính là 1 slot, dù bên trong có 2 hoặc nhiều người.
 - Nếu shared slot có captain, cả shared slot được tính sẵn vào team của captain.

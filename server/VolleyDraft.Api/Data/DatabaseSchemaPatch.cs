@@ -12,10 +12,19 @@ public static class DatabaseSchemaPatch
         {
             await EnsureSqliteColumn(db, "MatchSessions", "CreatedAt", "\"CreatedAt\" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'");
             await EnsureSqliteColumn(db, "MatchSessions", "UpdatedAt", "\"UpdatedAt\" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'");
+            await EnsureSqliteColumn(db, "MatchSessions", "ZaloConnectionId", "\"ZaloConnectionId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ZaloGroupId", "\"ZaloGroupId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ZaloGroupName", "\"ZaloGroupName\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ZaloGroupAvatarUrl", "\"ZaloGroupAvatarUrl\" TEXT NULL");
             await EnsureSqliteColumn(db, "SessionPlayers", "Gender", "\"Gender\" TEXT NOT NULL DEFAULT 'Male'");
+            await EnsureSqliteColumn(db, "SessionPlayers", "PlayerProfileId", "\"PlayerProfileId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SessionPlayers", "AvatarUrl", "\"AvatarUrl\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SessionPlayers", "SourcePollId", "\"SourcePollId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SessionPlayers", "SourceOptionIdsJson", "\"SourceOptionIdsJson\" TEXT NULL");
             await EnsureSqliteColumn(db, "DraftSlots", "Gender", "\"Gender\" TEXT NOT NULL DEFAULT 'Male'");
             await EnsureSqliteColumn(db, "BlindBags", "PreparedDraftSlotId", "\"PreparedDraftSlotId\" TEXT NULL");
             await EnsureSqliteTeamPreferenceTables(db);
+            await EnsureSqliteZaloTables(db);
             return;
         }
 
@@ -23,10 +32,19 @@ public static class DatabaseSchemaPatch
         {
             await EnsurePostgresColumn(db, "MatchSessions", "CreatedAt", "\"CreatedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
             await EnsurePostgresColumn(db, "MatchSessions", "UpdatedAt", "\"UpdatedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+            await EnsurePostgresColumn(db, "MatchSessions", "ZaloConnectionId", "\"ZaloConnectionId\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ZaloGroupId", "\"ZaloGroupId\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ZaloGroupName", "\"ZaloGroupName\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ZaloGroupAvatarUrl", "\"ZaloGroupAvatarUrl\" text NULL");
             await EnsurePostgresColumn(db, "SessionPlayers", "Gender", "\"Gender\" text NOT NULL DEFAULT 'Male'");
+            await EnsurePostgresColumn(db, "SessionPlayers", "PlayerProfileId", "\"PlayerProfileId\" text NULL");
+            await EnsurePostgresColumn(db, "SessionPlayers", "AvatarUrl", "\"AvatarUrl\" text NULL");
+            await EnsurePostgresColumn(db, "SessionPlayers", "SourcePollId", "\"SourcePollId\" text NULL");
+            await EnsurePostgresColumn(db, "SessionPlayers", "SourceOptionIdsJson", "\"SourceOptionIdsJson\" text NULL");
             await EnsurePostgresColumn(db, "DraftSlots", "Gender", "\"Gender\" text NOT NULL DEFAULT 'Male'");
             await EnsurePostgresColumn(db, "BlindBags", "PreparedDraftSlotId", "\"PreparedDraftSlotId\" text NULL");
             await EnsurePostgresTeamPreferenceTables(db);
+            await EnsurePostgresZaloTables(db);
         }
     }
 
@@ -141,6 +159,202 @@ public static class DatabaseSchemaPatch
             """CREATE INDEX IF NOT EXISTS "IX_TeamPreferenceGroups_SessionId" ON "TeamPreferenceGroups" ("SessionId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_TeamPreferenceGroupPlayers_SessionPlayerId" ON "TeamPreferenceGroupPlayers" ("SessionPlayerId");""");
+    }
+
+    private static async Task EnsureSqliteZaloTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PlayerProfiles" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_PlayerProfiles" PRIMARY KEY,
+                "ZaloUserId" TEXT NOT NULL,
+                "DisplayName" TEXT NOT NULL,
+                "AvatarUrl" TEXT NULL,
+                "Gender" TEXT NULL,
+                "DefaultRole" TEXT NULL,
+                "DefaultLevel" TEXT NULL,
+                "LastSyncedAt" TEXT NOT NULL,
+                "GenderUpdatedAt" TEXT NULL,
+                "GenderUpdatedByUserId" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloConnections" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloConnections" PRIMARY KEY,
+                "AdminUserId" TEXT NOT NULL,
+                "AccountZaloId" TEXT NOT NULL,
+                "DisplayName" TEXT NOT NULL,
+                "AvatarUrl" TEXT NULL,
+                "EncryptedCredentials" TEXT NOT NULL,
+                "Status" TEXT NOT NULL,
+                "LastValidatedAt" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloConnections_Users_AdminUserId"
+                    FOREIGN KEY ("AdminUserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PollImports" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_PollImports" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "ImportedByUserId" TEXT NOT NULL,
+                "ZaloGroupId" TEXT NOT NULL,
+                "PollId" TEXT NOT NULL,
+                "PollQuestion" TEXT NOT NULL,
+                "SelectedOptionIdsJson" TEXT NOT NULL,
+                "ImportedPlayerCount" INTEGER NOT NULL,
+                "ImportedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_PollImports_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_PollImports_Users_ImportedByUserId"
+                    FOREIGN KEY ("ImportedByUserId") REFERENCES "Users" ("Id") ON DELETE RESTRICT
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_PlayerProfiles_ZaloUserId" ON "PlayerProfiles" ("ZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloConnections_AdminUserId_AccountZaloId" ON "ZaloConnections" ("AdminUserId", "AccountZaloId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloConnections_AdminUserId" ON "ZaloConnections" ("AdminUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_PollImports_SessionId_PollId" ON "PollImports" ("SessionId", "PollId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_SessionPlayers_SessionId_PlayerProfileId" ON "SessionPlayers" ("SessionId", "PlayerProfileId") WHERE "PlayerProfileId" IS NOT NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_MatchSessions_ZaloConnectionId" ON "MatchSessions" ("ZaloConnectionId");""");
+    }
+
+    private static async Task EnsurePostgresZaloTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PlayerProfiles" (
+                "Id" text NOT NULL CONSTRAINT "PK_PlayerProfiles" PRIMARY KEY,
+                "ZaloUserId" text NOT NULL,
+                "DisplayName" text NOT NULL,
+                "AvatarUrl" text NULL,
+                "Gender" text NULL,
+                "DefaultRole" text NULL,
+                "DefaultLevel" text NULL,
+                "LastSyncedAt" timestamp with time zone NOT NULL,
+                "GenderUpdatedAt" timestamp with time zone NULL,
+                "GenderUpdatedByUserId" text NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloConnections" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloConnections" PRIMARY KEY,
+                "AdminUserId" text NOT NULL,
+                "AccountZaloId" text NOT NULL,
+                "DisplayName" text NOT NULL,
+                "AvatarUrl" text NULL,
+                "EncryptedCredentials" text NOT NULL,
+                "Status" text NOT NULL,
+                "LastValidatedAt" timestamp with time zone NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloConnections_Users_AdminUserId"
+                    FOREIGN KEY ("AdminUserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PollImports" (
+                "Id" text NOT NULL CONSTRAINT "PK_PollImports" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "ImportedByUserId" text NOT NULL,
+                "ZaloGroupId" text NOT NULL,
+                "PollId" text NOT NULL,
+                "PollQuestion" text NOT NULL,
+                "SelectedOptionIdsJson" text NOT NULL,
+                "ImportedPlayerCount" integer NOT NULL,
+                "ImportedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_PollImports_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_PollImports_Users_ImportedByUserId"
+                    FOREIGN KEY ("ImportedByUserId") REFERENCES "Users" ("Id") ON DELETE RESTRICT
+            );
+            """);
+        await EnsurePostgresColumn(
+    db,
+    "PlayerProfiles",
+    "ZaloUserId",
+    "\"ZaloUserId\" text NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "DisplayName",
+            "\"DisplayName\" text NOT NULL DEFAULT ''");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "AvatarUrl",
+            "\"AvatarUrl\" text NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "Gender",
+            "\"Gender\" text NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "DefaultRole",
+            "\"DefaultRole\" text NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "DefaultLevel",
+            "\"DefaultLevel\" text NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "LastSyncedAt",
+            "\"LastSyncedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "GenderUpdatedAt",
+            "\"GenderUpdatedAt\" timestamp with time zone NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "GenderUpdatedByUserId",
+            "\"GenderUpdatedByUserId\" text NULL");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "CreatedAt",
+            "\"CreatedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+
+        await EnsurePostgresColumn(
+            db,
+            "PlayerProfiles",
+            "UpdatedAt",
+            "\"UpdatedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_PlayerProfiles_ZaloUserId" ON "PlayerProfiles" ("ZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloConnections_AdminUserId_AccountZaloId" ON "ZaloConnections" ("AdminUserId", "AccountZaloId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloConnections_AdminUserId" ON "ZaloConnections" ("AdminUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_PollImports_SessionId_PollId" ON "PollImports" ("SessionId", "PollId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_SessionPlayers_SessionId_PlayerProfileId" ON "SessionPlayers" ("SessionId", "PlayerProfileId") WHERE "PlayerProfileId" IS NOT NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_MatchSessions_ZaloConnectionId" ON "MatchSessions" ("ZaloConnectionId");""");
     }
 
     private static async Task OpenIfNeeded(VolleyDraftDbContext db)

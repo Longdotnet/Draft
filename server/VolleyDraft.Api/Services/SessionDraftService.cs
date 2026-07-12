@@ -28,11 +28,11 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 "Admin token is no longer valid. Please logout and login again.");
         }
 
-        if (request.TeamCount != 3 || request.TeamSize != 6)
+        if (request.TeamCount != 3 || request.TeamSize < 2)
         {
             return ServiceResult<SessionResponse>.Failure(
                 StatusCodes.Status400BadRequest,
-                "MVP hiện hỗ trợ đúng 3 team x 6 slot.");
+                "MVP hiện hỗ trợ 3 team; số slot mỗi team sẽ tự tính theo số người có mặt.");
         }
 
         var session = new MatchSession
@@ -233,6 +233,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         var query = db.SessionPlayers
             .AsNoTracking()
+            .Include(player => player.PlayerProfile)
             .Where(player => player.SessionId == sessionId && player.IsPresent)
             .OrderBy(player => player.DisplayName);
         var totalItems = await query.CountAsync();
@@ -355,6 +356,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
 
         var players = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
             .Where(player => player.SessionId == sessionId)
             .OrderBy(player => player.DisplayName)
             .ToListAsync();
@@ -383,6 +385,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
 
         var player = await db.SessionPlayers
+            .Include(item => item.PlayerProfile)
             .SingleOrDefaultAsync(item => item.Id == playerId && item.SessionId == sessionId);
         if (player is null)
         {
@@ -410,6 +413,17 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         player.Score = score;
         player.IsPresent = request.IsPresent;
         player.IsCaptainEligible = request.IsCaptainEligible;
+
+        if (player.PlayerProfile is not null)
+        {
+            player.PlayerProfile.DisplayName = player.DisplayName;
+            player.PlayerProfile.Gender = request.Gender;
+            player.PlayerProfile.DefaultRole = request.Role;
+            player.PlayerProfile.DefaultLevel = request.Level;
+            player.PlayerProfile.GenderUpdatedAt = DateTimeOffset.UtcNow;
+            player.PlayerProfile.GenderUpdatedByUserId = adminUserId;
+            player.PlayerProfile.UpdatedAt = DateTimeOffset.UtcNow;
+        }
 
         if (shouldRemoveCaptain && captainTeam is not null)
         {
@@ -541,7 +555,9 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             Role = request.Role,
             Gender = players.Any(player => player.Gender == PlayerGender.Female)
                 ? PlayerGender.Female
-                : PlayerGender.Male,
+                : players.Any(player => player.Gender == PlayerGender.Unknown)
+                    ? PlayerGender.Unknown
+                    : PlayerGender.Male,
             AverageScore = players.Average(player => player.Score)
         };
 
@@ -862,13 +878,19 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return BadRequest<DraftStateResponse>(sharedSlotError);
         }
 
+        var players = await db.SessionPlayers
+            .Where(player => player.SessionId == sessionId && player.IsPresent)
+            .ToListAsync();
+        if (!IsValidRosterSize(players.Count, session.TeamCount))
+        {
+            return BadRequest<DraftStateResponse>(
+                $"Cần ít nhất {session.TeamCount * 2} người chơi và tổng số người phải chia hết cho {session.TeamCount}.");
+        }
+
         await ClearDraftRunArtifacts(sessionId);
         await EnsureCaptainSlots(session);
         await AttachCaptainSharedSlots(sessionId, teamIdByCaptainId);
 
-        var players = await db.SessionPlayers
-            .Where(player => player.SessionId == sessionId && player.IsPresent)
-            .ToListAsync();
         var singlePlayers = players
             .Where(player => !player.IsInsideSharedSlot && !captainIds.Contains(player.Id))
             .ToList();
@@ -901,6 +923,15 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 !slot.IsCaptainSlot &&
                 slot.AssignedTeamId == null)
             .ToListAsync();
+
+        var totalDraftSlotCount = draftPool.Count + session.TeamCount;
+        if (!IsValidRosterSize(totalDraftSlotCount, session.TeamCount))
+        {
+            return BadRequest<DraftStateResponse>(
+                $"Sau khi tính slot thay phiên, tổng số slot ({totalDraftSlotCount}) phải chia hết cho {session.TeamCount}.");
+        }
+
+        session.TeamSize = totalDraftSlotCount / session.TeamCount;
         var expectedSlots = session.TeamCount * (session.TeamSize - 1);
 
         if (draftPool.Count != expectedSlots)
@@ -2248,6 +2279,19 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return player.IsPresent && (player.IsCaptainEligible || player.IsInsideSharedSlot);
     }
 
+    private static bool IsValidRosterSize(int slotCount, int teamCount)
+    {
+        return teamCount > 0 && slotCount >= teamCount * 2 && slotCount % teamCount == 0;
+    }
+
+    private static int GetNextValidRosterSize(int playerCount, int teamCount)
+    {
+        var minimum = teamCount * 2;
+        var candidate = Math.Max(minimum, playerCount);
+        var remainder = candidate % teamCount;
+        return remainder == 0 ? candidate : candidate + teamCount - remainder;
+    }
+
     private static double CalculateScore(PlayerRole role, PlayerLevel level)
     {
         var baseScore = level switch
@@ -2271,6 +2315,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             session.TeamSize,
             session.TotalSets,
             session.AdminUserId,
+            session.ZaloConnectionId,
+            session.ZaloGroupId,
+            session.ZaloGroupName,
+            session.ZaloGroupAvatarUrl,
             session.Teams.OrderBy(team => team.Name).Select(team => new TeamSummary(team.Id, team.Name)).ToList());
     }
 
@@ -2286,7 +2334,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             session.TeamSize,
             session.TotalSets,
             playerCount,
-            session.TeamCount * session.TeamSize,
+            GetNextValidRosterSize(playerCount, session.TeamCount),
             session.CreatedAt,
             session.UpdatedAt);
     }
@@ -2303,7 +2351,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             session.TeamSize,
             session.TotalSets,
             playerCount,
-            session.TeamCount * session.TeamSize,
+            GetNextValidRosterSize(playerCount, session.TeamCount),
             session.CreatedAt,
             session.UpdatedAt);
     }
@@ -2314,6 +2362,9 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             player.Id,
             player.DisplayName,
             player.UserId,
+            player.PlayerProfileId,
+            player.PlayerProfile?.ZaloUserId,
+            player.AvatarUrl,
             player.Role,
             player.Level,
             player.Gender,

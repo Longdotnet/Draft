@@ -7,7 +7,7 @@ public sealed class DraftSlot
     public DraftSlotType Type { get; set; } = DraftSlotType.Single;
     public string DisplayName { get; set; } = string.Empty;
     public PlayerRole Role { get; set; } = PlayerRole.Attack;
-    public PlayerGender Gender { get; set; } = PlayerGender.Male;
+    public PlayerGender Gender { get; set; } = PlayerGender.Unknown;
     public double AverageScore { get; set; }
     public string? AssignedTeamId { get; set; }
     public bool IsCaptainSlot { get; set; }
