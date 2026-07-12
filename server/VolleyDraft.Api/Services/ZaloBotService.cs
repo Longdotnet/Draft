@@ -79,23 +79,34 @@ public sealed class ZaloBotService(
         return ServiceResult<ZaloBotSettingsResponse>.Success(ToSettings(session));
     }
 
-    public async Task<ServiceResult<IReadOnlyList<ZaloBotLearnedRuleResponse>>> GetLearnedRulesAsync(
+    public async Task<ServiceResult<PagedResponse<ZaloBotLearnedRuleResponse>>> GetLearnedRulesAsync(
         string adminUserId,
-        string sessionId)
+        string sessionId,
+        int page,
+        int pageSize)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 20);
         var session = await db.MatchSessions.AsNoTracking().SingleOrDefaultAsync(item =>
             item.Id == sessionId && item.AdminUserId == adminUserId);
         if (session is null)
-            return ServiceResult<IReadOnlyList<ZaloBotLearnedRuleResponse>>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
+            return ServiceResult<PagedResponse<ZaloBotLearnedRuleResponse>>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
         if (string.IsNullOrWhiteSpace(session.ZaloConnectionId) || string.IsNullOrWhiteSpace(session.ZaloGroupId))
-            return ServiceResult<IReadOnlyList<ZaloBotLearnedRuleResponse>>.Success([]);
-        var rules = await db.ZaloBotLearnedRules.AsNoTracking()
-            .Where(rule => rule.ZaloConnectionId == session.ZaloConnectionId && rule.GroupId == session.ZaloGroupId)
+            return ServiceResult<PagedResponse<ZaloBotLearnedRuleResponse>>.Success(new([], page, pageSize, 0, 0));
+        var query = db.ZaloBotLearnedRules.AsNoTracking()
+            .Where(rule => rule.ZaloConnectionId == session.ZaloConnectionId && rule.GroupId == session.ZaloGroupId);
+        var totalItems = await query.CountAsync();
+        var totalPages = totalItems == 0 ? 0 : (int)Math.Ceiling((double)totalItems / pageSize);
+        if (totalPages > 0) page = Math.Min(page, totalPages);
+        var rules = await query
             .OrderBy(rule => rule.Status == ZaloBotRuleStatus.Pending ? 0 : 1)
             .ThenByDescending(rule => rule.UpdatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .Select(rule => ToLearnedRuleResponse(rule))
             .ToListAsync();
-        return ServiceResult<IReadOnlyList<ZaloBotLearnedRuleResponse>>.Success(rules);
+        return ServiceResult<PagedResponse<ZaloBotLearnedRuleResponse>>.Success(
+            new(rules, page, pageSize, totalItems, totalPages));
     }
 
     public async Task<ServiceResult<ZaloBotLearnedRuleResponse>> ReviewLearnedRuleAsync(
@@ -340,6 +351,47 @@ public sealed class ZaloBotService(
             }
         }
 
+        var learnedRuleMatch = learnedRules
+            .Select(rule => new
+            {
+                Rule = rule,
+                RuleIntent = ZaloBotIntelligence.ClassifyDeterministically(rule.Trigger).Intent,
+                Score = ZaloBotIntelligence.TokenSimilarity(rule.NormalizedTrigger, question)
+            })
+            .Where(match => match.Score >= configuration.GetValue("ZaloBot:LearnedRuleSimilarityThreshold", .82))
+            .Where(match => match.RuleIntent == decision.Intent ||
+                            (decision.Intent == ZaloBotIntent.Unknown && match.RuleIntent is ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat))
+            .OrderByDescending(match => match.Rule.Priority)
+            .ThenByDescending(match => match.Score)
+            .FirstOrDefault();
+
+        ZaloBotLearnedRule? conversationalLearnedRule = null;
+        if (learnedRuleMatch is not null)
+        {
+            if (learnedRuleMatch.RuleIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat) &&
+                ZaloBotIntelligence.PrefersNearestSession(learnedRuleMatch.Rule.Answer) &&
+                !HasExplicitSessionSelector(sessions, normalizedQuestion))
+            {
+                var nearest = sessions.FirstOrDefault(IsUpcoming) ?? sessions.First();
+                normalizedQuestion = NormalizeText(nearest.Name);
+                decision = decision with
+                {
+                    Intent = learnedRuleMatch.RuleIntent,
+                    SessionReference = nearest.Name,
+                    Reason = "approved_rule_prefer_nearest_session"
+                };
+                logger.LogInformation(
+                    "Applied approved Zalo behavior rule Rule={RuleId} Intent={Intent} Session={SessionId}",
+                    learnedRuleMatch.Rule.Id,
+                    decision.Intent,
+                    nearest.Id);
+            }
+            else if (learnedRuleMatch.RuleIntent is ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat)
+            {
+                conversationalLearnedRule = learnedRuleMatch.Rule;
+            }
+        }
+
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
@@ -482,19 +534,9 @@ public sealed class ZaloBotService(
             return new BotAnswer(ai.GetPublicModelInfo(), null, decision.Intent);
         }
 
-        var learnedRule = learnedRules
-            .Select(rule => new { Rule = rule, Score = ZaloBotIntelligence.TokenJaccard(rule.NormalizedTrigger, question) })
-            .Where(match => match.Score >= configuration.GetValue("ZaloBot:LearnedRuleSimilarityThreshold", .82))
-            .Where(match => ZaloBotIntelligence.ClassifyDeterministically(match.Rule.Trigger).Intent is ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat)
-            .Where(match => !ZaloBotIntelligence.IsProtectedBusinessFactText(match.Rule.Trigger) &&
-                            !ZaloBotIntelligence.IsProtectedBusinessFactText(match.Rule.Answer))
-            .OrderByDescending(match => match.Rule.Priority)
-            .ThenByDescending(match => match.Score)
-            .Select(match => match.Rule)
-            .FirstOrDefault();
-        if (learnedRule is not null)
+        if (conversationalLearnedRule is not null)
         {
-            return new BotAnswer(RenderLearnedAnswer(learnedRule.Answer, incoming.SenderName), null);
+            return new BotAnswer(RenderLearnedAnswer(conversationalLearnedRule.Answer, incoming.SenderName), null);
         }
 
         var recentMessageRows = await db.ZaloGroupMessages
@@ -585,6 +627,13 @@ public sealed class ZaloBotService(
         }
         if (ZaloBotIntelligence.TryGetExactCommand(normalizedQuestion, out _) ||
             ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent == ZaloBotIntent.Help)
+        {
+            db.ZaloBotConversationStates.Remove(state);
+            await db.SaveChangesAsync(cancellationToken);
+            return PendingResolution.None;
+        }
+        var freshIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+        if (freshIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
         {
             db.ZaloBotConversationStates.Remove(state);
             await db.SaveChangesAsync(cancellationToken);

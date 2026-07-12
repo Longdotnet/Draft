@@ -34,6 +34,12 @@ public sealed record ZaloSessionReference(string Id, string Name, DateTimeOffset
 public static class ZaloBotIntelligence
 {
     private static readonly Regex ExactCommandRegex = new("^[1-6]$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
+    {
+        "ai", "hoi", "hay", "la", "thi", "cho", "minh", "tui", "toi", "em", "anh", "chi",
+        "bot", "npc", "nhe", "nha", "voi", "ve", "o", "dau", "gi", "nao", "xem", "giup",
+        "luon", "nua", "cai", "do", "nay", "kia", "duoc", "khong", "phai"
+    };
 
     public static string Normalize(string value)
     {
@@ -138,13 +144,32 @@ public static class ZaloBotIntelligence
     }
 
     public static double TokenJaccard(string left, string right)
+        => TokenSimilarity(left, right);
+
+    public static double TokenSimilarity(string left, string right)
     {
         var a = Tokens(left);
         var b = Tokens(right);
         if (a.Count == 0 || b.Count == 0) return 0;
         var intersection = a.Intersect(b, StringComparer.Ordinal).Count();
         var union = a.Union(b, StringComparer.Ordinal).Count();
-        return union == 0 ? 0 : (double)intersection / union;
+        var jaccard = union == 0 ? 0 : (double)intersection / union;
+        var containment = (double)intersection / Math.Min(a.Count, b.Count);
+        return Math.Max(jaccard, containment);
+    }
+
+    public static bool PrefersNearestSession(string value)
+    {
+        var q = Normalize(value);
+        return Has(q,
+            "buoi gan nhat",
+            "tran gan nhat",
+            "session gan nhat",
+            "lich gan nhat",
+            "sap toi gan nhat",
+            "gan nhat luon",
+            "thay vi hoi",
+            "khong can hoi lai");
     }
 
     public static IReadOnlyList<string> ResolveSessionReference(
@@ -180,10 +205,19 @@ public static class ZaloBotIntelligence
         }).Select(candidate => candidate.Id).ToList();
     }
 
-    private static HashSet<string> Tokens(string value) => Normalize(value)
-        .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-        .Where(token => token.Length > 1)
-        .ToHashSet(StringComparer.Ordinal);
+    private static HashSet<string> Tokens(string value)
+    {
+        var normalized = Normalize(value);
+        normalized = Regex.Replace(normalized, @"\b(?:gui xe|bai xe|cho de xe)\b", " parking ", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\b(?:dia diem|vi tri|san dau)\b", " location ", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\b(?:thanh toan|chuyen khoan|ma qr)\b", " payment ", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\b(?:danh sach|doi hinh)\b", " roster ", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"[^a-z0-9\s]", " ", RegexOptions.CultureInvariant);
+        return normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(token => token.Length > 1 && !StopWords.Contains(token))
+            .ToHashSet(StringComparer.Ordinal);
+    }
 
     private static string? ReadString(JsonElement root, string property) =>
         root.TryGetProperty(property, out var node) && node.ValueKind == JsonValueKind.String ? node.GetString()?.Trim() : null;

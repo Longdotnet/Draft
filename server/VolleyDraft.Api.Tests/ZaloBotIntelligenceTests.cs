@@ -60,6 +60,27 @@ public sealed class ZaloBotIntelligenceTests
         Assert.True(close >= .7);
     }
 
+    [Fact]
+    public void Semantic_rule_matching_understands_short_parking_question()
+    {
+        var score = ZaloBotIntelligence.TokenSimilarity(
+            "ai hỏi gửi xe hay bãi xe",
+            "gửi xe ở đâu vậy bot?");
+
+        Assert.True(score >= .82);
+        Assert.Equal(
+            ZaloBotIntent.LocationParking,
+            ZaloBotIntelligence.ClassifyDeterministically("ai hỏi gửi xe hay bãi xe").Intent);
+    }
+
+    [Theory]
+    [InlineData("gửi ảnh và nội dung cho buổi gần nhất luôn thay vì hỏi chính xác")]
+    [InlineData("dùng trận gần nhất, không cần hỏi lại")]
+    public void Learned_behavior_can_prefer_nearest_session(string answer)
+    {
+        Assert.True(ZaloBotIntelligence.PrefersNearestSession(answer));
+    }
+
     [Theory]
     [InlineData("huỷ")]
     [InlineData("cancel")]

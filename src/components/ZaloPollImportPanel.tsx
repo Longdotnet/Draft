@@ -6,6 +6,7 @@ import {
   type DbGender,
   type DbLevel,
   type DbRole,
+  type PagedResponse,
   type SessionResponse,
   type StartZaloQrLoginResponse,
   type ZaloConnectionResponse,
@@ -74,6 +75,9 @@ export function ZaloPollImportPanel({
   const [groups, setGroups] = useState<ZaloGroupResponse[]>([]);
   const [botImages, setBotImages] = useState<ZaloBotImageAssetResponse[]>([]);
   const [botRules, setBotRules] = useState<ZaloBotLearnedRuleResponse[]>([]);
+  const [botRulePage, setBotRulePage] = useState(1);
+  const [botRuleTotalPages, setBotRuleTotalPages] = useState(0);
+  const [botRuleTotalItems, setBotRuleTotalItems] = useState(0);
   const [selectedGroupId, setSelectedGroupId] = useState(session.zaloGroupId ?? "");
   const [polls, setPolls] = useState<ZaloPollResponse[]>([]);
   const [pollPage, setPollPage] = useState(1);
@@ -116,8 +120,12 @@ export function ZaloPollImportPanel({
   useEffect(() => {
     void loadConnections();
     void loadBotImages();
-    void loadBotRules();
   }, [token]);
+
+  useEffect(() => {
+    setBotRulePage(1);
+    void loadBotRules(1);
+  }, [token, session.id, session.zaloGroupId]);
 
   useEffect(() => {
     setSelectedConnectionId(session.zaloConnectionId ?? "");
@@ -178,15 +186,26 @@ export function ZaloPollImportPanel({
     if (result) setBotImages(result);
   }
 
-  async function loadBotRules() {
+  async function loadBotRules(page = botRulePage) {
     if (!session.zaloGroupId) {
       setBotRules([]);
+      setBotRulePage(1);
+      setBotRuleTotalPages(0);
+      setBotRuleTotalItems(0);
       return;
     }
     const result = await run(() =>
-      apiFetch<ZaloBotLearnedRuleResponse[]>(`/sessions/${session.id}/zalo-bot-rules`, { token }),
+      apiFetch<PagedResponse<ZaloBotLearnedRuleResponse>>(
+        `/sessions/${session.id}/zalo-bot-rules?page=${page}&pageSize=5`,
+        { token },
+      ),
     );
-    if (result) setBotRules(result);
+    if (result) {
+      setBotRules(result.items);
+      setBotRulePage(result.page);
+      setBotRuleTotalPages(result.totalPages);
+      setBotRuleTotalItems(result.totalItems);
+    }
   }
 
   async function reviewBotRule(rule: ZaloBotLearnedRuleResponse, status: ZaloBotRuleStatus) {
@@ -656,7 +675,7 @@ export function ZaloPollImportPanel({
         <div className="zalo-rule-review">
           <div className="action-row">
             <strong>Ghi nhớ do thành viên đề xuất</strong>
-            <button className="button-secondary" type="button" onClick={loadBotRules} disabled={!session.zaloGroupId || isBusy}>
+            <button className="button-secondary" type="button" onClick={() => void loadBotRules(botRulePage)} disabled={!session.zaloGroupId || isBusy}>
               <RefreshCw size={15} aria-hidden="true" /> Làm mới
             </button>
           </div>
@@ -674,6 +693,13 @@ export function ZaloPollImportPanel({
               </div>
             </div>
           ))}
+          {botRuleTotalPages > 1 && (
+            <div className="action-row zalo-rule-pagination">
+              <button className="button-secondary" type="button" onClick={() => void loadBotRules(botRulePage - 1)} disabled={isBusy || botRulePage <= 1}>Trước</button>
+              <span className="muted">Trang {botRulePage}/{botRuleTotalPages} · {botRuleTotalItems} ghi nhớ</span>
+              <button className="button-secondary" type="button" onClick={() => void loadBotRules(botRulePage + 1)} disabled={isBusy || botRulePage >= botRuleTotalPages}>Sau</button>
+            </div>
+          )}
         </div>
         <div className="action-row">
           <button className="button-primary" type="button" onClick={saveBotSettings} disabled={!session.zaloGroupId || isBusy}>

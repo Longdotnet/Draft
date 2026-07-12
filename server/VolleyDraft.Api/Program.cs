@@ -352,12 +352,14 @@ sessions.MapPut("/{sessionId}/zalo-bot-settings", async (
 sessions.MapGet("/{sessionId}/zalo-bot-rules", async (
     HttpContext httpContext,
     string sessionId,
+    int? page,
+    int? pageSize,
     ZaloBotService service) =>
 {
     var userId = httpContext.User.GetUserId();
     return userId is null
         ? Results.Unauthorized()
-        : (await service.GetLearnedRulesAsync(userId, sessionId)).ToHttpResult();
+        : (await service.GetLearnedRulesAsync(userId, sessionId, page ?? 1, pageSize ?? 5)).ToHttpResult();
 });
 sessions.MapPut("/{sessionId}/zalo-bot-rules/{ruleId}", async (
     HttpContext httpContext,
