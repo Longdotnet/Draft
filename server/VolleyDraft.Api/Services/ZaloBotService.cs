@@ -156,35 +156,6 @@ public sealed class ZaloBotService(
     {
         var question = ExtractQuestion(incoming);
         var normalizedQuestion = NormalizeText(question);
-        var intent = DetectIntent(question, normalizedQuestion);
-
-        if (intent == BotIntent.LearnRule)
-        {
-            if (!TryParseLearningCommand(question, out var trigger, out var answer))
-            {
-                return new BotAnswer("Cú pháp dạy bot chưa đúng. Dùng: @bot học: câu hỏi => câu trả lời", null);
-            }
-            return await SaveLearnedRuleAsync(
-                activeConnectionId,
-                groupId,
-                incoming,
-                trigger,
-                answer,
-                cancellationToken);
-        }
-
-        if (intent == BotIntent.ForgetRule)
-        {
-            if (!TryParseForgetCommand(question, out var forgottenTrigger))
-            {
-                return new BotAnswer("Cú pháp xoá ghi nhớ chưa đúng. Dùng: @bot quên: câu hỏi", null);
-            }
-            return await ForgetLearnedRuleAsync(
-                activeConnectionId,
-                groupId,
-                forgottenTrigger,
-                cancellationToken);
-        }
 
         if (TryParseNaturalLearning(question, out var naturalTrigger, out var naturalAnswer))
         {
@@ -197,10 +168,10 @@ public sealed class ZaloBotService(
                 cancellationToken);
         }
 
-        if (intent == BotIntent.TrainingHelp)
+        if (DetectIntent(normalizedQuestion) == BotIntent.TrainingHelp)
         {
             return new BotAnswer(
-                "Hiện tại bot không tự học chỉ vì bạn đặt câu hỏi. Bot có 2 loại dữ liệu:\n- Dữ liệu trận, sân, giờ, slot và danh sách: lấy trực tiếp từ hệ thống.\n- Ghi nhớ do thành viên dạy rõ ràng trong group.\n\nDạy bot: @bot học: câu hỏi => câu trả lời\nVí dụ: @bot học: ai đẹp trai nhất nhóm => Thanh Long 😄\nSửa: @bot sửa: câu hỏi => câu trả lời\nXoá: @bot quên: câu hỏi",
+                "Bot không tự ghi nhớ mọi câu hỏi bình thường. Bot sẽ hiểu và ghi nhớ khi bạn nói tự nhiên với ý muốn áp dụng về sau, ví dụ: “từ giờ ai đẹp trai nhất nhóm thì khen người đang hỏi”, “lần sau hỏi vị trí thì nhắc luôn chỗ gửi xe”, hoặc “nhớ là sân UTE có chỗ gửi xe bên trái”. Dữ liệu trận, sân, giờ và danh sách vẫn lấy trực tiếp từ hệ thống.",
                 null);
         }
 
@@ -215,7 +186,7 @@ public sealed class ZaloBotService(
         if (HasAny(normalizedQuestion, "help", "tro giup", "huong dan", "lenh"))
         {
             return new BotAnswer(
-                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n\nGõ @bot + số, ví dụ: @bot 3 hoặc @bot 6. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.\n\nDạy bot: @bot học: câu hỏi => câu trả lời\nSửa: @bot sửa: câu hỏi => câu trả lời\nXoá: @bot quên: câu hỏi",
+                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n\nGõ @bot + số, ví dụ: @bot 3 hoặc @bot 6. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.\n\nBạn có thể nói tự nhiên để bot ghi nhớ cách trả lời cho những lần sau.",
                 null);
         }
 
@@ -599,25 +570,11 @@ public sealed class ZaloBotService(
             "bot co nho khong",
             "sua cau tra loi");
 
-    private static BotIntent DetectIntent(string question, string normalizedQuestion)
+    private static BotIntent DetectIntent(string normalizedQuestion)
     {
-        if (HasLearningCommandPrefix(question)) return BotIntent.LearnRule;
-        if (HasForgetCommandPrefix(question)) return BotIntent.ForgetRule;
         if (IsTrainingQuestion(normalizedQuestion)) return BotIntent.TrainingHelp;
         return BotIntent.General;
     }
-
-    private static bool HasLearningCommandPrefix(string question) =>
-        Regex.IsMatch(
-            question,
-            @"^\s*(?:học|hoc|dạy|day|train|sửa|sua|ghi nhớ|ghi nho|learn)\s*[:：]",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static bool HasForgetCommandPrefix(string question) =>
-        Regex.IsMatch(
-            question,
-            @"^\s*(?:quên|quen|forget|xóa|xoa)\s*[:：]",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private async Task<List<ZaloBotLearnedRule>> LoadLearnedRulesAsync(
         IReadOnlyList<string> connectionIds,
@@ -645,7 +602,7 @@ public sealed class ZaloBotService(
         var normalizedTrigger = NormalizeRuleText(cleanTrigger ?? string.Empty);
         if (string.IsNullOrWhiteSpace(cleanTrigger) || string.IsNullOrWhiteSpace(cleanAnswer) || normalizedTrigger.Length < 2)
         {
-            return new BotAnswer("Cú pháp dạy bot chưa đúng. Dùng: @bot học: câu hỏi => câu trả lời", null);
+            return new BotAnswer("Mình chưa hiểu phần bạn muốn ghi nhớ. Bạn có thể nói tự nhiên như: “từ giờ khi ai hỏi vị trí thì nhắc luôn chỗ gửi xe”.", null);
         }
 
         var existing = await db.ZaloBotLearnedRules.SingleOrDefaultAsync(rule =>
@@ -678,50 +635,7 @@ public sealed class ZaloBotService(
         }
 
         await db.SaveChangesAsync(cancellationToken);
-        return new BotAnswer($"Đã ghi nhớ cho group: khi hỏi “{cleanTrigger}” bot sẽ trả lời theo nội dung bạn vừa dạy.", null);
-    }
-
-    private async Task<BotAnswer> ForgetLearnedRuleAsync(
-        string connectionId,
-        string groupId,
-        string trigger,
-        CancellationToken cancellationToken)
-    {
-        var normalizedTrigger = NormalizeRuleText(trigger);
-        var existing = await db.ZaloBotLearnedRules.SingleOrDefaultAsync(rule =>
-            rule.ZaloConnectionId == connectionId &&
-            rule.GroupId == groupId &&
-            rule.NormalizedTrigger == normalizedTrigger,
-            cancellationToken);
-        if (existing is null)
-        {
-            return new BotAnswer("Mình chưa có ghi nhớ nào khớp câu đó.", null);
-        }
-
-        db.ZaloBotLearnedRules.Remove(existing);
-        await db.SaveChangesAsync(cancellationToken);
-        return new BotAnswer($"Đã quên ghi nhớ “{existing.Trigger}” trong group.", null);
-    }
-
-    private static bool TryParseLearningCommand(string question, out string trigger, out string answer)
-    {
-        var match = Regex.Match(
-            question,
-            @"^\s*(?:học|hoc|dạy|day|train|sửa|sua|ghi nhớ|ghi nho|learn)\s*[:：]\s*(?<trigger>.+?)\s*(?:=>|->)\s*(?<answer>.+?)\s*$",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
-        trigger = match.Success ? match.Groups["trigger"].Value : string.Empty;
-        answer = match.Success ? match.Groups["answer"].Value : string.Empty;
-        return match.Success;
-    }
-
-    private static bool TryParseForgetCommand(string question, out string trigger)
-    {
-        var match = Regex.Match(
-            question,
-            @"^\s*(?:quên|quen|forget|xóa|xoa)\s*[:：]\s*(?<trigger>.+?)\s*$",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
-        trigger = match.Success ? match.Groups["trigger"].Value.Trim(' ', '"', '\'', '“', '”', '‘', '’') : string.Empty;
-        return match.Success && !string.IsNullOrWhiteSpace(trigger);
+        return new BotAnswer($"Đã ghi nhớ cách trả lời cho chủ đề “{cleanTrigger}”.", null);
     }
 
     private static bool TryParseNaturalLearning(string question, out string trigger, out string answer)
@@ -863,9 +777,7 @@ public sealed class ZaloBotService(
     private enum BotIntent
     {
         General,
-        TrainingHelp,
-        LearnRule,
-        ForgetRule
+        TrainingHelp
     }
 
     private static string NormalizeId(string? value)
