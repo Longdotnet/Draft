@@ -24,7 +24,6 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "MatchSessions", "PaymentQrImageUrl", "\"PaymentQrImageUrl\" TEXT NULL");
             await EnsureSqliteColumn(db, "MatchSessions", "BotEnabled", "\"BotEnabled\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "MatchSessions", "BotCustomInstructions", "\"BotCustomInstructions\" TEXT NULL");
-            await EnsureSqliteColumn(db, "MatchSessions", "BotTrainingExamples", "\"BotTrainingExamples\" TEXT NULL");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderEnabled", "\"ReminderEnabled\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderLeadHours", "\"ReminderLeadHours\" INTEGER NOT NULL DEFAULT 72");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderIntervalHours", "\"ReminderIntervalHours\" INTEGER NOT NULL DEFAULT 12");
@@ -39,6 +38,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteTeamPreferenceTables(db);
             await EnsureSqliteZaloTables(db);
             await EnsureSqliteZaloBotTables(db);
+            await EnsureSqliteZaloBotLearningTables(db);
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" TEXT NULL");
             return;
@@ -60,7 +60,6 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "MatchSessions", "PaymentQrImageUrl", "\"PaymentQrImageUrl\" text NULL");
             await EnsurePostgresColumn(db, "MatchSessions", "BotEnabled", "\"BotEnabled\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "MatchSessions", "BotCustomInstructions", "\"BotCustomInstructions\" text NULL");
-            await EnsurePostgresColumn(db, "MatchSessions", "BotTrainingExamples", "\"BotTrainingExamples\" text NULL");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderEnabled", "\"ReminderEnabled\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderLeadHours", "\"ReminderLeadHours\" integer NOT NULL DEFAULT 72");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderIntervalHours", "\"ReminderIntervalHours\" integer NOT NULL DEFAULT 12");
@@ -75,6 +74,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresTeamPreferenceTables(db);
             await EnsurePostgresZaloTables(db);
             await EnsurePostgresZaloBotTables(db);
+            await EnsurePostgresZaloBotLearningTables(db);
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" integer NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" timestamp with time zone NULL");
         }
@@ -489,5 +489,49 @@ public static class DatabaseSchemaPatch
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_MessageId" ON "ZaloGroupMessages" ("ZaloConnectionId", "MessageId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_GroupId_SentAt" ON "ZaloGroupMessages" ("ZaloConnectionId", "GroupId", "SentAt");""");
+    }
+
+    private static async Task EnsureSqliteZaloBotLearningTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotLearnedRules" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloBotLearnedRules" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "Trigger" TEXT NOT NULL,
+                "NormalizedTrigger" TEXT NOT NULL,
+                "Answer" TEXT NOT NULL,
+                "CreatedBySenderId" TEXT NOT NULL,
+                "CreatedBySenderName" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloBotLearnedRules_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotLearnedRules_Connection_Group_Trigger" ON "ZaloBotLearnedRules" ("ZaloConnectionId", "GroupId", "NormalizedTrigger");""");
+    }
+
+    private static async Task EnsurePostgresZaloBotLearningTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotLearnedRules" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloBotLearnedRules" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "Trigger" text NOT NULL,
+                "NormalizedTrigger" text NOT NULL,
+                "Answer" text NOT NULL,
+                "CreatedBySenderId" text NOT NULL,
+                "CreatedBySenderName" text NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloBotLearnedRules_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotLearnedRules_Connection_Group_Trigger" ON "ZaloBotLearnedRules" ("ZaloConnectionId", "GroupId", "NormalizedTrigger");""");
     }
 }

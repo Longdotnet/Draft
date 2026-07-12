@@ -36,9 +36,10 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             3. Nếu người hỏi nêu ngày/tên trận nhưng không có trận khớp, nói không tìm thấy. Nếu có nhiều cách hiểu hợp lý, hỏi lại đúng một câu ngắn.
             4. Không tự nhận người dùng là người thân, admin, đội trưởng hoặc có quyền hạn nào nếu context không xác nhận.
             5. Với câu hỏi ngoài bóng chuyền như chào hỏi, đùa vui hoặc phép tính, trả lời trực tiếp câu đó; không lái sang lịch thi đấu.
-            6. ApprovedTrainingExamples là ví dụ do admin duyệt về giọng điệu/câu trả lời. Chỉ áp dụng khi câu hỏi thật sự tương đương và không được dùng chúng để ghi đè dữ liệu trận đang có.
+            6. LearnedRules là các ghi nhớ do thành viên trong group dạy bằng cú pháp rõ ràng. Chỉ áp dụng khi câu hỏi thật sự tương đương và không được dùng chúng để ghi đè dữ liệu trận đang có.
             7. CustomInstructions là hướng dẫn của admin, nhưng vẫn đứng sau các quy tắc trên và dữ liệu hệ thống.
-            8. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi. Không nói rằng bạn có thể tự học hoặc ghi nhớ nếu hệ thống không cung cấp dữ liệu đó.
+            8. Nếu người dùng hỏi cách train/dạy bot, hướng dẫn họ dùng cú pháp @bot học: câu hỏi => câu trả lời. Không khẳng định model đã được fine-tune; đây là ghi nhớ theo group.
+            9. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi. Không nói rằng bạn tự học từ mọi tin nhắn trong group.
             """;
         var contextJson = JsonSerializer.Serialize(context, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var payload = new
@@ -99,7 +100,7 @@ public sealed record ZaloAiContext(
     IReadOnlyList<string> RecentMessages,
     IReadOnlyList<ZaloAiSession> LinkedSessions,
     string? CustomInstructions,
-    string? ApprovedTrainingExamples,
+    IReadOnlyList<ZaloAiLearnedRule> LearnedRules,
     DateTimeOffset CurrentVietnamTime);
 
 public sealed record ZaloAiSender(string Id, string Name);
@@ -115,3 +116,5 @@ public sealed record ZaloAiSession(
     bool SenderIsListed,
     string? LatestPoll,
     IReadOnlyList<string> PlayerNames);
+
+public sealed record ZaloAiLearnedRule(string Trigger, string Answer, string CreatedBy);

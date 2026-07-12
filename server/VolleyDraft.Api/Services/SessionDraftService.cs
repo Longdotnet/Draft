@@ -2327,7 +2327,6 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             session.PaymentQrImageUrl,
             session.BotEnabled,
             session.BotCustomInstructions,
-            session.BotTrainingExamples,
             session.ReminderEnabled,
             session.ReminderLeadHours,
             session.ReminderIntervalHours,

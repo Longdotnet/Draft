@@ -57,7 +57,6 @@ public sealed class ZaloBotService(
         session.PaymentQrImageUrl = Clean(request.PaymentQrImageUrl, 2048);
         session.BotEnabled = request.BotEnabled;
         session.BotCustomInstructions = Clean(request.BotCustomInstructions, 2000);
-        session.BotTrainingExamples = Clean(request.BotTrainingExamples, 8000);
         session.ReminderEnabled = request.ReminderEnabled;
         session.ReminderLeadHours = Math.Clamp(request.ReminderLeadHours, 1, 336);
         session.ReminderIntervalHours = Math.Clamp(request.ReminderIntervalHours, 1, 168);
@@ -118,7 +117,7 @@ public sealed class ZaloBotService(
         storedMessage.ReplyAttemptCount += 1;
         await db.SaveChangesAsync(cancellationToken);
 
-        var response = await BuildAnswerAsync(connectionIds, groupId, incoming, cancellationToken);
+        var response = await BuildAnswerAsync(connectionIds, connection.Id, groupId, incoming, cancellationToken);
         if (string.IsNullOrWhiteSpace(response.Text)) return;
 
         var senderName = (Clean(incoming.SenderName, 50) ?? "bạn").TrimStart('@');
@@ -150,21 +149,53 @@ public sealed class ZaloBotService(
 
     private async Task<BotAnswer> BuildAnswerAsync(
         IReadOnlyList<string> connectionIds,
+        string activeConnectionId,
         string groupId,
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken)
     {
-        var normalizedQuestion = ExtractQuestion(incoming);
+        var question = ExtractQuestion(incoming);
+        var normalizedQuestion = NormalizeText(question);
+
+        if (TryParseLearningCommand(question, out var trigger, out var answer))
+        {
+            return await SaveLearnedRuleAsync(
+                activeConnectionId,
+                groupId,
+                incoming,
+                trigger,
+                answer,
+                cancellationToken);
+        }
+
+        if (TryParseForgetCommand(question, out var forgottenTrigger))
+        {
+            return await ForgetLearnedRuleAsync(
+                activeConnectionId,
+                groupId,
+                forgottenTrigger,
+                cancellationToken);
+        }
+
         var sessions = await LoadSessionSnapshotsAsync(connectionIds, groupId, incoming.SenderId, cancellationToken);
         if (sessions.Count == 0)
         {
             return new BotAnswer("Nhóm này chưa có trận nào đang bật bot. Bạn nhờ admin kiểm tra cấu hình nhé.", null);
         }
 
+        if (IsTrainingQuestion(normalizedQuestion))
+        {
+            return new BotAnswer(
+                "Bạn có thể tự dạy bot ngay trong group bằng cú pháp:\n@bot học: câu hỏi => câu trả lời\nVí dụ: @bot học: ai đẹp trai nhất nhóm => Thanh Long 😄\nDùng @bot sửa: câu hỏi => câu trả lời để ghi đè, hoặc @bot quên: câu hỏi để xoá. Bot sẽ ghi nhớ theo group; giờ, sân và danh sách trận vẫn ưu tiên dữ liệu hệ thống.",
+                null);
+        }
+
+        var learnedRules = await LoadLearnedRulesAsync(connectionIds, groupId, cancellationToken);
+
         if (HasAny(normalizedQuestion, "help", "tro giup", "huong dan", "lenh"))
         {
             return new BotAnswer(
-                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n\nGõ @bot + số, ví dụ: @bot 3 hoặc @bot 6. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n\nGõ @bot + số, ví dụ: @bot 3 hoặc @bot 6. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.\n\nDạy bot: @bot học: câu hỏi => câu trả lời\nSửa: @bot sửa: câu hỏi => câu trả lời\nXoá: @bot quên: câu hỏi",
                 null);
         }
 
@@ -283,6 +314,13 @@ public sealed class ZaloBotService(
             return new BotAnswer(ai.GetPublicModelInfo(), null);
         }
 
+        var learnedRule = learnedRules.FirstOrDefault(rule =>
+            rule.NormalizedTrigger == NormalizeRuleText(question));
+        if (learnedRule is not null)
+        {
+            return new BotAnswer(learnedRule.Answer, null);
+        }
+
         var recentMessages = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(message => connectionIds.Contains(message.ZaloConnectionId) && message.GroupId == groupId)
@@ -308,7 +346,7 @@ public sealed class ZaloBotService(
                 session.LatestPoll,
                 session.PlayerNames)).ToList(),
             CombineSettings(sessions.Select(session => session.CustomInstructions)),
-            CombineSettings(sessions.Select(session => session.TrainingExamples)),
+            learnedRules.Select(rule => new ZaloAiLearnedRule(rule.Trigger, rule.Answer, rule.CreatedBySenderName)).ToList(),
             DateTimeOffset.UtcNow.ToOffset(VietnamOffset));
         return new BotAnswer(await ai.AnswerAsync(aiContext, cancellationToken), null);
     }
@@ -366,7 +404,6 @@ public sealed class ZaloBotService(
             session.PaymentInstructions,
             session.PaymentQrImageUrl,
             session.BotCustomInstructions,
-            session.BotTrainingExamples,
             playersBySession.GetValueOrDefault(session.Id)?.Count ?? 0,
             session.TeamCount * session.TeamSize,
             playersBySession.GetValueOrDefault(session.Id)?.Any(player => NormalizeId(player.ZaloUserId) == normalizedSenderId) == true,
@@ -389,6 +426,17 @@ public sealed class ZaloBotService(
         if (hasExplicitSelector && explicitMatches.Count == 0)
         {
             var available = sessions.Take(4).Select(FormatSessionChoice);
+            if (HasAny(normalizedQuestion, "hom nay", "bua nay"))
+            {
+                var now = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
+                var nearest = sessions.FirstOrDefault(IsUpcoming);
+                var nearestText = nearest is null
+                    ? " Hiện cũng chưa có trận sắp tới nào."
+                    : $" Trận gần nhất là {FormatSessionChoice(nearest)}.";
+                return new SessionSelection(
+                    null,
+                    $"Hôm nay là {FormatVietnamDate(now)} và nhóm chưa có trận nào hôm nay.{nearestText}");
+            }
             return new SessionSelection(null, $"mình không tìm thấy trận đúng ngày/tên bạn hỏi. Các trận đang có: {string.Join(", ", available)}.");
         }
         if (explicitMatches.Count > 1) candidates = explicitMatches;
@@ -448,6 +496,22 @@ public sealed class ZaloBotService(
         return $"{local:HH:mm} {day} {local:dd/MM}";
     }
 
+    private static string FormatVietnamDate(DateTimeOffset time)
+    {
+        var local = time.ToOffset(VietnamOffset);
+        var day = local.DayOfWeek switch
+        {
+            DayOfWeek.Monday => "thứ Hai",
+            DayOfWeek.Tuesday => "thứ Ba",
+            DayOfWeek.Wednesday => "thứ Tư",
+            DayOfWeek.Thursday => "thứ Năm",
+            DayOfWeek.Friday => "thứ Sáu",
+            DayOfWeek.Saturday => "thứ Bảy",
+            _ => "Chủ nhật"
+        };
+        return $"{day} {local:dd/MM/yyyy}";
+    }
+
     private static string FormatShortTime(DateTimeOffset? time) =>
         time is null ? string.Empty : $" ({FormatVietnamTime(time.Value)})";
 
@@ -490,6 +554,130 @@ public sealed class ZaloBotService(
             "ai tham gia",
             "ai danh");
 
+    private static bool IsTrainingQuestion(string question) =>
+        HasAny(question,
+            "lam sao train",
+            "cach train",
+            "train ban",
+            "train bot",
+            "day bot",
+            "day ban",
+            "hoc theo",
+            "tu hoc",
+            "sua cau tra loi");
+
+    private async Task<List<ZaloBotLearnedRule>> LoadLearnedRulesAsync(
+        IReadOnlyList<string> connectionIds,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        return await db.ZaloBotLearnedRules
+            .AsNoTracking()
+            .Where(rule => connectionIds.Contains(rule.ZaloConnectionId) && rule.GroupId == groupId)
+            .OrderByDescending(rule => rule.UpdatedAt)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+    }
+
+    private async Task<BotAnswer> SaveLearnedRuleAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        string trigger,
+        string answer,
+        CancellationToken cancellationToken)
+    {
+        var cleanTrigger = Clean(trigger.Trim(' ', '"', '\'', '“', '”', '‘', '’'), 500);
+        var cleanAnswer = Clean(answer, 4000);
+        var normalizedTrigger = NormalizeRuleText(cleanTrigger ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(cleanTrigger) || string.IsNullOrWhiteSpace(cleanAnswer) || normalizedTrigger.Length < 2)
+        {
+            return new BotAnswer("Cú pháp dạy bot chưa đúng. Dùng: @bot học: câu hỏi => câu trả lời", null);
+        }
+
+        var existing = await db.ZaloBotLearnedRules.SingleOrDefaultAsync(rule =>
+            rule.ZaloConnectionId == connectionId &&
+            rule.GroupId == groupId &&
+            rule.NormalizedTrigger == normalizedTrigger,
+            cancellationToken);
+        if (existing is null)
+        {
+            db.ZaloBotLearnedRules.Add(new ZaloBotLearnedRule
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                Trigger = cleanTrigger,
+                NormalizedTrigger = normalizedTrigger,
+                Answer = cleanAnswer,
+                CreatedBySenderId = NormalizeId(incoming.SenderId),
+                CreatedBySenderName = Clean(incoming.SenderName, 160) ?? "Thành viên Zalo",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+        }
+        else
+        {
+            existing.Trigger = cleanTrigger;
+            existing.Answer = cleanAnswer;
+            existing.CreatedBySenderId = NormalizeId(incoming.SenderId);
+            existing.CreatedBySenderName = Clean(incoming.SenderName, 160) ?? "Thành viên Zalo";
+            existing.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return new BotAnswer($"Đã ghi nhớ cho group: khi hỏi “{cleanTrigger}” bot sẽ trả lời theo nội dung bạn vừa dạy.", null);
+    }
+
+    private async Task<BotAnswer> ForgetLearnedRuleAsync(
+        string connectionId,
+        string groupId,
+        string trigger,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTrigger = NormalizeRuleText(trigger);
+        var existing = await db.ZaloBotLearnedRules.SingleOrDefaultAsync(rule =>
+            rule.ZaloConnectionId == connectionId &&
+            rule.GroupId == groupId &&
+            rule.NormalizedTrigger == normalizedTrigger,
+            cancellationToken);
+        if (existing is null)
+        {
+            return new BotAnswer("Mình chưa có ghi nhớ nào khớp câu đó.", null);
+        }
+
+        db.ZaloBotLearnedRules.Remove(existing);
+        await db.SaveChangesAsync(cancellationToken);
+        return new BotAnswer($"Đã quên ghi nhớ “{existing.Trigger}” trong group.", null);
+    }
+
+    private static bool TryParseLearningCommand(string question, out string trigger, out string answer)
+    {
+        var match = Regex.Match(
+            question,
+            @"^\s*(?:học|hoc|dạy|day|train|sửa|sua|ghi nhớ|ghi nho|learn)\s*[:：]\s*(?<trigger>.+?)\s*(?:=>|->)\s*(?<answer>.+?)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        trigger = match.Success ? match.Groups["trigger"].Value : string.Empty;
+        answer = match.Success ? match.Groups["answer"].Value : string.Empty;
+        return match.Success;
+    }
+
+    private static bool TryParseForgetCommand(string question, out string trigger)
+    {
+        var match = Regex.Match(
+            question,
+            @"^\s*(?:quên|quen|forget|xóa|xoa)\s*[:：]\s*(?<trigger>.+?)\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        trigger = match.Success ? match.Groups["trigger"].Value.Trim(' ', '"', '\'', '“', '”', '‘', '’') : string.Empty;
+        return match.Success && !string.IsNullOrWhiteSpace(trigger);
+    }
+
+    private static string NormalizeRuleText(string value)
+    {
+        var normalized = NormalizeText(value);
+        normalized = Regex.Replace(normalized, @"[^a-z0-9\s]", " ", RegexOptions.CultureInvariant);
+        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+    }
+
     private static bool IsSelfMembershipQuestion(string question) =>
         HasAny(question,
             "minh co trong",
@@ -523,7 +711,7 @@ public sealed class ZaloBotService(
             }
         }
         value = Regex.Replace(value, @"^\s*@\S+\s*", string.Empty, RegexOptions.CultureInvariant);
-        return NormalizeText(value).Trim();
+        return value.Trim();
     }
 
     private static string? CombineSettings(IEnumerable<string?> values)
@@ -604,7 +792,6 @@ public sealed class ZaloBotService(
         session.PaymentQrImageUrl,
         session.BotEnabled,
         session.BotCustomInstructions,
-        session.BotTrainingExamples,
         session.ReminderEnabled,
         session.ReminderLeadHours,
         session.ReminderIntervalHours,
@@ -622,7 +809,6 @@ public sealed class ZaloBotService(
         string? PaymentInstructions,
         string? PaymentQrImageUrl,
         string? CustomInstructions,
-        string? TrainingExamples,
         int PlayerCount,
         int Capacity,
         bool SenderIsListed,

@@ -35,7 +35,6 @@ export type SessionResponse = {
   paymentQrImageUrl: string | null;
   botEnabled: boolean;
   botCustomInstructions: string | null;
-  botTrainingExamples: string | null;
   reminderEnabled: boolean;
   reminderLeadHours: number;
   reminderIntervalHours: number;
@@ -53,7 +52,6 @@ export type ZaloBotSettingsResponse = {
   paymentQrImageUrl: string | null;
   botEnabled: boolean;
   botCustomInstructions: string | null;
-  botTrainingExamples: string | null;
   reminderEnabled: boolean;
   reminderLeadHours: number;
   reminderIntervalHours: number;

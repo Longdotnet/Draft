@@ -87,7 +87,6 @@ export function ZaloPollImportPanel({
     paymentQrImageUrl: session.paymentQrImageUrl ?? "",
     botEnabled: session.botEnabled,
     botCustomInstructions: session.botCustomInstructions ?? "",
-    botTrainingExamples: session.botTrainingExamples ?? "",
     reminderEnabled: session.reminderEnabled,
     reminderLeadHours: session.reminderLeadHours,
     reminderIntervalHours: session.reminderIntervalHours,
@@ -127,12 +126,11 @@ export function ZaloPollImportPanel({
       paymentQrImageUrl: session.paymentQrImageUrl ?? "",
       botEnabled: session.botEnabled,
       botCustomInstructions: session.botCustomInstructions ?? "",
-      botTrainingExamples: session.botTrainingExamples ?? "",
       reminderEnabled: session.reminderEnabled,
       reminderLeadHours: session.reminderLeadHours,
       reminderIntervalHours: session.reminderIntervalHours,
     });
-  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.paymentInstructions, session.paymentQrImageUrl, session.botEnabled, session.botCustomInstructions, session.botTrainingExamples, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours]);
+  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.paymentInstructions, session.paymentQrImageUrl, session.botEnabled, session.botCustomInstructions, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours]);
 
   useEffect(() => {
     if (!qrLoginId) return;
@@ -260,7 +258,6 @@ export function ZaloPollImportPanel({
           paymentInstructions: botSettings.paymentInstructions || null,
           paymentQrImageUrl: botSettings.paymentQrImageUrl || null,
           botCustomInstructions: botSettings.botCustomInstructions || null,
-          botTrainingExamples: botSettings.botTrainingExamples || null,
         },
       }),
     );
@@ -275,7 +272,6 @@ export function ZaloPollImportPanel({
       paymentQrImageUrl: result.paymentQrImageUrl,
       botEnabled: result.botEnabled,
       botCustomInstructions: result.botCustomInstructions,
-      botTrainingExamples: result.botTrainingExamples,
       reminderEnabled: result.reminderEnabled,
       reminderLeadHours: result.reminderLeadHours,
       reminderIntervalHours: result.reminderIntervalHours,
@@ -551,17 +547,6 @@ export function ZaloPollImportPanel({
               placeholder="Ví dụ: gọi nhóm là Longg Volley, trả lời thân thiện..."
               value={botSettings.botCustomInstructions}
               onChange={(event) => setBotSettings((current) => ({ ...current, botCustomInstructions: event.target.value }))}
-            />
-          </label>
-          <label className="field zalo-settings-wide">
-            <span>Ví dụ đã duyệt để dạy bot</span>
-            <small className="field-help">Admin ghi các câu hỏi và câu trả lời mẫu. Bot dùng chúng làm ví dụ cho câu hỏi tự do; thành viên trong group không thể tự sửa kiến thức vĩnh viễn.</small>
-            <textarea
-              className="input"
-              rows={6}
-              placeholder={'Hỏi: ai đẹp trai nhất nhóm?\nĐáp: Nhóm mình ai cũng đẹp trai theo cách riêng nha 😄\n---\nHỏi: có được ghẹo bot không?\nĐáp: Ghẹo nhẹ thôi nha, bot còn phải lo lịch đánh nữa 😄'}
-              value={botSettings.botTrainingExamples}
-              onChange={(event) => setBotSettings((current) => ({ ...current, botTrainingExamples: event.target.value }))}
             />
           </label>
         </div>

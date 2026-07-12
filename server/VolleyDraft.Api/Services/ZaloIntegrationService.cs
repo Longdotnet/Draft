@@ -578,7 +578,6 @@ public sealed class ZaloIntegrationService(
         session.PaymentQrImageUrl,
         session.BotEnabled,
         session.BotCustomInstructions,
-        session.BotTrainingExamples,
         session.ReminderEnabled,
         session.ReminderLeadHours,
         session.ReminderIntervalHours,

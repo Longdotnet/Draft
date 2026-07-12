@@ -13,6 +13,7 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<ZaloConnection> ZaloConnections => Set<ZaloConnection>();
     public DbSet<PollImport> PollImports => Set<PollImport>();
     public DbSet<ZaloGroupMessage> ZaloGroupMessages => Set<ZaloGroupMessage>();
+    public DbSet<ZaloBotLearnedRule> ZaloBotLearnedRules => Set<ZaloBotLearnedRule>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
     public DbSet<DraftSlotPlayer> DraftSlotPlayers => Set<DraftSlotPlayer>();
@@ -44,7 +45,6 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.Property(session => session.PaymentInstructions).HasMaxLength(1000);
             entity.Property(session => session.PaymentQrImageUrl).HasMaxLength(2048);
             entity.Property(session => session.BotCustomInstructions).HasMaxLength(2000);
-            entity.Property(session => session.BotTrainingExamples).HasMaxLength(8000);
             entity.Property(session => session.Status).HasConversion<string>();
             entity.HasOne(session => session.AdminUser)
                 .WithMany(user => user.AdminSessions)
@@ -108,6 +108,21 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.HasOne(message => message.ZaloConnection)
                 .WithMany(connection => connection.GroupMessages)
                 .HasForeignKey(message => message.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloBotLearnedRule>(entity =>
+        {
+            entity.Property(rule => rule.GroupId).HasMaxLength(100);
+            entity.Property(rule => rule.Trigger).HasMaxLength(500);
+            entity.Property(rule => rule.NormalizedTrigger).HasMaxLength(500);
+            entity.Property(rule => rule.Answer).HasMaxLength(4000);
+            entity.Property(rule => rule.CreatedBySenderId).HasMaxLength(100);
+            entity.Property(rule => rule.CreatedBySenderName).HasMaxLength(160);
+            entity.HasIndex(rule => new { rule.ZaloConnectionId, rule.GroupId, rule.NormalizedTrigger }).IsUnique();
+            entity.HasOne(rule => rule.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(rule => rule.ZaloConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

@@ -40,7 +40,6 @@ public sealed record SessionResponse(
     string? PaymentQrImageUrl,
     bool BotEnabled,
     string? BotCustomInstructions,
-    string? BotTrainingExamples,
     bool ReminderEnabled,
     int ReminderLeadHours,
     int ReminderIntervalHours,
@@ -157,7 +156,6 @@ public sealed record UpdateZaloBotSettingsRequest(
     string? PaymentQrImageUrl,
     bool BotEnabled,
     string? BotCustomInstructions,
-    string? BotTrainingExamples,
     bool ReminderEnabled,
     int ReminderLeadHours,
     int ReminderIntervalHours);
@@ -172,7 +170,6 @@ public sealed record ZaloBotSettingsResponse(
     string? PaymentQrImageUrl,
     bool BotEnabled,
     string? BotCustomInstructions,
-    string? BotTrainingExamples,
     bool ReminderEnabled,
     int ReminderLeadHours,
     int ReminderIntervalHours,
