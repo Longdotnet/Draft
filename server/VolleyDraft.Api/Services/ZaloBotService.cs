@@ -160,11 +160,25 @@ public sealed class ZaloBotService(
         if (HasAny(normalizedQuestion, "help", "tro giup", "huong dan", "lenh"))
         {
             return new BotAnswer(
-                "Bạn có thể hỏi: “location” hoặc “vị trí”, “tui có trong danh sách không?”, “trận lúc mấy giờ?”, “còn thiếu bao nhiêu slot?”. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n\nGõ @bot + số, ví dụ: @bot 3. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null);
         }
 
-        if (HasAny(normalizedQuestion, "danh sach", "co ten", "co trong", "duoc vote", "da vote"))
+        if (IsCommand(normalizedQuestion, "5"))
+        {
+            var upcoming = sessions.Where(IsUpcoming).Take(5).ToList();
+            var lines = upcoming.Select(session =>
+            {
+                var schedule = session.StartTime is null ? "chưa chốt giờ" : FormatVietnamTime(session.StartTime.Value);
+                var location = string.IsNullOrWhiteSpace(session.Location) ? "chưa chốt sân" : session.Location;
+                return $"- {session.Name}: {schedule}, {location}, {session.PlayerCount}/{session.Capacity} slot";
+            });
+            return new BotAnswer(upcoming.Count == 0
+                ? "Hiện chưa có trận sắp tới nào được cấu hình."
+                : "Các trận sắp tới:\n" + string.Join("\n", lines), null);
+        }
+
+        if (HasAny(normalizedQuestion, "danh sach", "co ten", "co trong", "duoc vote", "da vote") || IsCommand(normalizedQuestion, "2"))
         {
             var upcoming = sessions.Where(IsUpcoming).Take(4).ToList();
             if (upcoming.Count == 0) upcoming = sessions.Take(1).ToList();
@@ -182,10 +196,10 @@ public sealed class ZaloBotService(
             }
             var statuses = upcoming.Select(session =>
                 $"{session.Name}: {(session.SenderIsListed ? "đã có tên" : "chưa có tên")}{FormatShortTime(session.StartTime)}");
-            return new BotAnswer(string.Join("; ", statuses) + ".", null);
+            return new BotAnswer(string.Join("\n", statuses), null);
         }
 
-        if (HasAny(normalizedQuestion, "location", "vi tri", "dia diem", "o dau", "gui xe", "bai xe"))
+        if (HasAny(normalizedQuestion, "location", "vi tri", "dia diem", "o dau", "gui xe", "bai xe") || IsCommand(normalizedQuestion, "3"))
         {
             var selected = SelectSession(sessions, normalizedQuestion);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
@@ -200,7 +214,7 @@ public sealed class ZaloBotService(
             return new BotAnswer(string.Join(" — ", parts) + ".", session.LocationImageUrl);
         }
 
-        if (HasAny(normalizedQuestion, "may gio", "luc nao", "khi nao", "thoi gian", "tuan nay"))
+        if (HasAny(normalizedQuestion, "may gio", "luc nao", "khi nao", "thoi gian", "tuan nay") || IsCommand(normalizedQuestion, "1"))
         {
             var selected = SelectSession(sessions, normalizedQuestion);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
@@ -210,7 +224,7 @@ public sealed class ZaloBotService(
                 : new BotAnswer($"{session.Name} diễn ra lúc {FormatVietnamTime(session.StartTime.Value)}{FormatLocationSuffix(session)}.", null);
         }
 
-        if (HasAny(normalizedQuestion, "thieu bao nhieu", "con bao nhieu", "bao nhieu slot", "du slot", "du nguoi"))
+        if (HasAny(normalizedQuestion, "thieu bao nhieu", "con bao nhieu", "bao nhieu slot", "du slot", "du nguoi") || IsCommand(normalizedQuestion, "4"))
         {
             var selected = SelectSession(sessions, normalizedQuestion);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
@@ -371,6 +385,10 @@ public sealed class ZaloBotService(
 
     private static bool HasAny(string value, params string[] terms) =>
         terms.Any(term => value.Contains(term, StringComparison.Ordinal));
+
+    private static bool IsCommand(string value, string command) =>
+        value.Equals(command, StringComparison.Ordinal) ||
+        value.EndsWith($" {command}", StringComparison.Ordinal);
 
     private static string NormalizeText(string value)
     {
