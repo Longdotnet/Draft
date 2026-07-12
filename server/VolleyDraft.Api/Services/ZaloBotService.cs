@@ -62,7 +62,13 @@ public sealed class ZaloBotService(
 
         if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId))
         {
-            await listenerCoordinator.EnsureConnectionAsync(session.ZaloConnectionId);
+            var listenerReady = await listenerCoordinator.EnsureConnectionAsync(session.ZaloConnectionId);
+            if (session.BotEnabled && !listenerReady)
+            {
+                return ServiceResult<ZaloBotSettingsResponse>.Failure(
+                    StatusCodes.Status502BadGateway,
+                    "Đã lưu cấu hình nhưng listener Zalo chưa đăng nhập được. Hãy đăng nhập lại bằng QR rồi thử lưu lại.");
+            }
         }
         return ServiceResult<ZaloBotSettingsResponse>.Success(ToSettings(session));
     }
@@ -165,13 +171,13 @@ public sealed class ZaloBotService(
             var listed = upcoming.Where(session => session.SenderIsListed).ToList();
             if (listed.Count == 0)
             {
-                return new BotAnswer($"mình chưa thấy bạn trong danh sách chính thức của {JoinSessionNames(upcoming)}.", null);
+                return new BotAnswer($"mình chưa thấy bạn trong danh sách của {JoinSessionNames(upcoming)}.", null);
             }
             if (upcoming.Count == 1)
             {
                 var session = upcoming[0];
                 return new BotAnswer(
-                    $"bạn đang ở danh sách chính thức của {session.Name}{FormatScheduleSuffix(session)}.",
+                    $"bạn đang ở danh sách của {session.Name}{FormatScheduleSuffix(session)}.",
                     null);
             }
             var statuses = upcoming.Select(session =>
@@ -186,7 +192,7 @@ public sealed class ZaloBotService(
             var session = selected.Session!;
             if (string.IsNullOrWhiteSpace(session.Location) && string.IsNullOrWhiteSpace(session.ParkingInstructions))
             {
-                return new BotAnswer($"admin chưa cấu hình vị trí và chỗ gửi xe cho {session.Name}.", null);
+                return new BotAnswer($"admin chưa cấu hình vị trí và chỗ gửi xe cho mình.", null);
             }
             var parts = new List<string> { session.Name };
             if (!string.IsNullOrWhiteSpace(session.Location)) parts.Add($"địa điểm: {session.Location}");

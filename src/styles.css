@@ -1179,6 +1179,10 @@
     @apply md:col-span-2;
   }
 
+  .field-help {
+    @apply -mt-2 text-xs font-medium leading-5 text-slate-500;
+  }
+
   .zalo-command-help {
     @apply flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-sky-300 bg-sky-50 p-3 text-xs font-bold text-slate-600;
   }

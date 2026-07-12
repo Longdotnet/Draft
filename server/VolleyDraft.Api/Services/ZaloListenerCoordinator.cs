@@ -25,18 +25,18 @@ public sealed class ZaloListenerCoordinator(
         }
     }
 
-    public async Task EnsureConnectionAsync(string connectionId, CancellationToken cancellationToken = default)
+    public async Task<bool> EnsureConnectionAsync(string connectionId, CancellationToken cancellationToken = default)
     {
         var accountId = await db.ZaloConnections
             .AsNoTracking()
             .Where(item => item.Id == connectionId)
             .Select(item => item.AccountZaloId)
             .SingleOrDefaultAsync(cancellationToken);
-        if (accountId is null) return;
-        await EnsureAccountAsync(accountId, cancellationToken);
+        if (accountId is null) return false;
+        return await EnsureAccountAsync(accountId, cancellationToken);
     }
 
-    private async Task EnsureAccountAsync(string accountId, CancellationToken cancellationToken)
+    private async Task<bool> EnsureAccountAsync(string accountId, CancellationToken cancellationToken)
     {
         var connections = await db.ZaloConnections
             .AsNoTracking()
@@ -47,7 +47,7 @@ public sealed class ZaloListenerCoordinator(
         if (connection is null)
         {
             await bridge.StopListenerAsync(accountId);
-            return;
+            return false;
         }
         var connectionIds = connections.Select(item => item.Id).ToList();
 
@@ -65,7 +65,7 @@ public sealed class ZaloListenerCoordinator(
             if (groupIds.Count == 0)
             {
                 await bridge.StopListenerAsync(connection.AccountZaloId);
-                return;
+                return true;
             }
 
             using var document = JsonDocument.Parse(credentialProtector.Unprotect(connection.EncryptedCredentials));
@@ -81,10 +81,12 @@ public sealed class ZaloListenerCoordinator(
                 groupIds,
                 webhookUrl,
                 webhookKey);
+            return true;
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
         {
             logger.LogWarning(exception, "Could not reconcile Zalo listener for account {AccountId}", accountId);
+            return false;
         }
     }
 }

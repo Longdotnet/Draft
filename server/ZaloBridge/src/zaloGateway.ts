@@ -235,7 +235,14 @@ export async function startListener(request: StartListenerRequest) {
     return { accountId, botId: accountId, startedAt, groupCount: groupIds.size };
   }
 
-  const api = await getApi(request.credentials);
+  let api: MinimalZaloApi;
+  try {
+    api = await getApi(request.credentials);
+  } catch (error) {
+    apiCache.delete(credentialFingerprint);
+    console.error(`[Zalo listener ${accountId}] Login failed while starting listener:`, error);
+    throw error;
+  }
   const listener: ActiveListener = {
     api,
     credentialFingerprint,

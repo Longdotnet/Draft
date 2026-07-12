@@ -446,6 +446,7 @@ export function ZaloPollImportPanel({
         <div className="zalo-settings-grid">
           <label className="field">
             <span>Thời gian trận</span>
+            <small className="field-help">Ngày giờ thi đấu thật theo giờ máy admin. Bot dùng mốc này để trả lời giờ trận và tính reminder.</small>
             <input
               className="input"
               type="datetime-local"
@@ -474,6 +475,7 @@ export function ZaloPollImportPanel({
           </label>
           <label className="field zalo-settings-wide">
             <span>URL ảnh vị trí / sơ đồ gửi xe</span>
+            <small className="field-help">Phải là link http/https mà bridge có thể tải được. Bot sẽ gửi ảnh này khi trả lời location.</small>
             <input
               className="input"
               type="url"
@@ -484,6 +486,7 @@ export function ZaloPollImportPanel({
           </label>
           <label className="field">
             <span>Bắt đầu nhắc trước trận (giờ)</span>
+            <small className="field-help">72 nghĩa là bắt đầu nhắc trước 3 ngày.</small>
             <input
               className="input"
               type="number"
@@ -495,6 +498,7 @@ export function ZaloPollImportPanel({
           </label>
           <label className="field">
             <span>Lặp lại sau mỗi (giờ)</span>
+            <small className="field-help">12 nghĩa là nếu còn thiếu slot thì 12 giờ tag @all một lần.</small>
             <input
               className="input"
               type="number"
@@ -506,6 +510,7 @@ export function ZaloPollImportPanel({
           </label>
           <label className="field zalo-settings-wide">
             <span>Ghi chú riêng cho AI</span>
+            <small className="field-help">Chỉ là hướng dẫn thêm cho câu hỏi tự do; các lệnh help/location/danh sách dùng dữ liệu chính xác trong hệ thống.</small>
             <textarea
               className="input"
               rows={2}

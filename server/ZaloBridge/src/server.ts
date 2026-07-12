@@ -119,6 +119,7 @@ app.post("/v1/group-messages", async (request, response) => {
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : "Unexpected bridge error";
+  console.error("[Zalo bridge] request failed:", error);
   response.status(502).json({ error: message });
 });
 
