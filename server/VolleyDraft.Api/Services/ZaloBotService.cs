@@ -186,6 +186,17 @@ public sealed class ZaloBotService(
                 cancellationToken);
         }
 
+        if (TryParseNaturalLearning(question, out var naturalTrigger, out var naturalAnswer))
+        {
+            return await SaveLearnedRuleAsync(
+                activeConnectionId,
+                groupId,
+                incoming,
+                naturalTrigger,
+                naturalAnswer,
+                cancellationToken);
+        }
+
         if (intent == BotIntent.TrainingHelp)
         {
             return new BotAnswer(
@@ -327,7 +338,7 @@ public sealed class ZaloBotService(
             rule.NormalizedTrigger == NormalizeRuleText(question));
         if (learnedRule is not null)
         {
-            return new BotAnswer(learnedRule.Answer, null);
+            return new BotAnswer(RenderLearnedAnswer(learnedRule.Answer, incoming.SenderName), null);
         }
 
         var recentMessages = await db.ZaloGroupMessages
@@ -711,6 +722,44 @@ public sealed class ZaloBotService(
             RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
         trigger = match.Success ? match.Groups["trigger"].Value.Trim(' ', '"', '\'', '“', '”', '‘', '’') : string.Empty;
         return match.Success && !string.IsNullOrWhiteSpace(trigger);
+    }
+
+    private static bool TryParseNaturalLearning(string question, out string trigger, out string answer)
+    {
+        var patterns = new[]
+        {
+            @"^\s*(?:từ giờ|tu gio|lần sau|lan sau)\s*(?:,\s*)?(?<trigger>.+?)\s*(?:=>|->)\s*(?<answer>.+?)\s*$",
+            @"^\s*(?:từ giờ|tu gio|lần sau|lan sau)\s*(?:,\s*)?(?<trigger>.+?)\s+(?:thì|thi)\s+(?:hãy|hay)?\s*(?:(?:trả lời|tra loi|nói|noi|khen)\s+)?(?<answer>.+?)\s*$",
+            @"^\s*(?:nhớ là|nho la|ghi nhớ là|ghi nho la)\s*(?:,\s*)?(?<trigger>.+?)\s+(?:là|la)\s+(?<answer>.+?)\s*$",
+            @"^\s*khi ai hỏi\s+(?<trigger>.+?)\s+(?:thì|thi)\s+(?<answer>.+?)\s*$",
+            @"^\s*(?:không phải|khong phai)\s+(?<trigger>.+?)\s+(?:mà|ma)\s+(?:là|la)\s+(?<answer>.+?)\s*$"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(
+                question,
+                pattern,
+                RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant);
+            if (!match.Success) continue;
+            trigger = match.Groups["trigger"].Value.Trim(' ', '"', '\'', '“', '”', '‘', '’');
+            answer = match.Groups["answer"].Value.Trim();
+            return !string.IsNullOrWhiteSpace(trigger) && !string.IsNullOrWhiteSpace(answer);
+        }
+
+        trigger = string.Empty;
+        answer = string.Empty;
+        return false;
+    }
+
+    private static string RenderLearnedAnswer(string answer, string senderName)
+    {
+        var safeSenderName = (Clean(senderName, 80) ?? "người đang hỏi").TrimStart('@');
+        return Regex.Replace(
+            answer,
+            @"người\s+(?:đang\s+)?(?:hỏi|nhắn)",
+            safeSenderName,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static string NormalizeRuleText(string value)

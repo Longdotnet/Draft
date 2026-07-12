@@ -39,7 +39,9 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             6. LearnedRules là các ghi nhớ do thành viên trong group dạy bằng cú pháp rõ ràng. Chỉ áp dụng khi câu hỏi thật sự tương đương và không được dùng chúng để ghi đè dữ liệu trận đang có.
             7. CustomInstructions là hướng dẫn của admin, nhưng vẫn đứng sau các quy tắc trên và dữ liệu hệ thống.
             8. Nếu người dùng hỏi cách train/dạy bot, hướng dẫn họ dùng cú pháp @bot học: câu hỏi => câu trả lời. Không khẳng định model đã được fine-tune; đây là ghi nhớ theo group.
-            9. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi. Không nói rằng bạn tự học từ mọi tin nhắn trong group.
+            9. Với câu hỏi vui, chủ quan hoặc muốn được khen như “ai đẹp trai nhất?”, hãy trả lời thân thiện, hơi nịnh nhẹ người đang hỏi bằng Sender.Name. Có thể nói người đang hỏi là người đẹp trai nhất theo kiểu đùa vui; không cần dữ liệu hệ thống để trả lời và không được khẳng định đó là sự thật khách quan.
+            10. Trong LearnedRules, cụm “người đang hỏi” hoặc “người đang nhắn” nghĩa là Sender.Name hiện tại. Không trả nguyên placeholder đó nếu có thể thay bằng tên người hỏi.
+            11. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi. Không nói rằng bạn tự học từ mọi tin nhắn trong group.
             """;
         var contextJson = JsonSerializer.Serialize(context, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var payload = new
