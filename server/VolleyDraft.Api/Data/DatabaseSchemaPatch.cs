@@ -179,6 +179,12 @@ public static class DatabaseSchemaPatch
                 "UpdatedAt" TEXT NOT NULL
             );
             """);
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            ALTER TABLE "PlayerProfiles"
+            DROP COLUMN IF EXISTS "AdminUserId";
+            """
+        );
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "ZaloConnections" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloConnections" PRIMARY KEY,
@@ -278,10 +284,10 @@ public static class DatabaseSchemaPatch
             );
             """);
         await EnsurePostgresColumn(
-    db,
-    "PlayerProfiles",
-    "ZaloUserId",
-    "\"ZaloUserId\" text NULL");
+            db,
+            "PlayerProfiles",
+            "ZaloUserId",
+            "\"ZaloUserId\" text NULL");
 
         await EnsurePostgresColumn(
             db,
@@ -342,6 +348,34 @@ public static class DatabaseSchemaPatch
             "PlayerProfiles",
             "UpdatedAt",
             "\"UpdatedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            ALTER TABLE "PlayerProfiles"
+            ALTER COLUMN "Gender" DROP NOT NULL;
+            """
+        );
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            ALTER TABLE "PlayerProfiles"
+            DROP COLUMN IF EXISTS "AdminUserId" CASCADE;
+            """
+                );
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            ALTER TABLE "PlayerProfiles"
+            DROP COLUMN IF EXISTS "Role";
+            """
+                );
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            ALTER TABLE "PlayerProfiles"
+            DROP COLUMN IF EXISTS "Level";
+            """
+                );
 
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_PlayerProfiles_ZaloUserId" ON "PlayerProfiles" ("ZaloUserId");""");
