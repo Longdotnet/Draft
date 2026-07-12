@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "express": "5.1.0",
-    "zalo-api-final": "2.1.0"
+    "zca-js": "2.1.2"
   },
   "devDependencies": {
     "@types/express": "5.0.3",

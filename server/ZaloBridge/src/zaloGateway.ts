@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 // The published 2.1.0 package points TypeScript at an invalid declaration entrypoint.
 // Keep all untyped interaction isolated in this adapter while runtime exports remain valid.
-import * as ZaloRuntime from "zalo-api-final";
+import * as ZaloRuntime from "zca-js";
 import type { BridgeGroup, BridgeMember, BridgePoll, ZaloCredentials } from "./contracts.js";
 import { mockCredentials, mockGroups, mockMembers, mockPolls } from "./mockData.js";
 import { normalizeId, normalizeMember, normalizeMemberId, normalizePoll } from "./pollLogic.js";
@@ -120,7 +120,7 @@ async function runQrLogin(session: QrLoginSession) {
   }
 
   try {
-    const zalo = new Zalo({ logging: false, checkUpdate: false });
+    const zalo = new Zalo({ logging: true, checkUpdate: false });
     const api = await zalo.loginQR({}, (event: MinimalQrEvent) => onQrEvent(session, event));
     session.accountZaloId = normalizeMemberId(api.getOwnId());
     try {
@@ -129,13 +129,16 @@ async function runQrLogin(session: QrLoginSession) {
       session.avatarUrl = account.avatar || session.avatarUrl;
     } catch {
       // Login is still valid when optional profile enrichment fails.
+
     }
     session.status = "completed";
   } catch (error) {
+    console.error("[Zalo QR] Login failed:", error);
     if (session.status !== "expired" && session.status !== "declined") {
       session.status = "failed";
       session.error = publicError(error);
     }
+
   }
 }
 
