@@ -1123,12 +1123,68 @@
     @apply grid gap-3 rounded-lg border border-slate-200 bg-white p-4;
   }
 
+  .zalo-login-step { order: 1; }
+  .zalo-link-step { order: 2; }
+  .zalo-bot-settings { order: 3; }
+  .zalo-poll-step { order: 4; }
+  .zalo-preview-step { order: 5; }
+
   .zalo-step-heading {
     @apply flex items-center gap-3 text-slate-950;
   }
 
   .zalo-step-heading > span {
     @apply grid h-7 w-7 place-items-center rounded-full bg-sky-600 text-xs font-black text-white;
+  }
+
+  .zalo-toggle-row {
+    @apply grid gap-3 md:grid-cols-2;
+  }
+
+  .zalo-toggle-card {
+    @apply flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 transition hover:border-sky-300;
+  }
+
+  .zalo-toggle-card:has(input:checked) {
+    @apply border-sky-400 bg-sky-50 ring-2 ring-sky-100;
+  }
+
+  .zalo-toggle-card input {
+    @apply mt-1 h-4 w-4 accent-sky-600;
+  }
+
+  .zalo-toggle-card span,
+  .zalo-toggle-card strong,
+  .zalo-toggle-card small {
+    @apply block;
+  }
+
+  .zalo-toggle-card strong {
+    @apply text-sm text-slate-900;
+  }
+
+  .zalo-toggle-card strong svg {
+    @apply mr-1 inline;
+  }
+
+  .zalo-toggle-card small {
+    @apply mt-1 text-xs font-medium leading-5 text-slate-500;
+  }
+
+  .zalo-settings-grid {
+    @apply grid gap-3 md:grid-cols-2;
+  }
+
+  .zalo-settings-wide {
+    @apply md:col-span-2;
+  }
+
+  .zalo-command-help {
+    @apply flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-sky-300 bg-sky-50 p-3 text-xs font-bold text-slate-600;
+  }
+
+  .zalo-command-help code {
+    @apply rounded-md border border-sky-200 bg-white px-2 py-1 text-sky-800;
   }
 
   .zalo-qr-box {

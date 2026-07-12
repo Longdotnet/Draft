@@ -1,6 +1,17 @@
 import express, { type NextFunction, type Request, type Response } from "express";
-import type { ZaloCredentials } from "./contracts.js";
-import { createQrLogin, getGroups, getMembers, getPoll, getPolls, getQrLogin } from "./zaloGateway.js";
+import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } from "./contracts.js";
+import {
+  createQrLogin,
+  getGroups,
+  getListenerStatuses,
+  getMembers,
+  getPoll,
+  getPolls,
+  getQrLogin,
+  sendGroupMessage,
+  startListener,
+  stopListener,
+} from "./zaloGateway.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -66,6 +77,44 @@ app.post("/v1/group-members", async (request, response) => {
     return;
   }
   response.json({ members: await getMembers(credentialsFrom(request), memberIds) });
+});
+
+app.put("/v1/listeners/:accountId", async (request, response) => {
+  const body = request.body as Partial<StartListenerRequest>;
+  if (!body.credentials || !Array.isArray(body.groupIds) || !body.webhookUrl || !body.webhookKey) {
+    response.status(400).json({ error: "credentials, groupIds, webhookUrl and webhookKey are required" });
+    return;
+  }
+  response.json(await startListener({
+    accountId: request.params.accountId,
+    credentials: body.credentials,
+    groupIds: body.groupIds.map(String),
+    webhookUrl: String(body.webhookUrl),
+    webhookKey: String(body.webhookKey),
+  }));
+});
+
+app.delete("/v1/listeners/:accountId", (request, response) => {
+  response.json(stopListener(request.params.accountId));
+});
+
+app.get("/v1/listeners", (_request, response) => {
+  response.json({ listeners: getListenerStatuses() });
+});
+
+app.post("/v1/group-messages", async (request, response) => {
+  const body = request.body as Partial<SendGroupMessageRequest>;
+  if (!body.accountId || !body.groupId || !body.message) {
+    response.status(400).json({ error: "accountId, groupId and message are required" });
+    return;
+  }
+  response.json(await sendGroupMessage({
+    accountId: String(body.accountId),
+    groupId: String(body.groupId),
+    message: String(body.message),
+    mentions: Array.isArray(body.mentions) ? body.mentions : [],
+    imageUrl: body.imageUrl ? String(body.imageUrl) : null,
+  }));
 });
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {

@@ -27,6 +27,16 @@ services:
         sync: false
       - key: Zalo__CredentialEncryptionKey
         sync: false
+      - key: Zalo__WebhookUrl
+        sync: false
+      - key: Zalo__WebhookKey
+        sync: false
+      - key: Ai__Endpoint
+        sync: false
+      - key: Ai__ApiKey
+        sync: false
+      - key: Ai__Model
+        sync: false
 
   - type: web
     name: volley-draft-zalo-bridge

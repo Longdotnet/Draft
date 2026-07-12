@@ -58,6 +58,12 @@ builder.Services.AddScoped<JwtTokenService>();
 builder.Services.AddScoped<PasswordService>();
 builder.Services.AddScoped<SessionDraftService>();
 builder.Services.AddScoped<ZaloIntegrationService>();
+builder.Services.AddScoped<ZaloBotService>();
+builder.Services.AddScoped<ZaloListenerCoordinator>();
+builder.Services.AddScoped<ZaloReminderService>();
+builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHostedService<ZaloListenerWorker>();
+builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
@@ -124,6 +130,24 @@ auth.MapGet("/me", async (HttpContext httpContext, AuthService service) =>
         ? Results.Unauthorized()
         : (await service.MeAsync(userId)).ToHttpResult();
 }).RequireAuthorization();
+
+app.MapPost("/api/internal/zalo/events", async (
+    HttpContext httpContext,
+    ZaloIncomingMessageEvent incoming,
+    ZaloBotService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var expectedKey = configuration["Zalo:WebhookKey"]
+        ?? configuration["Zalo:BridgeInternalKey"]
+        ?? "development-zalo-bridge-key";
+    if (httpContext.Request.Headers["x-zalo-bridge-key"] != expectedKey)
+    {
+        return Results.Unauthorized();
+    }
+    await service.HandleIncomingAsync(incoming, cancellationToken);
+    return Results.Ok(new { accepted = true });
+});
 
 var zalo = app.MapGroup("/api/zalo").RequireAuthorization();
 zalo.MapPost("/connections/qr", async (
@@ -267,6 +291,27 @@ sessions.MapPut("/{sessionId}/zalo-group", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.LinkGroupAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/zalo-bot-settings", async (
+    HttpContext httpContext,
+    string sessionId,
+    ZaloBotService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetSettingsAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/zalo-bot-settings", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateZaloBotSettingsRequest request,
+    ZaloBotService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateSettingsAsync(userId, sessionId, request)).ToHttpResult();
 });
 sessions.MapGet("/{sessionId}/zalo-polls", async (
     HttpContext httpContext,

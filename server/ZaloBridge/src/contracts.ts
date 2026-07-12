@@ -40,3 +40,38 @@ export type BridgeMember = {
   zaloName: string | null;
   avatarUrl: string | null;
 };
+
+export type BridgeMention = {
+  uid: string;
+  pos: number;
+  len: number;
+};
+
+export type StartListenerRequest = {
+  accountId: string;
+  credentials: ZaloCredentials;
+  groupIds: string[];
+  webhookUrl: string;
+  webhookKey: string;
+};
+
+export type SendGroupMessageRequest = {
+  accountId: string;
+  groupId: string;
+  message: string;
+  mentions?: BridgeMention[];
+  imageUrl?: string | null;
+};
+
+export type IncomingGroupMessageEvent = {
+  accountId: string;
+  botId: string;
+  groupId: string;
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  content: string;
+  mentions: BridgeMention[];
+  mentionedBot: boolean;
+  sentAtUnixMs: number;
+};

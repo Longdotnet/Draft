@@ -32,6 +32,16 @@ public sealed record SessionResponse(
     string? ZaloGroupId,
     string? ZaloGroupName,
     string? ZaloGroupAvatarUrl,
+    DateTimeOffset? StartTime,
+    string? Location,
+    string? ParkingInstructions,
+    string? LocationImageUrl,
+    bool BotEnabled,
+    string? BotCustomInstructions,
+    bool ReminderEnabled,
+    int ReminderLeadHours,
+    int ReminderIntervalHours,
+    DateTimeOffset? LastReminderAt,
     IReadOnlyList<TeamSummary> Teams);
 
 public sealed record PublicSessionSummaryResponse(
@@ -134,6 +144,44 @@ public sealed record ZaloGroupResponse(
 public sealed record LinkZaloGroupRequest(
     string ConnectionId,
     string GroupId);
+
+public sealed record UpdateZaloBotSettingsRequest(
+    DateTimeOffset? StartTime,
+    string? Location,
+    string? ParkingInstructions,
+    string? LocationImageUrl,
+    bool BotEnabled,
+    string? BotCustomInstructions,
+    bool ReminderEnabled,
+    int ReminderLeadHours,
+    int ReminderIntervalHours);
+
+public sealed record ZaloBotSettingsResponse(
+    string SessionId,
+    DateTimeOffset? StartTime,
+    string? Location,
+    string? ParkingInstructions,
+    string? LocationImageUrl,
+    bool BotEnabled,
+    string? BotCustomInstructions,
+    bool ReminderEnabled,
+    int ReminderLeadHours,
+    int ReminderIntervalHours,
+    DateTimeOffset? LastReminderAt);
+
+public sealed record ZaloIncomingMessageEvent(
+    string AccountId,
+    string BotId,
+    string GroupId,
+    string MessageId,
+    string SenderId,
+    string SenderName,
+    string Content,
+    IReadOnlyList<ZaloBridgeMention> Mentions,
+    bool MentionedBot,
+    long SentAtUnixMs);
+
+public sealed record ZaloBridgeMention(string Uid, int Pos, int Len);
 
 public sealed record ZaloPollOptionResponse(
     string Id,

@@ -49,6 +49,38 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         return (await ReadAsync<BridgeMembersResponse>(response)).Members;
     }
 
+    public async Task<BridgeListenerResponse> StartListenerAsync(
+        string accountId,
+        JsonElement credentials,
+        IReadOnlyList<string> groupIds,
+        string webhookUrl,
+        string webhookKey)
+    {
+        using var response = await httpClient.PutAsJsonAsync(
+            $"v1/listeners/{Uri.EscapeDataString(accountId)}",
+            new { credentials, groupIds, webhookUrl, webhookKey });
+        return await ReadAsync<BridgeListenerResponse>(response);
+    }
+
+    public async Task StopListenerAsync(string accountId)
+    {
+        using var response = await httpClient.DeleteAsync($"v1/listeners/{Uri.EscapeDataString(accountId)}");
+        await ReadAsync<BridgeStopListenerResponse>(response);
+    }
+
+    public async Task SendGroupMessageAsync(
+        string accountId,
+        string groupId,
+        string message,
+        IReadOnlyList<BridgeOutgoingMention> mentions,
+        string? imageUrl = null)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "v1/group-messages",
+            new { accountId, groupId, message, mentions, imageUrl });
+        await ReadAsync<BridgeSendMessageResponse>(response);
+    }
+
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
     {
         if (response.IsSuccessStatusCode)
@@ -97,4 +129,8 @@ public sealed record BridgePoll(
 public sealed record BridgePollOption(string Id, string Content, int VoteCount, IReadOnlyList<string> VoterIds);
 public sealed record BridgeMembersResponse(IReadOnlyList<BridgeMember> Members);
 public sealed record BridgeMember(string ZaloUserId, string DisplayName, string? ZaloName, string? AvatarUrl);
+public sealed record BridgeListenerResponse(string AccountId, string BotId, long StartedAt, int GroupCount);
+public sealed record BridgeStopListenerResponse(bool Stopped);
+public sealed record BridgeOutgoingMention(string Uid, int Pos, int Len);
+public sealed record BridgeSendMessageResponse(bool Sent, bool Mock);
 public sealed record BridgeErrorResponse(string? Error);

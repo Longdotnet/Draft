@@ -9,6 +9,16 @@ public sealed class MatchSession
     public string? ZaloGroupId { get; set; }
     public string? ZaloGroupName { get; set; }
     public string? ZaloGroupAvatarUrl { get; set; }
+    public DateTimeOffset? StartTime { get; set; }
+    public string? Location { get; set; }
+    public string? ParkingInstructions { get; set; }
+    public string? LocationImageUrl { get; set; }
+    public bool BotEnabled { get; set; }
+    public string? BotCustomInstructions { get; set; }
+    public bool ReminderEnabled { get; set; }
+    public int ReminderLeadHours { get; set; } = 72;
+    public int ReminderIntervalHours { get; set; } = 12;
+    public DateTimeOffset? LastReminderAt { get; set; }
     public SessionStatus Status { get; set; } = SessionStatus.Setup;
     public int TeamCount { get; set; } = 3;
     public int TeamSize { get; set; } = 6;

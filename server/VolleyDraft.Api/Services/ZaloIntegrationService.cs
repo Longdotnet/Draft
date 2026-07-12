@@ -10,7 +10,8 @@ public sealed class ZaloIntegrationService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     ZaloCredentialProtector credentialProtector,
-    ZaloQrLoginRegistry loginRegistry)
+    ZaloQrLoginRegistry loginRegistry,
+    ZaloListenerCoordinator listenerCoordinator)
 {
     public async Task<ServiceResult<StartZaloQrLoginResponse>> StartQrLoginAsync(string adminUserId)
     {
@@ -181,6 +182,7 @@ public sealed class ZaloIntegrationService(
             session.ZaloGroupAvatarUrl = group.AvatarUrl;
             session.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync();
+            await listenerCoordinator.EnsureConnectionAsync(connection.Id);
             return ServiceResult<SessionResponse>.Success(ToSessionResponse(session));
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
@@ -568,6 +570,16 @@ public sealed class ZaloIntegrationService(
         session.ZaloGroupId,
         session.ZaloGroupName,
         session.ZaloGroupAvatarUrl,
+        session.StartTime,
+        session.Location,
+        session.ParkingInstructions,
+        session.LocationImageUrl,
+        session.BotEnabled,
+        session.BotCustomInstructions,
+        session.ReminderEnabled,
+        session.ReminderLeadHours,
+        session.ReminderIntervalHours,
+        session.LastReminderAt,
         session.Teams.OrderBy(team => team.Name).Select(team => new TeamSummary(team.Id, team.Name)).ToList());
 
     private static double CalculateScore(PlayerRole role, PlayerLevel level)

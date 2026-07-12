@@ -12,6 +12,7 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<PlayerProfile> PlayerProfiles => Set<PlayerProfile>();
     public DbSet<ZaloConnection> ZaloConnections => Set<ZaloConnection>();
     public DbSet<PollImport> PollImports => Set<PollImport>();
+    public DbSet<ZaloGroupMessage> ZaloGroupMessages => Set<ZaloGroupMessage>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
     public DbSet<DraftSlotPlayer> DraftSlotPlayers => Set<DraftSlotPlayer>();
@@ -37,6 +38,10 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.Property(session => session.ZaloGroupId).HasMaxLength(80);
             entity.Property(session => session.ZaloGroupName).HasMaxLength(160);
             entity.Property(session => session.ZaloGroupAvatarUrl).HasMaxLength(2048);
+            entity.Property(session => session.Location).HasMaxLength(500);
+            entity.Property(session => session.ParkingInstructions).HasMaxLength(1000);
+            entity.Property(session => session.LocationImageUrl).HasMaxLength(2048);
+            entity.Property(session => session.BotCustomInstructions).HasMaxLength(2000);
             entity.Property(session => session.Status).HasConversion<string>();
             entity.HasOne(session => session.AdminUser)
                 .WithMany(user => user.AdminSessions)
@@ -86,6 +91,21 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
                 .WithMany()
                 .HasForeignKey(import => import.ImportedByUserId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ZaloGroupMessage>(entity =>
+        {
+            entity.Property(message => message.GroupId).HasMaxLength(100);
+            entity.Property(message => message.MessageId).HasMaxLength(160);
+            entity.Property(message => message.SenderId).HasMaxLength(100);
+            entity.Property(message => message.SenderName).HasMaxLength(160);
+            entity.Property(message => message.Content).HasMaxLength(4000);
+            entity.HasIndex(message => new { message.ZaloConnectionId, message.MessageId }).IsUnique();
+            entity.HasIndex(message => new { message.ZaloConnectionId, message.GroupId, message.SentAt });
+            entity.HasOne(message => message.ZaloConnection)
+                .WithMany(connection => connection.GroupMessages)
+                .HasForeignKey(message => message.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<SessionPlayer>(entity =>

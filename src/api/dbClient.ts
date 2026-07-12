@@ -27,7 +27,31 @@ export type SessionResponse = {
   zaloGroupId: string | null;
   zaloGroupName: string | null;
   zaloGroupAvatarUrl: string | null;
+  startTime: string | null;
+  location: string | null;
+  parkingInstructions: string | null;
+  locationImageUrl: string | null;
+  botEnabled: boolean;
+  botCustomInstructions: string | null;
+  reminderEnabled: boolean;
+  reminderLeadHours: number;
+  reminderIntervalHours: number;
+  lastReminderAt: string | null;
   teams: TeamSummary[];
+};
+
+export type ZaloBotSettingsResponse = {
+  sessionId: string;
+  startTime: string | null;
+  location: string | null;
+  parkingInstructions: string | null;
+  locationImageUrl: string | null;
+  botEnabled: boolean;
+  botCustomInstructions: string | null;
+  reminderEnabled: boolean;
+  reminderLeadHours: number;
+  reminderIntervalHours: number;
+  lastReminderAt: string | null;
 };
 
 export type PublicSessionSummaryResponse = {

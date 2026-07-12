@@ -279,3 +279,30 @@ Nên dùng các nút này từ giao diện admin.
 5. Mở mobile tại sân.
 6. Cho từng captain bóc túi theo lượt.
 7. Sau khi hoàn tất, copy hoặc chia sẻ đội hình lên nhóm Zalo.
+
+## Zalo bot và reminder
+
+Trong màn admin của từng session:
+
+1. Kết nối tài khoản Zalo và liên kết group.
+2. Cấu hình giờ đấu, địa điểm, chỗ gửi xe và URL ảnh sơ đồ.
+3. Bật bot; nếu cần thì bật reminder, chọn số giờ bắt đầu nhắc và chu kỳ lặp.
+
+Bot chỉ trả lời khi được mention đúng UID. Các lệnh `help`, `location`/`vị trí`, kiểm tra danh sách, giờ đấu và slot còn thiếu được trả lời trực tiếp từ database. Câu hỏi tự do mới được gửi sang AI cùng tối đa 20 tin gần nhất. Khi có nhiều session phù hợp, bot hỏi lại ngày hoặc tên trận thay vì tự đoán.
+
+Reminder nhóm theo tài khoản Zalo + group, bỏ qua session đã đủ slot hoặc đã qua giờ và chỉ tag `@all` cho session sớm nhất còn thiếu người. Vì vậy sau khi trận thứ Tư qua, lần chạy tiếp theo mới ưu tiên trận thứ Sáu (hoặc session kế tiếp còn thiếu).
+
+Các biến môi trường cần cấu hình cho API khi deploy:
+
+```text
+Zalo__BridgeBaseUrl
+Zalo__BridgeInternalKey
+Zalo__CredentialEncryptionKey
+Zalo__WebhookUrl=https://<api-host>/api/internal/zalo/events
+Zalo__WebhookKey=<shared-secret>
+Ai__Endpoint=<OpenAI-compatible chat-completions endpoint>
+Ai__ApiKey=<provider key>
+Ai__Model=<provider model id>
+```
+
+`Zalo__WebhookKey` chỉ dùng giữa bridge và API. Không đưa khóa này ra frontend. Nếu chưa cấu hình AI, các lệnh dữ liệu cố định vẫn hoạt động; câu hỏi tự do sẽ nhận thông báo yêu cầu hỏi rõ hơn.

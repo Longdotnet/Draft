@@ -2,7 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 // The published 2.1.0 package points TypeScript at an invalid declaration entrypoint.
 // Keep all untyped interaction isolated in this adapter while runtime exports remain valid.
 import * as ZaloRuntime from "zca-js";
-import type { BridgeGroup, BridgeMember, BridgePoll, ZaloCredentials } from "./contracts.js";
+import type {
+  BridgeGroup,
+  BridgeMember,
+  BridgeMention,
+  BridgePoll,
+  IncomingGroupMessageEvent,
+  SendGroupMessageRequest,
+  StartListenerRequest,
+  ZaloCredentials,
+} from "./contracts.js";
 import { mockCredentials, mockGroups, mockMembers, mockPolls } from "./mockData.js";
 import { normalizeId, normalizeMember, normalizeMemberId, normalizePoll } from "./pollLogic.js";
 
@@ -18,6 +27,37 @@ type MinimalZaloApi = {
   }>;
   getPollDetail(pollId: string): Promise<Record<string, unknown>>;
   getGroupMembersInfo(ids: string[]): Promise<{ profiles?: Record<string, Record<string, unknown>> }>;
+  listener: {
+    on(event: "message", callback: (message: MinimalMessage) => unknown): void;
+    on(event: "error", callback: (error: unknown) => unknown): void;
+    on(event: "closed", callback: (code: number, reason: string) => unknown): void;
+    start(options?: { retryOnClose?: boolean }): void;
+    stop(): void;
+  };
+  sendMessage(
+    message: {
+      msg: string;
+      mentions?: BridgeMention[];
+      attachments?: Array<string | { data: Buffer; filename: `${string}.${string}`; metadata: { totalSize: number } }>;
+    },
+    threadId: string,
+    type: number,
+  ): Promise<unknown>;
+};
+
+type MinimalMessage = {
+  type: number;
+  threadId: string;
+  isSelf: boolean;
+  data: {
+    msgId?: string;
+    cliMsgId?: string;
+    uidFrom?: string;
+    dName?: string;
+    ts?: string;
+    content?: unknown;
+    mentions?: Array<{ uid?: string; pos?: number; len?: number }>;
+  };
 };
 
 type MinimalQrEvent = {
@@ -40,8 +80,9 @@ const runtime = ZaloRuntime as unknown as {
     QRCodeDeclined: number;
     GotLoginInfo: number;
   };
+  ThreadType: { Group: number };
 };
-const { Zalo, BoardType, LoginQRCallbackEventType } = runtime;
+const { Zalo, BoardType, LoginQRCallbackEventType, ThreadType } = runtime;
 
 export type QrLoginSession = {
   id: string;
@@ -57,7 +98,19 @@ export type QrLoginSession = {
 
 const qrSessions = new Map<string, QrLoginSession>();
 const apiCache = new Map<string, { api: MinimalZaloApi; lastUsed: number }>();
+const activeListeners = new Map<string, ActiveListener>();
+const processedMessageIds = new Map<string, number>();
 const mockMode = process.env.ZALO_BRIDGE_MOCK === "true";
+
+type ActiveListener = {
+  api: MinimalZaloApi | null;
+  credentialFingerprint: string;
+  groupIds: Set<string>;
+  webhookUrl: string;
+  webhookKey: string;
+  botId: string;
+  startedAt: number;
+};
 
 function publicError(error: unknown): string {
   return error instanceof Error ? error.message : "Zalo request failed";
@@ -79,6 +132,183 @@ async function getApi(credentials: ZaloCredentials): Promise<MinimalZaloApi> {
   const api = await zalo.login(credentials);
   apiCache.set(key, { api, lastUsed: Date.now() });
   return api;
+}
+
+function normalizeMentions(value: MinimalMessage["data"]["mentions"]): BridgeMention[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((mention) => ({
+      uid: normalizeMemberId(String(mention.uid ?? "")),
+      pos: Number(mention.pos ?? 0),
+      len: Number(mention.len ?? 0),
+    }))
+    .filter((mention) => mention.uid.length > 0 && mention.pos >= 0 && mention.len > 0);
+}
+
+function rememberMessage(accountId: string, messageId: string): boolean {
+  const now = Date.now();
+  for (const [key, seenAt] of processedMessageIds) {
+    if (now - seenAt > 24 * 60 * 60_000) processedMessageIds.delete(key);
+  }
+  const key = `${accountId}:${messageId}`;
+  if (processedMessageIds.has(key)) return false;
+  processedMessageIds.set(key, now);
+  return true;
+}
+
+async function postIncomingMessage(listener: ActiveListener, event: IncomingGroupMessageEvent) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(listener.webhookUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-zalo-bridge-key": listener.webhookKey,
+        },
+        body: JSON.stringify(event),
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (response.ok) return;
+      const body = await response.text();
+      throw new Error(`VolleyDraft webhook returned ${response.status}: ${body.slice(0, 300)}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+  }
+  throw lastError;
+}
+
+async function handleIncomingMessage(accountId: string, listener: ActiveListener, message: MinimalMessage) {
+  if (message.type !== ThreadType.Group || message.isSelf || typeof message.data.content !== "string") return;
+  const groupId = normalizeId(message.threadId);
+  if (!listener.groupIds.has(groupId)) return;
+
+  const messageId = normalizeId(String(message.data.msgId || message.data.cliMsgId || ""));
+  if (!messageId || !rememberMessage(accountId, messageId)) return;
+  const mentions = normalizeMentions(message.data.mentions);
+  const senderId = normalizeMemberId(String(message.data.uidFrom ?? ""));
+  if (!senderId || senderId === listener.botId) return;
+
+  const rawTimestamp = Number(message.data.ts ?? Date.now());
+  const sentAtUnixMs = rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
+  await postIncomingMessage(listener, {
+    accountId,
+    botId: listener.botId,
+    groupId,
+    messageId,
+    senderId,
+    senderName: String(message.data.dName || `Zalo ${senderId}`),
+    content: message.data.content,
+    mentions,
+    mentionedBot: mentions.some((mention) => mention.uid === listener.botId),
+    sentAtUnixMs,
+  });
+}
+
+export async function startListener(request: StartListenerRequest) {
+  const accountId = normalizeMemberId(request.accountId);
+  const groupIds = new Set(request.groupIds.map(normalizeId).filter(Boolean));
+  const credentialFingerprint = fingerprint(request.credentials);
+  const current = activeListeners.get(accountId);
+
+  if (current && current.credentialFingerprint === credentialFingerprint) {
+    current.groupIds = groupIds;
+    current.webhookUrl = request.webhookUrl;
+    current.webhookKey = request.webhookKey;
+    return { accountId, botId: current.botId, startedAt: current.startedAt, groupCount: groupIds.size };
+  }
+
+  current?.api?.listener.stop();
+  if (mockMode) {
+    const startedAt = Date.now();
+    activeListeners.set(accountId, {
+      api: null,
+      credentialFingerprint,
+      groupIds,
+      webhookUrl: request.webhookUrl,
+      webhookKey: request.webhookKey,
+      botId: accountId,
+      startedAt,
+    });
+    return { accountId, botId: accountId, startedAt, groupCount: groupIds.size };
+  }
+
+  const api = await getApi(request.credentials);
+  const listener: ActiveListener = {
+    api,
+    credentialFingerprint,
+    groupIds,
+    webhookUrl: request.webhookUrl,
+    webhookKey: request.webhookKey,
+    botId: normalizeMemberId(api.getOwnId()),
+    startedAt: Date.now(),
+  };
+  activeListeners.set(accountId, listener);
+  api.listener.on("message", (message) => {
+    void handleIncomingMessage(accountId, listener, message).catch((error) =>
+      console.error(`[Zalo listener ${accountId}] Failed to forward message:`, error),
+    );
+  });
+  api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
+  api.listener.on("closed", (code, reason) => {
+    if (activeListeners.get(accountId) === listener) activeListeners.delete(accountId);
+    console.warn(`[Zalo listener ${accountId}] closed (${code}): ${reason}`);
+  });
+  api.listener.start({ retryOnClose: true });
+  return { accountId, botId: listener.botId, startedAt: listener.startedAt, groupCount: groupIds.size };
+}
+
+export function stopListener(accountIdValue: string) {
+  const accountId = normalizeMemberId(accountIdValue);
+  const listener = activeListeners.get(accountId);
+  listener?.api?.listener.stop();
+  activeListeners.delete(accountId);
+  return { stopped: Boolean(listener) };
+}
+
+export function getListenerStatuses() {
+  return [...activeListeners.entries()].map(([accountId, listener]) => ({
+    accountId,
+    botId: listener.botId,
+    startedAt: listener.startedAt,
+    groupIds: [...listener.groupIds],
+  }));
+}
+
+async function downloadImage(url: string) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`Cannot download configured image (${response.status})`);
+  const data = Buffer.from(await response.arrayBuffer());
+  if (data.length > 10 * 1024 * 1024) throw new Error("Configured image exceeds 10 MB");
+  const contentType = response.headers.get("content-type") ?? "image/jpeg";
+  const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+  return { data, filename: `location.${extension}` as `${string}.${string}`, metadata: { totalSize: data.length } };
+}
+
+export async function sendGroupMessage(request: SendGroupMessageRequest) {
+  const accountId = normalizeMemberId(request.accountId);
+  const listener = activeListeners.get(accountId);
+  if (!listener) throw new Error("Zalo listener is not active for this account");
+  if (mockMode || !listener.api) {
+    console.log(`[Zalo mock -> ${request.groupId}] ${request.message}`);
+    return { sent: true, mock: true };
+  }
+  let attachments: Array<Awaited<ReturnType<typeof downloadImage>>> | undefined;
+  if (request.imageUrl) {
+    try {
+      attachments = [await downloadImage(request.imageUrl)];
+    } catch (error) {
+      console.warn(`[Zalo message ${accountId}] Could not attach configured image:`, error);
+    }
+  }
+  await listener.api.sendMessage(
+    { msg: request.message, mentions: request.mentions, attachments },
+    normalizeId(request.groupId),
+    ThreadType.Group,
+  );
+  return { sent: true, mock: false };
 }
 
 function onQrEvent(session: QrLoginSession, event: MinimalQrEvent) {

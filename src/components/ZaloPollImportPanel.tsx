@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Link2, QrCode, RefreshCw, UserPlus, Vote } from "lucide-react";
+import { Bell, Bot, CheckCircle2, Link2, MapPin, QrCode, RefreshCw, Save, UserPlus, Vote } from "lucide-react";
 import {
   apiFetch,
   type DbGender,
@@ -8,6 +8,7 @@ import {
   type SessionResponse,
   type StartZaloQrLoginResponse,
   type ZaloConnectionResponse,
+  type ZaloBotSettingsResponse,
   type ZaloGroupResponse,
   type ZaloImportCandidateResponse,
   type ZaloImportPreviewResponse,
@@ -23,6 +24,13 @@ type CandidateDraft = Omit<ZaloImportCandidateResponse, "gender"> & {
 };
 
 const POLLS_PER_PAGE = 3;
+
+function toDateTimeInput(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
 
 const genderOptions: Array<{ value: DbGender; label: string }> = [
   { value: "Male", label: "Nam" },
@@ -70,6 +78,17 @@ export function ZaloPollImportPanel({
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [botSettings, setBotSettings] = useState({
+    startTime: toDateTimeInput(session.startTime),
+    location: session.location ?? "",
+    parkingInstructions: session.parkingInstructions ?? "",
+    locationImageUrl: session.locationImageUrl ?? "",
+    botEnabled: session.botEnabled,
+    botCustomInstructions: session.botCustomInstructions ?? "",
+    reminderEnabled: session.reminderEnabled,
+    reminderLeadHours: session.reminderLeadHours,
+    reminderIntervalHours: session.reminderIntervalHours,
+  });
 
   const selectedPoll = polls.find((poll) => poll.id === selectedPollId) ?? null;
   const totalPollPages = Math.max( 1, Math.ceil(polls.length / POLLS_PER_PAGE),);
@@ -96,7 +115,18 @@ export function ZaloPollImportPanel({
     setPolls([]);
     setPollPage(1);
     setPreview(null);
-  }, [session.id, session.zaloConnectionId, session.zaloGroupId]);
+    setBotSettings({
+      startTime: toDateTimeInput(session.startTime),
+      location: session.location ?? "",
+      parkingInstructions: session.parkingInstructions ?? "",
+      locationImageUrl: session.locationImageUrl ?? "",
+      botEnabled: session.botEnabled,
+      botCustomInstructions: session.botCustomInstructions ?? "",
+      reminderEnabled: session.reminderEnabled,
+      reminderLeadHours: session.reminderLeadHours,
+      reminderIntervalHours: session.reminderIntervalHours,
+    });
+  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.botEnabled, session.botCustomInstructions, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours]);
 
   useEffect(() => {
     if (!qrLoginId) return;
@@ -210,6 +240,38 @@ export function ZaloPollImportPanel({
     }
   }
 
+  async function saveBotSettings() {
+    const result = await run(() =>
+      apiFetch<ZaloBotSettingsResponse>(`/sessions/${session.id}/zalo-bot-settings`, {
+        method: "PUT",
+        token,
+        body: {
+          ...botSettings,
+          startTime: botSettings.startTime ? new Date(botSettings.startTime).toISOString() : null,
+          location: botSettings.location || null,
+          parkingInstructions: botSettings.parkingInstructions || null,
+          locationImageUrl: botSettings.locationImageUrl || null,
+          botCustomInstructions: botSettings.botCustomInstructions || null,
+        },
+      }),
+    );
+    if (!result) return;
+    onSessionUpdated({
+      ...session,
+      startTime: result.startTime,
+      location: result.location,
+      parkingInstructions: result.parkingInstructions,
+      locationImageUrl: result.locationImageUrl,
+      botEnabled: result.botEnabled,
+      botCustomInstructions: result.botCustomInstructions,
+      reminderEnabled: result.reminderEnabled,
+      reminderLeadHours: result.reminderLeadHours,
+      reminderIntervalHours: result.reminderIntervalHours,
+      lastReminderAt: result.lastReminderAt,
+    });
+    setMessage(result.botEnabled ? "Đã lưu cấu hình và bật listener cho bot." : "Đã lưu cấu hình; bot đang tắt.");
+  }
+
   function choosePoll(pollId: string) {
     setSelectedPollId(pollId);
     setSelectedOptionIds([]);
@@ -313,7 +375,7 @@ export function ZaloPollImportPanel({
         <div className="notice notice-warn">Buổi đấu đã bắt đầu nên không thể liên kết nhóm hoặc import thêm người.</div>
       )}
 
-      <div className="zalo-step">
+      <div className="zalo-step zalo-login-step">
         <div className="zalo-step-heading"><span>1</span><strong>Kết nối Zalo</strong></div>
         <div className="action-row">
           <select
@@ -352,7 +414,124 @@ export function ZaloPollImportPanel({
         )}
       </div>
 
-      <div className="zalo-step">
+      <div className="zalo-step zalo-bot-settings">
+        <div className="zalo-step-heading"><span><Bot size={16} aria-hidden="true" /></span><strong>Bot chat & reminder</strong></div>
+        <p className="muted">Bot dùng lịch sử chat gần đây, dữ liệu session/poll và thông tin người hỏi. Mỗi tài khoản chỉ chạy một listener cho tất cả group đã bật.</p>
+
+        <div className="zalo-toggle-row">
+          <label className="zalo-toggle-card">
+            <input
+              type="checkbox"
+              checked={botSettings.botEnabled}
+              disabled={!session.zaloGroupId}
+              onChange={(event) => setBotSettings((current) => ({
+                ...current,
+                botEnabled: event.target.checked,
+                reminderEnabled: event.target.checked ? current.reminderEnabled : false,
+              }))}
+            />
+            <span><strong>Bật bot trong group</strong><small>Chỉ trả lời khi có @mention đúng tài khoản bot.</small></span>
+          </label>
+          <label className="zalo-toggle-card">
+            <input
+              type="checkbox"
+              checked={botSettings.reminderEnabled}
+              disabled={!botSettings.botEnabled || !botSettings.startTime}
+              onChange={(event) => setBotSettings((current) => ({ ...current, reminderEnabled: event.target.checked }))}
+            />
+            <span><strong><Bell size={15} aria-hidden="true" /> Reminder @all</strong><small>Bỏ qua trận đủ slot và ưu tiên trận gần nhất.</small></span>
+          </label>
+        </div>
+
+        <div className="zalo-settings-grid">
+          <label className="field">
+            <span>Thời gian trận</span>
+            <input
+              className="input"
+              type="datetime-local"
+              value={botSettings.startTime}
+              onChange={(event) => setBotSettings((current) => ({ ...current, startTime: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span><MapPin size={14} aria-hidden="true" /> Địa điểm</span>
+            <input
+              className="input"
+              placeholder="Sân UTE"
+              value={botSettings.location}
+              onChange={(event) => setBotSettings((current) => ({ ...current, location: event.target.value }))}
+            />
+          </label>
+          <label className="field zalo-settings-wide">
+            <span>Hướng dẫn gửi xe</span>
+            <textarea
+              className="input"
+              rows={2}
+              placeholder="Vào cổng A, gửi xe bên trái nhà thi đấu..."
+              value={botSettings.parkingInstructions}
+              onChange={(event) => setBotSettings((current) => ({ ...current, parkingInstructions: event.target.value }))}
+            />
+          </label>
+          <label className="field zalo-settings-wide">
+            <span>URL ảnh vị trí / sơ đồ gửi xe</span>
+            <input
+              className="input"
+              type="url"
+              placeholder="https://.../so-do-san.jpg"
+              value={botSettings.locationImageUrl}
+              onChange={(event) => setBotSettings((current) => ({ ...current, locationImageUrl: event.target.value }))}
+            />
+          </label>
+          <label className="field">
+            <span>Bắt đầu nhắc trước trận (giờ)</span>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={336}
+              value={botSettings.reminderLeadHours}
+              onChange={(event) => setBotSettings((current) => ({ ...current, reminderLeadHours: Number(event.target.value) }))}
+            />
+          </label>
+          <label className="field">
+            <span>Lặp lại sau mỗi (giờ)</span>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={168}
+              value={botSettings.reminderIntervalHours}
+              onChange={(event) => setBotSettings((current) => ({ ...current, reminderIntervalHours: Number(event.target.value) }))}
+            />
+          </label>
+          <label className="field zalo-settings-wide">
+            <span>Ghi chú riêng cho AI</span>
+            <textarea
+              className="input"
+              rows={2}
+              placeholder="Ví dụ: gọi nhóm là Longg Volley, trả lời thân thiện..."
+              value={botSettings.botCustomInstructions}
+              onChange={(event) => setBotSettings((current) => ({ ...current, botCustomInstructions: event.target.value }))}
+            />
+          </label>
+        </div>
+
+        <div className="zalo-command-help">
+          <span>Gợi ý sẵn:</span>
+          <code>@bot help</code>
+          <code>@bot location</code>
+          <code>@bot tui có trong danh sách không?</code>
+          <code>@bot còn thiếu bao nhiêu slot?</code>
+        </div>
+        <div className="action-row">
+          <button className="button-primary" type="button" onClick={saveBotSettings} disabled={!session.zaloGroupId || isBusy}>
+            <Save size={17} aria-hidden="true" /> Lưu cấu hình bot
+          </button>
+          {session.lastReminderAt && <small className="muted">Lần nhắc gần nhất: {new Date(session.lastReminderAt).toLocaleString("vi-VN")}</small>}
+        </div>
+      </div>
+
+      <div className="zalo-step zalo-link-step">
         <div className="zalo-step-heading"><span>2</span><strong>Liên kết nhóm</strong></div>
         <div className="action-row">
           <button className="button-secondary" type="button" onClick={loadGroups} disabled={!selectedConnectionId || isBusy}>
@@ -372,8 +551,8 @@ export function ZaloPollImportPanel({
         </div>
       </div>
 
-      <div className="zalo-step">
-        <div className="zalo-step-heading"><span>3</span><strong>Chọn poll và option</strong></div>
+      <div className="zalo-step zalo-poll-step">
+        <div className="zalo-step-heading"><span>4</span><strong>Chọn poll và option</strong></div>
         <button className="button-secondary" type="button" onClick={loadPolls} disabled={!session.zaloGroupId || isBusy}>
           <Vote size={17} aria-hidden="true" /> Lấy thông tin bình chọn từ Zalo
         </button>
@@ -471,8 +650,8 @@ export function ZaloPollImportPanel({
       </div>
 
       {preview && (
-        <div className="zalo-step">
-          <div className="zalo-step-heading"><span>4</span><strong>Preview và xác nhận</strong></div>
+        <div className="zalo-step zalo-preview-step">
+          <div className="zalo-step-heading"><span>5</span><strong>Preview và xác nhận</strong></div>
           <div className={canDivideIncluded ? "notice notice-good" : "notice notice-warn"}>
             Đang chọn {includedCandidates.length} người. {canDivideIncluded
               ? `Có thể chia ${session.teamCount} team, ${includedCandidates.length / session.teamCount} người/team.`

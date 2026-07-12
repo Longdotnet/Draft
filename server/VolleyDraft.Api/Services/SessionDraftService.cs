@@ -2319,6 +2319,16 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             session.ZaloGroupId,
             session.ZaloGroupName,
             session.ZaloGroupAvatarUrl,
+            session.StartTime,
+            session.Location,
+            session.ParkingInstructions,
+            session.LocationImageUrl,
+            session.BotEnabled,
+            session.BotCustomInstructions,
+            session.ReminderEnabled,
+            session.ReminderLeadHours,
+            session.ReminderIntervalHours,
+            session.LastReminderAt,
             session.Teams.OrderBy(team => team.Name).Select(team => new TeamSummary(team.Id, team.Name)).ToList());
     }
 
