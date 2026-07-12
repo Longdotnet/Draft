@@ -171,7 +171,7 @@ public sealed class ZaloBotService(
         if (DetectIntent(normalizedQuestion) == BotIntent.TrainingHelp)
         {
             return new BotAnswer(
-                "Đúng, các cú pháp cũ để học/sửa/xoá đã được gỡ khỏi luồng sử dụng. Bot hiện hiểu ghi nhớ tự nhiên khi bạn nói rõ muốn áp dụng về sau, ví dụ: “từ giờ ai đẹp trai nhất nhóm thì khen người đang hỏi”, “lần sau hỏi vị trí thì nhắc luôn chỗ gửi xe”, hoặc “nhớ là sân UTE có chỗ gửi xe bên trái”. Dữ liệu trận, sân, giờ và danh sách vẫn lấy trực tiếp từ hệ thống.",
+                "Đúng, Bot hiện hiểu ghi nhớ tự nhiên khi bạn nói rõ muốn áp dụng về sau.",
                 null);
         }
 
