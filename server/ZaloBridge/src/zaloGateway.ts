@@ -65,6 +65,8 @@ type MinimalQrEvent = {
   data: Record<string, unknown> | null;
 };
 
+const outgoingIdempotency = new Map<string, { expiresAt: number; result: Promise<{ sent: boolean; mock: boolean }> }>();
+
 type MinimalZaloClient = {
   login(credentials: ZaloCredentials): Promise<MinimalZaloApi>;
   loginQR(options: Record<string, unknown>, callback: (event: MinimalQrEvent) => void): Promise<MinimalZaloApi>;
@@ -295,6 +297,25 @@ async function downloadImage(url: string) {
 }
 
 export async function sendGroupMessage(request: SendGroupMessageRequest) {
+  const idempotencyKey = request.idempotencyKey?.trim();
+  const now = Date.now();
+  for (const [key, entry] of outgoingIdempotency) {
+    if (entry.expiresAt <= now) outgoingIdempotency.delete(key);
+  }
+  if (idempotencyKey) {
+    const existing = outgoingIdempotency.get(idempotencyKey);
+    if (existing && existing.expiresAt > now) return existing.result;
+    const result = sendGroupMessageCore(request).catch((error) => {
+      outgoingIdempotency.delete(idempotencyKey);
+      throw error;
+    });
+    outgoingIdempotency.set(idempotencyKey, { expiresAt: now + 24 * 60 * 60 * 1000, result });
+    return result;
+  }
+  return sendGroupMessageCore(request);
+}
+
+async function sendGroupMessageCore(request: SendGroupMessageRequest) {
   const accountId = normalizeMemberId(request.accountId);
   const listener = activeListeners.get(accountId);
   if (!listener) throw new Error("Zalo listener is not active for this account");

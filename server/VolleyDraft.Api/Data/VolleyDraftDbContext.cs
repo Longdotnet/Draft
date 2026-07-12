@@ -14,6 +14,7 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<PollImport> PollImports => Set<PollImport>();
     public DbSet<ZaloGroupMessage> ZaloGroupMessages => Set<ZaloGroupMessage>();
     public DbSet<ZaloBotLearnedRule> ZaloBotLearnedRules => Set<ZaloBotLearnedRule>();
+    public DbSet<ZaloBotConversationState> ZaloBotConversationStates => Set<ZaloBotConversationState>();
     public DbSet<ZaloBotImageAsset> ZaloBotImageAssets => Set<ZaloBotImageAsset>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
@@ -104,6 +105,9 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.Property(message => message.SenderId).HasMaxLength(100);
             entity.Property(message => message.SenderName).HasMaxLength(160);
             entity.Property(message => message.Content).HasMaxLength(4000);
+            entity.Property(message => message.ProcessingToken).HasMaxLength(80);
+            entity.Property(message => message.SelectedIntent).HasMaxLength(80);
+            entity.Property(message => message.ReplyOutcome).HasMaxLength(80);
             entity.HasIndex(message => new { message.ZaloConnectionId, message.MessageId }).IsUnique();
             entity.HasIndex(message => new { message.ZaloConnectionId, message.GroupId, message.SentAt });
             entity.HasOne(message => message.ZaloConnection)
@@ -120,10 +124,29 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.Property(rule => rule.Answer).HasMaxLength(4000);
             entity.Property(rule => rule.CreatedBySenderId).HasMaxLength(100);
             entity.Property(rule => rule.CreatedBySenderName).HasMaxLength(160);
+            entity.Property(rule => rule.Status).HasConversion<string>();
+            entity.Property(rule => rule.Scope).HasMaxLength(40);
+            entity.Property(rule => rule.ApprovedByUserId).HasMaxLength(100);
+            entity.Property(rule => rule.ReviewNote).HasMaxLength(500);
             entity.HasIndex(rule => new { rule.ZaloConnectionId, rule.GroupId, rule.NormalizedTrigger }).IsUnique();
             entity.HasOne(rule => rule.ZaloConnection)
                 .WithMany()
                 .HasForeignKey(rule => rule.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloBotConversationState>(entity =>
+        {
+            entity.Property(state => state.GroupId).HasMaxLength(100);
+            entity.Property(state => state.SenderZaloUserId).HasMaxLength(100);
+            entity.Property(state => state.PendingIntent).HasMaxLength(80);
+            entity.Property(state => state.PendingPayloadJson).HasMaxLength(8000);
+            entity.Property(state => state.PreviousCommand).HasMaxLength(80);
+            entity.HasIndex(state => new { state.ZaloConnectionId, state.GroupId, state.SenderZaloUserId }).IsUnique();
+            entity.HasIndex(state => state.ExpiresAt);
+            entity.HasOne(state => state.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(state => state.ZaloConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

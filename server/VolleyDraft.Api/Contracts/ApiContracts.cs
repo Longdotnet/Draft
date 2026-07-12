@@ -183,6 +183,23 @@ public sealed record ZaloBotImageAssetResponse(
     DateTimeOffset CreatedAt,
     string Url);
 
+public sealed record ZaloBotLearnedRuleResponse(
+    string Id,
+    string Trigger,
+    string Answer,
+    ZaloBotRuleStatus Status,
+    int Priority,
+    string CreatedBySenderName,
+    DateTimeOffset CreatedAt,
+    string? ApprovedByUserId,
+    DateTimeOffset? ApprovedAt,
+    string? ReviewNote);
+
+public sealed record ReviewZaloBotLearnedRuleRequest(
+    ZaloBotRuleStatus Status,
+    int Priority,
+    string? ReviewNote);
+
 public sealed record ZaloIncomingMessageEvent(
     string AccountId,
     string BotId,

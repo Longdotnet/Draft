@@ -1,0 +1,103 @@
+using VolleyDraft.Api.Services;
+using Xunit;
+
+namespace VolleyDraft.Api.Tests;
+
+public sealed class ZaloBotIntelligenceTests
+{
+    [Theory]
+    [InlineData("1", 1)]
+    [InlineData(" 6 ", 6)]
+    public void Exact_numeric_command_is_accepted(string input, int expected)
+    {
+        Assert.True(ZaloBotIntelligence.TryGetExactCommand(input, out var command));
+        Assert.Equal(expected, command);
+    }
+
+    [Theory]
+    [InlineData("1 tuần đánh mấy lần")]
+    [InlineData("1+1=?")]
+    [InlineData("6 thứ 6")]
+    [InlineData("help 1")]
+    public void Numeric_prefix_is_not_an_exact_command(string input)
+    {
+        Assert.False(ZaloBotIntelligence.TryGetExactCommand(input, out _));
+    }
+
+    [Fact]
+    public void Weekly_count_question_has_its_own_intent()
+    {
+        var result = ZaloBotIntelligence.ClassifyDeterministically("1 tuần đánh mấy lần vậy bot?");
+        Assert.Equal(ZaloBotIntent.WeeklySessionCount, result.Intent);
+        Assert.True(result.Confidence >= .9);
+    }
+
+    [Fact]
+    public void Structured_classifier_output_is_strictly_parsed()
+    {
+        const string json = """{"intent":"Roster","confidence":0.91,"sessionReference":"CN 12/7","needsClarification":false,"clarificationQuestion":null,"reason":"asks_roster"}""";
+        Assert.True(ZaloBotIntelligence.TryParseClassifierJson(json, out var result));
+        Assert.Equal(ZaloBotIntent.Roster, result.Intent);
+        Assert.Equal("CN 12/7", result.SessionReference);
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"intent\":\"DeleteDatabase\",\"confidence\":1}")]
+    [InlineData("{\"confidence\":1}")]
+    public void Invalid_or_unsupported_classifier_output_falls_back(string value)
+    {
+        Assert.False(ZaloBotIntelligence.TryParseClassifierJson(value, out var result));
+        Assert.Equal(ZaloBotIntent.Unknown, result.Intent);
+    }
+
+    [Fact]
+    public void Semantic_rule_matching_tolerates_small_wording_changes()
+    {
+        var close = ZaloBotIntelligence.TokenJaccard("ai dep trai nhat nhom", "ai là đẹp trai nhất nhóm");
+        var unrelated = ZaloBotIntelligence.TokenJaccard("ai dep trai nhat nhom", "san o dau gui xe the nao");
+        Assert.True(close > unrelated);
+        Assert.True(close >= .7);
+    }
+
+    [Theory]
+    [InlineData("huỷ")]
+    [InlineData("cancel")]
+    [InlineData("không cần nữa")]
+    public void Conversation_can_be_cancelled_naturally(string value)
+    {
+        Assert.True(ZaloBotIntelligence.IsCancel(value));
+    }
+
+    [Fact]
+    public void Follow_up_session_alias_resolves_one_candidate()
+    {
+        var now = new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.FromHours(7));
+        var sessions = new[]
+        {
+            new ZaloSessionReference("wed", "Trận giữa tuần", new DateTimeOffset(2026, 7, 15, 18, 0, 0, TimeSpan.FromHours(7))),
+            new ZaloSessionReference("fri", "Trận cuối tuần", new DateTimeOffset(2026, 7, 17, 18, 0, 0, TimeSpan.FromHours(7)))
+        };
+        Assert.Equal(new[] { "fri" }, ZaloBotIntelligence.ResolveSessionReference("T6", sessions, now));
+    }
+
+    [Fact]
+    public void Ambiguous_day_alias_returns_all_matching_candidates_for_clarification()
+    {
+        var sessions = new[]
+        {
+            new ZaloSessionReference("a", "Ca sớm", new DateTimeOffset(2026, 7, 17, 18, 0, 0, TimeSpan.FromHours(7))),
+            new ZaloSessionReference("b", "Ca muộn", new DateTimeOffset(2026, 7, 17, 20, 0, 0, TimeSpan.FromHours(7)))
+        };
+        Assert.Equal(2, ZaloBotIntelligence.ResolveSessionReference("thứ 6", sessions).Count);
+    }
+
+    [Theory]
+    [InlineData("từ giờ giờ đấu là 19h")]
+    [InlineData("danh sách trận này có Thanh Long")]
+    [InlineData("sân đổi sang UTE")]
+    public void Learned_rule_cannot_override_protected_business_facts(string value)
+    {
+        Assert.True(ZaloBotIntelligence.IsProtectedBusinessFactText(value));
+    }
+}

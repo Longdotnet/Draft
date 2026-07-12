@@ -11,6 +11,8 @@ import {
   type ZaloConnectionResponse,
   type ZaloBotSettingsResponse,
   type ZaloBotImageAssetResponse,
+  type ZaloBotLearnedRuleResponse,
+  type ZaloBotRuleStatus,
   type ZaloGroupResponse,
   type ZaloImportCandidateResponse,
   type ZaloImportPreviewResponse,
@@ -71,6 +73,7 @@ export function ZaloPollImportPanel({
   const [qrStatus, setQrStatus] = useState<ZaloQrLoginStatusResponse | null>(null);
   const [groups, setGroups] = useState<ZaloGroupResponse[]>([]);
   const [botImages, setBotImages] = useState<ZaloBotImageAssetResponse[]>([]);
+  const [botRules, setBotRules] = useState<ZaloBotLearnedRuleResponse[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState(session.zaloGroupId ?? "");
   const [polls, setPolls] = useState<ZaloPollResponse[]>([]);
   const [pollPage, setPollPage] = useState(1);
@@ -113,6 +116,7 @@ export function ZaloPollImportPanel({
   useEffect(() => {
     void loadConnections();
     void loadBotImages();
+    void loadBotRules();
   }, [token]);
 
   useEffect(() => {
@@ -172,6 +176,30 @@ export function ZaloPollImportPanel({
       apiFetch<ZaloBotImageAssetResponse[]>("/zalo/bot-images", { token }),
     );
     if (result) setBotImages(result);
+  }
+
+  async function loadBotRules() {
+    if (!session.zaloGroupId) {
+      setBotRules([]);
+      return;
+    }
+    const result = await run(() =>
+      apiFetch<ZaloBotLearnedRuleResponse[]>(`/sessions/${session.id}/zalo-bot-rules`, { token }),
+    );
+    if (result) setBotRules(result);
+  }
+
+  async function reviewBotRule(rule: ZaloBotLearnedRuleResponse, status: ZaloBotRuleStatus) {
+    const result = await run(() =>
+      apiFetch<ZaloBotLearnedRuleResponse>(`/sessions/${session.id}/zalo-bot-rules/${rule.id}`, {
+        method: "PUT",
+        token,
+        body: { status, priority: rule.priority, reviewNote: null },
+      }),
+    );
+    if (!result) return;
+    setBotRules((current) => current.map((item) => item.id === result.id ? result : item));
+    setMessage(status === "Approved" ? "Đã duyệt ghi nhớ cho bot." : "Đã cập nhật trạng thái ghi nhớ.");
   }
 
   async function uploadBotImage(
@@ -624,6 +652,28 @@ export function ZaloPollImportPanel({
           <code>@bot còn thiếu bao nhiêu slot?</code>
           <code>@bot 6</code>
           <code>@bot gửi danh sách CN 12/7</code>
+        </div>
+        <div className="zalo-rule-review">
+          <div className="action-row">
+            <strong>Ghi nhớ do thành viên đề xuất</strong>
+            <button className="button-secondary" type="button" onClick={loadBotRules} disabled={!session.zaloGroupId || isBusy}>
+              <RefreshCw size={15} aria-hidden="true" /> Làm mới
+            </button>
+          </div>
+          <small className="field-help">Bot chỉ dùng rule đã được admin duyệt. Rule không được ghi đè giờ, sân, danh sách, slot hoặc dữ liệu trận trong hệ thống.</small>
+          {botRules.length === 0 ? (
+            <p className="muted">Chưa có đề xuất ghi nhớ nào.</p>
+          ) : botRules.map((rule) => (
+            <div className="zalo-rule-card" key={rule.id}>
+              <div><strong>{rule.trigger}</strong><span className="muted"> → {rule.answer}</span></div>
+              <small className="muted">{rule.createdBySenderName} · {new Date(rule.createdAt).toLocaleString("vi-VN")} · {rule.status}</small>
+              <div className="action-row">
+                <button className="button-primary" type="button" onClick={() => void reviewBotRule(rule, "Approved")} disabled={isBusy || rule.status === "Approved"}>Duyệt</button>
+                <button className="button-secondary" type="button" onClick={() => void reviewBotRule(rule, "Rejected")} disabled={isBusy || rule.status === "Rejected"}>Từ chối</button>
+                <button className="button-secondary" type="button" onClick={() => void reviewBotRule(rule, "Disabled")} disabled={isBusy || rule.status === "Disabled"}>Tắt</button>
+              </div>
+            </div>
+          ))}
         </div>
         <div className="action-row">
           <button className="button-primary" type="button" onClick={saveBotSettings} disabled={!session.zaloGroupId || isBusy}>

@@ -114,6 +114,7 @@ app.post("/v1/group-messages", async (request, response) => {
     message: String(body.message),
     mentions: Array.isArray(body.mentions) ? body.mentions : [],
     imageUrl: body.imageUrl ? String(body.imageUrl) : null,
+    idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
   }));
 });
 

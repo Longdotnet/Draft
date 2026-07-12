@@ -67,6 +67,21 @@ export type ZaloBotImageAssetResponse = {
   url: string;
 };
 
+export type ZaloBotRuleStatus = "Pending" | "Approved" | "Rejected" | "Disabled";
+
+export type ZaloBotLearnedRuleResponse = {
+  id: string;
+  trigger: string;
+  answer: string;
+  status: ZaloBotRuleStatus;
+  priority: number;
+  createdBySenderName: string;
+  createdAt: string;
+  approvedByUserId: string | null;
+  approvedAt: string | null;
+  reviewNote: string | null;
+};
+
 export type PublicSessionSummaryResponse = {
   id: string;
   name: string;

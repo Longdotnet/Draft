@@ -1191,7 +1191,7 @@
     @apply rounded-md border border-sky-200 bg-white px-2 py-1 text-sky-800;
   }
 
-  .zalo-image-preview {
+.zalo-image-preview {
     @apply mt-2 max-h-40 max-w-full rounded-lg border border-slate-200 bg-white object-contain p-1;
   }
 
@@ -1265,6 +1265,25 @@
   .spin {
     animation: zalo-spin 1s linear infinite;
   }
+}
+
+.zalo-rule-review {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.zalo-rule-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #fff;
 }
 
 @keyframes zalo-spin {

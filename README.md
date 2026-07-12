@@ -285,10 +285,18 @@ Nên dùng các nút này từ giao diện admin.
 Trong màn admin của từng session:
 
 1. Kết nối tài khoản Zalo và liên kết group.
-2. Cấu hình giờ đấu, địa điểm, chỗ gửi xe và URL ảnh sơ đồ.
+2. Cấu hình giờ đấu, địa điểm, chỗ gửi xe và chọn ảnh vị trí/QR từ máy hoặc thư viện ảnh đã lưu trong DB.
 3. Bật bot; nếu cần thì bật reminder, chọn số giờ bắt đầu nhắc và chu kỳ lặp.
 
-Bot chỉ trả lời khi được mention đúng UID. Các lệnh `help`, `location`/`vị trí`, kiểm tra danh sách, giờ đấu và slot còn thiếu được trả lời trực tiếp từ database. Câu hỏi tự do mới được gửi sang AI cùng tối đa 20 tin gần nhất. Khi có nhiều session phù hợp, bot hỏi lại ngày hoặc tên trận thay vì tự đoán.
+Bot chỉ trả lời khi được mention đúng UID. `@bot help` hiển thị menu. Lệnh nhanh `1`–`6` chỉ được nhận khi phần câu hỏi đúng một chữ số; ví dụ `@bot 1 tuần đánh mấy lần` là câu tự nhiên `WeeklySessionCount`, không bị hiểu thành command 1. Dạng cũ như `@bot 6 thứ 6` chỉ được nhận khi phần sau là selector session hợp lệ.
+
+AI chỉ phân loại câu tự nhiên thành intent JSON có kiểu (`SessionSchedule`, `Roster`, `WeeklySessionCount`...). Handler .NET sau đó đọc giờ, sân, người chơi, poll và slot từ database; model không phải nguồn dữ liệu nghiệp vụ. Nếu classifier lỗi JSON, confidence thấp hoặc provider lỗi, bot dùng routing xác định được hoặc fallback an toàn thay vì gọi một method tùy ý.
+
+Khi câu hỏi có nhiều session, bot lưu conversation state theo bộ `(Zalo account, group, sender)` trong 15 phút. Ví dụ `@bot 6` → bot hỏi trận → `@bot T6` tiếp tục đúng intent QR. Gõ `huỷ`, `cancel` hoặc `không cần nữa` để bỏ câu đang chờ. State không bị dùng chéo giữa hai user/group và tự hết hạn.
+
+Thành viên có thể đề xuất ghi nhớ bằng cách nói tự nhiên rõ ý áp dụng về sau, nhưng rule mới chỉ ở trạng thái `Pending`. Admin duyệt/từ chối/tắt trong panel Bot chat & reminder. Chỉ rule `Approved` mới được semantic-match; rule không được ghi đè dữ liệu trận, danh sách, sân, giờ hoặc slot từ hệ thống. Đây là retrieval theo group, không phải fine-tune model.
+
+Mỗi incoming `messageId` là duy nhất theo connection. API dùng processing lease trước khi gọi AI/gửi Zalo để hai instance không cùng trả lời. Log có account/group/message/intent/có gọi AI hay không; request lỗi được mở lease để retry.
 
 Reminder nhóm theo tài khoản Zalo + group, bỏ qua session đã đủ slot hoặc đã qua giờ và chỉ tag `@all` cho session sớm nhất còn thiếu người. Vì vậy sau khi trận thứ Tư qua, lần chạy tiếp theo mới ưu tiên trận thứ Sáu (hoặc session kế tiếp còn thiếu).
 
@@ -303,6 +311,23 @@ Zalo__WebhookKey=<shared-secret>
 Ai__Endpoint=<OpenAI-compatible chat-completions endpoint>
 Ai__ApiKey=<provider key>
 Ai__Model=<provider model id>
+ZaloBot__ConversationTtlMinutes=15
+ZaloBot__ExactCommandCooldownSeconds=2
+ZaloBot__AiCooldownSeconds=10
+ZaloBot__AiPerUserPerMinute=4
+ZaloBot__AiPerGroupPerMinute=20
+ZaloBot__ClassifierConfidenceThreshold=0.72
+ZaloBot__LearnedRuleSimilarityThreshold=0.82
 ```
 
 `Zalo__WebhookKey` chỉ dùng giữa bridge và API. Không đưa khóa này ra frontend. Nếu chưa cấu hình AI, các lệnh dữ liệu cố định vẫn hoạt động; câu hỏi tự do sẽ nhận thông báo yêu cầu hỏi rõ hơn.
+
+Kiểm tra trước khi deploy:
+
+```powershell
+dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj
+dotnet build server/VolleyDraft.Api/VolleyDraft.Api.csproj
+npm run build
+npm --prefix server/ZaloBridge test
+npm --prefix server/ZaloBridge run build
+```

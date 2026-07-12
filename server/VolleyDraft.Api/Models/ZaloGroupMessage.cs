@@ -14,6 +14,11 @@ public sealed class ZaloGroupMessage
     public DateTimeOffset ReceivedAt { get; set; } = DateTimeOffset.UtcNow;
     public int ReplyAttemptCount { get; set; }
     public DateTimeOffset? BotReplySentAt { get; set; }
+    public DateTimeOffset? ProcessingStartedAt { get; set; }
+    public string? ProcessingToken { get; set; }
+    public string? SelectedIntent { get; set; }
+    public bool AiCalled { get; set; }
+    public string? ReplyOutcome { get; set; }
 
     public ZaloConnection ZaloConnection { get; set; } = null!;
 }

@@ -37,6 +37,20 @@ services:
         sync: false
       - key: Ai__Model
         sync: false
+      - key: ZaloBot__ConversationTtlMinutes
+        value: "15"
+      - key: ZaloBot__ExactCommandCooldownSeconds
+        value: "2"
+      - key: ZaloBot__AiCooldownSeconds
+        value: "10"
+      - key: ZaloBot__AiPerUserPerMinute
+        value: "4"
+      - key: ZaloBot__AiPerGroupPerMinute
+        value: "20"
+      - key: ZaloBot__ClassifierConfidenceThreshold
+        value: "0.72"
+      - key: ZaloBot__LearnedRuleSimilarityThreshold
+        value: "0.82"
 
   - type: web
     name: volley-draft-zalo-bridge

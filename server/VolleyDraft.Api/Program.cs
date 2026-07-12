@@ -349,6 +349,28 @@ sessions.MapPut("/{sessionId}/zalo-bot-settings", async (
         ? Results.Unauthorized()
         : (await service.UpdateSettingsAsync(userId, sessionId, request)).ToHttpResult();
 });
+sessions.MapGet("/{sessionId}/zalo-bot-rules", async (
+    HttpContext httpContext,
+    string sessionId,
+    ZaloBotService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetLearnedRulesAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/zalo-bot-rules/{ruleId}", async (
+    HttpContext httpContext,
+    string sessionId,
+    string ruleId,
+    ReviewZaloBotLearnedRuleRequest request,
+    ZaloBotService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.ReviewLearnedRuleAsync(userId, sessionId, ruleId, request)).ToHttpResult();
+});
 sessions.MapGet("/{sessionId}/zalo-polls", async (
     HttpContext httpContext,
     string sessionId,

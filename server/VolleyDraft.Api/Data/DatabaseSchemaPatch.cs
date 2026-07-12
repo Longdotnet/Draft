@@ -39,10 +39,22 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloTables(db);
             await EnsureSqliteZaloBotTables(db);
             await EnsureSqliteZaloBotLearningTables(db);
+            await EnsureSqliteZaloBotConversationTables(db);
             await EnsureSqliteZaloBotImageTables(db);
             await EnsureSqliteColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "ProcessingStartedAt", "\"ProcessingStartedAt\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "ProcessingToken", "\"ProcessingToken\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "SelectedIntent", "\"SelectedIntent\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "AiCalled", "\"AiCalled\" INTEGER NOT NULL DEFAULT 0");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyOutcome", "\"ReplyOutcome\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "Status", "\"Status\" TEXT NOT NULL DEFAULT 'Pending'");
+            await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "Scope", "\"Scope\" TEXT NOT NULL DEFAULT 'Group'");
+            await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "Priority", "\"Priority\" INTEGER NOT NULL DEFAULT 0");
+            await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "ApprovedByUserId", "\"ApprovedByUserId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "ApprovedAt", "\"ApprovedAt\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "ReviewNote", "\"ReviewNote\" TEXT NULL");
             return;
         }
 
@@ -77,10 +89,22 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloTables(db);
             await EnsurePostgresZaloBotTables(db);
             await EnsurePostgresZaloBotLearningTables(db);
+            await EnsurePostgresZaloBotConversationTables(db);
             await EnsurePostgresZaloBotImageTables(db);
             await EnsurePostgresColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" bigint NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" integer NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" timestamp with time zone NULL");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "ProcessingStartedAt", "\"ProcessingStartedAt\" timestamp with time zone NULL");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "ProcessingToken", "\"ProcessingToken\" text NULL");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "SelectedIntent", "\"SelectedIntent\" text NULL");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "AiCalled", "\"AiCalled\" boolean NOT NULL DEFAULT FALSE");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyOutcome", "\"ReplyOutcome\" text NULL");
+            await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "Status", "\"Status\" text NOT NULL DEFAULT 'Pending'");
+            await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "Scope", "\"Scope\" text NOT NULL DEFAULT 'Group'");
+            await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "Priority", "\"Priority\" integer NOT NULL DEFAULT 0");
+            await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "ApprovedByUserId", "\"ApprovedByUserId\" text NULL");
+            await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "ApprovedAt", "\"ApprovedAt\" timestamp with time zone NULL");
+            await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "ReviewNote", "\"ReviewNote\" text NULL");
         }
     }
 
@@ -459,6 +483,11 @@ public static class DatabaseSchemaPatch
                 "ReceivedAt" TEXT NOT NULL,
                 "ReplyAttemptCount" INTEGER NOT NULL DEFAULT 0,
                 "BotReplySentAt" TEXT NULL,
+                "ProcessingStartedAt" TEXT NULL,
+                "ProcessingToken" TEXT NULL,
+                "SelectedIntent" TEXT NULL,
+                "AiCalled" INTEGER NOT NULL DEFAULT 0,
+                "ReplyOutcome" TEXT NULL,
                 CONSTRAINT "FK_ZaloGroupMessages_ZaloConnections_ZaloConnectionId"
                     FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
             );
@@ -485,6 +514,11 @@ public static class DatabaseSchemaPatch
                 "ReceivedAt" timestamp with time zone NOT NULL,
                 "ReplyAttemptCount" integer NOT NULL DEFAULT 0,
                 "BotReplySentAt" timestamp with time zone NULL,
+                "ProcessingStartedAt" timestamp with time zone NULL,
+                "ProcessingToken" text NULL,
+                "SelectedIntent" text NULL,
+                "AiCalled" boolean NOT NULL DEFAULT FALSE,
+                "ReplyOutcome" text NULL,
                 CONSTRAINT "FK_ZaloGroupMessages_ZaloConnections_ZaloConnectionId"
                     FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
             );
@@ -507,6 +541,12 @@ public static class DatabaseSchemaPatch
                 "Answer" TEXT NOT NULL,
                 "CreatedBySenderId" TEXT NOT NULL,
                 "CreatedBySenderName" TEXT NOT NULL,
+                "Status" TEXT NOT NULL DEFAULT 'Pending',
+                "Scope" TEXT NOT NULL DEFAULT 'Group',
+                "Priority" INTEGER NOT NULL DEFAULT 0,
+                "ApprovedByUserId" TEXT NULL,
+                "ApprovedAt" TEXT NULL,
+                "ReviewNote" TEXT NULL,
                 "CreatedAt" TEXT NOT NULL,
                 "UpdatedAt" TEXT NOT NULL,
                 CONSTRAINT "FK_ZaloBotLearnedRules_ZaloConnections_ZaloConnectionId"
@@ -529,6 +569,12 @@ public static class DatabaseSchemaPatch
                 "Answer" text NOT NULL,
                 "CreatedBySenderId" text NOT NULL,
                 "CreatedBySenderName" text NOT NULL,
+                "Status" text NOT NULL DEFAULT 'Pending',
+                "Scope" text NOT NULL DEFAULT 'Group',
+                "Priority" integer NOT NULL DEFAULT 0,
+                "ApprovedByUserId" text NULL,
+                "ApprovedAt" timestamp with time zone NULL,
+                "ReviewNote" text NULL,
                 "CreatedAt" timestamp with time zone NOT NULL,
                 "UpdatedAt" timestamp with time zone NOT NULL,
                 CONSTRAINT "FK_ZaloBotLearnedRules_ZaloConnections_ZaloConnectionId"
@@ -537,6 +583,54 @@ public static class DatabaseSchemaPatch
             """);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotLearnedRules_Connection_Group_Trigger" ON "ZaloBotLearnedRules" ("ZaloConnectionId", "GroupId", "NormalizedTrigger");""");
+    }
+
+    private static async Task EnsureSqliteZaloBotConversationTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotConversationStates" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloBotConversationStates" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "SenderZaloUserId" TEXT NOT NULL,
+                "PendingIntent" TEXT NOT NULL,
+                "PendingPayloadJson" TEXT NOT NULL,
+                "PreviousCommand" TEXT NULL,
+                "ExpiresAt" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloBotConversationStates_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotConversationStates_Connection_Group_Sender" ON "ZaloBotConversationStates" ("ZaloConnectionId", "GroupId", "SenderZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotConversationStates_ExpiresAt" ON "ZaloBotConversationStates" ("ExpiresAt");""");
+    }
+
+    private static async Task EnsurePostgresZaloBotConversationTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotConversationStates" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloBotConversationStates" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "SenderZaloUserId" text NOT NULL,
+                "PendingIntent" text NOT NULL,
+                "PendingPayloadJson" text NOT NULL,
+                "PreviousCommand" text NULL,
+                "ExpiresAt" timestamp with time zone NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloBotConversationStates_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotConversationStates_Connection_Group_Sender" ON "ZaloBotConversationStates" ("ZaloConnectionId", "GroupId", "SenderZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotConversationStates_ExpiresAt" ON "ZaloBotConversationStates" ("ExpiresAt");""");
     }
 
     private static async Task EnsureSqliteZaloBotImageTables(VolleyDraftDbContext db)

@@ -73,11 +73,12 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         string groupId,
         string message,
         IReadOnlyList<BridgeOutgoingMention> mentions,
-        string? imageUrl = null)
+        string? imageUrl = null,
+        string? idempotencyKey = null)
     {
         using var response = await httpClient.PostAsJsonAsync(
             "v1/group-messages",
-            new { accountId, groupId, message, mentions, imageUrl });
+            new { accountId, groupId, message, mentions, imageUrl, idempotencyKey });
         await ReadAsync<BridgeSendMessageResponse>(response);
     }
 

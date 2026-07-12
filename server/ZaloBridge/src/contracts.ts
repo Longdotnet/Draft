@@ -61,6 +61,7 @@ export type SendGroupMessageRequest = {
   message: string;
   mentions?: BridgeMention[];
   imageUrl?: string | null;
+  idempotencyKey?: string | null;
 };
 
 export type IncomingGroupMessageEvent = {
