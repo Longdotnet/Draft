@@ -83,8 +83,11 @@ export function ZaloPollImportPanel({
     location: session.location ?? "",
     parkingInstructions: session.parkingInstructions ?? "",
     locationImageUrl: session.locationImageUrl ?? "",
+    paymentInstructions: session.paymentInstructions ?? "",
+    paymentQrImageUrl: session.paymentQrImageUrl ?? "",
     botEnabled: session.botEnabled,
     botCustomInstructions: session.botCustomInstructions ?? "",
+    botTrainingExamples: session.botTrainingExamples ?? "",
     reminderEnabled: session.reminderEnabled,
     reminderLeadHours: session.reminderLeadHours,
     reminderIntervalHours: session.reminderIntervalHours,
@@ -120,13 +123,16 @@ export function ZaloPollImportPanel({
       location: session.location ?? "",
       parkingInstructions: session.parkingInstructions ?? "",
       locationImageUrl: session.locationImageUrl ?? "",
+      paymentInstructions: session.paymentInstructions ?? "",
+      paymentQrImageUrl: session.paymentQrImageUrl ?? "",
       botEnabled: session.botEnabled,
       botCustomInstructions: session.botCustomInstructions ?? "",
+      botTrainingExamples: session.botTrainingExamples ?? "",
       reminderEnabled: session.reminderEnabled,
       reminderLeadHours: session.reminderLeadHours,
       reminderIntervalHours: session.reminderIntervalHours,
     });
-  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.botEnabled, session.botCustomInstructions, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours]);
+  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.paymentInstructions, session.paymentQrImageUrl, session.botEnabled, session.botCustomInstructions, session.botTrainingExamples, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours]);
 
   useEffect(() => {
     if (!qrLoginId) return;
@@ -251,7 +257,10 @@ export function ZaloPollImportPanel({
           location: botSettings.location || null,
           parkingInstructions: botSettings.parkingInstructions || null,
           locationImageUrl: botSettings.locationImageUrl || null,
+          paymentInstructions: botSettings.paymentInstructions || null,
+          paymentQrImageUrl: botSettings.paymentQrImageUrl || null,
           botCustomInstructions: botSettings.botCustomInstructions || null,
+          botTrainingExamples: botSettings.botTrainingExamples || null,
         },
       }),
     );
@@ -262,8 +271,11 @@ export function ZaloPollImportPanel({
       location: result.location,
       parkingInstructions: result.parkingInstructions,
       locationImageUrl: result.locationImageUrl,
+      paymentInstructions: result.paymentInstructions,
+      paymentQrImageUrl: result.paymentQrImageUrl,
       botEnabled: result.botEnabled,
       botCustomInstructions: result.botCustomInstructions,
+      botTrainingExamples: result.botTrainingExamples,
       reminderEnabled: result.reminderEnabled,
       reminderLeadHours: result.reminderLeadHours,
       reminderIntervalHours: result.reminderIntervalHours,
@@ -484,6 +496,28 @@ export function ZaloPollImportPanel({
               onChange={(event) => setBotSettings((current) => ({ ...current, locationImageUrl: event.target.value }))}
             />
           </label>
+          <label className="field zalo-settings-wide">
+            <span>Hướng dẫn thanh toán</span>
+            <small className="field-help">Nội dung bot gửi kèm khi thành viên gõ @bot 6.</small>
+            <textarea
+              className="input"
+              rows={2}
+              placeholder="Chuyển khoản 60.000đ, nội dung: Tên Zalo + ngày đánh..."
+              value={botSettings.paymentInstructions}
+              onChange={(event) => setBotSettings((current) => ({ ...current, paymentInstructions: event.target.value }))}
+            />
+          </label>
+          <label className="field zalo-settings-wide">
+            <span>URL ảnh QR thanh toán</span>
+            <small className="field-help">Phải là link ảnh public http/https. Bridge tải ảnh này rồi gửi vào group khi nhận @bot 6.</small>
+            <input
+              className="input"
+              type="url"
+              placeholder="https://.../qr-thanh-toan.jpg"
+              value={botSettings.paymentQrImageUrl}
+              onChange={(event) => setBotSettings((current) => ({ ...current, paymentQrImageUrl: event.target.value }))}
+            />
+          </label>
           <label className="field">
             <span>Bắt đầu nhắc trước trận (giờ)</span>
             <small className="field-help">72 nghĩa là bắt đầu nhắc trước 3 ngày.</small>
@@ -519,6 +553,17 @@ export function ZaloPollImportPanel({
               onChange={(event) => setBotSettings((current) => ({ ...current, botCustomInstructions: event.target.value }))}
             />
           </label>
+          <label className="field zalo-settings-wide">
+            <span>Ví dụ đã duyệt để dạy bot</span>
+            <small className="field-help">Admin ghi các câu hỏi và câu trả lời mẫu. Bot dùng chúng làm ví dụ cho câu hỏi tự do; thành viên trong group không thể tự sửa kiến thức vĩnh viễn.</small>
+            <textarea
+              className="input"
+              rows={6}
+              placeholder={'Hỏi: ai đẹp trai nhất nhóm?\nĐáp: Nhóm mình ai cũng đẹp trai theo cách riêng nha 😄\n---\nHỏi: có được ghẹo bot không?\nĐáp: Ghẹo nhẹ thôi nha, bot còn phải lo lịch đánh nữa 😄'}
+              value={botSettings.botTrainingExamples}
+              onChange={(event) => setBotSettings((current) => ({ ...current, botTrainingExamples: event.target.value }))}
+            />
+          </label>
         </div>
 
         <div className="zalo-command-help">
@@ -527,6 +572,8 @@ export function ZaloPollImportPanel({
           <code>@bot location</code>
           <code>@bot tui có trong danh sách không?</code>
           <code>@bot còn thiếu bao nhiêu slot?</code>
+          <code>@bot 6</code>
+          <code>@bot gửi danh sách CN 12/7</code>
         </div>
         <div className="action-row">
           <button className="button-primary" type="button" onClick={saveBotSettings} disabled={!session.zaloGroupId || isBusy}>

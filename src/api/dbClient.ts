@@ -31,8 +31,11 @@ export type SessionResponse = {
   location: string | null;
   parkingInstructions: string | null;
   locationImageUrl: string | null;
+  paymentInstructions: string | null;
+  paymentQrImageUrl: string | null;
   botEnabled: boolean;
   botCustomInstructions: string | null;
+  botTrainingExamples: string | null;
   reminderEnabled: boolean;
   reminderLeadHours: number;
   reminderIntervalHours: number;
@@ -46,8 +49,11 @@ export type ZaloBotSettingsResponse = {
   location: string | null;
   parkingInstructions: string | null;
   locationImageUrl: string | null;
+  paymentInstructions: string | null;
+  paymentQrImageUrl: string | null;
   botEnabled: boolean;
   botCustomInstructions: string | null;
+  botTrainingExamples: string | null;
   reminderEnabled: boolean;
   reminderLeadHours: number;
   reminderIntervalHours: number;

@@ -41,7 +41,10 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.Property(session => session.Location).HasMaxLength(500);
             entity.Property(session => session.ParkingInstructions).HasMaxLength(1000);
             entity.Property(session => session.LocationImageUrl).HasMaxLength(2048);
+            entity.Property(session => session.PaymentInstructions).HasMaxLength(1000);
+            entity.Property(session => session.PaymentQrImageUrl).HasMaxLength(2048);
             entity.Property(session => session.BotCustomInstructions).HasMaxLength(2000);
+            entity.Property(session => session.BotTrainingExamples).HasMaxLength(8000);
             entity.Property(session => session.Status).HasConversion<string>();
             entity.HasOne(session => session.AdminUser)
                 .WithMany(user => user.AdminSessions)

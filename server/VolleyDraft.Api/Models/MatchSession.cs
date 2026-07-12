@@ -13,8 +13,11 @@ public sealed class MatchSession
     public string? Location { get; set; }
     public string? ParkingInstructions { get; set; }
     public string? LocationImageUrl { get; set; }
+    public string? PaymentInstructions { get; set; }
+    public string? PaymentQrImageUrl { get; set; }
     public bool BotEnabled { get; set; }
     public string? BotCustomInstructions { get; set; }
+    public string? BotTrainingExamples { get; set; }
     public bool ReminderEnabled { get; set; }
     public int ReminderLeadHours { get; set; } = 72;
     public int ReminderIntervalHours { get; set; } = 12;

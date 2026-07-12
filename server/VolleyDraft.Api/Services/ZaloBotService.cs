@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
@@ -43,17 +44,20 @@ public sealed class ZaloBotService(
         {
             return ServiceResult<ZaloBotSettingsResponse>.Failure(StatusCodes.Status400BadRequest, "Reminder cần bật bot và có thời gian bắt đầu trận.");
         }
-        if (!IsOptionalHttpUrl(request.LocationImageUrl))
+        if (!IsOptionalHttpUrl(request.LocationImageUrl) || !IsOptionalHttpUrl(request.PaymentQrImageUrl))
         {
-            return ServiceResult<ZaloBotSettingsResponse>.Failure(StatusCodes.Status400BadRequest, "URL ảnh vị trí phải dùng http hoặc https.");
+            return ServiceResult<ZaloBotSettingsResponse>.Failure(StatusCodes.Status400BadRequest, "URL ảnh vị trí và QR thanh toán phải dùng http hoặc https.");
         }
 
         session.StartTime = request.StartTime;
         session.Location = Clean(request.Location, 500);
         session.ParkingInstructions = Clean(request.ParkingInstructions, 1000);
         session.LocationImageUrl = Clean(request.LocationImageUrl, 2048);
+        session.PaymentInstructions = Clean(request.PaymentInstructions, 1000);
+        session.PaymentQrImageUrl = Clean(request.PaymentQrImageUrl, 2048);
         session.BotEnabled = request.BotEnabled;
         session.BotCustomInstructions = Clean(request.BotCustomInstructions, 2000);
+        session.BotTrainingExamples = Clean(request.BotTrainingExamples, 8000);
         session.ReminderEnabled = request.ReminderEnabled;
         session.ReminderLeadHours = Math.Clamp(request.ReminderLeadHours, 1, 336);
         session.ReminderIntervalHours = Math.Clamp(request.ReminderIntervalHours, 1, 168);
@@ -150,7 +154,7 @@ public sealed class ZaloBotService(
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken)
     {
-        var normalizedQuestion = NormalizeText(incoming.Content);
+        var normalizedQuestion = ExtractQuestion(incoming);
         var sessions = await LoadSessionSnapshotsAsync(connectionIds, groupId, incoming.SenderId, cancellationToken);
         if (sessions.Count == 0)
         {
@@ -160,7 +164,7 @@ public sealed class ZaloBotService(
         if (HasAny(normalizedQuestion, "help", "tro giup", "huong dan", "lenh"))
         {
             return new BotAnswer(
-                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n\nGõ @bot + số, ví dụ: @bot 3. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n\nGõ @bot + số, ví dụ: @bot 3 hoặc @bot 6. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null);
         }
 
@@ -178,8 +182,47 @@ public sealed class ZaloBotService(
                 : "Các trận sắp tới:\n" + string.Join("\n", lines), null);
         }
 
-        if (HasAny(normalizedQuestion, "danh sach", "co ten", "co trong", "duoc vote", "da vote") || IsCommand(normalizedQuestion, "2"))
+        if (IsCommand(normalizedQuestion, "6") || HasAny(normalizedQuestion, "qr thanh toan", "ma qr", "chuyen khoan", "thanh toan o dau"))
         {
+            var selected = SelectSession(sessions, normalizedQuestion);
+            if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
+            var session = selected.Session!;
+            if (string.IsNullOrWhiteSpace(session.PaymentQrImageUrl))
+            {
+                return new BotAnswer($"admin chưa cấu hình ảnh QR thanh toán cho {session.Name}.", null);
+            }
+            var instructions = string.IsNullOrWhiteSpace(session.PaymentInstructions)
+                ? $"QR thanh toán cho {session.Name}. Khi chuyển khoản nhớ ghi tên Zalo của bạn nhé."
+                : $"{session.Name} — {session.PaymentInstructions}";
+            return new BotAnswer(instructions, session.PaymentQrImageUrl);
+        }
+
+        if (IsRosterQuestion(normalizedQuestion))
+        {
+            var selected = SelectSession(sessions, normalizedQuestion);
+            if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
+            var session = selected.Session!;
+            if (session.PlayerNames.Count == 0)
+            {
+                return new BotAnswer($"{session.Name} hiện chưa có ai trong danh sách.", null);
+            }
+            var players = session.PlayerNames.Select((name, index) => $"{index + 1}. {name}");
+            return new BotAnswer(
+                $"Danh sách {session.Name} ({session.PlayerCount}/{session.Capacity}):\n{string.Join("\n", players)}",
+                null);
+        }
+
+        if (IsSelfMembershipQuestion(normalizedQuestion) || IsCommand(normalizedQuestion, "2"))
+        {
+            if (HasExplicitSessionSelector(sessions, normalizedQuestion))
+            {
+                var selected = SelectSession(sessions, normalizedQuestion);
+                if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
+                var session = selected.Session!;
+                return new BotAnswer(session.SenderIsListed
+                    ? $"bạn đang ở danh sách của {session.Name}{FormatScheduleSuffix(session)}."
+                    : $"mình chưa thấy bạn trong danh sách của {session.Name}.", null);
+            }
             var upcoming = sessions.Where(IsUpcoming).Take(4).ToList();
             if (upcoming.Count == 0) upcoming = sessions.Take(1).ToList();
             var listed = upcoming.Where(session => session.SenderIsListed).ToList();
@@ -235,6 +278,11 @@ public sealed class ZaloBotService(
                 : $"{session.Name} đang có {session.PlayerCount}/{session.Capacity}, còn thiếu {missing} slot.", null);
         }
 
+        if (HasAny(normalizedQuestion, "quota token", "gioi han token", "gioi han model", "model nao", "model gi"))
+        {
+            return new BotAnswer(ai.GetPublicModelInfo(), null);
+        }
+
         var recentMessages = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(message => connectionIds.Contains(message.ZaloConnectionId) && message.GroupId == groupId)
@@ -257,8 +305,11 @@ public sealed class ZaloBotService(
                 session.PlayerCount,
                 session.Capacity,
                 session.SenderIsListed,
-                session.LatestPoll)).ToList(),
-            sessions.Select(session => session.CustomInstructions).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)));
+                session.LatestPoll,
+                session.PlayerNames)).ToList(),
+            CombineSettings(sessions.Select(session => session.CustomInstructions)),
+            CombineSettings(sessions.Select(session => session.TrainingExamples)),
+            DateTimeOffset.UtcNow.ToOffset(VietnamOffset));
         return new BotAnswer(await ai.AnswerAsync(aiContext, cancellationToken), null);
     }
 
@@ -268,32 +319,35 @@ public sealed class ZaloBotService(
         string senderId,
         CancellationToken cancellationToken)
     {
-        var sessions = await db.MatchSessions
+        var loadedSessions = await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.ZaloConnectionId != null &&
                               connectionIds.Contains(session.ZaloConnectionId) &&
                               session.ZaloGroupId == groupId &&
                               session.BotEnabled &&
                               session.Status != SessionStatus.Cancelled)
-            .OrderBy(session => session.StartTime == null)
+            .ToListAsync(cancellationToken);
+        var upcomingCutoff = DateTimeOffset.UtcNow.AddHours(-4);
+        var sessions = loadedSessions
+            .OrderBy(session => session.StartTime is not null && session.StartTime < upcomingCutoff ? 2 : session.StartTime is null ? 1 : 0)
             .ThenBy(session => session.StartTime)
             .ThenByDescending(session => session.UpdatedAt)
-            .ToListAsync(cancellationToken);
+            .ToList();
         var sessionIds = sessions.Select(session => session.Id).ToList();
-        var playerCounts = await db.SessionPlayers
+        var activePlayers = await db.SessionPlayers
             .AsNoTracking()
             .Where(player => sessionIds.Contains(player.SessionId) && player.IsPresent)
+            .Select(player => new
+            {
+                player.SessionId,
+                player.DisplayName,
+                ZaloUserId = player.PlayerProfile == null ? null : player.PlayerProfile.ZaloUserId
+            })
+            .ToListAsync(cancellationToken);
+        var playersBySession = activePlayers
             .GroupBy(player => player.SessionId)
-            .Select(group => new { SessionId = group.Key, Count = group.Count() })
-            .ToDictionaryAsync(item => item.SessionId, item => item.Count, cancellationToken);
-        var senderSessionIds = await db.SessionPlayers
-            .AsNoTracking()
-            .Where(player => sessionIds.Contains(player.SessionId) &&
-                             player.IsPresent &&
-                             player.PlayerProfile != null &&
-                             player.PlayerProfile.ZaloUserId == NormalizeId(senderId))
-            .Select(player => player.SessionId)
-            .ToHashSetAsync(cancellationToken);
+            .ToDictionary(group => group.Key, group => group.ToList());
+        var normalizedSenderId = NormalizeId(senderId);
         var imports = await db.PollImports
             .AsNoTracking()
             .Where(import => sessionIds.Contains(import.SessionId))
@@ -309,23 +363,38 @@ public sealed class ZaloBotService(
             session.Location,
             session.ParkingInstructions,
             session.LocationImageUrl,
+            session.PaymentInstructions,
+            session.PaymentQrImageUrl,
             session.BotCustomInstructions,
-            playerCounts.GetValueOrDefault(session.Id),
+            session.BotTrainingExamples,
+            playersBySession.GetValueOrDefault(session.Id)?.Count ?? 0,
             session.TeamCount * session.TeamSize,
-            senderSessionIds.Contains(session.Id),
-            latestPolls.GetValueOrDefault(session.Id))).ToList();
+            playersBySession.GetValueOrDefault(session.Id)?.Any(player => NormalizeId(player.ZaloUserId) == normalizedSenderId) == true,
+            latestPolls.GetValueOrDefault(session.Id),
+            playersBySession.GetValueOrDefault(session.Id)?
+                .Select(player => player.DisplayName)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList() ?? [])).ToList();
     }
 
     private static SessionSelection SelectSession(IReadOnlyList<SessionSnapshot> sessions, string normalizedQuestion)
     {
-        var upcoming = sessions.Where(IsUpcoming).ToList();
-        if (upcoming.Count == 0) upcoming = sessions.Take(1).ToList();
-        var explicitMatches = upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList();
+        var hasExplicitSelector = HasExplicitSessionSelector(sessions, normalizedQuestion);
+        var candidates = hasExplicitSelector ? sessions.ToList() : sessions.Where(IsUpcoming).ToList();
+        if (candidates.Count == 0) candidates = sessions.Take(1).ToList();
+        var explicitMatches = candidates.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList();
         if (explicitMatches.Count == 1) return new SessionSelection(explicitMatches[0], null);
-        if (upcoming.Count == 1) return new SessionSelection(upcoming[0], null);
+        if (hasExplicitSelector && explicitMatches.Count == 0)
+        {
+            var available = sessions.Take(4).Select(FormatSessionChoice);
+            return new SessionSelection(null, $"mình không tìm thấy trận đúng ngày/tên bạn hỏi. Các trận đang có: {string.Join(", ", available)}.");
+        }
+        if (explicitMatches.Count > 1) candidates = explicitMatches;
+        if (candidates.Count == 1) return new SessionSelection(candidates[0], null);
 
-        var choices = upcoming.Take(4).Select(session =>
-            session.StartTime is null ? session.Name : $"{session.Name} ({FormatVietnamTime(session.StartTime.Value)})");
+        var choices = candidates.Take(4).Select(FormatSessionChoice);
         return new SessionSelection(null, $"bạn đang hỏi trận nào: {string.Join(", ", choices)}?");
     }
 
@@ -334,6 +403,19 @@ public sealed class ZaloBotService(
         if (question.Contains(NormalizeText(session.Name), StringComparison.Ordinal)) return true;
         if (session.StartTime is null) return false;
         var local = session.StartTime.Value.ToOffset(VietnamOffset);
+        var today = DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date;
+        if (HasAny(question, "hom nay", "bua nay") && local.Date == today) return true;
+        if (HasAny(question, "ngay mai", "mai nay") && local.Date == today.AddDays(1)) return true;
+        foreach (Match dateMatch in Regex.Matches(question, @"(?<!\d)(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?(?!\d)"))
+        {
+            if (!int.TryParse(dateMatch.Groups[1].Value, out var day) ||
+                !int.TryParse(dateMatch.Groups[2].Value, out var month) ||
+                day != local.Day || month != local.Month) continue;
+            if (!dateMatch.Groups[3].Success) return true;
+            var year = int.Parse(dateMatch.Groups[3].Value, CultureInfo.InvariantCulture);
+            if (year < 100) year += 2000;
+            if (year == local.Year) return true;
+        }
         var dayTokens = local.DayOfWeek switch
         {
             DayOfWeek.Monday => new[] { "t2", "thu 2", "thu hai" },
@@ -344,8 +426,7 @@ public sealed class ZaloBotService(
             DayOfWeek.Saturday => new[] { "t7", "thu 7", "thu bay" },
             _ => new[] { "cn", "chu nhat" }
         };
-        return dayTokens.Any(token => question.Contains(token, StringComparison.Ordinal)) ||
-               question.Contains(local.ToString("dd/MM", CultureInfo.InvariantCulture), StringComparison.Ordinal);
+        return dayTokens.Any(token => ContainsToken(question, token));
     }
 
     private static bool IsUpcoming(SessionSnapshot session) =>
@@ -383,12 +464,91 @@ public sealed class ZaloBotService(
     private static string JoinSessionNames(IReadOnlyList<SessionSnapshot> sessions) =>
         string.Join(", ", sessions.Select(session => session.Name));
 
+    private static string FormatSessionChoice(SessionSnapshot session) =>
+        session.StartTime is null ? session.Name : $"{session.Name} ({FormatVietnamTime(session.StartTime.Value)})";
+
+    private static bool HasExplicitSessionSelector(IReadOnlyList<SessionSnapshot> sessions, string question) =>
+        HasAny(question, "hom nay", "bua nay", "ngay mai", "mai nay") ||
+        Regex.IsMatch(question, @"(?<!\d)\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?(?!\d)") ||
+        new[] { "t2", "thu 2", "thu hai", "t3", "thu 3", "thu ba", "t4", "thu 4", "thu tu", "t5", "thu 5", "thu nam", "t6", "thu 6", "thu sau", "t7", "thu 7", "thu bay", "cn", "chu nhat" }
+            .Any(token => ContainsToken(question, token)) ||
+        sessions.Any(session => question.Contains(NormalizeText(session.Name), StringComparison.Ordinal));
+
+    private static bool IsRosterQuestion(string question) =>
+        (question.Contains("danh sach", StringComparison.Ordinal) && !IsSelfMembershipQuestion(question)) ||
+        HasAny(question,
+            "danh sach doi hinh",
+            "lay danh sach",
+            "gui danh sach",
+            "xem danh sach",
+            "danh sach hom nay",
+            "danh sach bua nay",
+            "danh sach ngay",
+            "danh sach cn",
+            "danh sach chu nhat",
+            "co nhung ai",
+            "ai tham gia",
+            "ai danh");
+
+    private static bool IsSelfMembershipQuestion(string question) =>
+        HasAny(question,
+            "minh co trong",
+            "tui co trong",
+            "toi co trong",
+            "em co trong",
+            "minh co ten",
+            "tui co ten",
+            "toi co ten",
+            "em co ten",
+            "co ten minh",
+            "co ten tui",
+            "co ten toi",
+            "co ten em",
+            "duoc vote",
+            "da vote");
+
+    private static bool ContainsToken(string value, string token) =>
+        Regex.IsMatch(value, $@"(?<![a-z0-9]){Regex.Escape(token)}(?![a-z0-9])", RegexOptions.CultureInvariant);
+
+    private static string ExtractQuestion(ZaloIncomingMessageEvent incoming)
+    {
+        var value = incoming.Content ?? string.Empty;
+        foreach (var mention in incoming.Mentions
+                     .Where(mention => NormalizeId(mention.Uid) == NormalizeId(incoming.BotId))
+                     .OrderByDescending(mention => mention.Pos))
+        {
+            if (mention.Pos >= 0 && mention.Len > 0 && mention.Pos + mention.Len <= value.Length)
+            {
+                value = value.Remove(mention.Pos, mention.Len);
+            }
+        }
+        value = Regex.Replace(value, @"^\s*@\S+\s*", string.Empty, RegexOptions.CultureInvariant);
+        return NormalizeText(value).Trim();
+    }
+
+    private static string? CombineSettings(IEnumerable<string?> values)
+    {
+        var distinct = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinct.Count == 0 ? null : string.Join("\n---\n", distinct);
+    }
+
     private static bool HasAny(string value, params string[] terms) =>
         terms.Any(term => value.Contains(term, StringComparison.Ordinal));
 
-    private static bool IsCommand(string value, string command) =>
-        value.Equals(command, StringComparison.Ordinal) ||
-        value.EndsWith($" {command}", StringComparison.Ordinal);
+    private static bool IsCommand(string value, string command)
+    {
+        if (value.Equals(command, StringComparison.Ordinal)) return true;
+        if (!value.StartsWith(command + " ", StringComparison.Ordinal)) return false;
+        var remainder = value[(command.Length + 1)..].TrimStart();
+        return !Regex.IsMatch(
+            remainder,
+            @"^(?:[+\-*/x×=]|cong(?:\s|$)|tru(?:\s|$)|nhan(?:\s|$)|chia(?:\s|$))",
+            RegexOptions.CultureInvariant);
+    }
 
     private static string NormalizeText(string value)
     {
@@ -440,8 +600,11 @@ public sealed class ZaloBotService(
         session.Location,
         session.ParkingInstructions,
         session.LocationImageUrl,
+        session.PaymentInstructions,
+        session.PaymentQrImageUrl,
         session.BotEnabled,
         session.BotCustomInstructions,
+        session.BotTrainingExamples,
         session.ReminderEnabled,
         session.ReminderLeadHours,
         session.ReminderIntervalHours,
@@ -456,9 +619,13 @@ public sealed class ZaloBotService(
         string? Location,
         string? ParkingInstructions,
         string? LocationImageUrl,
+        string? PaymentInstructions,
+        string? PaymentQrImageUrl,
         string? CustomInstructions,
+        string? TrainingExamples,
         int PlayerCount,
         int Capacity,
         bool SenderIsListed,
-        string? LatestPoll);
+        string? LatestPoll,
+        IReadOnlyList<string> PlayerNames);
 }
