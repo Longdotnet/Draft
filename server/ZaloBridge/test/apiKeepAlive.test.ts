@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { apiHealthUrlsFromWebhooks, pingApiHealthUrls } from "../src/apiKeepAlive.js";
+import {
+  apiHealthUrlsFromWebhooks,
+  getApiKeepAliveConfiguration,
+  pingApiHealthUrls,
+} from "../src/apiKeepAlive.js";
+
+test("enables keep-alive by default only in production and clamps its interval", () => {
+  assert.deepEqual(getApiKeepAliveConfiguration({ NODE_ENV: "production" }), {
+    enabled: true,
+    intervalMinutes: 8,
+  });
+  assert.deepEqual(getApiKeepAliveConfiguration({
+    NODE_ENV: "production",
+    ZALO_BRIDGE_API_KEEP_ALIVE: "false",
+    ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES: "2",
+  }), {
+    enabled: false,
+    intervalMinutes: 5,
+  });
+});
 
 test("derives and deduplicates API health URLs from listener webhooks", () => {
   assert.deepEqual(

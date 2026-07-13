@@ -7,6 +7,25 @@ export type HealthPingResult = {
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Pick<Response, "ok" | "status">>;
 
+export type ApiKeepAliveConfiguration = {
+  enabled: boolean;
+  intervalMinutes: number;
+};
+
+export function getApiKeepAliveConfiguration(
+  environment: NodeJS.ProcessEnv = process.env,
+): ApiKeepAliveConfiguration {
+  const configuredEnabled = environment.ZALO_BRIDGE_API_KEEP_ALIVE;
+  const enabled = configuredEnabled == null
+    ? environment.NODE_ENV === "production"
+    : configuredEnabled.toLowerCase() === "true";
+  const configuredMinutes = Number(environment.ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES ?? "8");
+  const intervalMinutes = Number.isFinite(configuredMinutes)
+    ? Math.min(14, Math.max(5, configuredMinutes))
+    : 8;
+  return { enabled, intervalMinutes };
+}
+
 export function apiHealthUrlsFromWebhooks(webhookUrls: Iterable<string>): string[] {
   const healthUrls = new Set<string>();
 
@@ -56,17 +75,12 @@ export async function pingApiHealthUrls(
   );
 }
 
-export function startApiKeepAlive(getWebhookUrls: () => Iterable<string>): () => void {
-  const configuredEnabled = process.env.ZALO_BRIDGE_API_KEEP_ALIVE;
-  const enabled = configuredEnabled == null
-    ? process.env.NODE_ENV === "production"
-    : configuredEnabled.toLowerCase() === "true";
+export function startApiKeepAlive(
+  getWebhookUrls: () => Iterable<string>,
+  configuration = getApiKeepAliveConfiguration(),
+): () => void {
+  const { enabled, intervalMinutes } = configuration;
   if (!enabled) return () => undefined;
-
-  const configuredMinutes = Number(process.env.ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES ?? "8");
-  const intervalMinutes = Number.isFinite(configuredMinutes)
-    ? Math.min(14, Math.max(5, configuredMinutes))
-    : 8;
   let running = false;
 
   const run = async () => {

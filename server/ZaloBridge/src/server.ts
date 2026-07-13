@@ -1,5 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from "express";
-import { startApiKeepAlive } from "./apiKeepAlive.js";
+import { getApiKeepAliveConfiguration, startApiKeepAlive } from "./apiKeepAlive.js";
 import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } from "./contracts.js";
 import {
   createQrLogin,
@@ -23,12 +23,18 @@ if (!configuredInternalKey && process.env.NODE_ENV === "production") {
   throw new Error("ZALO_BRIDGE_INTERNAL_KEY is required in production.");
 }
 const internalKey = configuredInternalKey || "development-zalo-bridge-key";
+const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (_request, response) => {
-  response.json({ status: "ok", mockMode: process.env.ZALO_BRIDGE_MOCK === "true" });
+  response.json({
+    status: "ok",
+    mockMode: process.env.ZALO_BRIDGE_MOCK === "true",
+    apiKeepAlive: apiKeepAliveConfiguration,
+    revision: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null,
+  });
 });
 
 app.use("/v1", (request, response, next) => {
@@ -131,7 +137,7 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   response.status(502).json({ error: message });
 });
 
-const stopApiKeepAlive = startApiKeepAlive(getActiveListenerWebhookUrls);
+const stopApiKeepAlive = startApiKeepAlive(getActiveListenerWebhookUrls, apiKeepAliveConfiguration);
 const server = app.listen(port, "0.0.0.0", () => {
   console.log(`Zalo bridge listening on port ${port}`);
 });
