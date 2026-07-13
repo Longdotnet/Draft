@@ -16,12 +16,14 @@ jobs:
   tick:
     name: Wake services and check reminders
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 5
     steps:
-      - name: Queue one scheduler cycle
+      - name: Wake Render services
         env:
           SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
           SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
+          BACKEND_HEALTH_URL: ${{ vars.BACKEND_HEALTH_URL }}
+          ZALO_BRIDGE_HEALTH_URL: ${{ vars.ZALO_BRIDGE_HEALTH_URL }}
         shell: bash
         run: |
           if [ -z "$SCHEDULER_URL" ] || [ -z "$SCHEDULER_KEY" ]; then
@@ -29,32 +31,79 @@ jobs:
             exit 1
           fi
 
-          set +e
-          status=$(curl \
-            --silent \
-            --show-error \
-            --connect-timeout 15 \
-            --max-time 45 \
-            --output /tmp/scheduler-response \
-            --write-out "%{http_code}" \
-            --request POST \
-            --header "x-scheduler-key: $SCHEDULER_KEY" \
-            "$SCHEDULER_URL")
-          curl_exit=$?
-          set -e
+          # These variables are optional so the existing SCHEDULER_URL remains
+          # sufficient after deployment. Set them explicitly in Actions
+          # Variables when a service URL changes.
+          backend_health_url="${BACKEND_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health}"
+          bridge_health_url="${ZALO_BRIDGE_HEALTH_URL:-https://draft-zalo-bridge.onrender.com/health}"
 
-          if [ "$curl_exit" -eq 28 ]; then
-            echo "Render was asked to wake but did not answer within 45 seconds. The API startup worker will still check reminders."
-            exit 0
-          fi
-          if [ "$curl_exit" -ne 0 ]; then
-            echo "Scheduler request failed with curl exit code $curl_exit."
-            exit "$curl_exit"
-          fi
-          if [ "$status" != "202" ]; then
-            echo "Scheduler returned HTTP $status:"
-            cat /tmp/scheduler-response
-            exit 1
-          fi
+          wait_for_health() {
+            local name="$1"
+            local url="$2"
+            local response_file="/tmp/${name}-health-response"
 
-          cat /tmp/scheduler-response
+            for attempt in 1 2 3 4; do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --output "$response_file" \
+                --write-out "%{http_code}" \
+                "$url" 2>/tmp/${name}-health-error) || status="000"
+
+              if [ "$status" = "200" ]; then
+                echo "$name is healthy: $url"
+                cat "$response_file"
+                echo
+                return 0
+              fi
+
+              echo "$name wake attempt $attempt/4 returned HTTP $status."
+              if [ -s "/tmp/${name}-health-error" ]; then
+                cat "/tmp/${name}-health-error"
+              fi
+              sleep 5
+            done
+
+            echo "::warning::$name did not become healthy during this run: $url"
+            return 1
+          }
+
+          # Wake the bridge first. Render free services can need 50+ seconds
+          # before they accept the first request after sleeping.
+          wait_for_health "zalo-bridge" "$bridge_health_url" &
+          bridge_health_pid=$!
+          wait_for_health "draft-api" "$backend_health_url" &
+          backend_health_pid=$!
+          wait "$bridge_health_pid" || true
+          wait "$backend_health_pid" || true
+
+          echo "Queueing scheduler cycle: $SCHEDULER_URL"
+          for attempt in 1 2 3 4; do
+            set +e
+            status=$(curl \
+              --silent \
+              --show-error \
+              --connect-timeout 15 \
+              --max-time 30 \
+              --output /tmp/scheduler-response \
+              --write-out "%{http_code}" \
+              --request POST \
+              --header "x-scheduler-key: $SCHEDULER_KEY" \
+              "$SCHEDULER_URL")
+            curl_exit=$?
+            set -e
+
+            if [ "$curl_exit" -eq 0 ] && [ "$status" = "202" ]; then
+              cat /tmp/scheduler-response
+              exit 0
+            fi
+
+            echo "Scheduler attempt $attempt/4 failed: curl=$curl_exit HTTP=$status"
+            cat /tmp/scheduler-response 2>/dev/null || true
+            sleep 5
+          done
+
+          echo "Scheduler did not return HTTP 202 after 4 attempts."
+          exit 1

@@ -108,7 +108,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapPost("/api/internal/scheduler/tick", (
     HttpContext httpContext,
     ZaloSchedulerTrigger trigger,
-    IConfiguration configuration) =>
+    IConfiguration configuration,
+    ILogger<Program> logger) =>
 {
     var expectedKey = configuration["Scheduler:Key"];
     if (string.IsNullOrWhiteSpace(expectedKey))
@@ -121,6 +122,9 @@ app.MapPost("/api/internal/scheduler/tick", (
         return Results.Unauthorized();
 
     var queued = trigger.TryTrigger();
+    logger.LogInformation("Accepted scheduler tick from {RemoteIp}; queued={Queued}",
+        httpContext.Connection.RemoteIpAddress,
+        queued);
     return Results.Accepted(value: new
     {
         accepted = true,

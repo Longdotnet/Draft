@@ -92,15 +92,42 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
 
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
     {
+        var body = await response.Content.ReadAsStringAsync();
+
         if (response.IsSuccessStatusCode)
         {
-            return await response.Content.ReadFromJsonAsync<T>()
-                ?? throw new InvalidOperationException("Zalo bridge returned an empty response.");
+            try
+            {
+                return JsonSerializer.Deserialize<T>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                    ?? throw new InvalidOperationException("Zalo bridge returned an empty response.");
+            }
+            catch (JsonException exception)
+            {
+                throw new HttpRequestException(
+                    $"Zalo bridge returned invalid JSON for HTTP {(int)response.StatusCode}.",
+                    exception,
+                    response.StatusCode);
+            }
         }
 
-        var payload = await response.Content.ReadFromJsonAsync<BridgeErrorResponse>();
+        BridgeErrorResponse? payload = null;
+        try
+        {
+            payload = JsonSerializer.Deserialize<BridgeErrorResponse>(
+                body,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (JsonException)
+        {
+            // Render's proxy can return an HTML error page during cold start.
+            // Preserve the HTTP status instead of masking it with a JSON error.
+        }
+
+        var detail = string.IsNullOrWhiteSpace(body)
+            ? string.Empty
+            : $" Response: {body[..Math.Min(body.Length, 240)].Replace("\r", " ").Replace("\n", " ")}";
         throw new HttpRequestException(
-            payload?.Error ?? $"Zalo bridge returned HTTP {(int)response.StatusCode}.",
+            payload?.Error ?? $"Zalo bridge returned HTTP {(int)response.StatusCode}.{detail}",
             null,
             response.StatusCode);
     }

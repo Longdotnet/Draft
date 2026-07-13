@@ -75,12 +75,13 @@ public sealed class ZaloListenerCoordinator(
             var webhookKey = configuration["Zalo:WebhookKey"]
                 ?? configuration["Zalo:BridgeInternalKey"]
                 ?? "development-zalo-bridge-key";
-            await bridge.StartListenerAsync(
+            await StartListenerWithRetryAsync(
                 connection.AccountZaloId,
                 credentials,
                 groupIds,
                 webhookUrl,
-                webhookKey);
+                webhookKey,
+                cancellationToken);
             return true;
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
@@ -89,6 +90,54 @@ public sealed class ZaloListenerCoordinator(
             return false;
         }
     }
+
+    private async Task<BridgeListenerResponse> StartListenerWithRetryAsync(
+        string accountId,
+        JsonElement credentials,
+        IReadOnlyList<string> groupIds,
+        string webhookUrl,
+        string webhookKey,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 3;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return await bridge.StartListenerAsync(
+                    accountId,
+                    credentials,
+                    groupIds,
+                    webhookUrl,
+                    webhookKey);
+            }
+            catch (Exception exception) when (IsTransientBridgeFailure(exception) && attempt < maxAttempts)
+            {
+                var delay = TimeSpan.FromSeconds(attempt * 5);
+                logger.LogWarning(
+                    exception,
+                    "ZaloBridge listener start attempt {Attempt}/{MaxAttempts} failed for account {AccountId}; retrying in {DelaySeconds}s",
+                    attempt,
+                    maxAttempts,
+                    accountId,
+                    delay.TotalSeconds);
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+
+        throw new InvalidOperationException("ZaloBridge listener start failed after all retry attempts.");
+    }
+
+    private static bool IsTransientBridgeFailure(Exception exception) => exception switch
+    {
+        TaskCanceledException => true,
+        JsonException => true,
+        HttpRequestException http => http.StatusCode is null ||
+                                      (int)http.StatusCode >= 500 ||
+                                      (int)http.StatusCode is 408 or 429,
+        _ => false
+    };
 }
 
 public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogger<ZaloListenerWorker> logger)
