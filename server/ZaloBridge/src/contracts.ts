@@ -41,6 +41,12 @@ export type BridgeMember = {
   avatarUrl: string | null;
 };
 
+export type BridgeGroupRoles = {
+  groupId: string;
+  creatorId: string;
+  adminIds: string[];
+};
+
 export type BridgeMention = {
   uid: string;
   pos: number;

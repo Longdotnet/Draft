@@ -442,7 +442,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (operator)\n9. Tự chạy draft/khui túi (operator + xác nhận)\n10. Gửi ảnh card 3 team\n\nGõ @bot + số, ví dụ: @bot 7. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận. Lệnh 8–9 chỉ người được admin cấp quyền mới dùng được.\n\nBạn có thể nói tự nhiên để bot ghi nhớ cách trả lời cho những lần sau.",
+                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nLệnh thêm: @bot draft lại; @bot đổi vị trí Thanh Tuyền với Nick Tran.\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null,
                 ZaloBotIntent.Help);
         }
@@ -479,7 +479,8 @@ public sealed class ZaloBotService(
             var selected = await SelectSessionAsync(sessions, normalizedQuestion, activeConnectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null, decision.Intent);
             var session = selected.Session!;
-            if (!IsAuthorizedOperator(session, incoming.SenderId)) return UnauthorizedOperatorAnswer(decision.Intent);
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, false);
+            if (denial is not null) return denial;
             var synced = await zaloIntegration.SyncLatestPollAsync(session.AdminUserId, session.Id, question);
             return new BotAnswer(synced.IsSuccess && synced.Value is not null ? synced.Value.Message : synced.Error ?? "Không đồng bộ được poll.", null, decision.Intent);
         }
@@ -489,26 +490,59 @@ public sealed class ZaloBotService(
             var selected = await SelectSessionAsync(sessions, normalizedQuestion, activeConnectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null, decision.Intent);
             var session = selected.Session!;
-            if (!IsAuthorizedOperator(session, incoming.SenderId)) return UnauthorizedOperatorAnswer(decision.Intent);
-            await SaveActionConfirmationAsync(activeConnectionId, groupId, incoming.SenderId, session.Id, ZaloBotIntent.AutoDraftConfirm, cancellationToken);
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, false);
+            if (denial is not null) return denial;
+            var pendingIntent = session.Status == SessionStatus.Finished
+                ? ZaloBotIntent.RedraftConfirm
+                : ZaloBotIntent.AutoDraftConfirm;
+            await SaveActionConfirmationAsync(activeConnectionId, groupId, incoming.SenderId, session.Id, pendingIntent, cancellationToken);
             return new BotAnswer(
-                $"⚠️ Tự draft sẽ chọn captain nếu cần và khui toàn bộ túi của {session.Name}; kết quả đội sẽ thay đổi ngay trên web. Gõ @bot xác nhận draft để chạy, hoặc @bot huỷ.",
+                session.Status == SessionStatus.Finished
+                    ? $"⚠️ {session.Name} đã draft xong. Draft lại sẽ xoá kết quả bốc team hiện tại và khui lại từ đầu. Gõ @bot xác nhận draft lại để chạy, hoặc @bot huỷ."
+                    : $"⚠️ Tự draft sẽ chọn captain nếu cần và khui toàn bộ túi của {session.Name}; kết quả đội sẽ thay đổi ngay trên web. Gõ @bot xác nhận draft để chạy, hoặc @bot huỷ.",
                 null,
                 decision.Intent);
         }
 
-        if (decision.Intent == ZaloBotIntent.AutoDraftConfirm)
+        if (decision.Intent == ZaloBotIntent.Redraft)
+        {
+            var selected = await SelectSessionAsync(sessions, normalizedQuestion, activeConnectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
+            if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null, decision.Intent);
+            var session = selected.Session!;
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, false);
+            if (denial is not null) return denial;
+            await SaveActionConfirmationAsync(activeConnectionId, groupId, incoming.SenderId, session.Id, ZaloBotIntent.RedraftConfirm, cancellationToken);
+            return new BotAnswer(
+                $"⚠️ Draft lại {session.Name} sẽ xoá kết quả bốc team hiện tại và khui lại từ đầu, vẫn giữ captain hiện tại. Gõ @bot xác nhận draft lại để chạy, hoặc @bot huỷ.",
+                null,
+                decision.Intent);
+        }
+
+        if (decision.Intent is ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm)
         {
             var selected = sessions.SingleOrDefault(session => NormalizeText(session.Name) == normalizedQuestion) ?? sessions.FirstOrDefault();
             if (selected is null) return new BotAnswer("Mình không còn tìm thấy buổi cần draft.", null, decision.Intent);
-            if (!IsAuthorizedOperator(selected, incoming.SenderId)) return UnauthorizedOperatorAnswer(decision.Intent);
-            var drafted = await draftService.AutoRunDraftAsync(selected.AdminUserId, selected.Id);
+            var denial = await GetOperatorDenialAsync(selected, incoming.SenderId, decision.Intent, false);
+            if (denial is not null) return denial;
+            var isRedraft = decision.Intent == ZaloBotIntent.RedraftConfirm;
+            var drafted = await draftService.AutoRunDraftAsync(selected.AdminUserId, selected.Id, isRedraft);
             if (!drafted.IsSuccess || drafted.Value is null)
                 return new BotAnswer($"Không thể tự draft: {drafted.Error}", null, decision.Intent);
             return new BotAnswer(
-                $"Đã tự draft xong {selected.Name}.\n{FormatTeamLineup(selected.Name, drafted.Value.TeamPreview)}",
+                $"Đã {(isRedraft ? "draft lại" : "tự draft")} xong {selected.Name}.\n{FormatTeamLineup(selected.Name, drafted.Value.TeamPreview)}",
                 teamCards.GetPublicUrl(selected.Id),
                 decision.Intent);
+        }
+
+        if (decision.Intent == ZaloBotIntent.SwapTeamPlayers)
+        {
+            return await SwapTeamPlayersAsync(
+                decision,
+                sessions,
+                normalizedQuestion,
+                question,
+                incoming,
+                false);
         }
 
         if (decision.Intent == ZaloBotIntent.PaymentQr)
@@ -722,7 +756,9 @@ public sealed class ZaloBotService(
             await db.SaveChangesAsync(cancellationToken);
             return new PendingResolution(true, null, null, null);
         }
-        if (state.PendingIntent == ZaloBotIntent.AutoDraftConfirm.ToString())
+        if (state.PendingIntent is not null &&
+            (state.PendingIntent == ZaloBotIntent.AutoDraftConfirm.ToString() ||
+             state.PendingIntent == ZaloBotIntent.RedraftConfirm.ToString()))
         {
             List<string> actionSessionIds;
             try { actionSessionIds = JsonSerializer.Deserialize<List<string>>(state.PendingPayloadJson) ?? []; }
@@ -730,9 +766,12 @@ public sealed class ZaloBotService(
             var actionSession = sessions.SingleOrDefault(session => actionSessionIds.Contains(session.Id));
             if (ZaloBotIntelligence.IsConfirmation(normalizedQuestion) && actionSession is not null)
             {
+                var confirmationIntent = state.PendingIntent == ZaloBotIntent.RedraftConfirm.ToString()
+                    ? ZaloBotIntent.RedraftConfirm
+                    : ZaloBotIntent.AutoDraftConfirm;
                 db.ZaloBotConversationStates.Remove(state);
                 await db.SaveChangesAsync(cancellationToken);
-                return new PendingResolution(false, ZaloBotIntent.AutoDraftConfirm, actionSession, null);
+                return new PendingResolution(false, confirmationIntent, actionSession, null);
             }
             var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
             if (ZaloBotIntelligence.TryGetExactCommand(normalizedQuestion, out _) ||
@@ -742,7 +781,13 @@ public sealed class ZaloBotService(
                 await db.SaveChangesAsync(cancellationToken);
                 return PendingResolution.None;
             }
-            return new PendingResolution(false, null, null, "Đang chờ xác nhận tự draft. Gõ @bot xác nhận draft để chạy hoặc @bot huỷ.");
+            return new PendingResolution(
+                false,
+                null,
+                null,
+                state.PendingIntent == ZaloBotIntent.RedraftConfirm.ToString()
+                    ? "Đang chờ xác nhận draft lại. Gõ @bot xác nhận draft lại để chạy hoặc @bot huỷ."
+                    : "Đang chờ xác nhận tự draft. Gõ @bot xác nhận draft để chạy hoặc @bot huỷ.");
         }
         if (ZaloBotIntelligence.TryGetExactCommand(normalizedQuestion, out _) ||
             ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent == ZaloBotIntent.Help)
@@ -852,19 +897,124 @@ public sealed class ZaloBotService(
         }
         state.PendingIntent = pendingIntent.ToString();
         state.PendingPayloadJson = JsonSerializer.Serialize(new[] { sessionId });
-        state.PreviousCommand = ZaloBotIntent.AutoDraft.ToString();
+        state.PreviousCommand = pendingIntent == ZaloBotIntent.RedraftConfirm
+            ? ZaloBotIntent.Redraft.ToString()
+            : ZaloBotIntent.AutoDraft.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static bool IsAuthorizedOperator(SessionSnapshot session, string senderId) =>
-        session.OperatorZaloUserIds.Contains(NormalizeId(senderId));
+    private async Task<BotAnswer> SwapTeamPlayersAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string originalQuestion,
+        ZaloIncomingMessageEvent incoming,
+        bool aiCalled)
+    {
+        var sessionsWithBothNames = sessions
+            .Where(session => FindMentionedPlayerNames(originalQuestion, session.PlayerNames).Count >= 2)
+            .ToList();
+        SessionSelection selected;
+        if (sessionsWithBothNames.Count == 1)
+        {
+            selected = new SessionSelection(sessionsWithBothNames[0], null);
+        }
+        else
+        {
+            selected = SelectSession(sessions, normalizedQuestion);
+        }
+        if (selected.Clarification is not null)
+            return new BotAnswer(
+                selected.Clarification + " Hãy gửi lại đầy đủ lệnh đổi người kèm ngày hoặc tên trận.",
+                null,
+                decision.Intent,
+                aiCalled);
 
-    private static BotAnswer UnauthorizedOperatorAnswer(ZaloBotIntent intent) => new(
-        "Lệnh này thay đổi dữ liệu trên web nên chỉ Zalo operator được admin cấp quyền mới dùng được. Admin vào Bot chat & reminder → Người được phép điều khiển bot để bật quyền.",
-        null,
-        intent);
+        var session = selected.Session!;
+        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+        if (denial is not null) return denial;
+        var mentionedNames = FindMentionedPlayerNames(originalQuestion, session.PlayerNames);
+        string firstPlayer;
+        string secondPlayer;
+        if (mentionedNames.Count == 2)
+        {
+            firstPlayer = mentionedNames[0];
+            secondPlayer = mentionedNames[1];
+        }
+        else if (!ZaloBotIntelligence.TryExtractSwapPlayerNames(originalQuestion, out firstPlayer, out secondPlayer))
+        {
+            return new BotAnswer(
+                "Mình chưa nhận ra đúng hai người cần đổi. Bạn ghi theo mẫu: @bot đổi vị trí Thanh Tuyền với Nick Tran.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var swapped = await draftService.SwapDraftPlayersAsync(
+            session.AdminUserId,
+            session.Id,
+            firstPlayer,
+            secondPlayer);
+        if (!swapped.IsSuccess || swapped.Value is null)
+            return new BotAnswer(swapped.Error ?? "Không đổi được hai người này.", null, decision.Intent, aiCalled);
+        var result = swapped.Value;
+        return new BotAnswer(
+            $"Đã đổi {result.FirstPlayerName} từ {result.FirstPreviousTeamName} sang {result.SecondPreviousTeamName}, " +
+            $"và {result.SecondPlayerName} từ {result.SecondPreviousTeamName} sang {result.FirstPreviousTeamName}.\n" +
+            FormatTeamLineup(session.Name, result.State.TeamPreview),
+            teamCards.GetPublicUrl(session.Id),
+            decision.Intent,
+            aiCalled);
+    }
+
+    private static List<string> FindMentionedPlayerNames(
+        string question,
+        IReadOnlyList<string> playerNames)
+    {
+        var normalizedQuestion = NormalizeText(question);
+        return playerNames
+            .Select(name => new { Name = name, Normalized = NormalizeText(name) })
+            .Where(item => item.Normalized.Length > 0 && normalizedQuestion.Contains(item.Normalized, StringComparison.Ordinal))
+            .GroupBy(item => item.Normalized, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(item => normalizedQuestion.IndexOf(item.Normalized, StringComparison.Ordinal))
+            .Select(item => item.Name)
+            .ToList();
+    }
+
+    private async Task<BotAnswer?> GetOperatorDenialAsync(
+        SessionSnapshot session,
+        string senderId,
+        ZaloBotIntent intent,
+        bool aiCalled)
+    {
+        if (session.OperatorZaloUserIds.Contains(NormalizeId(senderId))) return null;
+        var groupRole = await zaloIntegration.GetGroupRoleAuthorizationAsync(
+            session.AdminUserId,
+            session.Id,
+            senderId);
+        if (groupRole.IsSuccess && groupRole.Value?.CanOperateBot == true) return null;
+        if (!groupRole.IsSuccess)
+        {
+            logger.LogWarning(
+                "Could not verify Zalo group role Session={SessionId} Sender={SenderId}: {Error}",
+                session.Id,
+                NormalizeId(senderId),
+                groupRole.Error);
+            return new BotAnswer(
+                "Mình chưa xác minh được quyền trưởng/phó nhóm từ Zalo lúc này. Bạn thử lại sau hoặc nhờ admin cấp UID trong phần Bot chat & reminder.",
+                null,
+                intent,
+                aiCalled);
+        }
+        return new BotAnswer(
+            "Lệnh này thay đổi dữ liệu nên chỉ trưởng nhóm, phó nhóm hoặc Zalo operator được admin cấp quyền mới dùng được.",
+            null,
+            intent,
+            aiCalled);
+    }
 
     private static string FormatTeamLineup(string sessionName, IReadOnlyList<TeamPreviewResponse> teams)
     {
@@ -924,7 +1074,8 @@ public sealed class ZaloBotService(
             var syncSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (syncSelection.Clarification is not null) return new BotAnswer(syncSelection.Clarification, null, decision.Intent, true);
             var syncSession = syncSelection.Session!;
-            if (!IsAuthorizedOperator(syncSession, incoming.SenderId)) return UnauthorizedOperatorAnswer(decision.Intent) with { AiCalled = true };
+            var denial = await GetOperatorDenialAsync(syncSession, incoming.SenderId, decision.Intent, true);
+            if (denial is not null) return denial;
             var synced = await zaloIntegration.SyncLatestPollAsync(syncSession.AdminUserId, syncSession.Id, selector);
             return new BotAnswer(synced.IsSuccess && synced.Value is not null ? synced.Value.Message : synced.Error ?? "Không đồng bộ được poll.", null, decision.Intent, true);
         }
@@ -933,9 +1084,39 @@ public sealed class ZaloBotService(
             var draftSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (draftSelection.Clarification is not null) return new BotAnswer(draftSelection.Clarification, null, decision.Intent, true);
             var draftSession = draftSelection.Session!;
-            if (!IsAuthorizedOperator(draftSession, incoming.SenderId)) return UnauthorizedOperatorAnswer(decision.Intent) with { AiCalled = true };
-            await SaveActionConfirmationAsync(connectionId, groupId, incoming.SenderId, draftSession.Id, ZaloBotIntent.AutoDraftConfirm, cancellationToken);
-            return new BotAnswer($"⚠️ Tự draft sẽ thay đổi đội hình {draftSession.Name}. Gõ @bot xác nhận draft để chạy hoặc @bot huỷ.", null, decision.Intent, true);
+            var denial = await GetOperatorDenialAsync(draftSession, incoming.SenderId, decision.Intent, true);
+            if (denial is not null) return denial;
+            var pendingIntent = draftSession.Status == SessionStatus.Finished
+                ? ZaloBotIntent.RedraftConfirm
+                : ZaloBotIntent.AutoDraftConfirm;
+            await SaveActionConfirmationAsync(connectionId, groupId, incoming.SenderId, draftSession.Id, pendingIntent, cancellationToken);
+            return new BotAnswer(
+                draftSession.Status == SessionStatus.Finished
+                    ? $"⚠️ {draftSession.Name} đã draft xong. Gõ @bot xác nhận draft lại để xoá kết quả hiện tại và chia lại, hoặc @bot huỷ."
+                    : $"⚠️ Tự draft sẽ thay đổi đội hình {draftSession.Name}. Gõ @bot xác nhận draft để chạy hoặc @bot huỷ.",
+                null,
+                decision.Intent,
+                true);
+        }
+        if (decision.Intent == ZaloBotIntent.Redraft)
+        {
+            var redraftSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
+            if (redraftSelection.Clarification is not null) return new BotAnswer(redraftSelection.Clarification, null, decision.Intent, true);
+            var redraftSession = redraftSelection.Session!;
+            var denial = await GetOperatorDenialAsync(redraftSession, incoming.SenderId, decision.Intent, true);
+            if (denial is not null) return denial;
+            await SaveActionConfirmationAsync(connectionId, groupId, incoming.SenderId, redraftSession.Id, ZaloBotIntent.RedraftConfirm, cancellationToken);
+            return new BotAnswer($"⚠️ Draft lại sẽ xoá kết quả đội hình {redraftSession.Name}. Gõ @bot xác nhận draft lại để chạy hoặc @bot huỷ.", null, decision.Intent, true);
+        }
+        if (decision.Intent == ZaloBotIntent.SwapTeamPlayers)
+        {
+            return await SwapTeamPlayersAsync(
+                decision,
+                sessions,
+                selector,
+                ExtractQuestion(incoming),
+                incoming,
+                true);
         }
         if (decision.Intent == ZaloBotIntent.UpcomingSessions)
         {

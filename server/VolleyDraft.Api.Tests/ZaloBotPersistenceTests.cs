@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services;
 using Xunit;
 
 namespace VolleyDraft.Api.Tests;
@@ -44,6 +45,53 @@ public sealed class ZaloBotPersistenceTests
         await Assert.ThrowsAsync<DbUpdateException>(() => fixture.Db.SaveChangesAsync());
     }
 
+    [Fact]
+    public async Task Finished_draft_can_swap_two_regular_players_and_recalculate_team_scores()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession
+        {
+            Id = "session",
+            AdminUserId = "admin",
+            Name = "Hôm nay",
+            Status = SessionStatus.Finished,
+            TeamCount = 3,
+            TeamSize = 2
+        };
+        var captainA = Player("captain-a", "Captain A", 2);
+        var captainB = Player("captain-b", "Captain B", 2);
+        var captainC = Player("captain-c", "Captain C", 2);
+        var thanhTuyen = Player("thanh-tuyen", "Thanh Tuyền", 1);
+        var nickTran = Player("nick-tran", "Nick Tran", 3);
+        session.Players.AddRange([captainA, captainB, captainC, thanhTuyen, nickTran]);
+        var teamA = new Team { Id = "team-a", SessionId = session.Id, Name = "Team A", CaptainSessionPlayerId = captainA.Id };
+        var teamB = new Team { Id = "team-b", SessionId = session.Id, Name = "Team B", CaptainSessionPlayerId = captainB.Id };
+        var teamC = new Team { Id = "team-c", SessionId = session.Id, Name = "Team C", CaptainSessionPlayerId = captainC.Id };
+        session.Teams.AddRange([teamA, teamB, teamC]);
+        session.DraftSlots.AddRange([
+            Slot("captain-slot-a", captainA, teamA.Id, 2, true),
+            Slot("captain-slot-b", captainB, teamB.Id, 2, true),
+            Slot("captain-slot-c", captainC, teamC.Id, 2, true),
+            Slot("thanh-tuyen-slot", thanhTuyen, teamA.Id, 1, false),
+            Slot("nick-tran-slot", nickTran, teamB.Id, 3, false)
+        ]);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).SwapDraftPlayersAsync(
+            "admin",
+            session.Id,
+            "Thanh Tuyền",
+            "Nick Tran");
+
+        Assert.True(result.IsSuccess, result.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("team-b", await fixture.Db.DraftSlots.Where(slot => slot.Id == "thanh-tuyen-slot").Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.Equal("team-a", await fixture.Db.DraftSlots.Where(slot => slot.Id == "nick-tran-slot").Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.Equal(5, await fixture.Db.Teams.Where(team => team.Id == "team-a").Select(team => team.TotalAverageScore).SingleAsync());
+        Assert.Equal(3, await fixture.Db.Teams.Where(team => team.Id == "team-b").Select(team => team.TotalAverageScore).SingleAsync());
+    }
+
     private static ZaloBotConversationState State(string connection, string group, string sender) => new()
     {
         ZaloConnectionId = connection,
@@ -64,6 +112,40 @@ public sealed class ZaloBotPersistenceTests
         Content = "@bot help",
         SentAt = DateTimeOffset.UtcNow
     };
+
+    private static SessionPlayer Player(string id, string name, double score) => new()
+    {
+        Id = id,
+        SessionId = "session",
+        DisplayName = name,
+        Score = score,
+        IsPresent = true
+    };
+
+    private static DraftSlot Slot(
+        string id,
+        SessionPlayer player,
+        string teamId,
+        double score,
+        bool isCaptain)
+    {
+        var slot = new DraftSlot
+        {
+            Id = id,
+            SessionId = "session",
+            DisplayName = player.DisplayName,
+            AssignedTeamId = teamId,
+            AverageScore = score,
+            IsCaptainSlot = isCaptain
+        };
+        slot.Players.Add(new DraftSlotPlayer
+        {
+            DraftSlotId = slot.Id,
+            SessionPlayerId = player.Id,
+            SessionPlayer = player
+        });
+        return slot;
+    }
 
     private sealed class DbFixture : IAsyncDisposable
     {

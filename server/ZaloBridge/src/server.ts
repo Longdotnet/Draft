@@ -3,6 +3,7 @@ import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } f
 import {
   createQrLogin,
   getGroups,
+  getGroupRoles,
   getListenerStatuses,
   getMembers,
   getPoll,
@@ -64,6 +65,10 @@ app.post("/v1/groups", async (request, response) => {
 
 app.post("/v1/groups/:groupId/polls", async (request, response) => {
   response.json({ polls: await getPolls(credentialsFrom(request), request.params.groupId) });
+});
+
+app.post("/v1/groups/:groupId/roles", async (request, response) => {
+  response.json(await getGroupRoles(credentialsFrom(request), request.params.groupId));
 });
 
 app.post("/v1/polls/:pollId", async (request, response) => {

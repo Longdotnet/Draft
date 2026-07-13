@@ -831,25 +831,29 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
     public async Task<ServiceResult<DraftStateResponse>> AutoRunDraftAsync(
         string adminUserId,
-        string sessionId)
+        string sessionId,
+        bool restart = false)
     {
         var leaseToken = Guid.NewGuid().ToString("n");
         var now = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil })
+            .SingleOrDefaultAsync();
+        if (currentLease is null)
+            return NotFound<DraftStateResponse>("Không tìm thấy session.");
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+            return ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Đang có một thao tác draft khác chạy cho buổi này.");
         var claimed = await db.MatchSessions
             .Where(session => session.Id == sessionId &&
                               session.AdminUserId == adminUserId &&
-                              (session.BotActionLeaseUntil == null || session.BotActionLeaseUntil < now))
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(session => session.BotActionLeaseToken, leaseToken)
                 .SetProperty(session => session.BotActionLeaseName, "AutoDraft")
                 .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(5)));
         if (claimed == 0)
-        {
-            var exists = await db.MatchSessions.AnyAsync(session => session.Id == sessionId && session.AdminUserId == adminUserId);
-            return exists
-                ? ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Đang có một thao tác draft khác chạy cho buổi này.")
-                : NotFound<DraftStateResponse>("Không tìm thấy session.");
-        }
+            return ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Đang có một thao tác draft khác chạy cho buổi này.");
 
         try
         {
@@ -857,7 +861,14 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             if (session.Status == SessionStatus.Cancelled)
                 return BadRequest<DraftStateResponse>("Session đã bị huỷ.");
 
-            if (session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection)
+            if (restart)
+            {
+                if (session.Status is not (SessionStatus.Drafting or SessionStatus.Finished))
+                    return BadRequest<DraftStateResponse>("Chỉ có thể draft lại khi draft đang chạy hoặc đã hoàn tất.");
+                var reset = await ResetDraftAsync(adminUserId, sessionId);
+                if (!reset.IsSuccess) return reset;
+            }
+            else if (session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection)
             {
                 var captains = await GetCaptainsAsync(adminUserId, sessionId);
                 if (!captains.IsSuccess || captains.Value is null || captains.Value.Captains.Count != session.TeamCount)
@@ -886,6 +897,92 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     return ServiceResult<DraftStateResponse>.Failure(opened.StatusCode, opened.Error!);
             }
             return ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Auto draft vượt quá giới hạn 200 lượt, đã dừng để bảo vệ dữ liệu.");
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == sessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
+    public async Task<ServiceResult<SwapDraftPlayersResult>> SwapDraftPlayersAsync(
+        string adminUserId,
+        string sessionId,
+        string firstPlayerReference,
+        string secondPlayerReference)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil })
+            .SingleOrDefaultAsync();
+        if (currentLease is null)
+            return NotFound<SwapDraftPlayersResult>("Không tìm thấy session.");
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+            return ServiceResult<SwapDraftPlayersResult>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật đội hình này.");
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == sessionId &&
+                              session.AdminUserId == adminUserId &&
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "SwapDraftPlayers")
+                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(2)));
+        if (claimed == 0)
+            return ServiceResult<SwapDraftPlayersResult>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật đội hình này.");
+
+        try
+        {
+            var session = await db.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId);
+            if (session.Status != SessionStatus.Finished)
+                return BadRequest<SwapDraftPlayersResult>("Chỉ đổi vị trí thành viên sau khi draft đã hoàn tất.");
+
+            var slots = await db.DraftSlots
+                .Include(slot => slot.AssignedTeam)
+                .Include(slot => slot.Players)
+                .ThenInclude(link => link.SessionPlayer)
+                .Where(slot => slot.SessionId == sessionId && slot.AssignedTeamId != null)
+                .ToListAsync();
+            var first = ResolveDraftPlayerSlot(slots, firstPlayerReference);
+            if (first.Match is null)
+                return BadRequest<SwapDraftPlayersResult>(first.Error!);
+            var second = ResolveDraftPlayerSlot(slots, secondPlayerReference);
+            if (second.Match is null)
+                return BadRequest<SwapDraftPlayersResult>(second.Error!);
+
+            if (first.Match.Slot.Id == second.Match.Slot.Id)
+                return BadRequest<SwapDraftPlayersResult>("Hai người đang ở cùng một slot nên không cần đổi.");
+            if (first.Match.Slot.AssignedTeamId == second.Match.Slot.AssignedTeamId)
+                return BadRequest<SwapDraftPlayersResult>("Hai người đang ở cùng một team nên không cần đổi.");
+            if (first.Match.Slot.IsCaptainSlot || second.Match.Slot.IsCaptainSlot)
+                return BadRequest<SwapDraftPlayersResult>("Bot không tự đổi captain. Hãy draft lại hoặc chỉnh captain trên web.");
+            if (first.Match.Slot.Type == DraftSlotType.Shared || second.Match.Slot.Type == DraftSlotType.Shared)
+                return BadRequest<SwapDraftPlayersResult>("Một trong hai người thuộc slot ghép/thay phiên; bot không tách slot để tránh làm sai đội hình.");
+
+            var firstTeamId = first.Match.Slot.AssignedTeamId!;
+            var secondTeamId = second.Match.Slot.AssignedTeamId!;
+            var firstTeamName = first.Match.Slot.AssignedTeam!.Name;
+            var secondTeamName = second.Match.Slot.AssignedTeam!.Name;
+            first.Match.Slot.AssignedTeamId = secondTeamId;
+            second.Match.Slot.AssignedTeamId = firstTeamId;
+            await db.SaveChangesAsync();
+            await RecalculateTeamScore(firstTeamId);
+            await RecalculateTeamScore(secondTeamId);
+
+            var state = await GetDraftStateAsync(adminUserId, sessionId);
+            if (!state.IsSuccess || state.Value is null)
+                return ServiceResult<SwapDraftPlayersResult>.Failure(state.StatusCode, state.Error!);
+            return ServiceResult<SwapDraftPlayersResult>.Success(new(
+                first.Match.PlayerName,
+                firstTeamName,
+                second.Match.PlayerName,
+                secondTeamName,
+                state.Value));
         }
         finally
         {
@@ -1868,6 +1965,34 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .ExecuteUpdateAsync(updates => updates.SetProperty(team => team.TotalAverageScore, total));
     }
 
+    private static DraftPlayerSlotResolution ResolveDraftPlayerSlot(
+        IReadOnlyList<DraftSlot> slots,
+        string playerReference)
+    {
+        var reference = ZaloBotIntelligence.Normalize(playerReference);
+        var all = slots
+            .SelectMany(slot => slot.Players.Select(link => new DraftPlayerSlotMatch(
+                slot,
+                link.SessionPlayer.DisplayName,
+                ZaloBotIntelligence.Normalize(link.SessionPlayer.DisplayName))))
+            .ToList();
+        var exact = all.Where(item => item.NormalizedPlayerName == reference).ToList();
+        if (exact.Count == 1) return new(exact[0], null);
+        var partial = all.Where(item =>
+                reference.Contains(item.NormalizedPlayerName, StringComparison.Ordinal) ||
+                item.NormalizedPlayerName.Contains(reference, StringComparison.Ordinal))
+            .ToList();
+        if (partial.Count == 1) return new(partial[0], null);
+        var possible = (exact.Count > 1 ? exact : partial)
+            .Select(item => item.PlayerName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToList();
+        return possible.Count > 0
+            ? new(null, $"Tên '{playerReference}' chưa đủ rõ. Các tên phù hợp: {string.Join(", ", possible)}.")
+            : new(null, $"Không tìm thấy '{playerReference}' trong đội hình đã draft.");
+    }
+
     private async Task<DraftSlot?> PrepareSlotForBagAsync(
         MatchSession session,
         string teamId,
@@ -2520,6 +2645,15 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
     }
 
+    private sealed record DraftPlayerSlotMatch(
+        DraftSlot Slot,
+        string PlayerName,
+        string NormalizedPlayerName);
+
+    private sealed record DraftPlayerSlotResolution(
+        DraftPlayerSlotMatch? Match,
+        string? Error);
+
     private static ServiceResult<T> BadRequest<T>(string message)
     {
         return ServiceResult<T>.Failure(StatusCodes.Status400BadRequest, message);
@@ -2535,3 +2669,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return ServiceResult<T>.Failure(StatusCodes.Status409Conflict, message);
     }
 }
+
+public sealed record SwapDraftPlayersResult(
+    string FirstPlayerName,
+    string FirstPreviousTeamName,
+    string SecondPlayerName,
+    string SecondPreviousTeamName,
+    DraftStateResponse State);

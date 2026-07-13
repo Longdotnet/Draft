@@ -680,7 +680,7 @@ export function ZaloPollImportPanel({
           </label>
           <label className="field zalo-settings-wide">
             <span>Người được phép điều khiển bot</span>
-            <small className="field-help">Chỉ những tài khoản được chọn mới dùng được lệnh 8 đồng bộ vote và lệnh 9 tự draft. Danh sách lấy từ thành viên đã nhắn trong group.</small>
+            <small className="field-help">Trưởng/phó nhóm Zalo tự có quyền. Chọn thêm UID tại đây nếu muốn họ dùng lệnh sync vote, draft/draft lại và đổi người. Danh sách lấy từ thành viên đã nhắn trong group.</small>
             {botOperatorCandidates.length === 0 ? (
               <span className="muted">Chưa thấy thành viên nào. Hãy để người cần cấp quyền mention bot một lần rồi bấm tải lại.</span>
             ) : (
@@ -720,6 +720,8 @@ export function ZaloPollImportPanel({
           <code>@bot còn thiếu bao nhiêu slot?</code>
           <code>@bot 6</code>
           <code>@bot gửi danh sách CN 12/7</code>
+          <code>@bot draft lại hôm nay</code>
+          <code>@bot đổi vị trí A với B</code>
         </div>
         <div className="zalo-rule-review">
           <div className="action-row">

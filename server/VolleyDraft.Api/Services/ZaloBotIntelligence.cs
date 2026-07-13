@@ -22,6 +22,9 @@ public enum ZaloBotIntent
     SyncPoll,
     AutoDraft,
     AutoDraftConfirm,
+    Redraft,
+    RedraftConfirm,
+    SwapTeamPlayers,
     TeamImage,
     GeneralChat
 }
@@ -96,6 +99,20 @@ public static class ZaloBotIntelligence
                normalized.StartsWith("xac nhan draft ", StringComparison.Ordinal);
     }
 
+    public static bool TryExtractSwapPlayerNames(string value, out string firstPlayer, out string secondPlayer)
+    {
+        firstPlayer = string.Empty;
+        secondPlayer = string.Empty;
+        var match = Regex.Match(
+            value ?? string.Empty,
+            @"(?:đổi\s+(?:(?:vị\s*trí|chỗ)\s+)?|swap\s+)(?<first>.+?)\s+(?:với|và|cho)\s+(?<second>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return false;
+        firstPlayer = match.Groups["first"].Value.Trim(' ', ',', '.', ':', ';');
+        secondPlayer = match.Groups["second"].Value.Trim(' ', ',', '.', ':', ';');
+        return firstPlayer.Length is > 0 and <= 160 && secondPlayer.Length is > 0 and <= 160;
+    }
+
     public static bool IsProtectedBusinessFactText(string value)
     {
         var q = Normalize(value);
@@ -112,6 +129,10 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
+        if (Has(q, "doi vi tri", "doi cho", "swap ") && Has(q, " voi ", " va ", " cho "))
+            return new(ZaloBotIntent.SwapTeamPlayers, .99, q, false, null, "swap_team_players_phrase");
+        if (Has(q, "draft lai", "chia lai team", "boc lai team", "khui lai tui", "khui lai", "draft lai tu dau"))
+            return new(ZaloBotIntent.Redraft, .99, q, false, null, "redraft_phrase");
         if (Has(q, "tu khui tui", "tu khui", "tu boc team", "tu boc doi", "tu draft", "auto draft", "draft tu dong", "khui het tui", "boc het tui", "chia team tu dong"))
             return new(ZaloBotIntent.AutoDraft, .98, q, false, null, "auto_draft_phrase");
         if (Has(q, "cap nhat so luong da vote", "cap nhat nguoi vote", "dong bo vote", "sync vote", "import poll", "lay nguoi da vote", "cap nhat poll len web"))
@@ -152,7 +173,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;

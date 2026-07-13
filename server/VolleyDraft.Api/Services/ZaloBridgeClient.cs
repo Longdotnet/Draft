@@ -31,6 +31,14 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         return (await ReadAsync<BridgePollsResponse>(response)).Polls;
     }
 
+    public async Task<BridgeGroupRoles> GetGroupRolesAsync(JsonElement credentials, string groupId)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"v1/groups/{Uri.EscapeDataString(groupId)}/roles",
+            new { credentials });
+        return await ReadAsync<BridgeGroupRoles>(response);
+    }
+
     public async Task<BridgePoll> GetPollAsync(JsonElement credentials, string pollId)
     {
         using var response = await httpClient.PostAsJsonAsync(
@@ -113,6 +121,7 @@ public sealed record BridgeQrStatusResponse(
 
 public sealed record BridgeGroupsResponse(IReadOnlyList<BridgeGroup> Groups);
 public sealed record BridgeGroup(string Id, string Name, string? AvatarUrl, int TotalMembers);
+public sealed record BridgeGroupRoles(string GroupId, string CreatorId, IReadOnlyList<string> AdminIds);
 public sealed record BridgePollsResponse(IReadOnlyList<BridgePoll> Polls);
 public sealed record BridgePoll(
     string Id,

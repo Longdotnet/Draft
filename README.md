@@ -294,10 +294,12 @@ Các lệnh mở rộng:
 
 - `7`: lấy danh sách ba team hiện tại dưới dạng text.
 - `8`: đồng bộ voter của poll lên roster web. Bot ưu tiên poll/option đã import trước đó; nếu chưa có thì semantic-match tên session, ngày và option. Người rút vote được chuyển `IsPresent=false`.
-- `9`: tự chọn captain nếu thiếu, bắt đầu draft và khui ngẫu nhiên toàn bộ túi. Đây là thao tác phá huỷ nên chỉ operator được cấp quyền dùng và luôn cần tin nhắn xác nhận thứ hai.
+- `9`: tự chọn captain nếu thiếu, bắt đầu draft và khui ngẫu nhiên toàn bộ túi. Đây là thao tác phá huỷ nên luôn cần tin nhắn xác nhận thứ hai.
 - `10`: tạo team-card PNG từ dữ liệu đội hình và gửi vào Zalo. Lệnh 9 cũng gửi card sau khi hoàn tất.
+- `@bot draft lại [ngày/tên trận]`: xoá kết quả bốc team hiện tại, giữ captain và khui lại từ đầu; luôn cần `@bot xác nhận draft lại`.
+- `@bot đổi vị trí <người A> với <người B>`: sau khi draft hoàn tất, đổi hai slot thường giữa hai team, tính lại điểm và gửi danh sách/card mới. Bot không tự đổi captain hoặc tách slot ghép.
 
-Lệnh 8–9 yêu cầu admin chọn Zalo operator trong panel `Bot chat & reminder`. Candidate được lấy từ những sender gần đây của group; không so quyền bằng display name. API còn dùng lease trên session để hai auto-draft không chạy đồng thời.
+Các lệnh thay đổi dữ liệu cho phép trưởng nhóm (`creatorId`), phó nhóm (`adminIds`) hoặc Zalo operator được admin chọn trong panel `Bot chat & reminder`. Quyền trưởng/phó nhóm được đọc trực tiếp từ Zalo theo UID khi chạy lệnh; không so quyền bằng display name. API còn dùng lease trên session để các thao tác sync/draft/đổi người không chạy đồng thời.
 
 AI chỉ phân loại câu tự nhiên thành intent JSON có kiểu (`SessionSchedule`, `Roster`, `WeeklySessionCount`...). Handler .NET sau đó đọc giờ, sân, người chơi, poll và slot từ database; model không phải nguồn dữ liệu nghiệp vụ. Nếu classifier lỗi JSON, confidence thấp hoặc provider lỗi, bot dùng routing xác định được hoặc fallback an toàn thay vì gọi một method tùy ý.
 

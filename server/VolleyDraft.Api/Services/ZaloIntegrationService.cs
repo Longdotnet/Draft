@@ -428,10 +428,16 @@ public sealed class ZaloIntegrationService(
 
         var leaseToken = Guid.NewGuid().ToString("n");
         var leaseNow = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil })
+            .SingleAsync();
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= leaseNow)
+            return ServiceResult<ZaloPollImportResultResponse>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật buổi này. Hãy thử lại sau ít phút.");
         var claimed = await db.MatchSessions
             .Where(session => session.Id == sessionId &&
                               session.AdminUserId == adminUserId &&
-                              (session.BotActionLeaseUntil == null || session.BotActionLeaseUntil < leaseNow))
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(session => session.BotActionLeaseToken, leaseToken)
                 .SetProperty(session => session.BotActionLeaseName, "SyncPoll")
@@ -525,6 +531,35 @@ public sealed class ZaloIntegrationService(
                     .SetProperty(session => session.BotActionLeaseToken, (string?)null)
                     .SetProperty(session => session.BotActionLeaseName, (string?)null)
                     .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
+    public async Task<ServiceResult<ZaloGroupRoleAuthorization>> GetGroupRoleAuthorizationAsync(
+        string adminUserId,
+        string sessionId,
+        string zaloUserId)
+    {
+        var linked = await GetLinkedSessionAsync(adminUserId, sessionId);
+        if (linked.Result is not null)
+        {
+            return ServiceResult<ZaloGroupRoleAuthorization>.Failure(
+                linked.Result.StatusCode,
+                linked.Result.Error!);
+        }
+
+        try
+        {
+            var roles = await bridge.GetGroupRolesAsync(
+                ReadCredentials(linked.Connection!),
+                linked.Session!.ZaloGroupId!);
+            var normalizedUserId = NormalizeId(zaloUserId);
+            return ServiceResult<ZaloGroupRoleAuthorization>.Success(new(
+                normalizedUserId == NormalizeId(roles.CreatorId),
+                roles.AdminIds.Select(NormalizeId).Contains(normalizedUserId, StringComparer.Ordinal)));
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            return BridgeFailure<ZaloGroupRoleAuthorization>(exception);
         }
     }
 
@@ -754,4 +789,9 @@ public sealed class ZaloIntegrationService(
         ServiceResult<T>.Failure(StatusCodes.Status502BadGateway, $"Không thể đọc dữ liệu Zalo: {exception.Message}");
 
     private sealed record ServiceError(int StatusCode, string Error);
+}
+
+public sealed record ZaloGroupRoleAuthorization(bool IsOwner, bool IsDeputy)
+{
+    public bool CanOperateBot => IsOwner || IsDeputy;
 }

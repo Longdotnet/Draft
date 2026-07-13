@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as ZaloRuntime from "zca-js";
 import type {
   BridgeGroup,
+  BridgeGroupRoles,
   BridgeMember,
   BridgeMention,
   BridgePoll,
@@ -499,4 +500,26 @@ export async function getMembers(credentials: ZaloCredentials, memberIds: string
   }
 
   return uniqueIds.map((id) => members.get(id)!);
+}
+
+export async function getGroupRoles(credentials: ZaloCredentials, groupId: string): Promise<BridgeGroupRoles> {
+  const normalizedGroupId = normalizeId(groupId);
+  if (mockMode) {
+    return {
+      groupId: normalizedGroupId,
+      creatorId: mockMembers[0]?.zaloUserId ?? "",
+      adminIds: mockMembers.slice(1, 3).map((member) => member.zaloUserId),
+    };
+  }
+
+  const api = await getApi(credentials);
+  const response = await api.getGroupInfo([normalizedGroupId]);
+  const info = response.gridInfoMap?.[normalizedGroupId];
+  if (!info) throw new Error("Group information is unavailable");
+
+  const creatorId = normalizeMemberId(String(info.creatorId ?? ""));
+  const adminIds = Array.isArray(info.adminIds)
+    ? [...new Set(info.adminIds.map((id) => normalizeMemberId(String(id))).filter(Boolean))]
+    : [];
+  return { groupId: normalizedGroupId, creatorId, adminIds };
 }

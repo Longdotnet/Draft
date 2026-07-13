@@ -90,9 +90,22 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("cập nhật số lượng đã vote trên web", ZaloBotIntent.SyncPoll)]
     [InlineData("tự khui túi mù rồi draft tự bốc team và chụp màn hình", ZaloBotIntent.AutoDraft)]
     [InlineData("gửi ảnh đội hình ba team", ZaloBotIntent.TeamImage)]
+    [InlineData("draft lại trận hôm nay từ đầu", ZaloBotIntent.Redraft)]
+    [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", ZaloBotIntent.SwapTeamPlayers)]
     public void New_features_understand_natural_vietnamese(string question, ZaloBotIntent expected)
     {
         Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
+    }
+
+    [Theory]
+    [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", "Thanh Tuyền", "Nick Tran")]
+    [InlineData("swap Thanh Tuyền với Nick Tran", "Thanh Tuyền", "Nick Tran")]
+    [InlineData("đổi chỗ Thanh Tuyền và Nick Tran", "Thanh Tuyền", "Nick Tran")]
+    public void Swap_command_extracts_two_player_names(string question, string first, string second)
+    {
+        Assert.True(ZaloBotIntelligence.TryExtractSwapPlayerNames(question, out var actualFirst, out var actualSecond));
+        Assert.Equal(first, actualFirst);
+        Assert.Equal(second, actualSecond);
     }
 
     [Theory]
