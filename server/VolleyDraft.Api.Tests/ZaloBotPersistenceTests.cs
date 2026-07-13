@@ -46,6 +46,37 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Reminder_schedule_and_retry_state_are_persisted()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var next = DateTimeOffset.UtcNow.AddHours(6);
+        fixture.Db.MatchSessions.Add(new MatchSession
+        {
+            Id = "reminder-session",
+            AdminUserId = "admin",
+            Name = "T6",
+            ReminderEnabled = true,
+            ReminderIntervalMinutes = 360,
+            ReminderRepeats = true,
+            NextReminderAt = next,
+            ReminderLastKnownPlayerCount = 17,
+            ReminderFailureCount = 2,
+            LastReminderError = "bridge sleeping"
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var stored = await fixture.Db.MatchSessions.SingleAsync(session => session.Id == "reminder-session");
+        Assert.True(stored.ReminderEnabled);
+        Assert.Equal(360, stored.ReminderIntervalMinutes);
+        Assert.True(stored.ReminderRepeats);
+        Assert.Equal(next, stored.NextReminderAt);
+        Assert.Equal(17, stored.ReminderLastKnownPlayerCount);
+        Assert.Equal(2, stored.ReminderFailureCount);
+        Assert.Equal("bridge sleeping", stored.LastReminderError);
+    }
+
+    [Fact]
     public async Task Finished_draft_can_swap_two_regular_players_and_recalculate_team_scores()
     {
         await using var fixture = await DbFixture.CreateAsync();

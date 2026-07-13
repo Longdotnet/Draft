@@ -17,6 +17,7 @@ public sealed class ZaloBotService(
     SessionDraftService draftService,
     ZaloTeamCardService teamCards,
     ZaloListenerCoordinator listenerCoordinator,
+    ZaloSchedulerTrigger schedulerTrigger,
     IConfiguration configuration,
     ILogger<ZaloBotService> logger)
 {
@@ -55,6 +56,10 @@ public sealed class ZaloBotService(
             return ServiceResult<ZaloBotSettingsResponse>.Failure(StatusCodes.Status400BadRequest, "URL ảnh vị trí và QR thanh toán phải dùng http hoặc https.");
         }
 
+        var previousStartTime = session.StartTime;
+        var previousReminderEnabled = session.ReminderEnabled;
+        var previousLeadHours = session.ReminderLeadHours;
+        var previousIntervalHours = session.ReminderIntervalHours;
         session.StartTime = request.StartTime;
         session.Location = Clean(request.Location, 500);
         session.ParkingInstructions = Clean(request.ParkingInstructions, 1000);
@@ -74,6 +79,37 @@ public sealed class ZaloBotService(
         session.ReminderEnabled = request.ReminderEnabled;
         session.ReminderLeadHours = Math.Clamp(request.ReminderLeadHours, 1, 336);
         session.ReminderIntervalHours = Math.Clamp(request.ReminderIntervalHours, 1, 168);
+        var reminderIntervalChanged = previousIntervalHours != session.ReminderIntervalHours;
+        if (reminderIntervalChanged || session.ReminderIntervalMinutes <= 0)
+            session.ReminderIntervalMinutes = session.ReminderIntervalHours * 60;
+        if (!previousReminderEnabled && session.ReminderEnabled)
+        {
+            session.ReminderIntervalMinutes = session.ReminderIntervalHours * 60;
+            session.ReminderRepeats = true;
+        }
+        var reminderScheduleChanged = !previousReminderEnabled ||
+                                      previousStartTime != session.StartTime ||
+                                      previousLeadHours != session.ReminderLeadHours ||
+                                      previousIntervalHours != session.ReminderIntervalHours;
+        if (session.ReminderEnabled && session.StartTime is not null)
+        {
+            if (reminderScheduleChanged || session.NextReminderAt is null)
+            {
+                var now = DateTimeOffset.UtcNow;
+                var configuredStart = session.StartTime.Value.AddHours(-session.ReminderLeadHours);
+                session.NextReminderAt = configuredStart > now ? configuredStart : now;
+            }
+            session.ReminderFailureCount = 0;
+            session.LastReminderError = null;
+        }
+        else
+        {
+            session.NextReminderAt = null;
+            session.ReminderLeaseToken = null;
+            session.ReminderLeaseUntil = null;
+            session.ReminderFailureCount = 0;
+            session.LastReminderError = null;
+        }
         session.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
 
@@ -87,6 +123,7 @@ public sealed class ZaloBotService(
                     "Đã lưu cấu hình nhưng listener Zalo chưa đăng nhập được. Hãy đăng nhập lại bằng QR rồi thử lưu lại.");
             }
         }
+        if (session.ReminderEnabled) schedulerTrigger.TryTrigger();
         return ServiceResult<ZaloBotSettingsResponse>.Success(ToSettings(session));
     }
 
@@ -350,6 +387,19 @@ public sealed class ZaloBotService(
             return new BotAnswer("Nhóm này chưa có trận nào đang bật bot. Bạn nhờ admin kiểm tra cấu hình nhé.", null);
         }
 
+        if (ZaloBotIntelligence.TryParseReminderCommand(question, out var reminderCommand))
+        {
+            return await HandleReminderCommandAsync(
+                reminderCommand,
+                sessions,
+                normalizedQuestion,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false);
+        }
+
         var learnedRules = await LoadLearnedRulesAsync(connectionIds, groupId, cancellationToken);
 
         if (TryParseNaturalLearning(question, out var naturalTrigger, out var naturalAnswer))
@@ -442,7 +492,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                "\n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nLịch nhắc (có quyền):\n- @bot cứ 6 tiếng nhắc nếu còn thiếu slot\n- @bot cứ 30 phút nhắc T6 nếu còn thiếu\n- @bot nhắc ngay / xem lịch nhắc / tắt nhắc CN\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null,
                 ZaloBotIntent.Help);
         }
@@ -1344,6 +1394,178 @@ public sealed class ZaloBotService(
         _ => "Mới"
     };
 
+    private async Task<BotAnswer> HandleReminderCommandAsync(
+        ZaloReminderCommand command,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
+        bool aiCalled)
+    {
+        await db.ZaloBotConversationStates
+            .Where(state => state.ZaloConnectionId == connectionId &&
+                            state.GroupId == groupId &&
+                            state.SenderZaloUserId == NormalizeId(incoming.SenderId))
+            .ExecuteDeleteAsync(cancellationToken);
+        var intent = command.Kind switch
+        {
+            ZaloReminderCommandKind.Status => ZaloBotIntent.ReminderStatus,
+            ZaloReminderCommandKind.Disable => ZaloBotIntent.CancelReminder,
+            _ => ZaloBotIntent.ScheduleReminder
+        };
+        var now = DateTimeOffset.UtcNow;
+        var upcoming = sessions
+            .Where(session => session.StartTime is not null && session.StartTime > now)
+            .OrderBy(session => session.StartTime)
+            .ToList();
+        if (upcoming.Count == 0)
+            return new BotAnswer("Nhóm chưa có trận sắp tới có thời gian cụ thể để lên lịch nhắc.", null, intent, aiCalled);
+
+        List<SessionSnapshot> targets;
+        var hasExplicitSelector = HasExplicitSessionSelector(sessions, normalizedQuestion);
+        if (hasExplicitSelector)
+        {
+            targets = upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList();
+            if (targets.Count == 0)
+            {
+                return new BotAnswer(
+                    $"Mình không tìm thấy trận đúng ngày/tên đó. Hãy gửi lại cả lệnh kèm một trong các trận: {string.Join(", ", upcoming.Take(5).Select(FormatSessionChoice))}.",
+                    null,
+                    intent,
+                    aiCalled);
+            }
+            if (targets.Count > 1)
+            {
+                return new BotAnswer(
+                    $"Có nhiều trận khớp: {string.Join(", ", targets.Take(5).Select(FormatSessionChoice))}. Hãy gửi lại cả lệnh kèm ngày cụ thể.",
+                    null,
+                    intent,
+                    aiCalled);
+            }
+        }
+        else
+        {
+            targets = upcoming;
+        }
+        if (!hasExplicitSelector &&
+            (command.Kind == ZaloReminderCommandKind.TriggerNow ||
+             command.Kind == ZaloReminderCommandKind.Schedule && !command.Repeats))
+        {
+            targets = [targets.FirstOrDefault(session => session.PlayerCount < session.Capacity) ?? targets[0]];
+        }
+
+        if (command.Kind == ZaloReminderCommandKind.Status)
+        {
+            var statusLines = targets.Select(session =>
+            {
+                if (!session.ReminderEnabled) return $"- {session.Name}: đang tắt";
+                var next = session.NextReminderAt is null
+                    ? "đang chờ hệ thống tính lượt đầu"
+                    : $"lần kiểm tra kế tiếp khoảng {FormatVietnamTime(session.NextReminderAt.Value)}";
+                var repeat = session.ReminderRepeats
+                    ? $", lặp mỗi {FormatDuration(session.ReminderIntervalMinutes)}"
+                    : ", chỉ một lần";
+                return $"- {session.Name}: {next}{repeat}";
+            });
+            return new BotAnswer(
+                "Lịch nhắc hiện tại:\n" + string.Join("\n", statusLines) +
+                "\nBot chỉ @all cho trận gần nhất còn thiếu slot; trận đã đủ sẽ được bỏ qua.",
+                null,
+                intent,
+                aiCalled);
+        }
+
+        if (command.Kind == ZaloReminderCommandKind.Schedule && command.DelayMinutes is null)
+        {
+            return new BotAnswer(
+                "Bạn cho mình biết khoảng thời gian nhé. Ví dụ: @bot cứ 6 tiếng nhắc nếu còn thiếu slot; @bot cứ 30 phút nhắc T6 nếu còn thiếu; hoặc @bot nhắc ngay.",
+                null,
+                intent,
+                aiCalled);
+        }
+
+        foreach (var target in targets)
+        {
+            var denial = await GetOperatorDenialAsync(target, incoming.SenderId, intent, aiCalled);
+            if (denial is not null) return denial;
+        }
+
+        var targetIds = targets.Select(target => target.Id).ToList();
+        var trackedSessions = await db.MatchSessions
+            .Where(session => targetIds.Contains(session.Id))
+            .ToListAsync(cancellationToken);
+        var scheduleWasMovedForward = false;
+        foreach (var session in trackedSessions)
+        {
+            switch (command.Kind)
+            {
+                case ZaloReminderCommandKind.Disable:
+                    session.ReminderEnabled = false;
+                    session.NextReminderAt = null;
+                    break;
+                case ZaloReminderCommandKind.TriggerNow:
+                    var wasEnabled = session.ReminderEnabled;
+                    session.ReminderEnabled = true;
+                    if (!wasEnabled) session.ReminderRepeats = false;
+                    session.NextReminderAt = now;
+                    break;
+                default:
+                    var intervalMinutes = command.DelayMinutes!.Value;
+                    session.ReminderEnabled = true;
+                    session.ReminderRepeats = command.Repeats;
+                    session.ReminderIntervalMinutes = intervalMinutes;
+                    session.ReminderIntervalHours = Math.Clamp((int)Math.Ceiling(intervalMinutes / 60d), 1, 168);
+                    var requestedAt = now.AddMinutes(intervalMinutes);
+                    if (session.StartTime is not null && requestedAt >= session.StartTime)
+                    {
+                        session.NextReminderAt = now;
+                        scheduleWasMovedForward = true;
+                    }
+                    else
+                    {
+                        session.NextReminderAt = requestedAt;
+                    }
+                    break;
+            }
+            session.ReminderLeaseToken = null;
+            session.ReminderLeaseUntil = null;
+            session.ReminderFailureCount = 0;
+            session.LastReminderError = null;
+            session.UpdatedAt = now;
+        }
+        await db.SaveChangesAsync(cancellationToken);
+        schedulerTrigger.TryTrigger();
+
+        var targetNames = targets.Count == 1 ? targets[0].Name : $"{targets.Count} trận sắp tới";
+        return command.Kind switch
+        {
+            ZaloReminderCommandKind.Disable => new BotAnswer(
+                $"Đã tắt lịch nhắc cho {targetNames}.", null, intent, aiCalled),
+            ZaloReminderCommandKind.TriggerNow => new BotAnswer(
+                $"Đã xếp một lượt nhắc ngay cho {targetNames}. Trận đủ slot sẽ không bị tag; nếu nhiều trận thì bot ưu tiên trận gần nhất còn thiếu.",
+                null,
+                intent,
+                aiCalled),
+            _ => new BotAnswer(
+                $"Đã lên lịch cho {targetNames}: lần đầu sau {FormatDuration(command.DelayMinutes!.Value)}" +
+                (command.Repeats ? $", sau đó lặp mỗi {FormatDuration(command.DelayMinutes.Value)}." : ", chỉ nhắc một lần.") +
+                (scheduleWasMovedForward ? " Có trận diễn ra trước mốc chờ nên bot sẽ kiểm tra trận đó ngay." : string.Empty) +
+                " Bot chỉ @all cho trận gần nhất còn thiếu slot; trận đủ sẽ bỏ qua và tự xét lại nếu có người rút vote.",
+                null,
+                intent,
+                aiCalled)
+        };
+    }
+
+    private static string FormatDuration(int minutes)
+    {
+        if (minutes % 60 == 0) return $"{minutes / 60} giờ";
+        if (minutes < 60) return $"{minutes} phút";
+        return $"{minutes / 60} giờ {minutes % 60} phút";
+    }
+
     private async Task<BotAnswer?> GetOperatorDenialAsync(
         SessionSnapshot session,
         string senderId,
@@ -1416,6 +1638,28 @@ public sealed class ZaloBotService(
         CancellationToken cancellationToken)
     {
         var selector = NormalizeText(string.Join(' ', new[] { normalizedQuestion, decision.SessionReference }.Where(value => !string.IsNullOrWhiteSpace(value))));
+        if (decision.Intent is ZaloBotIntent.ScheduleReminder or ZaloBotIntent.ReminderStatus or ZaloBotIntent.CancelReminder)
+        {
+            ZaloReminderCommand command;
+            if (!ZaloBotIntelligence.TryParseReminderCommand(ExtractQuestion(incoming), out command))
+            {
+                command = decision.Intent switch
+                {
+                    ZaloBotIntent.ReminderStatus => new ZaloReminderCommand(ZaloReminderCommandKind.Status, null, true),
+                    ZaloBotIntent.CancelReminder => new ZaloReminderCommand(ZaloReminderCommandKind.Disable, null, false),
+                    _ => new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, null, true)
+                };
+            }
+            return await HandleReminderCommandAsync(
+                command,
+                sessions,
+                selector,
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                true);
+        }
         if (decision.Intent is ZaloBotIntent.TeamLineup or ZaloBotIntent.TeamImage)
         {
             var teamSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
@@ -1590,6 +1834,12 @@ public sealed class ZaloBotService(
             session.PaymentInstructions,
             session.PaymentQrImageUrl,
             session.BotCustomInstructions,
+            session.ReminderEnabled,
+            session.ReminderIntervalMinutes > 0
+                ? session.ReminderIntervalMinutes
+                : session.ReminderIntervalHours * 60,
+            session.ReminderRepeats,
+            session.NextReminderAt,
             playersBySession.GetValueOrDefault(session.Id)?.Count ?? 0,
             session.TeamCount * session.TeamSize,
             playersBySession.GetValueOrDefault(session.Id)?.Any(player => NormalizeId(player.ZaloUserId) == normalizedSenderId) == true,
@@ -1927,7 +2177,11 @@ public sealed class ZaloBotService(
         session.ReminderEnabled,
         session.ReminderLeadHours,
         session.ReminderIntervalHours,
-        session.LastReminderAt);
+        session.LastReminderAt,
+        session.NextReminderAt,
+        session.ReminderRepeats,
+        session.ReminderFailureCount,
+        session.LastReminderError);
 
     private static HashSet<string> ParseOperatorIds(string? json)
     {
@@ -1980,6 +2234,10 @@ public sealed class ZaloBotService(
         string? PaymentInstructions,
         string? PaymentQrImageUrl,
         string? CustomInstructions,
+        bool ReminderEnabled,
+        int ReminderIntervalMinutes,
+        bool ReminderRepeats,
+        DateTimeOffset? NextReminderAt,
         int PlayerCount,
         int Capacity,
         bool SenderIsListed,

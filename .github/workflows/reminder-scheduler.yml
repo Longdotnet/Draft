@@ -1,0 +1,60 @@
+name: Reminder scheduler
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: volley-draft-reminder-scheduler
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    name: Wake services and check reminders
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Queue one scheduler cycle
+        env:
+          SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
+          SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$SCHEDULER_URL" ] || [ -z "$SCHEDULER_KEY" ]; then
+            echo "Configure Actions variable SCHEDULER_URL and secret SCHEDULER_KEY first."
+            exit 1
+          fi
+
+          set +e
+          status=$(curl \
+            --silent \
+            --show-error \
+            --connect-timeout 15 \
+            --max-time 45 \
+            --output /tmp/scheduler-response \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "x-scheduler-key: $SCHEDULER_KEY" \
+            "$SCHEDULER_URL")
+          curl_exit=$?
+          set -e
+
+          if [ "$curl_exit" -eq 28 ]; then
+            echo "Render was asked to wake but did not answer within 45 seconds. The API startup worker will still check reminders."
+            exit 0
+          fi
+          if [ "$curl_exit" -ne 0 ]; then
+            echo "Scheduler request failed with curl exit code $curl_exit."
+            exit "$curl_exit"
+          fi
+          if [ "$status" != "202" ]; then
+            echo "Scheduler returned HTTP $status:"
+            cat /tmp/scheduler-response
+            exit 1
+          fi
+
+          cat /tmp/scheduler-response

@@ -44,6 +44,8 @@ public sealed record SessionResponse(
     int ReminderLeadHours,
     int ReminderIntervalHours,
     DateTimeOffset? LastReminderAt,
+    DateTimeOffset? NextReminderAt,
+    bool ReminderRepeats,
     IReadOnlyList<TeamSummary> Teams);
 
 public sealed record PublicSessionSummaryResponse(
@@ -175,7 +177,11 @@ public sealed record ZaloBotSettingsResponse(
     bool ReminderEnabled,
     int ReminderLeadHours,
     int ReminderIntervalHours,
-    DateTimeOffset? LastReminderAt);
+    DateTimeOffset? LastReminderAt,
+    DateTimeOffset? NextReminderAt,
+    bool ReminderRepeats,
+    int ReminderFailureCount,
+    string? LastReminderError);
 
 public sealed record ZaloBotOperatorCandidateResponse(
     string ZaloUserId,

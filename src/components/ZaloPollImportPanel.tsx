@@ -103,6 +103,10 @@ export function ZaloPollImportPanel({
     reminderEnabled: session.reminderEnabled,
     reminderLeadHours: session.reminderLeadHours,
     reminderIntervalHours: session.reminderIntervalHours,
+    nextReminderAt: session.nextReminderAt,
+    reminderRepeats: session.reminderRepeats,
+    reminderFailureCount: 0,
+    lastReminderError: null as string | null,
   });
 
   const selectedPoll = polls.find((poll) => poll.id === selectedPollId) ?? null;
@@ -150,8 +154,12 @@ export function ZaloPollImportPanel({
       reminderEnabled: session.reminderEnabled,
       reminderLeadHours: session.reminderLeadHours,
       reminderIntervalHours: session.reminderIntervalHours,
+      nextReminderAt: session.nextReminderAt,
+      reminderRepeats: session.reminderRepeats,
+      reminderFailureCount: 0,
+      lastReminderError: null,
     });
-  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.paymentInstructions, session.paymentQrImageUrl, session.botEnabled, session.botCustomInstructions, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours]);
+  }, [session.id, session.zaloConnectionId, session.zaloGroupId, session.startTime, session.location, session.parkingInstructions, session.locationImageUrl, session.paymentInstructions, session.paymentQrImageUrl, session.botEnabled, session.botCustomInstructions, session.reminderEnabled, session.reminderLeadHours, session.reminderIntervalHours, session.nextReminderAt, session.reminderRepeats]);
 
   useEffect(() => {
     if (!qrLoginId) return;
@@ -222,7 +230,14 @@ export function ZaloPollImportPanel({
       apiFetch<ZaloBotSettingsResponse>(`/sessions/${session.id}/zalo-bot-settings`, { token }),
       apiFetch<ZaloBotOperatorCandidateResponse[]>(`/sessions/${session.id}/zalo-bot-operators`, { token }),
     ]);
-    setBotSettings((current) => ({ ...current, botOperatorZaloUserIds: settings.botOperatorZaloUserIds }));
+    setBotSettings((current) => ({
+      ...current,
+      botOperatorZaloUserIds: settings.botOperatorZaloUserIds,
+      nextReminderAt: settings.nextReminderAt,
+      reminderRepeats: settings.reminderRepeats,
+      reminderFailureCount: settings.reminderFailureCount,
+      lastReminderError: settings.lastReminderError,
+    }));
     setBotOperatorCandidates(candidates);
   }
 
@@ -367,7 +382,14 @@ export function ZaloPollImportPanel({
       }),
     );
     if (!result) return;
-    setBotSettings((current) => ({ ...current, botOperatorZaloUserIds: result.botOperatorZaloUserIds }));
+    setBotSettings((current) => ({
+      ...current,
+      botOperatorZaloUserIds: result.botOperatorZaloUserIds,
+      nextReminderAt: result.nextReminderAt,
+      reminderRepeats: result.reminderRepeats,
+      reminderFailureCount: result.reminderFailureCount,
+      lastReminderError: result.lastReminderError,
+    }));
     onSessionUpdated({
       ...session,
       startTime: result.startTime,
@@ -382,6 +404,8 @@ export function ZaloPollImportPanel({
       reminderLeadHours: result.reminderLeadHours,
       reminderIntervalHours: result.reminderIntervalHours,
       lastReminderAt: result.lastReminderAt,
+      nextReminderAt: result.nextReminderAt,
+      reminderRepeats: result.reminderRepeats,
     });
     setMessage(result.botEnabled ? "Đã lưu cấu hình và bật listener cho bot." : "Đã lưu cấu hình; bot đang tắt.");
   }
@@ -761,6 +785,8 @@ export function ZaloPollImportPanel({
             <Save size={17} aria-hidden="true" /> Lưu cấu hình bot
           </button>
           {session.lastReminderAt && <small className="muted">Lần nhắc gần nhất: {new Date(session.lastReminderAt).toLocaleString("vi-VN")}</small>}
+          {botSettings.reminderEnabled && botSettings.nextReminderAt && <small className="muted">Lượt kiểm tra kế tiếp: {new Date(botSettings.nextReminderAt).toLocaleString("vi-VN")}</small>}
+          {botSettings.lastReminderError && <small className="error-text">Lần gửi gần nhất lỗi ({botSettings.reminderFailureCount}): {botSettings.lastReminderError}</small>}
         </div>
       </div>
 

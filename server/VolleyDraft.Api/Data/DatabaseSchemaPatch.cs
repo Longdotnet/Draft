@@ -31,7 +31,20 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderEnabled", "\"ReminderEnabled\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderLeadHours", "\"ReminderLeadHours\" INTEGER NOT NULL DEFAULT 72");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderIntervalHours", "\"ReminderIntervalHours\" INTEGER NOT NULL DEFAULT 12");
+            var reminderIntervalMinutesAdded = await EnsureSqliteColumn(db, "MatchSessions", "ReminderIntervalMinutes", "\"ReminderIntervalMinutes\" INTEGER NOT NULL DEFAULT 720");
+            if (reminderIntervalMinutesAdded)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "UPDATE \"MatchSessions\" SET \"ReminderIntervalMinutes\" = \"ReminderIntervalHours\" * 60");
+            }
+            await EnsureSqliteColumn(db, "MatchSessions", "ReminderRepeats", "\"ReminderRepeats\" INTEGER NOT NULL DEFAULT 1");
             await EnsureSqliteColumn(db, "MatchSessions", "LastReminderAt", "\"LastReminderAt\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "NextReminderAt", "\"NextReminderAt\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ReminderLastKnownPlayerCount", "\"ReminderLastKnownPlayerCount\" INTEGER NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ReminderLeaseToken", "\"ReminderLeaseToken\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ReminderLeaseUntil", "\"ReminderLeaseUntil\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "ReminderFailureCount", "\"ReminderFailureCount\" INTEGER NOT NULL DEFAULT 0");
+            await EnsureSqliteColumn(db, "MatchSessions", "LastReminderError", "\"LastReminderError\" TEXT NULL");
             await EnsureSqliteColumn(db, "SessionPlayers", "Gender", "\"Gender\" TEXT NOT NULL DEFAULT 'Male'");
             await EnsureSqliteColumn(db, "SessionPlayers", "PlayerProfileId", "\"PlayerProfileId\" TEXT NULL");
             await EnsureSqliteColumn(db, "SessionPlayers", "AvatarUrl", "\"AvatarUrl\" TEXT NULL");
@@ -85,7 +98,20 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderEnabled", "\"ReminderEnabled\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderLeadHours", "\"ReminderLeadHours\" integer NOT NULL DEFAULT 72");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderIntervalHours", "\"ReminderIntervalHours\" integer NOT NULL DEFAULT 12");
+            var reminderIntervalMinutesAdded = await EnsurePostgresColumn(db, "MatchSessions", "ReminderIntervalMinutes", "\"ReminderIntervalMinutes\" integer NOT NULL DEFAULT 720");
+            if (reminderIntervalMinutesAdded)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "UPDATE \"MatchSessions\" SET \"ReminderIntervalMinutes\" = \"ReminderIntervalHours\" * 60");
+            }
+            await EnsurePostgresColumn(db, "MatchSessions", "ReminderRepeats", "\"ReminderRepeats\" boolean NOT NULL DEFAULT TRUE");
             await EnsurePostgresColumn(db, "MatchSessions", "LastReminderAt", "\"LastReminderAt\" timestamp with time zone NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "NextReminderAt", "\"NextReminderAt\" timestamp with time zone NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ReminderLastKnownPlayerCount", "\"ReminderLastKnownPlayerCount\" integer NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ReminderLeaseToken", "\"ReminderLeaseToken\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ReminderLeaseUntil", "\"ReminderLeaseUntil\" timestamp with time zone NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "ReminderFailureCount", "\"ReminderFailureCount\" integer NOT NULL DEFAULT 0");
+            await EnsurePostgresColumn(db, "MatchSessions", "LastReminderError", "\"LastReminderError\" text NULL");
             await EnsurePostgresColumn(db, "SessionPlayers", "Gender", "\"Gender\" text NOT NULL DEFAULT 'Male'");
             await EnsurePostgresColumn(db, "SessionPlayers", "PlayerProfileId", "\"PlayerProfileId\" text NULL");
             await EnsurePostgresColumn(db, "SessionPlayers", "AvatarUrl", "\"AvatarUrl\" text NULL");
@@ -116,7 +142,7 @@ public static class DatabaseSchemaPatch
         }
     }
 
-    private static async Task EnsureSqliteColumn(
+    private static async Task<bool> EnsureSqliteColumn(
         VolleyDraftDbContext db,
         string tableName,
         string columnName,
@@ -131,10 +157,12 @@ public static class DatabaseSchemaPatch
         {
             var sql = "ALTER TABLE \"" + tableName + "\" ADD COLUMN " + columnDefinition;
             await db.Database.ExecuteSqlRawAsync(sql);
+            return true;
         }
+        return false;
     }
 
-    private static async Task EnsurePostgresColumn(
+    private static async Task<bool> EnsurePostgresColumn(
         VolleyDraftDbContext db,
         string tableName,
         string columnName,
@@ -166,7 +194,9 @@ public static class DatabaseSchemaPatch
         {
             var sql = "ALTER TABLE \"" + tableName + "\" ADD COLUMN " + columnDefinition;
             await db.Database.ExecuteSqlRawAsync(sql);
+            return true;
         }
+        return false;
     }
 
     private static async Task EnsureSqliteTeamPreferenceTables(VolleyDraftDbContext db)

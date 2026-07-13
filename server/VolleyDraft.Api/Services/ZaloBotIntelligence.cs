@@ -30,8 +30,24 @@ public enum ZaloBotIntent
     AddGuestPlayer,
     ShareSlot,
     TeamImage,
+    ScheduleReminder,
+    ReminderStatus,
+    CancelReminder,
     GeneralChat
 }
+
+public enum ZaloReminderCommandKind
+{
+    Schedule,
+    TriggerNow,
+    Status,
+    Disable
+}
+
+public sealed record ZaloReminderCommand(
+    ZaloReminderCommandKind Kind,
+    int? DelayMinutes,
+    bool Repeats);
 
 public sealed record ZaloIntentDecision(
     ZaloBotIntent Intent,
@@ -103,6 +119,53 @@ public static class ZaloBotIntelligence
                normalized.StartsWith("xac nhan draft ", StringComparison.Ordinal);
     }
 
+    public static bool TryParseReminderCommand(string value, out ZaloReminderCommand command)
+    {
+        command = new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, null, true);
+        var q = Normalize(value);
+        var mentionsReminder = Has(q,
+            "nhac", "reminder", "tag @all", "tag all", "tag moi nguoi", "bao moi nguoi", "goi moi nguoi");
+        if (!mentionsReminder) return false;
+
+        if (Has(q, "xem lich nhac", "lich nhac hien tai", "lich reminder", "khi nao nhac", "bao gio nhac", "con hen nhac"))
+        {
+            command = new ZaloReminderCommand(ZaloReminderCommandKind.Status, null, true);
+            return true;
+        }
+
+        if (Has(q, "tat nhac", "dung nhac", "huy lich nhac", "bo lich nhac", "khong nhac nua", "tat reminder"))
+        {
+            command = new ZaloReminderCommand(ZaloReminderCommandKind.Disable, null, false);
+            return true;
+        }
+
+        if (Has(q, "nhac ngay", "tag ngay", "bao moi nguoi ngay", "goi moi nguoi ngay") ||
+            Regex.IsMatch(q, @"(?:nhac|tag|bao|goi).*\bngay[.!?]*$", RegexOptions.CultureInvariant))
+        {
+            command = new ZaloReminderCommand(ZaloReminderCommandKind.TriggerNow, 0, true);
+            return true;
+        }
+
+        var duration = Regex.Match(
+            q,
+            @"(?<!\d)(?<amount>\d{1,3})\s*(?<unit>phut|p|gio|tieng|h)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        if (!duration.Success || !int.TryParse(duration.Groups["amount"].Value, out var amount))
+        {
+            command = new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, null, true);
+            return true;
+        }
+
+        var unit = duration.Groups["unit"].Value;
+        var minutes = unit is "phut" or "p" ? amount : amount * 60;
+        if (minutes is < 5 or > 10_080) return false;
+        var recurringPhrase = Regex.IsMatch(q, @"\b(?:cu|moi)\s+(?:moi\s+)?\d", RegexOptions.CultureInvariant);
+        var oneTime = !recurringPhrase &&
+                      Has(q, "chi mot lan", "mot lan thoi", "chi lan nay", "nhac 1 lan", "tag 1 lan");
+        command = new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, minutes, !oneTime);
+        return true;
+    }
+
     public static bool TryExtractSwapPlayerNames(string value, out string firstPlayer, out string secondPlayer)
     {
         firstPlayer = string.Empty;
@@ -143,6 +206,16 @@ public static class ZaloBotIntelligence
         var q = Normalize(value);
         if (TryGetExactCommand(q, out var command))
             return new(IntentForCommand(command), 1, null, false, null, "exact_numeric_command");
+        if (TryParseReminderCommand(value, out var reminderCommand))
+        {
+            var intent = reminderCommand.Kind switch
+            {
+                ZaloReminderCommandKind.Status => ZaloBotIntent.ReminderStatus,
+                ZaloReminderCommandKind.Disable => ZaloBotIntent.CancelReminder,
+                _ => ZaloBotIntent.ScheduleReminder
+            };
+            return new(intent, .99, q, false, null, "reminder_command");
+        }
         if (Regex.IsMatch(q, @"^(help|tro giup|huong dan|menu|lenh)$", RegexOptions.CultureInvariant))
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))

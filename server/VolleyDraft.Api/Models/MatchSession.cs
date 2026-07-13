@@ -24,7 +24,15 @@ public sealed class MatchSession
     public bool ReminderEnabled { get; set; }
     public int ReminderLeadHours { get; set; } = 72;
     public int ReminderIntervalHours { get; set; } = 12;
+    public int ReminderIntervalMinutes { get; set; } = 720;
+    public bool ReminderRepeats { get; set; } = true;
     public DateTimeOffset? LastReminderAt { get; set; }
+    public DateTimeOffset? NextReminderAt { get; set; }
+    public int? ReminderLastKnownPlayerCount { get; set; }
+    public string? ReminderLeaseToken { get; set; }
+    public DateTimeOffset? ReminderLeaseUntil { get; set; }
+    public int ReminderFailureCount { get; set; }
+    public string? LastReminderError { get; set; }
     public SessionStatus Status { get; set; } = SessionStatus.Setup;
     public int TeamCount { get; set; } = 3;
     public int TeamSize { get; set; } = 6;

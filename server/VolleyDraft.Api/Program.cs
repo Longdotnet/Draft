@@ -63,9 +63,11 @@ builder.Services.AddScoped<ZaloBotImageService>();
 builder.Services.AddScoped<ZaloTeamCardService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
+builder.Services.AddSingleton<ZaloSchedulerTrigger>();
 builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
+builder.Services.AddHostedService<ZaloSchedulerWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
@@ -103,6 +105,29 @@ builder.Services.AddAuthorization();
 var app = builder.Build();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapPost("/api/internal/scheduler/tick", (
+    HttpContext httpContext,
+    ZaloSchedulerTrigger trigger,
+    IConfiguration configuration) =>
+{
+    var expectedKey = configuration["Scheduler:Key"];
+    if (string.IsNullOrWhiteSpace(expectedKey))
+    {
+        return Results.Json(
+            new { message = "Scheduler key is not configured." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    if (!string.Equals(httpContext.Request.Headers["x-scheduler-key"], expectedKey, StringComparison.Ordinal))
+        return Results.Unauthorized();
+
+    var queued = trigger.TryTrigger();
+    return Results.Accepted(value: new
+    {
+        accepted = true,
+        queued,
+        requestedAt = DateTimeOffset.UtcNow
+    });
+});
 
 if (app.Environment.IsDevelopment())
 {

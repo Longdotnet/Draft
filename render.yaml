@@ -39,6 +39,16 @@ services:
         sync: false
       - key: Ai__Model
         sync: false
+      - key: Scheduler__Key
+        sync: false
+      - key: Scheduler__PollRefreshMinutes
+        value: "20"
+      - key: Scheduler__RetryMinutes
+        value: "10"
+      - key: Scheduler__UrgentWindowHours
+        value: "1"
+      - key: Scheduler__UrgentDelayMinutes
+        value: "0"
       - key: ZaloBot__ConversationTtlMinutes
         value: "15"
       - key: ZaloBot__ExactCommandCooldownSeconds

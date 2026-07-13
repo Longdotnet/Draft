@@ -39,6 +39,8 @@ export type SessionResponse = {
   reminderLeadHours: number;
   reminderIntervalHours: number;
   lastReminderAt: string | null;
+  nextReminderAt: string | null;
+  reminderRepeats: boolean;
   teams: TeamSummary[];
 };
 
@@ -57,6 +59,10 @@ export type ZaloBotSettingsResponse = {
   reminderLeadHours: number;
   reminderIntervalHours: number;
   lastReminderAt: string | null;
+  nextReminderAt: string | null;
+  reminderRepeats: boolean;
+  reminderFailureCount: number;
+  lastReminderError: string | null;
 };
 
 export type ZaloBotOperatorCandidateResponse = {

@@ -28,6 +28,35 @@ public sealed class ZaloBotIntelligenceTests
         Assert.False(ZaloBotIntelligence.TryGetExactCommand(input, out _));
     }
 
+    [Theory]
+    [InlineData("nhắc nhóm sau 6 tiếng nếu còn thiếu người", ZaloReminderCommandKind.Schedule, 360, true)]
+    [InlineData("cứ mỗi 8h tag @all nếu thiếu slot", ZaloReminderCommandKind.Schedule, 480, true)]
+    [InlineData("nhắc T6 ngay", ZaloReminderCommandKind.TriggerNow, 0, true)]
+    [InlineData("xem lịch nhắc T6", ZaloReminderCommandKind.Status, null, true)]
+    [InlineData("tắt nhắc CN", ZaloReminderCommandKind.Disable, null, false)]
+    [InlineData("nhắc sau 30 phút chỉ một lần", ZaloReminderCommandKind.Schedule, 30, false)]
+    [InlineData("cứ 30 phút nhắc T6 một lần", ZaloReminderCommandKind.Schedule, 30, true)]
+    public void Reminder_commands_accept_natural_vietnamese(
+        string input,
+        ZaloReminderCommandKind expectedKind,
+        int? expectedDelayMinutes,
+        bool expectedRepeats)
+    {
+        Assert.True(ZaloBotIntelligence.TryParseReminderCommand(input, out var command));
+        Assert.Equal(expectedKind, command.Kind);
+        Assert.Equal(expectedDelayMinutes, command.DelayMinutes);
+        Assert.Equal(expectedRepeats, command.Repeats);
+    }
+
+    [Theory]
+    [InlineData("nhắc nhóm sau 6 tiếng nếu còn thiếu người", ZaloBotIntent.ScheduleReminder)]
+    [InlineData("xem lịch nhắc T6", ZaloBotIntent.ReminderStatus)]
+    [InlineData("tắt nhắc CN", ZaloBotIntent.CancelReminder)]
+    public void Reminder_commands_are_routed_without_calling_ai(string input, ZaloBotIntent expected)
+    {
+        Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
+    }
+
     [Fact]
     public void Weekly_count_question_has_its_own_intent()
     {

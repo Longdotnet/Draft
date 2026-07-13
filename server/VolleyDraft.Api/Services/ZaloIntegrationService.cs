@@ -779,6 +779,8 @@ public sealed class ZaloIntegrationService(
         session.ReminderLeadHours,
         session.ReminderIntervalHours,
         session.LastReminderAt,
+        session.NextReminderAt,
+        session.ReminderRepeats,
         session.Teams.OrderBy(team => team.Name).Select(team => new TeamSummary(team.Id, team.Name)).ToList());
 
     private static double CalculateScore(PlayerRole role, PlayerLevel level)
