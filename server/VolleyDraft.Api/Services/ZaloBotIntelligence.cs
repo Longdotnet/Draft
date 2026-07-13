@@ -124,7 +124,9 @@ public static class ZaloBotIntelligence
         command = new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, null, true);
         var q = Normalize(value);
         var mentionsReminder = Has(q,
-            "nhac", "reminder", "tag @all", "tag all", "tag moi nguoi", "bao moi nguoi", "goi moi nguoi");
+            "nhac", "reminder", "scheduler", "schedul", "tag @all", "tag all", "tag moi nguoi",
+            "bao moi nguoi", "bao cho moi nguoi", "thong bao", "goi moi nguoi") ||
+            (Has(q, "len lich", "hen lich", "dat lich") && Has(q, "cho moi nguoi", "tag", "bao", "thong bao"));
         if (!mentionsReminder) return false;
 
         if (Has(q, "xem lich nhac", "lich nhac hien tai", "lich reminder", "khi nao nhac", "bao gio nhac", "con hen nhac"))

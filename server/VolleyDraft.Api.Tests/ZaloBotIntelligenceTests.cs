@@ -36,6 +36,7 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("tắt nhắc CN", ZaloReminderCommandKind.Disable, null, false)]
     [InlineData("nhắc sau 30 phút chỉ một lần", ZaloReminderCommandKind.Schedule, 30, false)]
     [InlineData("cứ 30 phút nhắc T6 một lần", ZaloReminderCommandKind.Schedule, 30, true)]
+    [InlineData("hãy lên lịch schedular giúp tui cho thứ 6, nếu chưa đủ vote là 18 thì cứ cách 8h là thông báo cho mọi người giúp tui", ZaloReminderCommandKind.Schedule, 480, true)]
     public void Reminder_commands_accept_natural_vietnamese(
         string input,
         ZaloReminderCommandKind expectedKind,
