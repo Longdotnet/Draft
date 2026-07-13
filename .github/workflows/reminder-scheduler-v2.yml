@@ -70,8 +70,7 @@ jobs:
             return 1
           }
 
-          # Wake the bridge first. Render free services can need 50+ seconds
-          # before they accept the first request after sleeping.
+          # Wake both free Render services in parallel before queueing work.
           wait_for_health "zalo-bridge" "$bridge_health_url" &
           bridge_health_pid=$!
           wait_for_health "draft-api" "$backend_health_url" &
