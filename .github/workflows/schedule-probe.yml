@@ -1,0 +1,19 @@
+name: Schedule probe
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Confirm schedule event
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "scheduled_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
