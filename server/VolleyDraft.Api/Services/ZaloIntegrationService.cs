@@ -258,7 +258,8 @@ public sealed class ZaloIntegrationService(
     public async Task<ServiceResult<ZaloPollImportResultResponse>> ConfirmImportAsync(
         string adminUserId,
         string sessionId,
-        ConfirmZaloPollImportRequest request)
+        ConfirmZaloPollImportRequest request,
+        bool preserveMissingProfileFields = false)
     {
         var linked = await GetLinkedSessionAsync(adminUserId, sessionId);
         if (linked.Result is not null)
@@ -313,6 +314,9 @@ public sealed class ZaloIntegrationService(
             foreach (var (zaloUserId, decision) in decisions)
             {
                 memberById.TryGetValue(zaloUserId, out var member);
+                var existingGender = (PlayerGender?)null;
+                var existingRole = (PlayerRole?)null;
+                var existingLevel = (PlayerLevel?)null;
                 if (!existingProfiles.TryGetValue(zaloUserId, out var profile))
                 {
                     profile = new PlayerProfile
@@ -325,14 +329,23 @@ public sealed class ZaloIntegrationService(
                     db.PlayerProfiles.Add(profile);
                     existingProfiles[zaloUserId] = profile;
                 }
+                else
+                {
+                    existingGender = profile.Gender is PlayerGender.Male or PlayerGender.Female ? profile.Gender : null;
+                    existingRole = profile.DefaultRole;
+                    existingLevel = profile.DefaultLevel;
+                }
 
                 profile.DisplayName = member?.DisplayName ?? profile.DisplayName;
                 profile.AvatarUrl = member?.AvatarUrl ?? profile.AvatarUrl;
-                profile.Gender = decision.Gender;
-                profile.DefaultRole = decision.Role;
-                profile.DefaultLevel = decision.Level;
-                profile.GenderUpdatedAt = now;
-                profile.GenderUpdatedByUserId = adminUserId;
+                profile.Gender = preserveMissingProfileFields ? existingGender : decision.Gender;
+                profile.DefaultRole = preserveMissingProfileFields ? existingRole : decision.Role;
+                profile.DefaultLevel = preserveMissingProfileFields ? existingLevel : decision.Level;
+                if (!preserveMissingProfileFields)
+                {
+                    profile.GenderUpdatedAt = now;
+                    profile.GenderUpdatedByUserId = adminUserId;
+                }
                 profile.LastSyncedAt = now;
                 profile.UpdatedAt = now;
                 updatedProfileCount += 1;
@@ -495,7 +508,8 @@ public sealed class ZaloIntegrationService(
                     preview.PollId,
                     selectedOptionIds,
                     preview.PollUpdatedAtUnixMs,
-                    decisions));
+                    decisions),
+                preserveMissingProfileFields: true);
             if (!importResult.IsSuccess || importResult.Value is null) return importResult;
 
             var activeZaloIds = preview.Candidates.Select(candidate => NormalizeId(candidate.ZaloUserId)).ToHashSet(StringComparer.Ordinal);

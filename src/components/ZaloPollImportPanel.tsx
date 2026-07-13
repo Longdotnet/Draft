@@ -722,6 +722,9 @@ export function ZaloPollImportPanel({
           <code>@bot gửi danh sách CN 12/7</code>
           <code>@bot draft lại hôm nay</code>
           <code>@bot đổi vị trí A với B</code>
+          <code>@bot cập nhật A: nam, công, trung bình</code>
+          <code>@bot +1 cho bạn của A</code>
+          <code>@bot A muốn share slot với B</code>
         </div>
         <div className="zalo-rule-review">
           <div className="action-row">

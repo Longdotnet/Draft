@@ -442,7 +442,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                "🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                "\n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nLệnh có quyền khác:\n- @bot cập nhật Nick Tran: nam, công, trung bình\n- @bot +1 số lượng vote cho bạn của Nick Tran\n- @bot Nick Tran muốn share slot với Thanh Tuyền\n- @bot draft lại\n- @bot đổi vị trí Thanh Tuyền với Nick Tran\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null,
                 ZaloBotIntent.Help);
         }
@@ -474,6 +474,15 @@ public sealed class ZaloBotService(
             return new BotAnswer(text, imageUrl, decision.Intent);
         }
 
+        if (decision.Intent == ZaloBotIntent.UpdatePlayerProfile)
+            return await UpdatePlayerProfileAsync(decision, sessions, normalizedQuestion, question, incoming, false);
+
+        if (decision.Intent == ZaloBotIntent.AddGuestPlayer)
+            return await AddGuestPlayerAsync(decision, sessions, normalizedQuestion, question, incoming, false);
+
+        if (decision.Intent == ZaloBotIntent.ShareSlot)
+            return await ShareSlotAsync(decision, sessions, normalizedQuestion, question, incoming, false);
+
         if (decision.Intent == ZaloBotIntent.SyncPoll)
         {
             var selected = await SelectSessionAsync(sessions, normalizedQuestion, activeConnectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
@@ -482,7 +491,12 @@ public sealed class ZaloBotService(
             var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, false);
             if (denial is not null) return denial;
             var synced = await zaloIntegration.SyncLatestPollAsync(session.AdminUserId, session.Id, question);
-            return new BotAnswer(synced.IsSuccess && synced.Value is not null ? synced.Value.Message : synced.Error ?? "Không đồng bộ được poll.", null, decision.Intent);
+            if (!synced.IsSuccess || synced.Value is null)
+                return new BotAnswer(synced.Error ?? "Không đồng bộ được poll.", null, decision.Intent);
+            return new BotAnswer(
+                synced.Value.Message + await BuildIncompleteProfilePromptAsync(session, true),
+                null,
+                decision.Intent);
         }
 
         if (decision.Intent == ZaloBotIntent.AutoDraft)
@@ -492,6 +506,10 @@ public sealed class ZaloBotService(
             var session = selected.Session!;
             var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, false);
             if (denial is not null) return denial;
+            var syncError = await SyncPollBeforeDraftAsync(session, question);
+            if (syncError is not null) return new BotAnswer(syncError, null, decision.Intent);
+            var incompletePrompt = await BuildIncompleteProfilePromptAsync(session, false);
+            if (incompletePrompt.Length > 0) return new BotAnswer(incompletePrompt.TrimStart(), null, decision.Intent);
             var pendingIntent = session.Status == SessionStatus.Finished
                 ? ZaloBotIntent.RedraftConfirm
                 : ZaloBotIntent.AutoDraftConfirm;
@@ -511,6 +529,8 @@ public sealed class ZaloBotService(
             var session = selected.Session!;
             var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, false);
             if (denial is not null) return denial;
+            var incompletePrompt = await BuildIncompleteProfilePromptAsync(session, false);
+            if (incompletePrompt.Length > 0) return new BotAnswer(incompletePrompt.TrimStart(), null, decision.Intent);
             await SaveActionConfirmationAsync(activeConnectionId, groupId, incoming.SenderId, session.Id, ZaloBotIntent.RedraftConfirm, cancellationToken);
             return new BotAnswer(
                 $"⚠️ Draft lại {session.Name} sẽ xoá kết quả bốc team hiện tại và khui lại từ đầu, vẫn giữ captain hiện tại. Gõ @bot xác nhận draft lại để chạy, hoặc @bot huỷ.",
@@ -905,6 +925,175 @@ public sealed class ZaloBotService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task<string> BuildIncompleteProfilePromptAsync(SessionSnapshot session, bool appendToExistingText)
+    {
+        var incomplete = await draftService.GetIncompletePlayerProfilesAsync(session.AdminUserId, session.Id);
+        if (!incomplete.IsSuccess || incomplete.Value is null || incomplete.Value.Count == 0) return string.Empty;
+        var names = string.Join(", ", incomplete.Value.Take(10).Select(player =>
+        {
+            var missing = new List<string>();
+            if (player.MissingGender) missing.Add("giới tính");
+            if (player.MissingRole) missing.Add("vị trí");
+            if (player.MissingLevel) missing.Add("trình độ");
+            return $"{player.DisplayName} ({string.Join("/", missing)})";
+        }));
+        var prefix = appendToExistingText ? "\n\n" : string.Empty;
+        return prefix +
+               $"⛔ Chưa thể draft vì chưa xác nhận hồ sơ: {names}. " +
+               "Cập nhật từng người, ví dụ `@bot cập nhật Nick Tran: nam` hoặc `@bot cập nhật Nick Tran: nam, công, trung bình`. " +
+               "Nếu chỉ biết giới tính, bot sẽ giữ vị trí Người mới và trình độ Mới.";
+    }
+
+    private async Task<string?> SyncPollBeforeDraftAsync(SessionSnapshot session, string optionReference)
+    {
+        if (session.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection) ||
+            string.IsNullOrWhiteSpace(session.LatestPoll))
+            return null;
+        var synced = await zaloIntegration.SyncLatestPollAsync(session.AdminUserId, session.Id, optionReference);
+        return synced.IsSuccess
+            ? null
+            : $"Chưa thể draft vì không đồng bộ lại được poll: {synced.Error}";
+    }
+
+    private async Task<BotAnswer> UpdatePlayerProfileAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string originalQuestion,
+        ZaloIncomingMessageEvent incoming,
+        bool aiCalled)
+    {
+        var sessionsWithPlayer = sessions
+            .Where(session => FindBestMentionedPlayerName(originalQuestion, session.PlayerNames) is not null)
+            .ToList();
+        var selected = sessionsWithPlayer.Count == 1
+            ? new SessionSelection(sessionsWithPlayer[0], null)
+            : SelectSession(sessions, normalizedQuestion);
+        if (selected.Clarification is not null)
+            return new BotAnswer(selected.Clarification + " Hãy gửi lại lệnh cập nhật kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
+        var session = selected.Session!;
+        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+        if (denial is not null) return denial;
+
+        var playerReference = FindBestMentionedPlayerName(originalQuestion, session.PlayerNames) ?? ExtractProfilePlayerReference(originalQuestion);
+        if (string.IsNullOrWhiteSpace(playerReference))
+            return new BotAnswer("Mình chưa nhận ra tên người cần cập nhật. Ví dụ: @bot cập nhật Nick Tran: nam, công, trung bình.", null, decision.Intent, aiCalled);
+        var parsed = ParsePlayerProfileValues(originalQuestion, playerReference);
+        if (parsed.Gender is null && parsed.Role is null && parsed.Level is null)
+            return new BotAnswer("Mình chưa nhận ra thông tin hồ sơ. Dùng giới tính nam/nữ; vị trí công/thủ/chuyền 2/toàn diện; trình độ tốt/trung bình/mới.", null, decision.Intent, aiCalled);
+
+        var updated = await draftService.UpdatePlayerProfileFromBotAsync(
+            session.AdminUserId,
+            session.Id,
+            playerReference,
+            parsed.Gender,
+            parsed.Role,
+            parsed.Level);
+        if (!updated.IsSuccess || updated.Value is null)
+            return new BotAnswer(updated.Error ?? "Không cập nhật được hồ sơ.", null, decision.Intent, aiCalled);
+        var player = updated.Value;
+        var remaining = await draftService.GetIncompletePlayerProfilesAsync(session.AdminUserId, session.Id);
+        var remainingText = remaining.IsSuccess && remaining.Value is { Count: > 0 }
+            ? $" Còn hồ sơ chưa xác nhận: {string.Join(", ", remaining.Value.Take(10).Select(item => item.DisplayName))}."
+            : " Hồ sơ đã đủ điều kiện để draft.";
+        return new BotAnswer(
+            $"Đã cập nhật {player.DisplayName}: {FormatGender(player.Gender)}, {FormatRole(player.Role)}, {FormatLevel(player.Level)}.{remainingText}",
+            null,
+            decision.Intent,
+            aiCalled);
+    }
+
+    private async Task<BotAnswer> AddGuestPlayerAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string originalQuestion,
+        ZaloIncomingMessageEvent incoming,
+        bool aiCalled)
+    {
+        var selected = SelectSession(sessions, normalizedQuestion);
+        if (selected.Clarification is not null)
+            return new BotAnswer(selected.Clarification + " Hãy gửi lại lệnh +1 kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
+        var session = selected.Session!;
+        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+        if (denial is not null) return denial;
+        var guestName = ExtractGuestName(originalQuestion);
+        if (string.IsNullOrWhiteSpace(guestName))
+            return new BotAnswer("Mình chưa nhận ra khách của ai. Ví dụ: @bot +1 số lượng vote cho bạn của Nick Tran.", null, decision.Intent, aiCalled);
+        var added = await draftService.AddGuestPlayerFromBotAsync(session.AdminUserId, session.Id, guestName);
+        if (!added.IsSuccess || added.Value is null)
+            return new BotAnswer(added.Error ?? "Không +1 được người chơi.", null, decision.Intent, aiCalled);
+        var result = added.Value;
+        var divisible = result.PresentPlayerCount % result.TeamCount == 0;
+        var countText = divisible
+            ? $"Tổng hiện tại {result.PresentPlayerCount}, đã chia hết cho {result.TeamCount} team."
+            : $"Tổng hiện tại {result.PresentPlayerCount}, chưa chia hết cho {result.TeamCount} team.";
+        return new BotAnswer(
+            $"Đã +1 {result.Player.DisplayName} trên web. {countText} " +
+            $"Khách chưa có hồ sơ; cập nhật ít nhất giới tính bằng `@bot cập nhật {result.Player.DisplayName}: nam` hoặc `nữ` trước khi draft.",
+            null,
+            decision.Intent,
+            aiCalled);
+    }
+
+    private async Task<BotAnswer> ShareSlotAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string originalQuestion,
+        ZaloIncomingMessageEvent incoming,
+        bool aiCalled)
+    {
+        if (!ZaloBotIntelligence.TryExtractSharePlayerNames(originalQuestion, out var rawAnchor, out var rawPartner))
+            return new BotAnswer("Mình chưa nhận ra hai người cần share. Ví dụ: @bot Nick Tran muốn share slot với Thanh Tuyền.", null, decision.Intent, aiCalled);
+        var matchingSessions = sessions
+            .Where(session => ResolvePlayerReference(rawAnchor, session.PlayerNames) is not null)
+            .ToList();
+        var finishedMatchingSessions = matchingSessions.Where(session => session.Status == SessionStatus.Finished).ToList();
+        var selected = finishedMatchingSessions.Count == 1
+            ? new SessionSelection(finishedMatchingSessions[0], null)
+            : matchingSessions.Count == 1
+                ? new SessionSelection(matchingSessions[0], null)
+            : SelectSession(sessions, normalizedQuestion);
+        if (selected.Clarification is not null)
+            return new BotAnswer(selected.Clarification + " Hãy gửi lại đầy đủ lệnh share slot kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
+        var session = selected.Session!;
+        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+        if (denial is not null) return denial;
+        var anchor = ResolvePlayerReference(rawAnchor, session.PlayerNames);
+        if (anchor is null)
+            return new BotAnswer($"Không tìm thấy '{rawAnchor}' trong đội hình.", null, decision.Intent, aiCalled);
+        var existingPartner = ResolvePlayerReference(rawPartner, session.PlayerNames);
+        var partner = existingPartner ?? (NormalizeText(rawPartner) == "ban"
+            ? NextExternalShareName(anchor, session.PlayerNames)
+            : rawPartner);
+        var shared = await draftService.SharePostDraftSlotAsync(session.AdminUserId, session.Id, anchor, partner);
+        if (!shared.IsSuccess || shared.Value is null)
+            return new BotAnswer(shared.Error ?? "Không cập nhật được share slot.", null, decision.Intent, aiCalled);
+        var result = shared.Value;
+        var profileNote = result.NeedsProfileUpdate
+            ? " Hồ sơ người mới chưa có giới tính; cần cập nhật trước nếu sau này draft lại."
+            : string.Empty;
+        return new BotAnswer(
+            $"Đã cập nhật {result.AnchorPlayerName} và {result.PartnerPlayerName} share slot tại {result.TeamName}.{profileNote}",
+            null,
+            decision.Intent,
+            aiCalled);
+    }
+
+    private static string NextExternalShareName(string anchor, IReadOnlyList<string> playerNames)
+    {
+        var baseName = $"Bạn share cùng {anchor}";
+        var existing = playerNames.Select(NormalizeText).ToHashSet(StringComparer.Ordinal);
+        if (!existing.Contains(NormalizeText(baseName))) return baseName;
+        for (var index = 2; index <= 20; index += 1)
+        {
+            var candidate = $"{baseName} #{index}";
+            if (!existing.Contains(NormalizeText(candidate))) return candidate;
+        }
+        return $"{baseName} #{Guid.NewGuid().ToString("n")[..4]}";
+    }
+
     private async Task<BotAnswer> SwapTeamPlayersAsync(
         ZaloIntentDecision decision,
         IReadOnlyList<SessionSnapshot> sessions,
@@ -916,8 +1105,13 @@ public sealed class ZaloBotService(
         var sessionsWithBothNames = sessions
             .Where(session => FindMentionedPlayerNames(originalQuestion, session.PlayerNames).Count >= 2)
             .ToList();
+        var finishedSessionsWithBothNames = sessionsWithBothNames.Where(session => session.Status == SessionStatus.Finished).ToList();
         SessionSelection selected;
-        if (sessionsWithBothNames.Count == 1)
+        if (finishedSessionsWithBothNames.Count == 1)
+        {
+            selected = new SessionSelection(finishedSessionsWithBothNames[0], null);
+        }
+        else if (sessionsWithBothNames.Count == 1)
         {
             selected = new SessionSelection(sessionsWithBothNames[0], null);
         }
@@ -983,6 +1177,111 @@ public sealed class ZaloBotService(
             .Select(item => item.Name)
             .ToList();
     }
+
+    private static string? FindBestMentionedPlayerName(string question, IReadOnlyList<string> playerNames)
+    {
+        var normalizedQuestion = NormalizeText(question);
+        return playerNames
+            .Where(name =>
+            {
+                var normalizedName = NormalizeText(name);
+                return normalizedName.Length > 0 && normalizedQuestion.Contains(normalizedName, StringComparison.Ordinal);
+            })
+            .OrderByDescending(name => NormalizeText(name).Length)
+            .FirstOrDefault();
+    }
+
+    private static string? ResolvePlayerReference(string reference, IReadOnlyList<string> playerNames)
+    {
+        var normalizedReference = NormalizeText(reference);
+        var exact = playerNames.Where(name => NormalizeText(name) == normalizedReference).ToList();
+        if (exact.Count == 1) return exact[0];
+        var partial = playerNames
+            .Where(name =>
+            {
+                var normalizedName = NormalizeText(name);
+                return normalizedReference.Contains(normalizedName, StringComparison.Ordinal) ||
+                       normalizedName.Contains(normalizedReference, StringComparison.Ordinal);
+            })
+            .OrderByDescending(name => NormalizeText(name).Length)
+            .ToList();
+        return partial.Count == 0 ? null : partial[0];
+    }
+
+    private static string? ExtractProfilePlayerReference(string question)
+    {
+        var match = Regex.Match(
+            question,
+            @"^cập\s+nhật(?:\s+(?:thông\s+tin|hồ\s+sơ|trình\s+độ|giới\s+tính))?\s+(?<name>.+?)(?::|,|\s+là\s+)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups["name"].Value.Trim() : null;
+    }
+
+    private static PlayerProfileValues ParsePlayerProfileValues(string question, string playerReference)
+    {
+        var descriptor = NormalizeText(question);
+        var normalizedName = NormalizeText(playerReference);
+        var nameIndex = descriptor.IndexOf(normalizedName, StringComparison.Ordinal);
+        if (nameIndex >= 0) descriptor = descriptor.Remove(nameIndex, normalizedName.Length);
+
+        PlayerGender? gender = null;
+        if (ContainsToken(descriptor, "nu") || ContainsToken(descriptor, "female")) gender = PlayerGender.Female;
+        else if (ContainsToken(descriptor, "nam") || ContainsToken(descriptor, "male")) gender = PlayerGender.Male;
+
+        PlayerRole? role = null;
+        if (HasAny(descriptor, "chuyen 2", "chuyen hai", "setter")) role = PlayerRole.Setter;
+        else if (HasAny(descriptor, "fullstack", "full stack", "toan dien")) role = PlayerRole.FullStack;
+        else if (HasAny(descriptor, "phong thu", "danh thu", "libero") || ContainsToken(descriptor, "thu")) role = PlayerRole.Defense;
+        else if (HasAny(descriptor, "tan cong", "danh cong", "attack") || ContainsToken(descriptor, "cong")) role = PlayerRole.Attack;
+        else if (HasAny(descriptor, "nguoi moi", "role moi", "vi tri moi")) role = PlayerRole.New;
+
+        PlayerLevel? level = null;
+        if (HasAny(descriptor, "trung binh", "average") || ContainsToken(descriptor, "tb")) level = PlayerLevel.Average;
+        else if (HasAny(descriptor, "trinh do tot", "level tot", "choi tot", "good") || ContainsToken(descriptor, "kha")) level = PlayerLevel.Good;
+        else if (HasAny(descriptor, "moi choi", "trinh do moi", "level moi")) level = PlayerLevel.New;
+        return new PlayerProfileValues(gender, role, level);
+    }
+
+    private static string? ExtractGuestName(string question)
+    {
+        var friend = Regex.Match(
+            question,
+            @"bạn\s+của\s+(?<sponsor>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (friend.Success)
+        {
+            var sponsor = friend.Groups["sponsor"].Value.Trim(' ', ',', '.', ':', ';');
+            return sponsor.Length == 0 ? null : $"Bạn của {sponsor}";
+        }
+        var named = Regex.Match(
+            question,
+            @"(?:\+1|thêm\s+1|cộng\s+1).*(?:cho|người)\s+(?<guest>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return named.Success ? named.Groups["guest"].Value.Trim(' ', ',', '.', ':', ';') : null;
+    }
+
+    private static string FormatGender(PlayerGender gender) => gender switch
+    {
+        PlayerGender.Male => "nam",
+        PlayerGender.Female => "nữ",
+        _ => "chưa xác định"
+    };
+
+    private static string FormatRole(PlayerRole role) => role switch
+    {
+        PlayerRole.Attack => "công",
+        PlayerRole.Defense => "thủ",
+        PlayerRole.Setter => "chuyền 2",
+        PlayerRole.FullStack => "toàn diện",
+        _ => "Người mới"
+    };
+
+    private static string FormatLevel(PlayerLevel level) => level switch
+    {
+        PlayerLevel.Good => "tốt",
+        PlayerLevel.Average => "trung bình",
+        _ => "Mới"
+    };
 
     private async Task<BotAnswer?> GetOperatorDenialAsync(
         SessionSnapshot session,
@@ -1069,6 +1368,12 @@ public sealed class ZaloBotService(
                 decision.Intent,
                 true);
         }
+        if (decision.Intent == ZaloBotIntent.UpdatePlayerProfile)
+            return await UpdatePlayerProfileAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
+        if (decision.Intent == ZaloBotIntent.AddGuestPlayer)
+            return await AddGuestPlayerAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
+        if (decision.Intent == ZaloBotIntent.ShareSlot)
+            return await ShareSlotAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
         if (decision.Intent == ZaloBotIntent.SyncPoll)
         {
             var syncSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
@@ -1077,7 +1382,13 @@ public sealed class ZaloBotService(
             var denial = await GetOperatorDenialAsync(syncSession, incoming.SenderId, decision.Intent, true);
             if (denial is not null) return denial;
             var synced = await zaloIntegration.SyncLatestPollAsync(syncSession.AdminUserId, syncSession.Id, selector);
-            return new BotAnswer(synced.IsSuccess && synced.Value is not null ? synced.Value.Message : synced.Error ?? "Không đồng bộ được poll.", null, decision.Intent, true);
+            if (!synced.IsSuccess || synced.Value is null)
+                return new BotAnswer(synced.Error ?? "Không đồng bộ được poll.", null, decision.Intent, true);
+            return new BotAnswer(
+                synced.Value.Message + await BuildIncompleteProfilePromptAsync(syncSession, true),
+                null,
+                decision.Intent,
+                true);
         }
         if (decision.Intent == ZaloBotIntent.AutoDraft)
         {
@@ -1086,6 +1397,10 @@ public sealed class ZaloBotService(
             var draftSession = draftSelection.Session!;
             var denial = await GetOperatorDenialAsync(draftSession, incoming.SenderId, decision.Intent, true);
             if (denial is not null) return denial;
+            var syncError = await SyncPollBeforeDraftAsync(draftSession, selector);
+            if (syncError is not null) return new BotAnswer(syncError, null, decision.Intent, true);
+            var incompletePrompt = await BuildIncompleteProfilePromptAsync(draftSession, false);
+            if (incompletePrompt.Length > 0) return new BotAnswer(incompletePrompt.TrimStart(), null, decision.Intent, true);
             var pendingIntent = draftSession.Status == SessionStatus.Finished
                 ? ZaloBotIntent.RedraftConfirm
                 : ZaloBotIntent.AutoDraftConfirm;
@@ -1105,6 +1420,8 @@ public sealed class ZaloBotService(
             var redraftSession = redraftSelection.Session!;
             var denial = await GetOperatorDenialAsync(redraftSession, incoming.SenderId, decision.Intent, true);
             if (denial is not null) return denial;
+            var incompletePrompt = await BuildIncompleteProfilePromptAsync(redraftSession, false);
+            if (incompletePrompt.Length > 0) return new BotAnswer(incompletePrompt.TrimStart(), null, decision.Intent, true);
             await SaveActionConfirmationAsync(connectionId, groupId, incoming.SenderId, redraftSession.Id, ZaloBotIntent.RedraftConfirm, cancellationToken);
             return new BotAnswer($"⚠️ Draft lại sẽ xoá kết quả đội hình {redraftSession.Name}. Gõ @bot xác nhận draft lại để chạy hoặc @bot huỷ.", null, decision.Intent, true);
         }
@@ -1578,6 +1895,7 @@ public sealed class ZaloBotService(
     {
         public static PendingResolution None { get; } = new(false, null, null, null);
     }
+    private sealed record PlayerProfileValues(PlayerGender? Gender, PlayerRole? Role, PlayerLevel? Level);
     private sealed record SessionSnapshot(
         string Id,
         string Name,

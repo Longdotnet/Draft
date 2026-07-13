@@ -298,8 +298,13 @@ Các lệnh mở rộng:
 - `10`: tạo team-card PNG từ dữ liệu đội hình và gửi vào Zalo. Lệnh 9 cũng gửi card sau khi hoàn tất.
 - `@bot draft lại [ngày/tên trận]`: xoá kết quả bốc team hiện tại, giữ captain và khui lại từ đầu; luôn cần `@bot xác nhận draft lại`.
 - `@bot đổi vị trí <người A> với <người B>`: sau khi draft hoàn tất, đổi hai slot thường giữa hai team, tính lại điểm và gửi danh sách/card mới. Bot không tự đổi captain hoặc tách slot ghép.
+- `@bot cập nhật <tên>: nam/nữ, công/thủ/chuyền 2/toàn diện, tốt/trung bình/mới`: cập nhật hồ sơ người chơi. Bot chặn draft nếu còn người có giới tính `Unknown`; nếu admin chỉ cung cấp giới tính thì giữ `Người mới/Mới`.
+- `@bot +1 số lượng vote cho bạn của <tên>`: thêm khách không có Zalo vào roster trước draft, cập nhật số người trên web và yêu cầu bổ sung ít nhất giới tính.
+- `@bot <người A> muốn share slot với <người B>`: sau khi draft hoàn tất, ghép người có sẵn hoặc khách ngoài roster vào slot của A. Bot chỉ báo kết quả cập nhật, không tự gửi lại toàn bộ đội hình.
 
-Các lệnh thay đổi dữ liệu cho phép trưởng nhóm (`creatorId`), phó nhóm (`adminIds`) hoặc Zalo operator được admin chọn trong panel `Bot chat & reminder`. Quyền trưởng/phó nhóm được đọc trực tiếp từ Zalo theo UID khi chạy lệnh; không so quyền bằng display name. API còn dùng lease trên session để các thao tác sync/draft/đổi người không chạy đồng thời.
+Các lệnh thay đổi dữ liệu cho phép trưởng nhóm (`creatorId`), phó nhóm (`adminIds`) hoặc Zalo operator được admin chọn trong panel `Bot chat & reminder`. Quyền trưởng/phó nhóm được đọc trực tiếp từ Zalo theo UID khi chạy lệnh; không so quyền bằng display name. API còn dùng lease trên session để các thao tác sync/draft/đổi người/share slot không chạy đồng thời.
+
+Bot sync poll có thể nhập voter chưa có hồ sơ thành `Unknown + Người mới + Mới` để roster trên web phản ánh đúng số vote, nhưng sẽ không cho draft. Người có quyền phải xác nhận ít nhất giới tính qua lệnh cập nhật; role/level chỉ giữ mặc định sau lần xác nhận này.
 
 AI chỉ phân loại câu tự nhiên thành intent JSON có kiểu (`SessionSchedule`, `Roster`, `WeeklySessionCount`...). Handler .NET sau đó đọc giờ, sân, người chơi, poll và slot từ database; model không phải nguồn dữ liệu nghiệp vụ. Nếu classifier lỗi JSON, confidence thấp hoặc provider lỗi, bot dùng routing xác định được hoặc fallback an toàn thay vì gọi một method tùy ý.
 

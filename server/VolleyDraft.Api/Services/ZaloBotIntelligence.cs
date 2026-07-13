@@ -25,6 +25,9 @@ public enum ZaloBotIntent
     Redraft,
     RedraftConfirm,
     SwapTeamPlayers,
+    UpdatePlayerProfile,
+    AddGuestPlayer,
+    ShareSlot,
     TeamImage,
     GeneralChat
 }
@@ -113,6 +116,20 @@ public static class ZaloBotIntelligence
         return firstPlayer.Length is > 0 and <= 160 && secondPlayer.Length is > 0 and <= 160;
     }
 
+    public static bool TryExtractSharePlayerNames(string value, out string anchorPlayer, out string partnerPlayer)
+    {
+        anchorPlayer = string.Empty;
+        partnerPlayer = string.Empty;
+        var match = Regex.Match(
+            value ?? string.Empty,
+            @"^(?<anchor>.+?)\s+(?:muốn\s+)?(?:(?:share|chung|đánh\s+chung|chơi\s+chung)\s+(?:một\s+)?slot|thay\s+phiên)\s+với\s+(?<partner>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return false;
+        anchorPlayer = match.Groups["anchor"].Value.Trim(' ', ',', '.', ':', ';');
+        partnerPlayer = match.Groups["partner"].Value.Trim(' ', ',', '.', ':', ';');
+        return anchorPlayer.Length is > 0 and <= 160 && partnerPlayer.Length is > 0 and <= 160;
+    }
+
     public static bool IsProtectedBusinessFactText(string value)
     {
         var q = Normalize(value);
@@ -129,6 +146,14 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
+        if ((q.StartsWith("+1 ", StringComparison.Ordinal) || Has(q, "them 1 nguoi", "cong 1 nguoi", "+1 so luong vote", "+1 slot")) &&
+            Has(q, "ban", "nguoi", "vote", "slot"))
+            return new(ZaloBotIntent.AddGuestPlayer, .99, q, false, null, "add_guest_player_phrase");
+        if (Has(q, "share slot", "chung slot", "danh chung slot", "choi chung slot", "slot thay phien", "thay phien voi"))
+            return new(ZaloBotIntent.ShareSlot, .99, q, false, null, "share_slot_phrase");
+        if (Has(q, "cap nhat thong tin", "cap nhat ho so", "cap nhat trinh do", "cap nhat gioi tinh") ||
+            (q.StartsWith("cap nhat ", StringComparison.Ordinal) && Has(q, " nam", " nu", "tan cong", "phong thu", "chuyen 2", "trung binh", "moi choi")))
+            return new(ZaloBotIntent.UpdatePlayerProfile, .98, q, false, null, "update_player_profile_phrase");
         if (Has(q, "doi vi tri", "doi cho", "swap ") && Has(q, " voi ", " va ", " cho "))
             return new(ZaloBotIntent.SwapTeamPlayers, .99, q, false, null, "swap_team_players_phrase");
         if (Has(q, "draft lai", "chia lai team", "boc lai team", "khui lai tui", "khui lai", "draft lai tu dau"))

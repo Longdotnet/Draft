@@ -346,6 +346,137 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return ServiceResult<SessionPlayerResponse>.Created(ToPlayerResponse(player));
     }
 
+    public async Task<ServiceResult<IReadOnlyList<IncompletePlayerProfile>>> GetIncompletePlayerProfilesAsync(
+        string adminUserId,
+        string sessionId)
+    {
+        if (!await IsSessionAdmin(adminUserId, sessionId))
+            return NotFound<IReadOnlyList<IncompletePlayerProfile>>("Không tìm thấy session.");
+        var players = await db.SessionPlayers.AsNoTracking()
+            .Where(player => player.SessionId == sessionId && player.IsPresent &&
+                             (player.Gender == PlayerGender.Unknown ||
+                              (player.PlayerProfile != null &&
+                               (player.PlayerProfile.Gender == null ||
+                                player.PlayerProfile.Gender == PlayerGender.Unknown ||
+                                player.PlayerProfile.DefaultRole == null ||
+                                player.PlayerProfile.DefaultLevel == null))))
+            .OrderBy(player => player.DisplayName)
+            .Select(player => new IncompletePlayerProfile(
+                player.Id,
+                player.DisplayName,
+                player.Gender,
+                player.Role,
+                player.Level,
+                player.Gender == PlayerGender.Unknown ||
+                (player.PlayerProfile != null &&
+                 (player.PlayerProfile.Gender == null || player.PlayerProfile.Gender == PlayerGender.Unknown)),
+                player.PlayerProfile != null && player.PlayerProfile.DefaultRole == null,
+                player.PlayerProfile != null && player.PlayerProfile.DefaultLevel == null))
+            .ToListAsync();
+        return ServiceResult<IReadOnlyList<IncompletePlayerProfile>>.Success(players);
+    }
+
+    public async Task<ServiceResult<SessionPlayerResponse>> UpdatePlayerProfileFromBotAsync(
+        string adminUserId,
+        string sessionId,
+        string playerReference,
+        PlayerGender? gender,
+        PlayerRole? role,
+        PlayerLevel? level)
+    {
+        if (gender is null && role is null && level is null)
+            return BadRequest<SessionPlayerResponse>("Cần cung cấp ít nhất giới tính, vị trí hoặc trình độ.");
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null) return NotFound<SessionPlayerResponse>("Không tìm thấy session.");
+        if (session.Status == SessionStatus.Drafting)
+            return BadRequest<SessionPlayerResponse>("Không cập nhật hồ sơ khi draft đang chạy.");
+
+        var players = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId && player.IsPresent)
+            .ToListAsync();
+        var resolved = ResolveSessionPlayer(players, playerReference);
+        if (resolved.Player is null) return BadRequest<SessionPlayerResponse>(resolved.Error!);
+        var player = resolved.Player;
+        if (gender is not null) player.Gender = gender.Value;
+        if (role is not null) player.Role = role.Value;
+        if (level is not null) player.Level = level.Value;
+        player.Score = CalculateScore(player.Role, player.Level);
+
+        if (player.PlayerProfile is not null)
+        {
+            if (gender is not null)
+            {
+                player.PlayerProfile.Gender = gender.Value;
+                player.PlayerProfile.DefaultRole ??= player.Role;
+                player.PlayerProfile.DefaultLevel ??= player.Level;
+                player.PlayerProfile.GenderUpdatedAt = DateTimeOffset.UtcNow;
+                player.PlayerProfile.GenderUpdatedByUserId = adminUserId;
+            }
+            if (role is not null) player.PlayerProfile.DefaultRole = role.Value;
+            if (level is not null) player.PlayerProfile.DefaultLevel = level.Value;
+            player.PlayerProfile.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        var affectedSlots = await db.DraftSlots
+            .Include(slot => slot.Players.OrderBy(link => link.RotationOrder))
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(slot => slot.SessionId == sessionId && slot.Players.Any(link => link.SessionPlayerId == player.Id))
+            .ToListAsync();
+        var affectedTeamIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var slot in affectedSlots)
+        {
+            var slotPlayers = slot.Players.Select(link => link.SessionPlayer).ToList();
+            slot.DisplayName = string.Join(" / ", slotPlayers.Select(item => item.DisplayName));
+            slot.AverageScore = slotPlayers.Average(item => item.Score);
+            slot.Gender = CombinedGender(slotPlayers);
+            if (slot.Type == DraftSlotType.Single)
+                slot.Role = player.Role;
+            if (slot.AssignedTeamId is not null) affectedTeamIds.Add(slot.AssignedTeamId);
+        }
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        foreach (var teamId in affectedTeamIds) await RecalculateTeamScore(teamId);
+        return ServiceResult<SessionPlayerResponse>.Success(ToPlayerResponse(player));
+    }
+
+    public async Task<ServiceResult<GuestPlayerAddResult>> AddGuestPlayerFromBotAsync(
+        string adminUserId,
+        string sessionId,
+        string displayName)
+    {
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null) return NotFound<GuestPlayerAddResult>("Không tìm thấy session.");
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+            return BadRequest<GuestPlayerAddResult>("Chỉ có thể +1 khách trước khi draft bắt đầu.");
+        var cleanName = displayName.Trim();
+        if (cleanName.Length is < 2 or > 160)
+            return BadRequest<GuestPlayerAddResult>("Tên hoặc mô tả khách không hợp lệ.");
+        var existingNames = await db.SessionPlayers
+            .Where(player => player.SessionId == sessionId && player.IsPresent)
+            .Select(player => player.DisplayName)
+            .ToListAsync();
+        if (existingNames.Any(name => ZaloBotIntelligence.Normalize(name) == ZaloBotIntelligence.Normalize(cleanName)))
+            return ServiceResult<GuestPlayerAddResult>.Failure(StatusCodes.Status409Conflict, $"{cleanName} đã có trong danh sách.");
+
+        var player = new SessionPlayer
+        {
+            SessionId = sessionId,
+            DisplayName = cleanName,
+            Gender = PlayerGender.Unknown,
+            Role = PlayerRole.New,
+            Level = PlayerLevel.New,
+            Score = CalculateScore(PlayerRole.New, PlayerLevel.New),
+            IsPresent = true,
+            IsCaptainEligible = false
+        };
+        db.SessionPlayers.Add(player);
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+        var count = await db.SessionPlayers.CountAsync(item => item.SessionId == sessionId && item.IsPresent);
+        return ServiceResult<GuestPlayerAddResult>.Created(new(ToPlayerResponse(player), count, session.TeamCount));
+    }
+
     public async Task<ServiceResult<IReadOnlyList<SessionPlayerResponse>>> GetPlayersAsync(
         string adminUserId,
         string sessionId)
@@ -860,6 +991,21 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var session = await db.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId);
             if (session.Status == SessionStatus.Cancelled)
                 return BadRequest<DraftStateResponse>("Session đã bị huỷ.");
+            var incompleteNames = await db.SessionPlayers.AsNoTracking()
+                .Where(player => player.SessionId == sessionId && player.IsPresent &&
+                                 (player.Gender == PlayerGender.Unknown ||
+                                  (player.PlayerProfile != null &&
+                                   (player.PlayerProfile.Gender == null ||
+                                    player.PlayerProfile.Gender == PlayerGender.Unknown ||
+                                    player.PlayerProfile.DefaultRole == null ||
+                                    player.PlayerProfile.DefaultLevel == null))))
+                .OrderBy(player => player.DisplayName)
+                .Select(player => player.DisplayName)
+                .Take(10)
+                .ToListAsync();
+            if (incompleteNames.Count > 0)
+                return BadRequest<DraftStateResponse>(
+                    $"Chưa thể draft vì chưa xác nhận hồ sơ: {string.Join(", ", incompleteNames)}. Cần cập nhật ít nhất giới tính; vị trí/trình độ có thể giữ Người mới/Mới.");
 
             if (restart)
             {
@@ -983,6 +1129,150 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 second.Match.PlayerName,
                 secondTeamName,
                 state.Value));
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == sessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
+    public async Task<ServiceResult<PostDraftSharedSlotResult>> SharePostDraftSlotAsync(
+        string adminUserId,
+        string sessionId,
+        string anchorPlayerReference,
+        string partnerReference)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil })
+            .SingleOrDefaultAsync();
+        if (currentLease is null) return NotFound<PostDraftSharedSlotResult>("Không tìm thấy session.");
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+            return ServiceResult<PostDraftSharedSlotResult>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật đội hình này.");
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == sessionId &&
+                              session.AdminUserId == adminUserId &&
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "SharePostDraftSlot")
+                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(2)));
+        if (claimed == 0)
+            return ServiceResult<PostDraftSharedSlotResult>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật đội hình này.");
+
+        try
+        {
+            var session = await db.MatchSessions.SingleAsync(item => item.Id == sessionId);
+            if (session.Status != SessionStatus.Finished)
+                return BadRequest<PostDraftSharedSlotResult>("Chỉ ghép share slot sau khi draft đã hoàn tất.");
+            var slots = await db.DraftSlots
+                .Include(slot => slot.AssignedTeam)
+                .Include(slot => slot.Players.OrderBy(link => link.RotationOrder))
+                .ThenInclude(link => link.SessionPlayer)
+                .Where(slot => slot.SessionId == sessionId && slot.AssignedTeamId != null)
+                .ToListAsync();
+            var anchor = ResolveDraftPlayerSlot(slots, anchorPlayerReference);
+            if (anchor.Match is null) return BadRequest<PostDraftSharedSlotResult>(anchor.Error!);
+
+            var sessionPlayers = await db.SessionPlayers
+                .Where(player => player.SessionId == sessionId && player.IsPresent)
+                .ToListAsync();
+            var normalizedPartnerReference = ZaloBotIntelligence.Normalize(partnerReference);
+            var exactPartner = sessionPlayers
+                .Where(player => ZaloBotIntelligence.Normalize(player.DisplayName) == normalizedPartnerReference)
+                .ToList();
+            var isExternalGuestLabel = normalizedPartnerReference.StartsWith("ban cua ", StringComparison.Ordinal) ||
+                                       normalizedPartnerReference.StartsWith("ban share cung ", StringComparison.Ordinal);
+            var partnerResolution = exactPartner.Count == 1
+                ? new SessionPlayerResolution(exactPartner[0], null, false)
+                : isExternalGuestLabel
+                    ? new SessionPlayerResolution(null, $"Không tìm thấy '{partnerReference}' trong danh sách.", true)
+                    : ResolveSessionPlayer(sessionPlayers, partnerReference);
+            SessionPlayer partner;
+            var partnerWasAdded = false;
+            DraftSlot? previousPartnerSlot = null;
+            if (partnerResolution.Player is null)
+            {
+                if (!partnerResolution.CanCreateNew)
+                    return BadRequest<PostDraftSharedSlotResult>(partnerResolution.Error!);
+                partner = new SessionPlayer
+                {
+                    SessionId = sessionId,
+                    DisplayName = partnerReference.Trim(),
+                    Gender = PlayerGender.Unknown,
+                    Role = PlayerRole.New,
+                    Level = PlayerLevel.New,
+                    Score = CalculateScore(PlayerRole.New, PlayerLevel.New),
+                    IsPresent = true,
+                    IsCaptainEligible = false,
+                    IsInsideSharedSlot = true
+                };
+                db.SessionPlayers.Add(partner);
+                partnerWasAdded = true;
+            }
+            else
+            {
+                partner = partnerResolution.Player;
+                if (partner.Id == anchor.Match.PlayerId)
+                    return BadRequest<PostDraftSharedSlotResult>("Không thể share slot một người với chính họ.");
+                previousPartnerSlot = slots.SingleOrDefault(slot => slot.Players.Any(link => link.SessionPlayerId == partner.Id));
+                if (previousPartnerSlot is null)
+                    return BadRequest<PostDraftSharedSlotResult>($"{partner.DisplayName} chưa có slot trong đội hình đã draft.");
+                if (previousPartnerSlot.Id == anchor.Match.Slot.Id)
+                    return ServiceResult<PostDraftSharedSlotResult>.Success(new(
+                        anchor.Match.PlayerName,
+                        partner.DisplayName,
+                        anchor.Match.Slot.AssignedTeam!.Name,
+                        false,
+                        partner.Gender == PlayerGender.Unknown));
+                if (previousPartnerSlot.IsCaptainSlot)
+                    return BadRequest<PostDraftSharedSlotResult>("Không thể chuyển captain vào share slot khác.");
+                if (previousPartnerSlot.Type == DraftSlotType.Shared || partner.IsInsideSharedSlot)
+                    return BadRequest<PostDraftSharedSlotResult>($"{partner.DisplayName} đang thuộc một share slot khác.");
+            }
+
+            var anchorSlot = anchor.Match.Slot;
+            var previousPartnerTeamId = previousPartnerSlot?.AssignedTeamId;
+            if (previousPartnerSlot is not null)
+            {
+                var oldLinks = previousPartnerSlot.Players.Where(link => link.SessionPlayerId == partner.Id).ToList();
+                db.DraftSlotPlayers.RemoveRange(oldLinks);
+                previousPartnerSlot.AssignedTeamId = null;
+            }
+
+            var nextRotation = anchorSlot.Players.Count == 0 ? 1 : anchorSlot.Players.Max(link => link.RotationOrder) + 1;
+            anchorSlot.Players.Add(new DraftSlotPlayer
+            {
+                DraftSlotId = anchorSlot.Id,
+                SessionPlayerId = partner.Id,
+                SessionPlayer = partner,
+                RotationOrder = nextRotation
+            });
+            anchorSlot.Type = DraftSlotType.Shared;
+            partner.IsInsideSharedSlot = true;
+            foreach (var link in anchorSlot.Players) link.SessionPlayer.IsInsideSharedSlot = true;
+            var combinedPlayers = anchorSlot.Players.OrderBy(link => link.RotationOrder).Select(link => link.SessionPlayer).ToList();
+            anchorSlot.DisplayName = string.Join(" / ", combinedPlayers.Select(player => player.DisplayName));
+            anchorSlot.AverageScore = combinedPlayers.Average(player => player.Score);
+            anchorSlot.Gender = CombinedGender(combinedPlayers);
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            await RecalculateTeamScore(anchorSlot.AssignedTeamId!);
+            if (previousPartnerTeamId is not null && previousPartnerTeamId != anchorSlot.AssignedTeamId)
+                await RecalculateTeamScore(previousPartnerTeamId);
+            return ServiceResult<PostDraftSharedSlotResult>.Success(new(
+                anchor.Match.PlayerName,
+                partner.DisplayName,
+                anchorSlot.AssignedTeam!.Name,
+                partnerWasAdded,
+                partner.Gender == PlayerGender.Unknown));
         }
         finally
         {
@@ -1973,6 +2263,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var all = slots
             .SelectMany(slot => slot.Players.Select(link => new DraftPlayerSlotMatch(
                 slot,
+                link.SessionPlayer.Id,
                 link.SessionPlayer.DisplayName,
                 ZaloBotIntelligence.Normalize(link.SessionPlayer.DisplayName))))
             .ToList();
@@ -1992,6 +2283,35 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             ? new(null, $"Tên '{playerReference}' chưa đủ rõ. Các tên phù hợp: {string.Join(", ", possible)}.")
             : new(null, $"Không tìm thấy '{playerReference}' trong đội hình đã draft.");
     }
+
+    private static SessionPlayerResolution ResolveSessionPlayer(
+        IReadOnlyList<SessionPlayer> players,
+        string playerReference)
+    {
+        var reference = ZaloBotIntelligence.Normalize(playerReference);
+        var exact = players.Where(player => ZaloBotIntelligence.Normalize(player.DisplayName) == reference).ToList();
+        if (exact.Count == 1) return new(exact[0], null, false);
+        var partial = players.Where(player =>
+                reference.Contains(ZaloBotIntelligence.Normalize(player.DisplayName), StringComparison.Ordinal) ||
+                ZaloBotIntelligence.Normalize(player.DisplayName).Contains(reference, StringComparison.Ordinal))
+            .ToList();
+        if (partial.Count == 1) return new(partial[0], null, false);
+        var possible = (exact.Count > 1 ? exact : partial)
+            .Select(player => player.DisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToList();
+        return possible.Count > 0
+            ? new(null, $"Tên '{playerReference}' chưa đủ rõ. Các tên phù hợp: {string.Join(", ", possible)}.", false)
+            : new(null, $"Không tìm thấy '{playerReference}' trong danh sách.", true);
+    }
+
+    private static PlayerGender CombinedGender(IReadOnlyList<SessionPlayer> players) =>
+        players.Any(player => player.Gender == PlayerGender.Female)
+            ? PlayerGender.Female
+            : players.Any(player => player.Gender == PlayerGender.Unknown)
+                ? PlayerGender.Unknown
+                : PlayerGender.Male;
 
     private async Task<DraftSlot?> PrepareSlotForBagAsync(
         MatchSession session,
@@ -2647,12 +2967,18 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
     private sealed record DraftPlayerSlotMatch(
         DraftSlot Slot,
+        string PlayerId,
         string PlayerName,
         string NormalizedPlayerName);
 
     private sealed record DraftPlayerSlotResolution(
         DraftPlayerSlotMatch? Match,
         string? Error);
+
+    private sealed record SessionPlayerResolution(
+        SessionPlayer? Player,
+        string? Error,
+        bool CanCreateNew);
 
     private static ServiceResult<T> BadRequest<T>(string message)
     {
@@ -2676,3 +3002,25 @@ public sealed record SwapDraftPlayersResult(
     string SecondPlayerName,
     string SecondPreviousTeamName,
     DraftStateResponse State);
+
+public sealed record IncompletePlayerProfile(
+    string SessionPlayerId,
+    string DisplayName,
+    PlayerGender Gender,
+    PlayerRole Role,
+    PlayerLevel Level,
+    bool MissingGender,
+    bool MissingRole,
+    bool MissingLevel);
+
+public sealed record GuestPlayerAddResult(
+    SessionPlayerResponse Player,
+    int PresentPlayerCount,
+    int TeamCount);
+
+public sealed record PostDraftSharedSlotResult(
+    string AnchorPlayerName,
+    string PartnerPlayerName,
+    string TeamName,
+    bool PartnerWasAdded,
+    bool NeedsProfileUpdate);

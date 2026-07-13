@@ -92,6 +92,9 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("gửi ảnh đội hình ba team", ZaloBotIntent.TeamImage)]
     [InlineData("draft lại trận hôm nay từ đầu", ZaloBotIntent.Redraft)]
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", ZaloBotIntent.SwapTeamPlayers)]
+    [InlineData("+1 số lượng vote cho bạn của Nick Tran", ZaloBotIntent.AddGuestPlayer)]
+    [InlineData("Nick Tran muốn share slot với Thanh Tuyền", ZaloBotIntent.ShareSlot)]
+    [InlineData("cập nhật Nick Tran: nam, công, trung bình", ZaloBotIntent.UpdatePlayerProfile)]
     public void New_features_understand_natural_vietnamese(string question, ZaloBotIntent expected)
     {
         Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
@@ -106,6 +109,16 @@ public sealed class ZaloBotIntelligenceTests
         Assert.True(ZaloBotIntelligence.TryExtractSwapPlayerNames(question, out var actualFirst, out var actualSecond));
         Assert.Equal(first, actualFirst);
         Assert.Equal(second, actualSecond);
+    }
+
+    [Theory]
+    [InlineData("Nick Tran muốn share slot với Thanh Tuyền", "Nick Tran", "Thanh Tuyền")]
+    [InlineData("Nick Tran share slot với bạn", "Nick Tran", "bạn")]
+    public void Share_slot_command_extracts_anchor_and_partner(string question, string anchor, string partner)
+    {
+        Assert.True(ZaloBotIntelligence.TryExtractSharePlayerNames(question, out var actualAnchor, out var actualPartner));
+        Assert.Equal(anchor, actualAnchor);
+        Assert.Equal(partner, actualPartner);
     }
 
     [Theory]
