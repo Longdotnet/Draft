@@ -13,7 +13,7 @@ The bot replies to these commands after the user selects the bot in Zalo's menti
 @bot 5  -> upcoming matches
 ```
 
-The help response is sent with line breaks. These commands do not require an AI key.
+The help response is sent with line breaks. These commands still work without an AI key; when AI style is enabled, the API may use AI only to rewrite the final wording and falls back to the deterministic answer on failure.
 
 ## Local AI config
 
@@ -27,7 +27,7 @@ Edit `server/VolleyDraft.Api/appsettings.Development.json` and restart the API:
 }
 ```
 
-The AI settings are used only for free-form questions. Do not put the key in frontend code or in a `VITE_*` variable.
+The AI settings are used for free-form questions, intent classification, and optional final-answer wording. Business facts and actions still come from .NET/database. Do not put the key in frontend code or in a `VITE_*` variable.
 
 ## Public image on Render
 
@@ -60,6 +60,7 @@ Zalo__WebhookKey=<webhook-shared-secret>
 Ai__Endpoint=<ai-provider-endpoint>
 Ai__ApiKey=<ai-provider-key>
 Ai__Model=<ai-model-id>
+ZaloBot__AiStyleEnabled=true
 ```
 
 Bridge service `draft-zalo-bridge`:

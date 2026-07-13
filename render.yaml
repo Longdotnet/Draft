@@ -59,6 +59,8 @@ services:
         value: "4"
       - key: ZaloBot__AiPerGroupPerMinute
         value: "20"
+      - key: ZaloBot__AiStyleEnabled
+        value: "true"
       - key: ZaloBot__ClassifierConfidenceThreshold
         value: "0.72"
       - key: ZaloBot__LearnedRuleSimilarityThreshold

@@ -22,7 +22,7 @@ This repo includes:
 
 ## Keep Zalo Reminder Alive With GitHub Actions
 
-The scheduler runs at minute `07` and `37` of every hour. It does not run continuously and does not call AI. Each run sends one short request to the API; the API wakes the Zalo bridge, refreshes linked polls when needed, and sends only reminders that are due.
+The scheduler runs at minute `07` and `37` of every hour. It does not run continuously. Each run sends one short request to the API; the API wakes the Zalo bridge, refreshes linked polls when needed, and sends only reminders that are due. A due reminder may use one AI call to make its wording natural when `ZaloBot__AiStyleEnabled=true`; provider failure falls back to the factual template.
 
 ### 1. Configure Render API
 

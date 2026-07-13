@@ -307,6 +307,30 @@ public sealed class ZaloBotService(
             await ReleaseMessageAsync(storedMessage.Id, processingToken, "routing_failed", cancellationToken);
             throw;
         }
+        if (!response.TextGeneratedByAi &&
+            response.Intent != ZaloBotIntent.GeneralChat &&
+            ai.IsConfigured &&
+            configuration.GetValue("ZaloBot:AiStyleEnabled", true) &&
+            await IsAiCallAllowedAsync(connection.Id, groupId, incoming.SenderId, cancellationToken))
+        {
+            var rewritten = await ai.RewriteFactualAnswerAsync(
+                new ZaloAiRewriteContext(
+                    incomingQuestion,
+                    Clean(incoming.SenderName, 160) ?? "Thành viên Zalo",
+                    response.Intent,
+                    response.Text),
+                cancellationToken);
+            response = response with { AiCalled = true };
+            if (!string.IsNullOrWhiteSpace(rewritten))
+            {
+                response = response with
+                {
+                    Text = rewritten,
+                    AiCalled = true,
+                    TextGeneratedByAi = true
+                };
+            }
+        }
         if (string.IsNullOrWhiteSpace(response.Text))
         {
             await FinishMessageAsync(storedMessage.Id, processingToken, response.Intent, response.AiCalled, "no_reply", cancellationToken);
@@ -809,7 +833,12 @@ public sealed class ZaloBotService(
         {
             return new BotAnswer("Bạn hỏi hơi nhanh rồi 😄 Chờ một chút rồi hỏi lại giúp mình nhé.", null, ZaloBotIntent.GeneralChat);
         }
-        return new BotAnswer(await ai.AnswerAsync(aiContext, cancellationToken), null, ZaloBotIntent.GeneralChat, true);
+        return new BotAnswer(
+            await ai.AnswerAsync(aiContext, cancellationToken),
+            null,
+            ZaloBotIntent.GeneralChat,
+            true,
+            true);
     }
 
     private async Task<PendingResolution> ResolvePendingConversationAsync(
@@ -1471,7 +1500,9 @@ public sealed class ZaloBotService(
             });
             return new BotAnswer(
                 "Lịch nhắc hiện tại:\n" + string.Join("\n", statusLines) +
-                "\nBot chỉ @all cho trận gần nhất còn thiếu slot; trận đã đủ sẽ được bỏ qua.",
+                (hasExplicitSelector
+                    ? "\nĐây là lịch riêng của trận bạn vừa chọn; lịch các trận khác không bị thay đổi."
+                    : "\nKhi nhiều lịch cùng đến hạn, bot ưu tiên trận gần nhất còn thiếu slot; trận đã đủ sẽ được bỏ qua."),
                 null,
                 intent,
                 aiCalled);
@@ -1539,12 +1570,15 @@ public sealed class ZaloBotService(
         schedulerTrigger.TryTrigger();
 
         var targetNames = targets.Count == 1 ? targets[0].Name : $"{targets.Count} trận sắp tới";
+        var scopeNote = hasExplicitSelector
+            ? $" Lệnh này chỉ áp dụng cho {targetNames}; lịch của các trận khác vẫn giữ nguyên nếu đã được bật riêng."
+            : " Khi nhiều lịch cùng đến hạn, bot ưu tiên trận gần nhất còn thiếu slot.";
         return command.Kind switch
         {
             ZaloReminderCommandKind.Disable => new BotAnswer(
                 $"Đã tắt lịch nhắc cho {targetNames}.", null, intent, aiCalled),
             ZaloReminderCommandKind.TriggerNow => new BotAnswer(
-                $"Đã xếp một lượt nhắc ngay cho {targetNames}. Trận đủ slot sẽ không bị tag; nếu nhiều trận thì bot ưu tiên trận gần nhất còn thiếu.",
+                $"Đã xếp một lượt nhắc ngay cho {targetNames}." + scopeNote + " Trận đủ slot sẽ không bị tag.",
                 null,
                 intent,
                 aiCalled),
@@ -1552,7 +1586,7 @@ public sealed class ZaloBotService(
                 $"Đã lên lịch cho {targetNames}: lần đầu sau {FormatDuration(command.DelayMinutes!.Value)}" +
                 (command.Repeats ? $", sau đó lặp mỗi {FormatDuration(command.DelayMinutes.Value)}." : ", chỉ nhắc một lần.") +
                 (scheduleWasMovedForward ? " Có trận diễn ra trước mốc chờ nên bot sẽ kiểm tra trận đó ngay." : string.Empty) +
-                " Bot chỉ @all cho trận gần nhất còn thiếu slot; trận đủ sẽ bỏ qua và tự xét lại nếu có người rút vote.",
+                scopeNote + " Trận đủ slot sẽ bỏ qua và tự xét lại nếu có người rút vote.",
                 null,
                 intent,
                 aiCalled)
@@ -2214,7 +2248,8 @@ public sealed class ZaloBotService(
         string Text,
         string? ImageUrl,
         ZaloBotIntent Intent = ZaloBotIntent.Unknown,
-        bool AiCalled = false);
+        bool AiCalled = false,
+        bool TextGeneratedByAi = false);
     private sealed record SessionSelection(SessionSnapshot? Session, string? Clarification);
     private sealed record PendingResolution(bool Cancelled, ZaloBotIntent? Intent, SessionSnapshot? Session, string? Clarification)
     {

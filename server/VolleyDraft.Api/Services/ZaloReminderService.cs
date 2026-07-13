@@ -14,6 +14,7 @@ public sealed class ZaloReminderService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     ZaloIntegrationService zaloIntegration,
+    AiAssistantService ai,
     IConfiguration configuration,
     ILogger<ZaloReminderService> logger)
 {
@@ -82,10 +83,12 @@ public sealed class ZaloReminderService(
         foreach (var group in groups)
         {
             var target = group
-                .Where(session => counts.GetValueOrDefault(session.Id) < session.TeamCount * session.TeamSize)
+                .Where(session => counts.GetValueOrDefault(session.Id) < session.TeamCount * session.TeamSize &&
+                                  session.NextReminderAt is not null &&
+                                  session.NextReminderAt <= now)
                 .OrderBy(session => session.StartTime)
                 .FirstOrDefault();
-            if (target?.StartTime is null || target.NextReminderAt is null || target.NextReminderAt > now)
+            if (target?.StartTime is null || target.NextReminderAt is null)
             {
                 skippedCount += 1;
                 continue;
@@ -113,7 +116,22 @@ public sealed class ZaloReminderService(
             var missing = capacity - playerCount;
             var mentionLabel = "@all";
             var location = string.IsNullOrWhiteSpace(target.Location) ? string.Empty : $" tại {target.Location}";
-            var message = $"{mentionLabel} Nhắc lịch {target.Name}: còn thiếu {missing} slot ({playerCount}/{capacity}). Trận lúc {FormatVietnamTime(target.StartTime.Value)}{location}.";
+            var factualReminder = $"Nhắc lịch {target.Name}: còn thiếu {missing} slot ({playerCount}/{capacity}). Trận lúc {FormatVietnamTime(target.StartTime.Value)}{location}.";
+            var reminderBody = factualReminder;
+            if (ai.IsConfigured && configuration.GetValue("ZaloBot:AiStyleEnabled", true))
+            {
+                var rewritten = await ai.RewriteFactualAnswerAsync(
+                    new ZaloAiRewriteContext(
+                        "Viết lời nhắc tự động cho cả nhóm khi trận vẫn còn thiếu người.",
+                        "Cả nhóm",
+                        ZaloBotIntent.ScheduleReminder,
+                        factualReminder),
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(rewritten)) reminderBody = rewritten.Trim();
+            }
+            if (reminderBody.StartsWith(mentionLabel, StringComparison.OrdinalIgnoreCase))
+                reminderBody = reminderBody[mentionLabel.Length..].TrimStart();
+            var message = $"{mentionLabel} {reminderBody}";
             var idempotencyKey = $"reminder:{target.Id}:{dueAt.ToUnixTimeSeconds()}";
 
             try
