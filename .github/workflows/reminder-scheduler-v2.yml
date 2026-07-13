@@ -3,6 +3,7 @@ name: Reminder scheduler
 on:
   schedule:
     - cron: "1,16,31,46 * * * *"
+      timezone: "Asia/Ho_Chi_Minh"
   workflow_dispatch:
 
 concurrency:
