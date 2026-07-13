@@ -22,7 +22,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, TeamImage, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, TeamImage, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -32,6 +32,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             - Muốn bot tự chọn captain, bắt đầu draft và khui hết túi là AutoDraft.
             - Muốn chia/draft/khui lại một đội hình đã có là Redraft.
             - Muốn đổi chỗ hai thành viên giữa hai team là SwapTeamPlayers.
+            - Muốn biết ai còn thiếu/chưa cập nhật giới tính, vị trí hoặc trình độ là IncompleteProfiles; KHÔNG phải Roster hay UpdatePlayerProfile.
             - Muốn cập nhật giới tính/vị trí/trình độ người chơi là UpdatePlayerProfile.
             - Muốn +1/thêm khách không thể vote Zalo là AddGuestPlayer.
             - Muốn hai người đánh chung/share một slot là ShareSlot.

@@ -442,7 +442,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                "\n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nLệnh có quyền khác:\n- @bot cập nhật Nick Tran: nam, công, trung bình\n- @bot +1 số lượng vote cho bạn của Nick Tran\n- @bot Nick Tran muốn share slot với Thanh Tuyền\n- @bot draft lại\n- @bot đổi vị trí Thanh Tuyền với Nick Tran\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                "\n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nXem hồ sơ còn thiếu:\n- @bot ai chưa cập nhật giới tính, trình độ T4?\n\nLệnh có quyền khác:\n- @bot cập nhật Nick Tran: nam, công, trung bình\n- @bot +1 số lượng vote cho bạn của Nick Tran\n- @bot Nick Tran muốn share slot với Thanh Tuyền\n- @bot draft lại\n- @bot đổi vị trí Thanh Tuyền với Nick Tran\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null,
                 ZaloBotIntent.Help);
         }
@@ -482,6 +482,17 @@ public sealed class ZaloBotService(
 
         if (decision.Intent == ZaloBotIntent.ShareSlot)
             return await ShareSlotAsync(decision, sessions, normalizedQuestion, question, incoming, false);
+
+        if (decision.Intent == ZaloBotIntent.IncompleteProfiles)
+            return await ListIncompleteProfilesAsync(
+                decision,
+                sessions,
+                normalizedQuestion,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false);
 
         if (decision.Intent == ZaloBotIntent.SyncPoll)
         {
@@ -931,17 +942,67 @@ public sealed class ZaloBotService(
         if (!incomplete.IsSuccess || incomplete.Value is null || incomplete.Value.Count == 0) return string.Empty;
         var names = string.Join(", ", incomplete.Value.Take(10).Select(player =>
         {
-            var missing = new List<string>();
-            if (player.MissingGender) missing.Add("giới tính");
-            if (player.MissingRole) missing.Add("vị trí");
-            if (player.MissingLevel) missing.Add("trình độ");
-            return $"{player.DisplayName} ({string.Join("/", missing)})";
+            return $"{player.DisplayName} ({string.Join("/", GetMissingProfileFields(player))})";
         }));
         var prefix = appendToExistingText ? "\n\n" : string.Empty;
         return prefix +
                $"⛔ Chưa thể draft vì chưa xác nhận hồ sơ: {names}. " +
                "Cập nhật từng người, ví dụ `@bot cập nhật Nick Tran: nam` hoặc `@bot cập nhật Nick Tran: nam, công, trung bình`. " +
                "Nếu chỉ biết giới tính, bot sẽ giữ vị trí Người mới và trình độ Mới.";
+    }
+
+    private async Task<BotAnswer> ListIncompleteProfilesAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string selector,
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
+        bool aiCalled)
+    {
+        var selected = await SelectSessionAsync(
+            sessions,
+            selector,
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            decision.Intent,
+            cancellationToken);
+        if (selected.Clarification is not null)
+            return new BotAnswer(selected.Clarification, null, decision.Intent, aiCalled);
+
+        var session = selected.Session!;
+        var result = await draftService.GetIncompletePlayerProfilesAsync(session.AdminUserId, session.Id);
+        if (!result.IsSuccess || result.Value is null)
+            return new BotAnswer(result.Error ?? "Mình chưa đọc được hồ sơ người chơi của buổi này.", null, decision.Intent, aiCalled);
+        if (result.Value.Count == 0)
+            return new BotAnswer(
+                $"Hồ sơ người chơi của {session.Name}{FormatShortTime(session.StartTime)} đã đầy đủ giới tính, vị trí và trình độ.",
+                null,
+                decision.Intent,
+                aiCalled);
+
+        var players = result.Value.Select((player, index) =>
+            $"{index + 1}. {player.DisplayName} — thiếu {string.Join(", ", GetMissingProfileFields(player))}");
+        var example = result.Value[0].DisplayName;
+        return new BotAnswer(
+            $"Danh sách cần cập nhật của {session.Name}{FormatShortTime(session.StartTime)} ({result.Value.Count} người):\n" +
+            string.Join("\n", players) +
+            $"\n\nCập nhật từng người, ví dụ:\n@bot cập nhật {example}: nam, công, trung bình\n" +
+            $"Nếu mới biết giới tính: @bot cập nhật {example}: nam",
+            null,
+            decision.Intent,
+            aiCalled);
+    }
+
+    private static IReadOnlyList<string> GetMissingProfileFields(IncompletePlayerProfile player)
+    {
+        var missing = new List<string>(3);
+        if (player.MissingGender) missing.Add("giới tính");
+        if (player.MissingRole) missing.Add("vị trí");
+        if (player.MissingLevel) missing.Add("trình độ");
+        return missing;
     }
 
     private async Task<string?> SyncPollBeforeDraftAsync(SessionSnapshot session, string optionReference)
@@ -1374,6 +1435,16 @@ public sealed class ZaloBotService(
             return await AddGuestPlayerAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
         if (decision.Intent == ZaloBotIntent.ShareSlot)
             return await ShareSlotAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
+        if (decision.Intent == ZaloBotIntent.IncompleteProfiles)
+            return await ListIncompleteProfilesAsync(
+                decision,
+                sessions,
+                selector,
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                true);
         if (decision.Intent == ZaloBotIntent.SyncPoll)
         {
             var syncSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);

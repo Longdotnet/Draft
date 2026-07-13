@@ -95,6 +95,12 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("+1 số lượng vote cho bạn của Nick Tran", ZaloBotIntent.AddGuestPlayer)]
     [InlineData("Nick Tran muốn share slot với Thanh Tuyền", ZaloBotIntent.ShareSlot)]
     [InlineData("cập nhật Nick Tran: nam, công, trung bình", ZaloBotIntent.UpdatePlayerProfile)]
+    [InlineData("đưa tui danh sách người chưa cập nhật giới tính, trình độ cho buổi thứ 4", ZaloBotIntent.IncompleteProfiles)]
+    [InlineData("T4 còn ai thiếu thông tin hồ sơ?", ZaloBotIntent.IncompleteProfiles)]
+    [InlineData("ai chưa có giới tính và trình độ trận T6?", ZaloBotIntent.IncompleteProfiles)]
+    [InlineData("cho xem những người cần cập nhật trước khi draft", ZaloBotIntent.IncompleteProfiles)]
+    [InlineData("lọc giúp người chưa khai giới tính bữa chủ nhật", ZaloBotIntent.IncompleteProfiles)]
+    [InlineData("T4 còn ai chưa cập nhật thông tin?", ZaloBotIntent.IncompleteProfiles)]
     public void New_features_understand_natural_vietnamese(string question, ZaloBotIntent expected)
     {
         Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);

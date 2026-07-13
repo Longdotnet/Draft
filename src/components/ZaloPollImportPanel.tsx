@@ -720,6 +720,7 @@ export function ZaloPollImportPanel({
           <code>@bot còn thiếu bao nhiêu slot?</code>
           <code>@bot 6</code>
           <code>@bot gửi danh sách CN 12/7</code>
+          <code>@bot ai chưa cập nhật hồ sơ T4?</code>
           <code>@bot draft lại hôm nay</code>
           <code>@bot đổi vị trí A với B</code>
           <code>@bot cập nhật A: nam, công, trung bình</code>

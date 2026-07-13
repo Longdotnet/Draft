@@ -299,6 +299,7 @@ Các lệnh mở rộng:
 - `@bot draft lại [ngày/tên trận]`: xoá kết quả bốc team hiện tại, giữ captain và khui lại từ đầu; luôn cần `@bot xác nhận draft lại`.
 - `@bot đổi vị trí <người A> với <người B>`: sau khi draft hoàn tất, đổi hai slot thường giữa hai team, tính lại điểm và gửi danh sách/card mới. Bot không tự đổi captain hoặc tách slot ghép.
 - `@bot cập nhật <tên>: nam/nữ, công/thủ/chuyền 2/toàn diện, tốt/trung bình/mới`: cập nhật hồ sơ người chơi. Bot chặn draft nếu còn người có giới tính `Unknown`; nếu admin chỉ cung cấp giới tính thì giữ `Người mới/Mới`.
+- `@bot ai chưa cập nhật hồ sơ [ngày/tên trận]`: liệt kê từng người còn thiếu giới tính, vị trí hoặc trình độ trước khi draft, kèm mẫu lệnh cập nhật. Bot hiểu các cách hỏi tương đương như `T4 còn ai thiếu thông tin?` hoặc `lọc người chưa khai giới tính bữa Chủ nhật`.
 - `@bot +1 số lượng vote cho bạn của <tên>`: thêm khách không có Zalo vào roster trước draft, cập nhật số người trên web và yêu cầu bổ sung ít nhất giới tính.
 - `@bot <người A> muốn share slot với <người B>`: sau khi draft hoàn tất, ghép người có sẵn hoặc khách ngoài roster vào slot của A. Bot chỉ báo kết quả cập nhật, không tự gửi lại toàn bộ đội hình.
 

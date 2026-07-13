@@ -92,10 +92,17 @@ public sealed class ZaloBotPersistenceTests
         await fixture.Db.SaveChangesAsync();
         var service = new SessionDraftService(fixture.Db);
 
+        var beforeUpdate = await service.GetIncompletePlayerProfilesAsync("admin", session.Id);
+
         var updated = await service.UpdatePlayerProfileFromBotAsync(
             "admin", session.Id, "Bạn của Nick Tran", PlayerGender.Male, null, null);
         var incomplete = await service.GetIncompletePlayerProfilesAsync("admin", session.Id);
 
+        Assert.True(beforeUpdate.IsSuccess, beforeUpdate.Error);
+        var missingProfile = Assert.Single(beforeUpdate.Value!);
+        Assert.True(missingProfile.MissingGender);
+        Assert.True(missingProfile.MissingRole);
+        Assert.True(missingProfile.MissingLevel);
         Assert.True(updated.IsSuccess, updated.Error);
         Assert.Equal(PlayerGender.Male, updated.Value!.Gender);
         Assert.Equal(PlayerRole.New, updated.Value.Role);

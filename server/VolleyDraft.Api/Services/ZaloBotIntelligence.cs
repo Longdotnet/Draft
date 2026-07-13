@@ -25,6 +25,7 @@ public enum ZaloBotIntent
     Redraft,
     RedraftConfirm,
     SwapTeamPlayers,
+    IncompleteProfiles,
     UpdatePlayerProfile,
     AddGuestPlayer,
     ShareSlot,
@@ -151,6 +152,8 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.AddGuestPlayer, .99, q, false, null, "add_guest_player_phrase");
         if (Has(q, "share slot", "chung slot", "danh chung slot", "choi chung slot", "slot thay phien", "thay phien voi"))
             return new(ZaloBotIntent.ShareSlot, .99, q, false, null, "share_slot_phrase");
+        if (IsIncompleteProfileQuery(q))
+            return new(ZaloBotIntent.IncompleteProfiles, .98, q, false, null, "incomplete_profiles_phrase");
         if (Has(q, "cap nhat thong tin", "cap nhat ho so", "cap nhat trinh do", "cap nhat gioi tinh") ||
             (q.StartsWith("cap nhat ", StringComparison.Ordinal) && Has(q, " nam", " nu", "tan cong", "phong thu", "chuyen 2", "trung binh", "moi choi")))
             return new(ZaloBotIntent.UpdatePlayerProfile, .98, q, false, null, "update_player_profile_phrase");
@@ -293,6 +296,21 @@ public static class ZaloBotIntelligence
         root.TryGetProperty(property, out var node) && node.ValueKind == JsonValueKind.String ? node.GetString()?.Trim() : null;
 
     private static bool IsMembership(string q) => Has(q, "minh co trong", "tui co trong", "toi co trong", "em co trong", "minh co ten", "tui co ten", "toi co ten", "em co ten", "co ten minh", "co ten tui", "co ten toi", "co ten em", "duoc vote", "da vote");
+    private static bool IsIncompleteProfileQuery(string q)
+    {
+        var asksForMissingPeople = Has(q,
+            "chua cap nhat", "chua khai", "chua co", "chua ro", "chua biet",
+            "chua xac dinh", "chua du thong tin", "chua day du", "chua hoan tat",
+            "thieu thong tin", "thieu ho so", "thieu profile", "con thieu thong tin",
+            "can cap nhat", "can bo sung", "can khai", "ho so con thieu", "thong tin con trong");
+        var mentionsProfile = Has(q,
+            "gioi tinh", "trinh do", "level", "vi tri", "vai tro", "role",
+            "thong tin", "ho so", "profile");
+        var asksBeforeDraft = Has(q, "truoc khi draft", "truoc luc draft", "de draft", "moi draft duoc");
+        var asksWhichPeople = Has(q, "con ai", "nhung ai", "nguoi nao", "danh sach nguoi", "loc nguoi");
+        var isPollQuestion = Has(q, "vote", "poll", "binh chon");
+        return !isPollQuestion && asksForMissingPeople && (mentionsProfile || asksBeforeDraft || asksWhichPeople);
+    }
     private static bool IsRoster(string q) => (q.Contains("danh sach", StringComparison.Ordinal) && !IsMembership(q)) || Has(q, "co nhung ai", "ai tham gia", "ai danh");
     private static bool Has(string value, params string[] terms) => terms.Any(term => value.Contains(term, StringComparison.Ordinal));
 }
