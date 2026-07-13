@@ -5,7 +5,7 @@ This repo includes:
 - `render.yaml` for Render Blueprint deploys.
 - `server/VolleyDraft.Api/Dockerfile` for the ASP.NET API.
 - `.github/workflows/ci.yml` to build frontend, backend, and API Docker image on every push/PR to `main`.
-- `.github/workflows/reminder-scheduler.yml` to wake Render and check Zalo reminders every 30 minutes.
+- `.github/workflows/reminder-scheduler-v2.yml` to wake Render and check Zalo reminders every 15 minutes.
 
 ## Deploy With Blueprint
 
@@ -20,9 +20,11 @@ This repo includes:
    - `VITE_API_BASE_URL`: set to the API public URL, for example `https://volley-draft-api.onrender.com`.
    - `Cors__Origins__0`: set to the frontend public URL, for example `https://volley-draft-web.onrender.com`.
 
-## Keep Zalo Reminder Alive With GitHub Actions
+## Keep Zalo Reminder Alive
 
-The scheduler runs at minute `07` and `37` of every hour. It does not run continuously. Each run sends one short request to the API; the API wakes the Zalo bridge, refreshes linked polls when needed, and sends only reminders that are due. A due reminder may use one AI call to make its wording natural when `ZaloBot__AiStyleEnabled=true`; provider failure falls back to the factual template.
+The Zalo bridge pings the API health endpoint every 8 minutes while at least one listener is active. The API already reconciles its active bridge listeners, so the two Render services recover each other and the API reminder worker can keep checking due schedules. This is enabled by default in production and can be controlled with `ZALO_BRIDGE_API_KEEP_ALIVE` and `ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES` on the bridge.
+
+GitHub Actions remains a second wake-up path. Its workflow runs at minutes `01`, `16`, `31`, and `46` in the `Asia/Ho_Chi_Minh` timezone. Each run wakes both services and queues one scheduler cycle. GitHub documents scheduled workflows as best-effort: a schedule can be delayed or dropped before a runner is created. A due reminder may use one AI call to make its wording natural when `ZaloBot__AiStyleEnabled=true`; provider failure falls back to the factual template.
 
 ### 1. Configure Render API
 
@@ -38,7 +40,14 @@ Scheduler__UrgentDelayMinutes=0
 
 Use a new random value for `Scheduler__Key`. Do not reuse the AI key, JWT key, Zalo credential key, or bridge key. Save and wait for the API to redeploy.
 
-No scheduler environment variable is required on `draft-zalo-bridge`. The API wakes/reconciles that service through the existing `Zalo__BridgeBaseUrl` and matching bridge internal key.
+No scheduler secret is required on `draft-zalo-bridge`. The API wakes/reconciles that service through the existing `Zalo__BridgeBaseUrl` and matching bridge internal key. The Blueprint also sets these optional bridge values:
+
+```text
+ZALO_BRIDGE_API_KEEP_ALIVE=true
+ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES=8
+```
+
+Existing manually-created Render services do not need these values because production defaults to enabled/eight minutes. Add them only when you want the setting to be explicit or changed.
 
 ### 2. Configure GitHub
 
@@ -55,7 +64,7 @@ Copy the public URL shown inside the Render service running ASP.NET (`Draft`/`vo
 
 ### 3. Test Once
 
-Open **Actions > Reminder scheduler > Run workflow**. A successful warm request returns HTTP `202`. If a sleeping Render instance needs more than 45 seconds, the action exits successfully after requesting a wake-up; the API's startup reminder worker performs the check after boot.
+Open **Actions > Reminder scheduler > Run workflow**. A successful run wakes the bridge and API, then the scheduler endpoint returns HTTP `202`. If a sleeping Render instance cold-starts slowly, the workflow retries health checks and the scheduler request.
 
 The workflow must be committed to the repository's default branch before GitHub runs its cron schedule.
 
@@ -71,11 +80,13 @@ Then test in Zalo with an authorized account (group owner, deputy, or configured
 
 Without a day/session selector, the schedule is saved for all upcoming sessions in that group. On every cycle the bot chooses the nearest upcoming session that is still missing slots. Full sessions are skipped. If a full poll later loses a vote, automatic poll refresh makes the session eligible again, including close to match time.
 
-### GitHub Actions Minute Budget
+### GitHub Actions Schedule And Minute Budget
 
-The workflow has no checkout/install/build step and `timeout-minutes: 1`. At two runs per hour, the upper bound is 48 runs/day, or 1,488 one-minute jobs in a 31-day month. This fits a 2,000-minute private-repository allowance, leaving about 512 minutes for CI. Scheduled runs can be delayed by GitHub or Render cold starts, so reminders are best-effort with roughly 30-minute precision. GitHub resets the included quota on its normal monthly billing cycle; it is not a rolling 30-day timer.
+At four runs per hour, a private repository can consume up to 2,976 rounded runner-minutes in a 31-day month. This repository is public, so standard GitHub-hosted runners are not charged against the private-repository minute allowance. Scheduled events can still be delayed or dropped by GitHub before the workflow starts; manual success only proves the workflow body and Render endpoints are valid.
 
-Avoid changing this workflow to run every 5 minutes: that would use up to 8,928 one-minute jobs in a 31-day month.
+Avoid changing the production workflow to every 5 minutes. The active-listener keep-alive handles Render sleep, while the 15-minute workflow is only a recovery path.
+
+If GitHub shows no run whose event is `schedule` after several expected windows, use a dedicated HTTP scheduler such as cron-job.org instead of repeatedly editing the YAML. Configure one POST job to `SCHEDULER_URL` every 15 minutes and add the custom header `x-scheduler-key` with the same `SCHEDULER_KEY`. The service supports custom methods/headers and execution history, which makes missing ticks visible.
 
 ## Local Dev
 

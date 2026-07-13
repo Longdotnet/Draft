@@ -1,7 +1,9 @@
 import express, { type NextFunction, type Request, type Response } from "express";
+import { startApiKeepAlive } from "./apiKeepAlive.js";
 import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } from "./contracts.js";
 import {
   createQrLogin,
+  getActiveListenerWebhookUrls,
   getGroups,
   getGroupRoles,
   getListenerStatuses,
@@ -129,6 +131,15 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   response.status(502).json({ error: message });
 });
 
-app.listen(port, "0.0.0.0", () => {
+const stopApiKeepAlive = startApiKeepAlive(getActiveListenerWebhookUrls);
+const server = app.listen(port, "0.0.0.0", () => {
   console.log(`Zalo bridge listening on port ${port}`);
 });
+
+function shutdown() {
+  stopApiKeepAlive();
+  server.close();
+}
+
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);

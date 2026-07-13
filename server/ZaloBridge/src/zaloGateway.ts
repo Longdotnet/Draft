@@ -287,6 +287,10 @@ export function getListenerStatuses() {
   }));
 }
 
+export function getActiveListenerWebhookUrls(): string[] {
+  return [...new Set([...activeListeners.values()].map((listener) => listener.webhookUrl))];
+}
+
 async function downloadImage(url: string) {
   const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`Cannot download configured image (${response.status})`);

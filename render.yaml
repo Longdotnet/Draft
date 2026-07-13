@@ -78,6 +78,10 @@ services:
         sync: false
       - key: ZALO_BRIDGE_MOCK
         value: "false"
+      - key: ZALO_BRIDGE_API_KEEP_ALIVE
+        value: "true"
+      - key: ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES
+        value: "8"
 
   - type: web
     name: volley-draft-web
