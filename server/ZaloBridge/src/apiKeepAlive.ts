@@ -12,6 +12,22 @@ export type ApiKeepAliveConfiguration = {
   intervalMinutes: number;
 };
 
+export type ApiKeepAliveRuntimeStatus = {
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  targetCount: number;
+};
+
+const runtimeStatus: ApiKeepAliveRuntimeStatus = {
+  lastRunAt: null,
+  lastSuccessAt: null,
+  targetCount: 0,
+};
+
+export function getApiKeepAliveRuntimeStatus(): ApiKeepAliveRuntimeStatus {
+  return { ...runtimeStatus };
+}
+
 export function getApiKeepAliveConfiguration(
   environment: NodeJS.ProcessEnv = process.env,
 ): ApiKeepAliveConfiguration {
@@ -88,6 +104,9 @@ export function startApiKeepAlive(
     running = true;
     try {
       const results = await pingApiHealthUrls(getWebhookUrls());
+      runtimeStatus.lastRunAt = new Date().toISOString();
+      runtimeStatus.targetCount = results.length;
+      if (results.some((result) => result.ok)) runtimeStatus.lastSuccessAt = runtimeStatus.lastRunAt;
       for (const result of results) {
         if (result.ok) {
           console.log(`[Zalo bridge keep-alive] API healthy: ${result.url}`);
@@ -100,7 +119,11 @@ export function startApiKeepAlive(
     }
   };
 
+  const initialTimer = setTimeout(() => void run(), 60_000);
   const timer = setInterval(() => void run(), intervalMinutes * 60_000);
   console.log(`[Zalo bridge keep-alive] Enabled every ${intervalMinutes} minute(s) for active listener APIs.`);
-  return () => clearInterval(timer);
+  return () => {
+    clearTimeout(initialTimer);
+    clearInterval(timer);
+  };
 }

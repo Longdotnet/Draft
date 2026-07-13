@@ -1,5 +1,9 @@
 import express, { type NextFunction, type Request, type Response } from "express";
-import { getApiKeepAliveConfiguration, startApiKeepAlive } from "./apiKeepAlive.js";
+import {
+  getApiKeepAliveConfiguration,
+  getApiKeepAliveRuntimeStatus,
+  startApiKeepAlive,
+} from "./apiKeepAlive.js";
 import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } from "./contracts.js";
 import {
   createQrLogin,
@@ -32,7 +36,11 @@ app.get("/health", (_request, response) => {
   response.json({
     status: "ok",
     mockMode: process.env.ZALO_BRIDGE_MOCK === "true",
-    apiKeepAlive: apiKeepAliveConfiguration,
+    activeListenerCount: getListenerStatuses().length,
+    apiKeepAlive: {
+      ...apiKeepAliveConfiguration,
+      ...getApiKeepAliveRuntimeStatus(),
+    },
     revision: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null,
   });
 });
