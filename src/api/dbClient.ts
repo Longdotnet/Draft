@@ -52,10 +52,18 @@ export type ZaloBotSettingsResponse = {
   paymentQrImageUrl: string | null;
   botEnabled: boolean;
   botCustomInstructions: string | null;
+  botOperatorZaloUserIds: string[];
   reminderEnabled: boolean;
   reminderLeadHours: number;
   reminderIntervalHours: number;
   lastReminderAt: string | null;
+};
+
+export type ZaloBotOperatorCandidateResponse = {
+  zaloUserId: string;
+  displayName: string;
+  isAuthorized: boolean;
+  lastSeenAt: string;
 };
 
 export type ZaloBotImageAssetResponse = {

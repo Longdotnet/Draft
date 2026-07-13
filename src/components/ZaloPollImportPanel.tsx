@@ -13,6 +13,7 @@ import {
   type ZaloBotSettingsResponse,
   type ZaloBotImageAssetResponse,
   type ZaloBotLearnedRuleResponse,
+  type ZaloBotOperatorCandidateResponse,
   type ZaloBotRuleStatus,
   type ZaloGroupResponse,
   type ZaloImportCandidateResponse,
@@ -75,6 +76,7 @@ export function ZaloPollImportPanel({
   const [groups, setGroups] = useState<ZaloGroupResponse[]>([]);
   const [botImages, setBotImages] = useState<ZaloBotImageAssetResponse[]>([]);
   const [botRules, setBotRules] = useState<ZaloBotLearnedRuleResponse[]>([]);
+  const [botOperatorCandidates, setBotOperatorCandidates] = useState<ZaloBotOperatorCandidateResponse[]>([]);
   const [botRulePage, setBotRulePage] = useState(1);
   const [botRuleTotalPages, setBotRuleTotalPages] = useState(0);
   const [botRuleTotalItems, setBotRuleTotalItems] = useState(0);
@@ -97,6 +99,7 @@ export function ZaloPollImportPanel({
     paymentQrImageUrl: session.paymentQrImageUrl ?? "",
     botEnabled: session.botEnabled,
     botCustomInstructions: session.botCustomInstructions ?? "",
+    botOperatorZaloUserIds: [] as string[],
     reminderEnabled: session.reminderEnabled,
     reminderLeadHours: session.reminderLeadHours,
     reminderIntervalHours: session.reminderIntervalHours,
@@ -125,6 +128,7 @@ export function ZaloPollImportPanel({
   useEffect(() => {
     setBotRulePage(1);
     void loadBotRules(1);
+    void loadBotOperatorSettings();
   }, [token, session.id, session.zaloGroupId]);
 
   useEffect(() => {
@@ -142,6 +146,7 @@ export function ZaloPollImportPanel({
       paymentQrImageUrl: session.paymentQrImageUrl ?? "",
       botEnabled: session.botEnabled,
       botCustomInstructions: session.botCustomInstructions ?? "",
+      botOperatorZaloUserIds: [],
       reminderEnabled: session.reminderEnabled,
       reminderLeadHours: session.reminderLeadHours,
       reminderIntervalHours: session.reminderIntervalHours,
@@ -206,6 +211,28 @@ export function ZaloPollImportPanel({
       setBotRuleTotalPages(result.totalPages);
       setBotRuleTotalItems(result.totalItems);
     }
+  }
+
+  async function loadBotOperatorSettings() {
+    if (!session.zaloGroupId) {
+      setBotOperatorCandidates([]);
+      return;
+    }
+    const [settings, candidates] = await Promise.all([
+      apiFetch<ZaloBotSettingsResponse>(`/sessions/${session.id}/zalo-bot-settings`, { token }),
+      apiFetch<ZaloBotOperatorCandidateResponse[]>(`/sessions/${session.id}/zalo-bot-operators`, { token }),
+    ]);
+    setBotSettings((current) => ({ ...current, botOperatorZaloUserIds: settings.botOperatorZaloUserIds }));
+    setBotOperatorCandidates(candidates);
+  }
+
+  function toggleBotOperator(zaloUserId: string, enabled: boolean) {
+    setBotSettings((current) => ({
+      ...current,
+      botOperatorZaloUserIds: enabled
+        ? [...new Set([...current.botOperatorZaloUserIds, zaloUserId])]
+        : current.botOperatorZaloUserIds.filter((id) => id !== zaloUserId),
+    }));
   }
 
   async function reviewBotRule(rule: ZaloBotLearnedRuleResponse, status: ZaloBotRuleStatus) {
@@ -340,6 +367,7 @@ export function ZaloPollImportPanel({
       }),
     );
     if (!result) return;
+    setBotSettings((current) => ({ ...current, botOperatorZaloUserIds: result.botOperatorZaloUserIds }));
     onSessionUpdated({
       ...session,
       startTime: result.startTime,
@@ -649,6 +677,27 @@ export function ZaloPollImportPanel({
               value={botSettings.reminderIntervalHours}
               onChange={(event) => setBotSettings((current) => ({ ...current, reminderIntervalHours: Number(event.target.value) }))}
             />
+          </label>
+          <label className="field zalo-settings-wide">
+            <span>Người được phép điều khiển bot</span>
+            <small className="field-help">Chỉ những tài khoản được chọn mới dùng được lệnh 8 đồng bộ vote và lệnh 9 tự draft. Danh sách lấy từ thành viên đã nhắn trong group.</small>
+            {botOperatorCandidates.length === 0 ? (
+              <span className="muted">Chưa thấy thành viên nào. Hãy để người cần cấp quyền mention bot một lần rồi bấm tải lại.</span>
+            ) : (
+              <div className="zalo-operator-grid">
+                {botOperatorCandidates.map((candidate) => (
+                  <label className="zalo-operator-item" key={candidate.zaloUserId}>
+                    <input
+                      type="checkbox"
+                      checked={botSettings.botOperatorZaloUserIds.includes(candidate.zaloUserId)}
+                      onChange={(event) => toggleBotOperator(candidate.zaloUserId, event.target.checked)}
+                    />
+                    <span><strong>{candidate.displayName}</strong><small>{candidate.zaloUserId}</small></span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <button className="button-secondary" type="button" onClick={() => void loadBotOperatorSettings()} disabled={isBusy}>Tải lại thành viên</button>
           </label>
           <label className="field zalo-settings-wide">
             <span>Ghi chú riêng cho AI</span>

@@ -18,6 +18,11 @@ public enum ZaloBotIntent
     Roster,
     WeeklySessionCount,
     ModelInfo,
+    TeamLineup,
+    SyncPoll,
+    AutoDraft,
+    AutoDraftConfirm,
+    TeamImage,
     GeneralChat
 }
 
@@ -33,7 +38,7 @@ public sealed record ZaloSessionReference(string Id, string Name, DateTimeOffset
 
 public static class ZaloBotIntelligence
 {
-    private static readonly Regex ExactCommandRegex = new("^[1-6]$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ExactCommandRegex = new("^(?:[1-9]|10)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "ai", "hoi", "hay", "la", "thi", "cho", "minh", "tui", "toi", "em", "anh", "chi",
@@ -71,6 +76,10 @@ public static class ZaloBotIntelligence
         4 => ZaloBotIntent.MissingSlots,
         5 => ZaloBotIntent.UpcomingSessions,
         6 => ZaloBotIntent.PaymentQr,
+        7 => ZaloBotIntent.TeamLineup,
+        8 => ZaloBotIntent.SyncPoll,
+        9 => ZaloBotIntent.AutoDraft,
+        10 => ZaloBotIntent.TeamImage,
         _ => ZaloBotIntent.Unknown
     };
 
@@ -78,6 +87,13 @@ public static class ZaloBotIntelligence
     {
         var normalized = Normalize(value);
         return normalized is "huy" or "cancel" or "thoi" or "bo qua" or "khong can nua";
+    }
+
+    public static bool IsConfirmation(string value)
+    {
+        var normalized = Normalize(value);
+        return normalized is "xac nhan" or "xac nhan draft" or "dong y" or "ok chay" or "chay di" or "thuc hien di" ||
+               normalized.StartsWith("xac nhan draft ", StringComparison.Ordinal);
     }
 
     public static bool IsProtectedBusinessFactText(string value)
@@ -96,6 +112,14 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
+        if (Has(q, "tu khui tui", "tu khui", "tu boc team", "tu boc doi", "tu draft", "auto draft", "draft tu dong", "khui het tui", "boc het tui", "chia team tu dong"))
+            return new(ZaloBotIntent.AutoDraft, .98, q, false, null, "auto_draft_phrase");
+        if (Has(q, "cap nhat so luong da vote", "cap nhat nguoi vote", "dong bo vote", "sync vote", "import poll", "lay nguoi da vote", "cap nhat poll len web"))
+            return new(ZaloBotIntent.SyncPoll, .98, q, false, null, "sync_poll_phrase");
+        if (Has(q, "chup man hinh 3 team", "anh 3 team", "anh doi hinh", "gui anh team", "gui hinh team", "the doi hinh"))
+            return new(ZaloBotIntent.TeamImage, .96, q, false, null, "team_image_phrase");
+        if (Has(q, "danh sach 3 team", "danh sach ba team", "danh sach team", "danh sach cac team", "doi hinh 3 team", "3 team hom nay", "team hom nay"))
+            return new(ZaloBotIntent.TeamLineup, .96, q, false, null, "team_lineup_phrase");
         if (Has(q, "qr thanh toan", "ma qr", "chuyen khoan", "thanh toan o dau"))
             return new(ZaloBotIntent.PaymentQr, .96, q, false, null, "payment_phrase");
         if (IsRoster(q)) return new(ZaloBotIntent.Roster, .96, q, false, null, "roster_phrase");
@@ -128,7 +152,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;

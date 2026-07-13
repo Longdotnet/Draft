@@ -24,6 +24,10 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "MatchSessions", "PaymentQrImageUrl", "\"PaymentQrImageUrl\" TEXT NULL");
             await EnsureSqliteColumn(db, "MatchSessions", "BotEnabled", "\"BotEnabled\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "MatchSessions", "BotCustomInstructions", "\"BotCustomInstructions\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "BotOperatorZaloUserIdsJson", "\"BotOperatorZaloUserIdsJson\" TEXT NOT NULL DEFAULT '[]'");
+            await EnsureSqliteColumn(db, "MatchSessions", "BotActionLeaseToken", "\"BotActionLeaseToken\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "BotActionLeaseName", "\"BotActionLeaseName\" TEXT NULL");
+            await EnsureSqliteColumn(db, "MatchSessions", "BotActionLeaseUntil", "\"BotActionLeaseUntil\" TEXT NULL");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderEnabled", "\"ReminderEnabled\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderLeadHours", "\"ReminderLeadHours\" INTEGER NOT NULL DEFAULT 72");
             await EnsureSqliteColumn(db, "MatchSessions", "ReminderIntervalHours", "\"ReminderIntervalHours\" INTEGER NOT NULL DEFAULT 12");
@@ -74,6 +78,10 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "MatchSessions", "PaymentQrImageUrl", "\"PaymentQrImageUrl\" text NULL");
             await EnsurePostgresColumn(db, "MatchSessions", "BotEnabled", "\"BotEnabled\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "MatchSessions", "BotCustomInstructions", "\"BotCustomInstructions\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "BotOperatorZaloUserIdsJson", "\"BotOperatorZaloUserIdsJson\" text NOT NULL DEFAULT '[]'");
+            await EnsurePostgresColumn(db, "MatchSessions", "BotActionLeaseToken", "\"BotActionLeaseToken\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "BotActionLeaseName", "\"BotActionLeaseName\" text NULL");
+            await EnsurePostgresColumn(db, "MatchSessions", "BotActionLeaseUntil", "\"BotActionLeaseUntil\" timestamp with time zone NULL");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderEnabled", "\"ReminderEnabled\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderLeadHours", "\"ReminderLeadHours\" integer NOT NULL DEFAULT 72");
             await EnsurePostgresColumn(db, "MatchSessions", "ReminderIntervalHours", "\"ReminderIntervalHours\" integer NOT NULL DEFAULT 12");

@@ -17,6 +17,10 @@ public sealed class MatchSession
     public string? PaymentQrImageUrl { get; set; }
     public bool BotEnabled { get; set; }
     public string? BotCustomInstructions { get; set; }
+    public string BotOperatorZaloUserIdsJson { get; set; } = "[]";
+    public string? BotActionLeaseToken { get; set; }
+    public string? BotActionLeaseName { get; set; }
+    public DateTimeOffset? BotActionLeaseUntil { get; set; }
     public bool ReminderEnabled { get; set; }
     public int ReminderLeadHours { get; set; } = 72;
     public int ReminderIntervalHours { get; set; } = 12;

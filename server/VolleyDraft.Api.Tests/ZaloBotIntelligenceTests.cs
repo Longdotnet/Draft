@@ -8,6 +8,10 @@ public sealed class ZaloBotIntelligenceTests
     [Theory]
     [InlineData("1", 1)]
     [InlineData(" 6 ", 6)]
+    [InlineData("7", 7)]
+    [InlineData("8", 8)]
+    [InlineData("9", 9)]
+    [InlineData("10", 10)]
     public void Exact_numeric_command_is_accepted(string input, int expected)
     {
         Assert.True(ZaloBotIntelligence.TryGetExactCommand(input, out var command));
@@ -79,6 +83,41 @@ public sealed class ZaloBotIntelligenceTests
     public void Learned_behavior_can_prefer_nearest_session(string answer)
     {
         Assert.True(ZaloBotIntelligence.PrefersNearestSession(answer));
+    }
+
+    [Theory]
+    [InlineData("hãy lấy danh sách 3 team hôm nay và gửi cho tui", ZaloBotIntent.TeamLineup)]
+    [InlineData("cập nhật số lượng đã vote trên web", ZaloBotIntent.SyncPoll)]
+    [InlineData("tự khui túi mù rồi draft tự bốc team và chụp màn hình", ZaloBotIntent.AutoDraft)]
+    [InlineData("gửi ảnh đội hình ba team", ZaloBotIntent.TeamImage)]
+    public void New_features_understand_natural_vietnamese(string question, ZaloBotIntent expected)
+    {
+        Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
+    }
+
+    [Theory]
+    [InlineData("xác nhận draft")]
+    [InlineData("đồng ý")]
+    [InlineData("ok chạy")]
+    public void Destructive_draft_requires_an_explicit_confirmation_phrase(string value)
+    {
+        Assert.True(ZaloBotIntelligence.IsConfirmation(value));
+    }
+
+    [Fact]
+    public void Team_card_renderer_outputs_a_png()
+    {
+        var bytes = SimpleTeamCardPng.Render(
+            "Trận hôm nay",
+            new DateTimeOffset(2026, 7, 13, 18, 0, 0, TimeSpan.FromHours(7)),
+            [
+                new TeamCardTeam("Team A", "Thanh Long", ["Thanh Long", "An", "Bình"]),
+                new TeamCardTeam("Team B", "Minh", ["Minh", "Hà", "Phúc"]),
+                new TeamCardTeam("Team C", "Nam", ["Nam", "Linh", "Huy"])
+            ]);
+
+        Assert.True(bytes.Length > 1_000);
+        Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, bytes[..8]);
     }
 
     [Theory]

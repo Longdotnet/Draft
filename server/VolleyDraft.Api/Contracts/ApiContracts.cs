@@ -156,6 +156,7 @@ public sealed record UpdateZaloBotSettingsRequest(
     string? PaymentQrImageUrl,
     bool BotEnabled,
     string? BotCustomInstructions,
+    IReadOnlyList<string>? BotOperatorZaloUserIds,
     bool ReminderEnabled,
     int ReminderLeadHours,
     int ReminderIntervalHours);
@@ -170,10 +171,17 @@ public sealed record ZaloBotSettingsResponse(
     string? PaymentQrImageUrl,
     bool BotEnabled,
     string? BotCustomInstructions,
+    IReadOnlyList<string> BotOperatorZaloUserIds,
     bool ReminderEnabled,
     int ReminderLeadHours,
     int ReminderIntervalHours,
     DateTimeOffset? LastReminderAt);
+
+public sealed record ZaloBotOperatorCandidateResponse(
+    string ZaloUserId,
+    string DisplayName,
+    bool IsAuthorized,
+    DateTimeOffset LastSeenAt);
 
 public sealed record ZaloBotImageAssetResponse(
     string Id,

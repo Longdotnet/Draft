@@ -1286,6 +1286,33 @@
   background: #fff;
 }
 
+.zalo-operator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+
+.zalo-operator-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.zalo-operator-item span {
+  display: grid;
+  min-width: 0;
+}
+
+.zalo-operator-item small {
+  overflow: hidden;
+  color: #64748b;
+  text-overflow: ellipsis;
+}
+
 @keyframes zalo-spin {
   to {
     transform: rotate(360deg);

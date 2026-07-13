@@ -60,6 +60,7 @@ builder.Services.AddScoped<SessionDraftService>();
 builder.Services.AddScoped<ZaloIntegrationService>();
 builder.Services.AddScoped<ZaloBotService>();
 builder.Services.AddScoped<ZaloBotImageService>();
+builder.Services.AddScoped<ZaloTeamCardService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
 builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = TimeSpan.FromSeconds(30));
@@ -225,6 +226,15 @@ app.MapGet("/api/public/bot-images/{assetId}", async (
         : Results.File(image.Data, image.ContentType, enableRangeProcessing: true);
 });
 
+app.MapGet("/api/public/sessions/{sessionId}/team-card.png", async (
+    string sessionId,
+    ZaloTeamCardService service,
+    CancellationToken cancellationToken) =>
+{
+    var image = await service.GenerateAsync(sessionId, cancellationToken);
+    return image is null ? Results.NotFound() : Results.File(image.Data, image.ContentType);
+});
+
 var publicSessions = app.MapGroup("/api/public/sessions");
 publicSessions.MapGet("/", async (
     int? page,
@@ -360,6 +370,16 @@ sessions.MapGet("/{sessionId}/zalo-bot-rules", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.GetLearnedRulesAsync(userId, sessionId, page ?? 1, pageSize ?? 5)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/zalo-bot-operators", async (
+    HttpContext httpContext,
+    string sessionId,
+    ZaloBotService service) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetOperatorCandidatesAsync(userId, sessionId)).ToHttpResult();
 });
 sessions.MapPut("/{sessionId}/zalo-bot-rules/{ruleId}", async (
     HttpContext httpContext,

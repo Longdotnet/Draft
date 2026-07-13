@@ -829,6 +829,75 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return await StartDraftRunAsync(adminUserId, sessionId, allowRestart: true);
     }
 
+    public async Task<ServiceResult<DraftStateResponse>> AutoRunDraftAsync(
+        string adminUserId,
+        string sessionId)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == sessionId &&
+                              session.AdminUserId == adminUserId &&
+                              (session.BotActionLeaseUntil == null || session.BotActionLeaseUntil < now))
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "AutoDraft")
+                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(5)));
+        if (claimed == 0)
+        {
+            var exists = await db.MatchSessions.AnyAsync(session => session.Id == sessionId && session.AdminUserId == adminUserId);
+            return exists
+                ? ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Đang có một thao tác draft khác chạy cho buổi này.")
+                : NotFound<DraftStateResponse>("Không tìm thấy session.");
+        }
+
+        try
+        {
+            var session = await db.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId);
+            if (session.Status == SessionStatus.Cancelled)
+                return BadRequest<DraftStateResponse>("Session đã bị huỷ.");
+
+            if (session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection)
+            {
+                var captains = await GetCaptainsAsync(adminUserId, sessionId);
+                if (!captains.IsSuccess || captains.Value is null || captains.Value.Captains.Count != session.TeamCount)
+                {
+                    var selected = await AutoSelectCaptainsAsync(adminUserId, sessionId);
+                    if (!selected.IsSuccess)
+                        return ServiceResult<DraftStateResponse>.Failure(selected.StatusCode, selected.Error!);
+                }
+                var started = await StartDraftAsync(adminUserId, sessionId);
+                if (!started.IsSuccess) return started;
+            }
+
+            for (var pick = 0; pick < 200; pick += 1)
+            {
+                var state = await GetDraftStateAsync(adminUserId, sessionId);
+                if (!state.IsSuccess || state.Value is null) return state;
+                if (state.Value.SessionStatus == SessionStatus.Finished) return state;
+                if (state.Value.SessionStatus != SessionStatus.Drafting)
+                    return BadRequest<DraftStateResponse>("Session chưa sẵn sàng để tự draft.");
+                var availableBags = state.Value.Bags.Where(bag => !bag.IsOpened).ToList();
+                if (availableBags.Count == 0)
+                    return ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Không tìm thấy túi hợp lệ cho lượt draft hiện tại.");
+                var bag = availableBags[Random.Shared.Next(availableBags.Count)];
+                var opened = await OpenBagAsync(adminUserId, sessionId, bag.Id);
+                if (!opened.IsSuccess)
+                    return ServiceResult<DraftStateResponse>.Failure(opened.StatusCode, opened.Error!);
+            }
+            return ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Auto draft vượt quá giới hạn 200 lượt, đã dừng để bảo vệ dữ liệu.");
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == sessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
     private async Task<ServiceResult<DraftStateResponse>> StartDraftRunAsync(
         string adminUserId,
         string sessionId,

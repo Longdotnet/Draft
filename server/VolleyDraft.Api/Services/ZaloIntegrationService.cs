@@ -355,6 +355,7 @@ public sealed class ZaloIntegrationService(
                     existingSessionPlayer.Score = CalculateScore(decision.Role, decision.Level);
                     existingSessionPlayer.SourcePollId = poll.Id;
                     existingSessionPlayer.SourceOptionIdsJson = JsonSerializer.Serialize(optionIds);
+                    existingSessionPlayer.IsPresent = true;
                     skippedCount += 1;
                     continue;
                 }
@@ -413,6 +414,153 @@ public sealed class ZaloIntegrationService(
             return BridgeFailure<ZaloPollImportResultResponse>(exception);
         }
     }
+
+    public async Task<ServiceResult<ZaloPollImportResultResponse>> SyncLatestPollAsync(
+        string adminUserId,
+        string sessionId,
+        string? optionReference = null)
+    {
+        var linked = await GetLinkedSessionAsync(adminUserId, sessionId);
+        if (linked.Result is not null)
+            return ServiceResult<ZaloPollImportResultResponse>.Failure(linked.Result.StatusCode, linked.Result.Error!);
+        if (linked.Session!.Status is SessionStatus.Drafting or SessionStatus.Finished)
+            return BadRequest<ZaloPollImportResultResponse>("Không thể đồng bộ vote sau khi draft đã bắt đầu.");
+
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var leaseNow = DateTimeOffset.UtcNow;
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == sessionId &&
+                              session.AdminUserId == adminUserId &&
+                              (session.BotActionLeaseUntil == null || session.BotActionLeaseUntil < leaseNow))
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "SyncPoll")
+                .SetProperty(session => session.BotActionLeaseUntil, leaseNow.AddMinutes(2)));
+        if (claimed == 0)
+            return ServiceResult<ZaloPollImportResultResponse>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật buổi này. Hãy thử lại sau ít phút.");
+
+        try
+        {
+            var polls = (await bridge.GetPollsAsync(ReadCredentials(linked.Connection!), linked.Session.ZaloGroupId!))
+                .Where(poll => !poll.IsAnonymous)
+                .OrderByDescending(poll => poll.UpdatedAtUnixMs)
+                .ToList();
+            if (polls.Count == 0)
+                return BadRequest<ZaloPollImportResultResponse>("Nhóm chưa có poll không ẩn danh để đồng bộ.");
+
+            var previousImport = await db.PollImports.AsNoTracking()
+                .Where(item => item.SessionId == sessionId)
+                .OrderByDescending(item => item.ImportedAt)
+                .FirstOrDefaultAsync();
+            var poll = previousImport is null
+                ? polls[0]
+                : polls.FirstOrDefault(item => item.Id == previousImport.PollId) ?? polls[0];
+            var selectedOptionIds = previousImport is not null && previousImport.PollId == poll.Id
+                ? ParseStringList(previousImport.SelectedOptionIdsJson)
+                : InferPollOptionIds(linked.Session, poll, optionReference);
+            selectedOptionIds = selectedOptionIds
+                .Where(id => poll.Options.Any(option => option.Id == id))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (selectedOptionIds.Count == 0)
+            {
+                return ServiceResult<ZaloPollImportResultResponse>.Failure(
+                    StatusCodes.Status409Conflict,
+                    $"Bot chưa xác định được option nào thuộc buổi này. Hãy hỏi lại và thêm đúng tên option. Poll “{poll.Question}” có: {string.Join(", ", poll.Options.Select(option => option.Content))}.");
+            }
+
+            var previewResult = await CreateImportPreviewAsync(
+                adminUserId,
+                sessionId,
+                new CreateZaloImportPreviewRequest(poll.Id, selectedOptionIds));
+            if (!previewResult.IsSuccess || previewResult.Value is null)
+                return ServiceResult<ZaloPollImportResultResponse>.Failure(previewResult.StatusCode, previewResult.Error!);
+            var preview = previewResult.Value;
+            var decisions = preview.Candidates.Select(candidate => new ZaloImportCandidateDecision(
+                candidate.ZaloUserId,
+                true,
+                candidate.Gender ?? PlayerGender.Unknown,
+                candidate.Role,
+                candidate.Level)).ToList();
+            var importResult = await ConfirmImportAsync(
+                adminUserId,
+                sessionId,
+                new ConfirmZaloPollImportRequest(
+                    preview.PollId,
+                    selectedOptionIds,
+                    preview.PollUpdatedAtUnixMs,
+                    decisions));
+            if (!importResult.IsSuccess || importResult.Value is null) return importResult;
+
+            var activeZaloIds = preview.Candidates.Select(candidate => NormalizeId(candidate.ZaloUserId)).ToHashSet(StringComparer.Ordinal);
+            var previouslyImportedPlayers = await db.SessionPlayers
+                .Include(player => player.PlayerProfile)
+                .Where(player => player.SessionId == sessionId && player.SourcePollId == poll.Id)
+                .ToListAsync();
+            var removedCount = 0;
+            foreach (var player in previouslyImportedPlayers)
+            {
+                var zaloId = player.PlayerProfile?.ZaloUserId;
+                if (string.IsNullOrWhiteSpace(zaloId) || activeZaloIds.Contains(NormalizeId(zaloId))) continue;
+                if (player.IsPresent) removedCount += 1;
+                player.IsPresent = false;
+            }
+            await db.SaveChangesAsync();
+            var presentCount = await db.SessionPlayers.CountAsync(player => player.SessionId == sessionId && player.IsPresent);
+            return ServiceResult<ZaloPollImportResultResponse>.Success(importResult.Value with
+            {
+                SessionPlayerCount = presentCount,
+                Message = $"Đã đồng bộ poll “{preview.PollQuestion}”: {presentCount} người đang có mặt, thêm {importResult.Value.AddedCount}, cập nhật {importResult.Value.SkippedExistingCount}, bỏ {removedCount} người đã rút vote."
+            });
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            return BridgeFailure<ZaloPollImportResultResponse>(exception);
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == sessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
+    private static List<string> InferPollOptionIds(MatchSession session, BridgePoll poll, string? optionReference)
+    {
+        if (poll.Options.Count == 1) return [poll.Options[0].Id];
+        var sessionText = $"{session.Name} {optionReference}";
+        if (session.StartTime is not null)
+        {
+            var local = session.StartTime.Value.ToOffset(TimeSpan.FromHours(7));
+            sessionText += $" {local:dd/M} {DayAlias(local.DayOfWeek)}";
+        }
+        var scored = poll.Options
+            .Select(option => new { option.Id, Score = ZaloBotIntelligence.TokenSimilarity(sessionText, option.Content) })
+            .OrderByDescending(item => item.Score)
+            .ToList();
+        if (scored.Count == 0 || scored[0].Score < .5 || (scored.Count > 1 && Math.Abs(scored[0].Score - scored[1].Score) < .05)) return [];
+        return [scored[0].Id];
+    }
+
+    private static List<string> ParseStringList(string? json)
+    {
+        try { return JsonSerializer.Deserialize<List<string>>(json ?? "[]") ?? []; }
+        catch (JsonException) { return []; }
+    }
+
+    private static string DayAlias(DayOfWeek day) => day switch
+    {
+        DayOfWeek.Monday => "T2",
+        DayOfWeek.Tuesday => "T3",
+        DayOfWeek.Wednesday => "T4",
+        DayOfWeek.Thursday => "T5",
+        DayOfWeek.Friday => "T6",
+        DayOfWeek.Saturday => "T7",
+        _ => "CN"
+    };
 
     private async Task<ZaloImportPreviewResponse> BuildPreviewAsync(
         MatchSession session,

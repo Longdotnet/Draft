@@ -288,7 +288,16 @@ Trong màn admin của từng session:
 2. Cấu hình giờ đấu, địa điểm, chỗ gửi xe và chọn ảnh vị trí/QR từ máy hoặc thư viện ảnh đã lưu trong DB.
 3. Bật bot; nếu cần thì bật reminder, chọn số giờ bắt đầu nhắc và chu kỳ lặp.
 
-Bot chỉ trả lời khi được mention đúng UID. `@bot help` hiển thị menu. Lệnh nhanh `1`–`6` chỉ được nhận khi phần câu hỏi đúng một chữ số; ví dụ `@bot 1 tuần đánh mấy lần` là câu tự nhiên `WeeklySessionCount`, không bị hiểu thành command 1. Dạng cũ như `@bot 6 thứ 6` chỉ được nhận khi phần sau là selector session hợp lệ.
+Bot chỉ trả lời khi được mention đúng UID. `@bot help` hiển thị menu. Lệnh nhanh `1`–`10` chỉ được nhận khi phần câu hỏi đúng một số; ví dụ `@bot 1 tuần đánh mấy lần` là câu tự nhiên `WeeklySessionCount`, không bị hiểu thành command 1. Dạng như `@bot 7 T6` chỉ được nhận khi phần sau là selector session hợp lệ.
+
+Các lệnh mở rộng:
+
+- `7`: lấy danh sách ba team hiện tại dưới dạng text.
+- `8`: đồng bộ voter của poll lên roster web. Bot ưu tiên poll/option đã import trước đó; nếu chưa có thì semantic-match tên session, ngày và option. Người rút vote được chuyển `IsPresent=false`.
+- `9`: tự chọn captain nếu thiếu, bắt đầu draft và khui ngẫu nhiên toàn bộ túi. Đây là thao tác phá huỷ nên chỉ operator được cấp quyền dùng và luôn cần tin nhắn xác nhận thứ hai.
+- `10`: tạo team-card PNG từ dữ liệu đội hình và gửi vào Zalo. Lệnh 9 cũng gửi card sau khi hoàn tất.
+
+Lệnh 8–9 yêu cầu admin chọn Zalo operator trong panel `Bot chat & reminder`. Candidate được lấy từ những sender gần đây của group; không so quyền bằng display name. API còn dùng lease trên session để hai auto-draft không chạy đồng thời.
 
 AI chỉ phân loại câu tự nhiên thành intent JSON có kiểu (`SessionSchedule`, `Roster`, `WeeklySessionCount`...). Handler .NET sau đó đọc giờ, sân, người chơi, poll và slot từ database; model không phải nguồn dữ liệu nghiệp vụ. Nếu classifier lỗi JSON, confidence thấp hoặc provider lỗi, bot dùng routing xác định được hoặc fallback an toàn thay vì gọi một method tùy ý.
 
@@ -308,6 +317,7 @@ Zalo__BridgeInternalKey
 Zalo__CredentialEncryptionKey
 Zalo__WebhookUrl=https://<api-host>/api/internal/zalo/events
 Zalo__WebhookKey=<shared-secret>
+Public__BaseUrl=https://<api-host>
 Ai__Endpoint=<OpenAI-compatible chat-completions endpoint>
 Ai__ApiKey=<provider key>
 Ai__Model=<provider model id>

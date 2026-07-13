@@ -31,6 +31,8 @@ services:
         sync: false
       - key: Zalo__WebhookKey
         sync: false
+      - key: Public__BaseUrl
+        sync: false
       - key: Ai__Endpoint
         sync: false
       - key: Ai__ApiKey
