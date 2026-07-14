@@ -1564,7 +1564,9 @@ public sealed class ZaloBotService(
                         : extracted.DelayMinutes ?? deterministicCommand.DelayMinutes,
                     ExplicitLocalDate = extracted.ExplicitLocalDate ?? deterministicCommand.ExplicitLocalDate,
                     UseSessionDate = extracted.UseSessionDate || deterministicCommand.UseSessionDate,
-                    CustomMessage = extracted.CustomMessage ?? deterministicCommand.CustomMessage,
+                    // Keep the deterministic extraction when it found a clean message. AI
+                    // sometimes echoes the scheduling preamble into customMessage.
+                    CustomMessage = deterministicCommand.CustomMessage ?? extracted.CustomMessage,
                     Audience = extracted.Audience == ZaloReminderAudience.All
                         ? deterministicCommand.Audience
                         : extracted.Audience,
