@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -9,6 +10,41 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class AiAssistantServiceTests
 {
+    [Fact]
+    public async Task Reminder_extraction_accepts_null_optional_json_values()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"kind\":\"Schedule\",\"delayMinutes\":null,\"repeats\":false,\"localTime\":\"17:00\",\"explicitLocalDate\":null,\"useSessionDate\":true,\"customMessage\":\"remember water\",\"audience\":\"All\",\"onlyIfMissingSlots\":false,\"sessionReferences\":[\"T4\"]}"}}]}""");
+
+        var result = await service.ParseReminderCommandAsync(new ZaloNaturalReminderContext(
+            "nhắc 5h chiều T4 nhớ mang nước",
+            "Thanh Long",
+            [],
+            new DateTimeOffset(2026, 7, 14, 8, 0, 0, TimeSpan.FromHours(7))));
+
+        Assert.NotNull(result);
+        Assert.Equal(new TimeOnly(17, 0), result!.LocalTime);
+        Assert.Null(result.DelayMinutes);
+        Assert.Equal(["T4"], result.SessionReferences);
+    }
+
+    [Fact]
+    public async Task Share_extraction_uses_partner_count_when_ai_returns_null_count()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"anchor\":\"Nick Tran\",\"partners\":[\"An\",\"Bình\"],\"requestedPartnerCount\":null}"}}]}""");
+
+        var result = await service.ParseShareSlotCommandAsync(new ZaloNaturalShareContext(
+            "Nick Tran xin +2 cho An và Bình",
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.Equal(2, result!.RequestedPartnerCount);
+        Assert.Equal(["An", "Bình"], result.Partners);
+    }
+
     [Fact]
     public async Task Factual_answer_can_be_rewritten_without_losing_protected_facts()
     {

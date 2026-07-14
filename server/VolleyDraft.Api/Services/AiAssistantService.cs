@@ -110,25 +110,23 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         {
             using var document = JsonDocument.Parse(StripCodeFence(content));
             var root = document.RootElement;
-            if (!root.TryGetProperty("kind", out var kindElement) ||
-                !Enum.TryParse<ZaloReminderCommandKind>(kindElement.GetString(), true, out var kind)) return null;
-            int? delayMinutes = root.TryGetProperty("delayMinutes", out var delayElement) && delayElement.TryGetInt32(out var delay)
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var kindText = ReadJsonString(root, "kind");
+            if (!Enum.TryParse<ZaloReminderCommandKind>(kindText, true, out var kind)) return null;
+            int? delayMinutes = TryReadInt32(root, "delayMinutes", out var delay)
                 ? delay
                 : null;
             if (delayMinutes is < 5 or > 10_080) delayMinutes = null;
             var repeats = root.TryGetProperty("repeats", out var repeatsElement) && repeatsElement.ValueKind == JsonValueKind.True;
             TimeOnly? localTime = null;
-            if (root.TryGetProperty("localTime", out var timeElement) &&
-                TimeOnly.TryParseExact(timeElement.GetString(), "HH:mm", out var parsedTime)) localTime = parsedTime;
+            if (TimeOnly.TryParseExact(ReadJsonString(root, "localTime"), "HH:mm", out var parsedTime)) localTime = parsedTime;
             DateOnly? explicitDate = null;
-            if (root.TryGetProperty("explicitLocalDate", out var dateElement) &&
-                DateOnly.TryParseExact(dateElement.GetString(), "yyyy-MM-dd", out var parsedDate)) explicitDate = parsedDate;
+            if (DateOnly.TryParseExact(ReadJsonString(root, "explicitLocalDate"), "yyyy-MM-dd", out var parsedDate)) explicitDate = parsedDate;
             var useSessionDate = root.TryGetProperty("useSessionDate", out var sessionDateElement) && sessionDateElement.ValueKind == JsonValueKind.True;
             var customMessage = root.TryGetProperty("customMessage", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
                 ? Truncate(messageElement.GetString()?.Trim(), 2000)
                 : null;
-            var audience = root.TryGetProperty("audience", out var audienceElement) &&
-                           Enum.TryParse<ZaloReminderAudience>(audienceElement.GetString(), true, out var parsedAudience)
+            var audience = Enum.TryParse<ZaloReminderAudience>(ReadJsonString(root, "audience"), true, out var parsedAudience)
                 ? parsedAudience
                 : ZaloReminderAudience.All;
             var onlyIfMissing = root.TryGetProperty("onlyIfMissingSlots", out var missingElement) && missingElement.ValueKind == JsonValueKind.True;
@@ -153,7 +151,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                 onlyIfMissing,
                 references);
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             logger.LogWarning(exception, "AI reminder extraction returned invalid JSON: {Output}", Truncate(content, 500));
             return null;
@@ -197,7 +195,8 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         {
             using var document = JsonDocument.Parse(StripCodeFence(content));
             var root = document.RootElement;
-            var anchor = root.TryGetProperty("anchor", out var anchorElement) ? anchorElement.GetString()?.Trim() : null;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var anchor = ReadJsonString(root, "anchor")?.Trim();
             var partners = root.TryGetProperty("partners", out var partnerElement) && partnerElement.ValueKind == JsonValueKind.Array
                 ? partnerElement.EnumerateArray()
                     .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
@@ -206,20 +205,33 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                     .Take(3)
                     .ToList()
                 : [];
-            var requestedCount = root.TryGetProperty("requestedPartnerCount", out var countElement) && countElement.TryGetInt32(out var count)
+            var requestedCount = TryReadInt32(root, "requestedPartnerCount", out var count)
                 ? count
                 : partners.Count;
-            var sessionReference = root.TryGetProperty("sessionReference", out var sessionElement) && sessionElement.ValueKind == JsonValueKind.String
-                ? sessionElement.GetString()?.Trim()
-                : null;
+            var sessionReference = ReadJsonString(root, "sessionReference")?.Trim();
             if (string.IsNullOrWhiteSpace(anchor) || requestedCount is < 1 or > 2) return null;
             return new ZaloShareSlotCommand(anchor.TrimStart('@'), partners, requestedCount, sessionReference);
         }
-        catch (JsonException exception)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             logger.LogWarning(exception, "AI share-slot extraction returned invalid JSON: {Output}", Truncate(content, 500));
             return null;
         }
+    }
+
+    private static string? ReadJsonString(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : null;
+    }
+
+    private static bool TryReadInt32(JsonElement root, string propertyName, out int value)
+    {
+        value = default;
+        return root.TryGetProperty(propertyName, out var element) &&
+               element.ValueKind == JsonValueKind.Number &&
+               element.TryGetInt32(out value);
     }
 
     public string GetPublicModelInfo()
@@ -352,7 +364,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                 return outputText.GetString()?.Trim() ?? "Mình chưa tìm được câu trả lời phù hợp.";
             }
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
             logger.LogWarning(exception, "AI provider request failed");
         }
@@ -385,7 +397,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                 message.TryGetProperty("content", out var content)) return content.GetString()?.Trim();
             return root.TryGetProperty("output_text", out var outputText) ? outputText.GetString()?.Trim() : null;
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
             logger.LogWarning(exception, "AI {Operation} request failed", operation);
             return null;
