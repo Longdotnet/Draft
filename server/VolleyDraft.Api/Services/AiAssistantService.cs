@@ -177,6 +177,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
     {
         if (!IsConfigured) return null;
         var prompt = """
+            HARD RULE: if MentionedUsers contains exactly two or three non-bot players, the first mentioned player is always the anchor and the remaining players are always partners, in that order. Never replace that explicit anchor with SenderName. The application will enforce this binding too.
             Bạn trích xuất lệnh ghép share slot bóng chuyền. Chỉ trả về một JSON object, không markdown.
             Schema: {"anchor":"Nick Tran","partners":["An","Bình"],"requestedPartnerCount":2,"sessionReference":"T4"}
 

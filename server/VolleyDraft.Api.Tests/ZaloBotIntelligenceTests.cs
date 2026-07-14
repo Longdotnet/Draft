@@ -176,6 +176,42 @@ public sealed class ZaloBotIntelligenceTests
         Assert.Equal(partner, actualPartner);
     }
 
+    [Fact]
+    public void Explicit_share_mentions_override_sender_or_ai_anchor()
+    {
+        var current = new ZaloShareSlotCommand("Thanh Long", ["Vivian"], 1);
+        var mentions = new List<ZaloMentionedUser>
+        {
+            new("vinh-id", "Vinh"),
+            new("vivian-id", "Vivian")
+        };
+
+        var command = ZaloNaturalCommandParser.BindExplicitShareMentions(mentions, current);
+
+        Assert.NotNull(command);
+        Assert.Equal("Vinh", command!.Anchor);
+        Assert.Equal(["Vivian"], command.Partners);
+        Assert.Equal(1, command.RequestedPartnerCount);
+    }
+
+    [Fact]
+    public void Explicit_three_player_mentions_bind_plus_two_in_order()
+    {
+        var mentions = new List<ZaloMentionedUser>
+        {
+            new("vinh-id", "Vinh"),
+            new("a-id", "An"),
+            new("b-id", "Bình")
+        };
+
+        var command = ZaloNaturalCommandParser.BindExplicitShareMentions(mentions, null);
+
+        Assert.NotNull(command);
+        Assert.Equal("Vinh", command!.Anchor);
+        Assert.Equal(["An", "Bình"], command.Partners);
+        Assert.Equal(2, command.RequestedPartnerCount);
+    }
+
     [Theory]
     [InlineData("xác nhận draft")]
     [InlineData("đồng ý")]

@@ -1419,6 +1419,16 @@ public sealed class ZaloBotService(
             aiCalled |= aiCommand is not null;
         }
         var command = aiCommand ?? (fallbackCommand.RequestedPartnerCount > 0 ? fallbackCommand : null);
+        var explicitMentionCommand = ZaloNaturalCommandParser.BindExplicitShareMentions(mentionedUsers, command);
+        if (explicitMentionCommand is not null)
+        {
+            logger.LogInformation(
+                "Share slot command bound from explicit mentions Anchor={Anchor} Partners={Partners} AiCommand={AiCommand}",
+                explicitMentionCommand.Anchor,
+                string.Join(", ", explicitMentionCommand.Partners),
+                aiCommand is not null);
+            command = explicitMentionCommand;
+        }
         if (command is null)
             return new BotAnswer("Mình chưa nhận ra người chính và người chơi chung. Ví dụ: @bot Nick Tran muốn share slot với An; hoặc @bot Nick Tran xin +2 cho An và Bình.", null, decision.Intent, aiCalled);
 
@@ -3071,7 +3081,9 @@ public sealed class ZaloBotService(
     private static IReadOnlyList<ZaloMentionedUser> ExtractMentionedUsers(ZaloIncomingMessageEvent incoming)
     {
         var users = new List<ZaloMentionedUser>();
-        foreach (var mention in incoming.Mentions.Where(item =>
+        foreach (var mention in incoming.Mentions
+                     .OrderBy(item => item.Pos)
+                     .Where(item =>
                      NormalizeId(item.Uid) != NormalizeId(incoming.BotId)))
         {
             if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos + mention.Len > incoming.Content.Length) continue;

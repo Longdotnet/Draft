@@ -131,6 +131,36 @@ public static class ZaloNaturalCommandParser
         return command.Anchor.Length > 0 && requestedCount is >= 1 and <= 2;
     }
 
+    /// <summary>
+    /// Binds explicit Zalo mentions to the share-slot command.
+    ///
+    /// A natural-language model may reasonably interpret the sender as "tui"
+    /// when the text also contains an explicit @player.  That is unsafe for a
+    /// data-changing command.  When the message contains exactly two or three
+    /// non-bot player mentions, their order is authoritative:
+    /// mention[0] = existing slot owner, remaining mentions = shared players.
+    /// </summary>
+    public static ZaloShareSlotCommand? BindExplicitShareMentions(
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers,
+        ZaloShareSlotCommand? currentCommand)
+    {
+        if (mentionedUsers.Count is < 2 or > 3) return null;
+
+        var anchor = mentionedUsers[0].DisplayName.Trim().TrimStart('@');
+        var partners = mentionedUsers
+            .Skip(1)
+            .Select(user => user.DisplayName.Trim().TrimStart('@'))
+            .Where(name => name.Length > 0)
+            .ToList();
+        if (anchor.Length == 0 || partners.Count is < 1 or > 2) return null;
+
+        return new ZaloShareSlotCommand(
+            anchor,
+            partners,
+            partners.Count,
+            currentCommand?.SessionReference);
+    }
+
     public static IReadOnlyList<string> SplitPeople(string value)
     {
         var cleaned = Regex.Replace(
