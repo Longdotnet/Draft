@@ -60,6 +60,18 @@ public sealed class ZaloBotIntelligenceTests
     }
 
     [Theory]
+    [InlineData("giải thích chi tiết về waitlist")]
+    [InlineData("waitlist là gì và cách hoạt động")]
+    [InlineData("hiện tại có danh sách chờ không khi đủ 18")]
+    [InlineData("waitlist ấy")]
+    public void Waitlist_questions_are_routed_without_requiring_ai(string input)
+    {
+        var decision = ZaloBotIntelligence.ClassifyDeterministically(input);
+
+        Assert.Equal(ZaloBotIntent.WaitlistStatus, decision.Intent);
+    }
+
+    [Theory]
     [InlineData("xác nhận")]
     [InlineData("đồng ý")]
     [InlineData("chốt đi")]

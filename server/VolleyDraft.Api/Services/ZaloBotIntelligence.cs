@@ -283,6 +283,17 @@ public static class ZaloBotIntelligence
             (Has(q, "co nguoi rut", "co slot trong", "co cho trong", "khi co slot") &&
              Has(q, "goi tui", "bao tui", "nhac tui", "keu tui", "cho tui vao")))
             return new(ZaloBotIntent.WaitlistJoin, .98, q, false, null, "waitlist_join_phrase");
+        if (Has(q, "danh sach cho", "waitlist"))
+        {
+            var explanation = Has(q, "giai thich", "cach hoat dong", "hoat dong nhu nao", "chi tiet", "la gi", "huong dan");
+            return new(
+                ZaloBotIntent.WaitlistStatus,
+                .98,
+                q,
+                false,
+                null,
+                explanation ? "waitlist_explanation_phrase" : "waitlist_status_phrase");
+        }
         if (Has(q, "lich su thao tac", "xem thao tac", "vua thay doi gi", "nhung thay doi gan day"))
             return new(ZaloBotIntent.ActionHistory, .98, q, false, null, "action_history_phrase");
         if (Regex.IsMatch(q, @"(?:^|\s)(?:undo|hoan tac|khoi phuc)(?:\s|$)", RegexOptions.CultureInvariant))

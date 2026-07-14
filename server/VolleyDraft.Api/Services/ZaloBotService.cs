@@ -2473,6 +2473,22 @@ public sealed class ZaloBotService(
         CancellationToken cancellationToken,
         bool aiCalled)
     {
+        if (decision.Intent == ZaloBotIntent.WaitlistStatus &&
+            IsStandaloneWaitlistExplanation(selector) &&
+            !HasExplicitSessionSelector(sessions, selector))
+        {
+            var inviteMinutes = Math.Clamp(configuration.GetValue("ZaloBot:WaitlistInviteMinutes", 15), 5, 120);
+            return new BotAnswer(
+                $"Waitlist là danh sách chờ cho người muốn tham gia nhưng buổi đã đủ slot. Cách hoạt động:\n" +
+                $"1. Bạn nói tự nhiên như `@bot cho tui vào waitlist T6`; bot xếp theo thứ tự đăng ký.\n" +
+                "2. Khi có người rút vote hoặc slot trống, hệ thống cập nhật lại số slot rồi gọi người đứng đầu trước.\n" +
+                $"3. Người được gọi sẽ được mention và giữ lời mời trong {inviteMinutes} phút; gõ `@bot nhận slot` để vào danh sách chính thức, hoặc `@bot nhường người sau` để bỏ qua.\n" +
+                "4. Nếu từ chối hoặc hết thời gian, bot tự chuyển lời mời cho người kế tiếp. Người đã nhận slot sẽ được yêu cầu bổ sung hồ sơ còn thiếu trước khi draft.\n" +
+                "Muốn xem trạng thái của một buổi, gõ `@bot xem waitlist T4`, `T6` hoặc tên trận.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
         SessionSnapshot? session = null;
         if (decision.Intent is ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
         {
@@ -2544,6 +2560,13 @@ public sealed class ZaloBotService(
             _ => $"\nBạn đang ở vị trí chờ số {own.Position}."
         };
         return new BotAnswer($"Danh sách chờ {session.Name}:\n{string.Join("\n", lines)}{ownLine}", null, decision.Intent, aiCalled);
+    }
+
+    private static bool IsStandaloneWaitlistExplanation(string selector)
+    {
+        if (!HasAny(selector, "waitlist", "danh sach cho")) return false;
+        if (!HasAny(selector, "giai thich", "cach hoat dong", "hoat dong nhu nao", "chi tiet", "la gi", "huong dan")) return false;
+        return !HasAny(selector, "hien tai", "co danh sach", "ai dang", "xem", "trang thai", "du 18", "slot trong", "khi co slot");
     }
 
     private async Task<BotAnswer> HandleActionHistoryIntentAsync(
