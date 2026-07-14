@@ -226,6 +226,41 @@ public sealed record ZaloIncomingMessageEvent(
     bool MentionedBot,
     long SentAtUnixMs);
 
+public sealed record ZaloPollBoardEvent(
+    string AccountId,
+    string GroupId,
+    string EventType,
+    string? ActorId,
+    string? BoardType,
+    string? BoardId,
+    long OccurredAtUnixMs);
+
+public sealed record SessionWaitlistEntryResponse(
+    string Id,
+    string SessionId,
+    string ZaloUserId,
+    string DisplayName,
+    SessionWaitlistStatus Status,
+    int Position,
+    DateTimeOffset? InviteExpiresAt,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+public sealed record AddSessionWaitlistEntryRequest(string ZaloUserId, string DisplayName);
+
+public sealed record ZaloBotActionHistoryResponse(
+    string Id,
+    string SessionId,
+    string? ActorZaloUserId,
+    string ActorName,
+    string ActionType,
+    string Summary,
+    bool IsUndoable,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? UndoneAt,
+    string? UndoneByZaloUserId,
+    string? UndoFailure);
+
 public sealed record ZaloBridgeMention(string Uid, int Pos, int Len);
 
 public sealed record ZaloPollOptionResponse(

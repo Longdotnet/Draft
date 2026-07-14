@@ -18,6 +18,7 @@ public sealed class ZaloReminderService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     ZaloIntegrationService zaloIntegration,
+    SessionWaitlistService waitlists,
     AiAssistantService ai,
     IConfiguration configuration,
     ILogger<ZaloReminderService> logger)
@@ -27,6 +28,7 @@ public sealed class ZaloReminderService(
     public async Task<ReminderRunResult> SendDueRemindersAsync(CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow;
+        await waitlists.ProcessAllAsync(cancellationToken);
         await RefreshPollRostersAsync(now, cancellationToken);
         db.ChangeTracker.Clear();
         var naturalScheduleResult = await SendDueNaturalSchedulesAsync(now, cancellationToken);
@@ -471,6 +473,8 @@ public sealed class ZaloReminderService(
                 var result = await zaloIntegration.SyncLatestPollAsync(candidate.AdminUserId, candidate.Id);
                 if (!result.IsSuccess)
                     logger.LogDebug("Poll refresh skipped for session {SessionId}: {Reason}", candidate.Id, result.Error);
+                else
+                    await waitlists.ProcessVacanciesAsync(candidate.Id, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

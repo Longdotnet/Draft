@@ -9,6 +9,7 @@ import type {
   BridgeMention,
   BridgePoll,
   IncomingGroupMessageEvent,
+  PollBoardChangedEvent,
   SendGroupMessageRequest,
   StartListenerRequest,
   ZaloCredentials,
@@ -30,6 +31,7 @@ type MinimalZaloApi = {
   getGroupMembersInfo(ids: string[]): Promise<{ profiles?: Record<string, Record<string, unknown>> }>;
   listener: {
     on(event: "message", callback: (message: MinimalMessage) => unknown): void;
+    on(event: "group_event", callback: (event: MinimalGroupEvent) => unknown): void;
     on(event: "error", callback: (error: unknown) => unknown): void;
     on(event: "closed", callback: (code: number, reason: string) => unknown): void;
     start(options?: { retryOnClose?: boolean }): void;
@@ -61,12 +63,26 @@ type MinimalMessage = {
   };
 };
 
+type MinimalGroupEvent = {
+  type: string;
+  threadId: string;
+  isSelf: boolean;
+  data?: {
+    sourceId?: string;
+    creatorId?: string;
+    time?: string | number;
+    groupTopic?: Record<string, unknown> | null;
+    extraData?: Record<string, unknown> | null;
+  };
+};
+
 type MinimalQrEvent = {
   type: number;
   data: Record<string, unknown> | null;
 };
 
 const outgoingIdempotency = new Map<string, { expiresAt: number; result: Promise<{ sent: boolean; mock: boolean }> }>();
+const pendingBoardEvents = new Map<string, ReturnType<typeof setTimeout>>();
 
 type MinimalZaloClient = {
   login(credentials: ZaloCredentials): Promise<MinimalZaloApi>;
@@ -159,11 +175,15 @@ function rememberMessage(accountId: string, messageId: string): boolean {
   return true;
 }
 
-async function postIncomingMessage(listener: ActiveListener, event: IncomingGroupMessageEvent) {
+async function postWebhook(
+  listener: ActiveListener,
+  event: IncomingGroupMessageEvent | PollBoardChangedEvent,
+  webhookUrl = listener.webhookUrl,
+) {
   let lastError: unknown;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const response = await fetch(listener.webhookUrl, {
+      const response = await fetch(webhookUrl, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -183,6 +203,52 @@ async function postIncomingMessage(listener: ActiveListener, event: IncomingGrou
   throw lastError;
 }
 
+function pollWebhookUrl(messageWebhookUrl: string): string {
+  const parsed = new URL(messageWebhookUrl);
+  parsed.pathname = /\/events\/?$/.test(parsed.pathname)
+    ? parsed.pathname.replace(/\/events\/?$/, "/poll-events")
+    : `${parsed.pathname.replace(/\/$/, "")}/poll-events`;
+  return parsed.toString();
+}
+
+function readTopicValue(topic: Record<string, unknown> | null | undefined, ...keys: string[]): string | null {
+  if (!topic) return null;
+  for (const key of keys) {
+    const value = topic[key];
+    if (typeof value === "string" || typeof value === "number") return String(value);
+  }
+  return null;
+}
+
+function handleBoardEvent(accountId: string, listener: ActiveListener, event: MinimalGroupEvent) {
+  if (event.type !== "update_board" && event.type !== "remove_board") return;
+  const eventType: PollBoardChangedEvent["eventType"] = event.type;
+  const groupId = normalizeId(event.threadId);
+  if (!groupId || !listener.groupIds.has(groupId)) return;
+  const key = `${accountId}:${groupId}`;
+  const pending = pendingBoardEvents.get(key);
+  if (pending) clearTimeout(pending);
+  pendingBoardEvents.set(key, setTimeout(() => {
+    pendingBoardEvents.delete(key);
+    const topic = event.data?.groupTopic;
+    const rawTimestamp = Number(event.data?.time ?? Date.now());
+    const occurredAtUnixMs = Number.isFinite(rawTimestamp)
+      ? rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
+      : Date.now();
+    void postWebhook(listener, {
+      accountId,
+      groupId,
+      eventType,
+      actorId: normalizeMemberId(String(event.data?.sourceId ?? event.data?.creatorId ?? "")) || null,
+      boardType: readTopicValue(topic, "type", "topicType", "boardType"),
+      boardId: readTopicValue(topic, "topicId", "id", "pollId") ?? readTopicValue(event.data?.extraData, "topicId", "id", "pollId"),
+      occurredAtUnixMs,
+    }, pollWebhookUrl(listener.webhookUrl)).catch((error) =>
+      console.error(`[Zalo listener ${accountId}] Failed to forward poll board event:`, error),
+    );
+  }, 1_500));
+}
+
 async function handleIncomingMessage(accountId: string, listener: ActiveListener, message: MinimalMessage) {
   if (message.type !== ThreadType.Group || message.isSelf || typeof message.data.content !== "string") return;
   const groupId = normalizeId(message.threadId);
@@ -196,7 +262,7 @@ async function handleIncomingMessage(accountId: string, listener: ActiveListener
 
   const rawTimestamp = Number(message.data.ts ?? Date.now());
   const sentAtUnixMs = rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
-  await postIncomingMessage(listener, {
+  await postWebhook(listener, {
     accountId,
     botId: listener.botId,
     groupId,
@@ -261,6 +327,7 @@ export async function startListener(request: StartListenerRequest) {
       console.error(`[Zalo listener ${accountId}] Failed to forward message:`, error),
     );
   });
+  api.listener.on("group_event", (event) => handleBoardEvent(accountId, listener, event));
   api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
   api.listener.on("closed", (code, reason) => {
     if (activeListeners.get(accountId) === listener) activeListeners.delete(accountId);

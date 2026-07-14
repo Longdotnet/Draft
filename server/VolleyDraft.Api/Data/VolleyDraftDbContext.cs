@@ -25,6 +25,8 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<TeamPreferenceGroup> TeamPreferenceGroups => Set<TeamPreferenceGroup>();
     public DbSet<TeamPreferenceGroupPlayer> TeamPreferenceGroupPlayers => Set<TeamPreferenceGroupPlayer>();
     public DbSet<ZaloReminderSchedule> ZaloReminderSchedules => Set<ZaloReminderSchedule>();
+    public DbSet<SessionWaitlistEntry> SessionWaitlistEntries => Set<SessionWaitlistEntry>();
+    public DbSet<ZaloBotActionHistory> ZaloBotActionHistory => Set<ZaloBotActionHistory>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -180,6 +182,42 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.HasOne(schedule => schedule.Session)
                 .WithMany(session => session.ReminderSchedules)
                 .HasForeignKey(schedule => schedule.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SessionWaitlistEntry>(entity =>
+        {
+            entity.Property(entry => entry.ZaloUserId).HasMaxLength(100);
+            entity.Property(entry => entry.DisplayName).HasMaxLength(160);
+            entity.Property(entry => entry.Status).HasConversion<string>();
+            entity.HasIndex(entry => new { entry.SessionId, entry.ZaloUserId }).IsUnique();
+            entity.HasIndex(entry => new { entry.SessionId, entry.Status, entry.CreatedAt });
+            entity.HasIndex(entry => entry.InviteExpiresAt);
+            entity.HasOne(entry => entry.Session)
+                .WithMany(session => session.WaitlistEntries)
+                .HasForeignKey(entry => entry.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(entry => entry.SessionPlayer)
+                .WithMany()
+                .HasForeignKey(entry => entry.SessionPlayerId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<ZaloBotActionHistory>(entity =>
+        {
+            entity.Property(action => action.ActorZaloUserId).HasMaxLength(100);
+            entity.Property(action => action.ActorName).HasMaxLength(160);
+            entity.Property(action => action.ActionType).HasMaxLength(80);
+            entity.Property(action => action.Summary).HasMaxLength(1000);
+            entity.Property(action => action.BeforeHash).HasMaxLength(64);
+            entity.Property(action => action.AfterHash).HasMaxLength(64);
+            entity.Property(action => action.UndoneByZaloUserId).HasMaxLength(100);
+            entity.Property(action => action.UndoFailure).HasMaxLength(1000);
+            entity.HasIndex(action => new { action.SessionId, action.CreatedAt });
+            entity.HasIndex(action => new { action.SessionId, action.IsUndoable, action.UndoneAt });
+            entity.HasOne(action => action.Session)
+                .WithMany(session => session.BotActionHistory)
+                .HasForeignKey(action => action.SessionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

@@ -59,3 +59,13 @@ public enum ZaloConnectionStatus
     Invalid,
     Disconnected
 }
+
+public enum SessionWaitlistStatus
+{
+    Waiting,
+    Invited,
+    Accepted,
+    Declined,
+    Expired,
+    Cancelled
+}

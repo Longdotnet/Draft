@@ -63,11 +63,15 @@ builder.Services.AddScoped<ZaloBotImageService>();
 builder.Services.AddScoped<ZaloTeamCardService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
+builder.Services.AddScoped<SessionWaitlistService>();
+builder.Services.AddScoped<ZaloBotActionHistoryService>();
 builder.Services.AddSingleton<ZaloSchedulerTrigger>();
+builder.Services.AddSingleton<ZaloPollEventQueue>();
 builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddHostedService<ZaloSchedulerWorker>();
+builder.Services.AddHostedService<ZaloPollEventWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
@@ -178,6 +182,20 @@ app.MapPost("/api/internal/zalo/events", async (
     }
     await service.HandleIncomingAsync(incoming, cancellationToken);
     return Results.Ok(new { accepted = true });
+});
+
+app.MapPost("/api/internal/zalo/poll-events", (
+    HttpContext httpContext,
+    ZaloPollBoardEvent incoming,
+    ZaloPollEventQueue queue,
+    IConfiguration configuration) =>
+{
+    var expectedKey = configuration["Zalo:WebhookKey"]
+        ?? configuration["Zalo:BridgeInternalKey"]
+        ?? "development-zalo-bridge-key";
+    if (httpContext.Request.Headers["x-zalo-bridge-key"] != expectedKey)
+        return Results.Unauthorized();
+    return Results.Accepted(value: new { accepted = queue.TryEnqueue(incoming) });
 });
 
 var zalo = app.MapGroup("/api/zalo").RequireAuthorization();
@@ -453,6 +471,70 @@ sessions.MapPost("/{sessionId}/zalo-import", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.ConfirmImportAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/waitlist", async (
+    HttpContext httpContext,
+    string sessionId,
+    SessionWaitlistService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetAsync(userId, sessionId, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/waitlist", async (
+    HttpContext httpContext,
+    string sessionId,
+    AddSessionWaitlistEntryRequest request,
+    SessionWaitlistService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    var owned = await service.GetAsync(userId, sessionId, cancellationToken);
+    return !owned.IsSuccess
+        ? owned.ToHttpResult()
+        : (await service.JoinAsync(sessionId, request.ZaloUserId, request.DisplayName,
+            userId, "Admin website", cancellationToken)).ToHttpResult();
+});
+sessions.MapDelete("/{sessionId}/waitlist/{zaloUserId}", async (
+    HttpContext httpContext,
+    string sessionId,
+    string zaloUserId,
+    SessionWaitlistService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    var owned = await service.GetAsync(userId, sessionId, cancellationToken);
+    return !owned.IsSuccess
+        ? owned.ToHttpResult()
+        : (await service.LeaveAsync(sessionId, zaloUserId, userId, "Admin website", cancellationToken)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/action-history", async (
+    HttpContext httpContext,
+    string sessionId,
+    int? count,
+    ZaloBotActionHistoryService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetHistoryAsync(userId, sessionId, count ?? 10, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/action-history/{actionId}/undo", async (
+    HttpContext httpContext,
+    string sessionId,
+    string actionId,
+    ZaloBotActionHistoryService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UndoAsync(userId, sessionId, actionId, userId, cancellationToken)).ToHttpResult();
 });
 sessions.MapPost("/{sessionId}/players", async (
     HttpContext httpContext,

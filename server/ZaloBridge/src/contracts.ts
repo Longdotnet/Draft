@@ -82,3 +82,13 @@ export type IncomingGroupMessageEvent = {
   mentionedBot: boolean;
   sentAtUnixMs: number;
 };
+
+export type PollBoardChangedEvent = {
+  accountId: string;
+  groupId: string;
+  eventType: "update_board" | "remove_board";
+  actorId: string | null;
+  boardType: string | null;
+  boardId: string | null;
+  occurredAtUnixMs: number;
+};

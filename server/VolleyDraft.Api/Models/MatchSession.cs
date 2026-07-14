@@ -54,4 +54,6 @@ public sealed class MatchSession
     public List<TeamPreferenceGroup> TeamPreferenceGroups { get; set; } = [];
     public List<PollImport> PollImports { get; set; } = [];
     public List<ZaloReminderSchedule> ReminderSchedules { get; set; } = [];
+    public List<SessionWaitlistEntry> WaitlistEntries { get; set; } = [];
+    public List<ZaloBotActionHistory> BotActionHistory { get; set; } = [];
 }

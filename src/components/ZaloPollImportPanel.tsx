@@ -1,5 +1,5 @@
 import { type ChangeEvent, useEffect, useMemo, useState } from "react";
-import { Bell, Bot, CheckCircle2, Link2, MapPin, QrCode, RefreshCw, Save, UserPlus, Vote } from "lucide-react";
+import { Bell, Bot, CheckCircle2, History, Link2, ListOrdered, MapPin, QrCode, RefreshCw, Save, Undo2, UserPlus, Vote } from "lucide-react";
 import {
   apiFetch,
   apiUpload,
@@ -8,10 +8,12 @@ import {
   type DbRole,
   type PagedResponse,
   type SessionResponse,
+  type SessionWaitlistEntryResponse,
   type StartZaloQrLoginResponse,
   type ZaloConnectionResponse,
   type ZaloBotSettingsResponse,
   type ZaloBotImageAssetResponse,
+  type ZaloBotActionHistoryResponse,
   type ZaloBotLearnedRuleResponse,
   type ZaloBotOperatorCandidateResponse,
   type ZaloBotRuleStatus,
@@ -77,6 +79,8 @@ export function ZaloPollImportPanel({
   const [botImages, setBotImages] = useState<ZaloBotImageAssetResponse[]>([]);
   const [botRules, setBotRules] = useState<ZaloBotLearnedRuleResponse[]>([]);
   const [botOperatorCandidates, setBotOperatorCandidates] = useState<ZaloBotOperatorCandidateResponse[]>([]);
+  const [waitlistEntries, setWaitlistEntries] = useState<SessionWaitlistEntryResponse[]>([]);
+  const [actionHistory, setActionHistory] = useState<ZaloBotActionHistoryResponse[]>([]);
   const [botRulePage, setBotRulePage] = useState(1);
   const [botRuleTotalPages, setBotRuleTotalPages] = useState(0);
   const [botRuleTotalItems, setBotRuleTotalItems] = useState(0);
@@ -133,6 +137,7 @@ export function ZaloPollImportPanel({
     setBotRulePage(1);
     void loadBotRules(1);
     void loadBotOperatorSettings();
+    void loadAutomationState();
   }, [token, session.id, session.zaloGroupId]);
 
   useEffect(() => {
@@ -239,6 +244,30 @@ export function ZaloPollImportPanel({
       lastReminderError: settings.lastReminderError,
     }));
     setBotOperatorCandidates(candidates);
+  }
+
+  async function loadAutomationState() {
+    const result = await run(() => Promise.all([
+      apiFetch<SessionWaitlistEntryResponse[]>(`/sessions/${session.id}/waitlist`, { token }),
+      apiFetch<ZaloBotActionHistoryResponse[]>(`/sessions/${session.id}/action-history?count=8`, { token }),
+    ]));
+    if (!result) return;
+    setWaitlistEntries(result[0]);
+    setActionHistory(result[1]);
+  }
+
+  async function undoAction(action: ZaloBotActionHistoryResponse) {
+    if (!window.confirm(`Khôi phục dữ liệu trước thao tác “${action.summary}”? Tin nhắn Zalo sẽ không bị thu hồi.`)) return;
+    const result = await run(() =>
+      apiFetch<ZaloBotActionHistoryResponse>(`/sessions/${session.id}/action-history/${action.id}/undo`, {
+        method: "POST",
+        token,
+      }),
+    );
+    if (!result) return;
+    setMessage(`Đã hoàn tác dữ liệu: ${result.summary}`);
+    await onImported();
+    await loadAutomationState();
   }
 
   function toggleBotOperator(zaloUserId: string, enabled: boolean) {
@@ -750,6 +779,55 @@ export function ZaloPollImportPanel({
           <code>@bot cập nhật A: nam, công, trung bình</code>
           <code>@bot +1 cho bạn của A</code>
           <code>@bot A muốn share slot với B</code>
+          <code>@bot cho tui vào danh sách chờ T6</code>
+          <code>@bot xem waitlist T6</code>
+          <code>@bot undo thao tác vừa rồi</code>
+        </div>
+        <div className="zalo-automation-grid">
+          <section className="zalo-rule-review">
+            <div className="action-row">
+              <strong><ListOrdered size={16} aria-hidden="true" /> Danh sách chờ</strong>
+              <button className="button-secondary" type="button" onClick={() => void loadAutomationState()} disabled={isBusy}>
+                <RefreshCw size={15} aria-hidden="true" /> Làm mới
+              </button>
+            </div>
+            <small className="field-help">Khi poll có người rút, listener đồng bộ ngay và gọi người chờ theo thứ tự. Scheduler vẫn quét dự phòng nếu Render từng ngủ.</small>
+            {waitlistEntries.length === 0 ? (
+              <p className="muted">Chưa có ai trong danh sách chờ.</p>
+            ) : waitlistEntries.map((entry) => (
+              <div className="zalo-rule-card" key={entry.id}>
+                <div><strong>{entry.position > 0 ? `${entry.position}. ` : ""}{entry.displayName}</strong></div>
+                <small className="muted">
+                  {entry.status === "Waiting" && "Đang chờ"}
+                  {entry.status === "Invited" && `Đang giữ slot${entry.inviteExpiresAt ? ` tới ${new Date(entry.inviteExpiresAt).toLocaleString("vi-VN")}` : ""}`}
+                  {entry.status === "Accepted" && "Đã nhận slot"}
+                </small>
+              </div>
+            ))}
+          </section>
+
+          <section className="zalo-rule-review">
+            <div className="action-row">
+              <strong><History size={16} aria-hidden="true" /> Lịch sử dữ liệu & undo</strong>
+            </div>
+            <small className="field-help">Undo khôi phục dữ liệu backend/web. Nếu có thay đổi mới hơn, hệ thống sẽ chặn để không ghi đè.</small>
+            {actionHistory.length === 0 ? (
+              <p className="muted">Chưa có thao tác bot nào được ghi lại.</p>
+            ) : actionHistory.map((action) => (
+              <div className="zalo-rule-card" key={action.id}>
+                <div><strong>{action.summary}</strong></div>
+                <small className="muted">{action.actorName} · {new Date(action.createdAt).toLocaleString("vi-VN")}{action.undoneAt ? " · Đã hoàn tác" : ""}</small>
+                {action.undoFailure && <small className="error-text">{action.undoFailure}</small>}
+                {action.isUndoable && !action.undoneAt && (
+                  <div className="action-row">
+                    <button className="button-secondary" type="button" onClick={() => void undoAction(action)} disabled={isBusy}>
+                      <Undo2 size={15} aria-hidden="true" /> Hoàn tác dữ liệu
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </section>
         </div>
         <div className="zalo-rule-review">
           <div className="action-row">

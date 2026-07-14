@@ -1277,6 +1277,27 @@
   background: #f8fafc;
 }
 
+.zalo-automation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.zalo-automation-grid .zalo-rule-review {
+  min-width: 0;
+}
+
+.zalo-automation-grid strong svg {
+  margin-right: 0.35rem;
+  vertical-align: -0.16rem;
+}
+
+@media (max-width: 760px) {
+  .zalo-automation-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .zalo-rule-card {
   display: grid;
   gap: 0.5rem;

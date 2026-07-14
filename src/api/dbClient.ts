@@ -96,6 +96,34 @@ export type ZaloBotLearnedRuleResponse = {
   reviewNote: string | null;
 };
 
+export type SessionWaitlistStatus = "Waiting" | "Invited" | "Accepted" | "Declined" | "Expired" | "Cancelled";
+
+export type SessionWaitlistEntryResponse = {
+  id: string;
+  sessionId: string;
+  zaloUserId: string;
+  displayName: string;
+  status: SessionWaitlistStatus;
+  position: number;
+  inviteExpiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ZaloBotActionHistoryResponse = {
+  id: string;
+  sessionId: string;
+  actorZaloUserId: string | null;
+  actorName: string;
+  actionType: string;
+  summary: string;
+  isUndoable: boolean;
+  createdAt: string;
+  undoneAt: string | null;
+  undoneByZaloUserId: string | null;
+  undoFailure: string | null;
+};
+
 export type PublicSessionSummaryResponse = {
   id: string;
   name: string;

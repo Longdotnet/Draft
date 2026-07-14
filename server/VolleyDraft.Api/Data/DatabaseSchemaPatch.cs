@@ -59,6 +59,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloBotConversationTables(db);
             await EnsureSqliteZaloBotImageTables(db);
             await EnsureSqliteZaloReminderScheduleTables(db);
+            await EnsureSqliteWaitlistAndActionHistoryTables(db);
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" INTEGER NOT NULL DEFAULT 0");
@@ -128,6 +129,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloBotConversationTables(db);
             await EnsurePostgresZaloBotImageTables(db);
             await EnsurePostgresZaloReminderScheduleTables(db);
+            await EnsurePostgresWaitlistAndActionHistoryTables(db);
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" bigint NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" integer NOT NULL DEFAULT 0");
@@ -777,5 +779,119 @@ public static class DatabaseSchemaPatch
             """CREATE INDEX IF NOT EXISTS "IX_ZaloReminderSchedules_Enabled_NextRunAt" ON "ZaloReminderSchedules" ("Enabled", "NextRunAt");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloReminderSchedules_SessionId" ON "ZaloReminderSchedules" ("SessionId");""");
+    }
+
+    private static async Task EnsureSqliteWaitlistAndActionHistoryTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "SessionWaitlistEntries" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_SessionWaitlistEntries" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "ZaloUserId" TEXT NOT NULL,
+                "DisplayName" TEXT NOT NULL,
+                "Status" TEXT NOT NULL DEFAULT 'Waiting',
+                "SessionPlayerId" TEXT NULL,
+                "InvitedAt" TEXT NULL,
+                "InviteExpiresAt" TEXT NULL,
+                "AcceptedAt" TEXT NULL,
+                "LastNotifiedAt" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                "Version" INTEGER NOT NULL DEFAULT 0,
+                CONSTRAINT "FK_SessionWaitlistEntries_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_SessionWaitlistEntries_SessionPlayers_SessionPlayerId"
+                    FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE SET NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_SessionWaitlistEntries_SessionId_ZaloUserId" ON "SessionWaitlistEntries" ("SessionId", "ZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_SessionWaitlistEntries_SessionId_Status_CreatedAt" ON "SessionWaitlistEntries" ("SessionId", "Status", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_SessionWaitlistEntries_InviteExpiresAt" ON "SessionWaitlistEntries" ("InviteExpiresAt");""");
+
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotActionHistory" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloBotActionHistory" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "ActorZaloUserId" TEXT NULL,
+                "ActorName" TEXT NOT NULL,
+                "ActionType" TEXT NOT NULL,
+                "Summary" TEXT NOT NULL,
+                "BeforeStateJson" TEXT NOT NULL,
+                "AfterStateJson" TEXT NOT NULL,
+                "BeforeHash" TEXT NOT NULL,
+                "AfterHash" TEXT NOT NULL,
+                "IsUndoable" INTEGER NOT NULL DEFAULT 1,
+                "CreatedAt" TEXT NOT NULL,
+                "UndoneAt" TEXT NULL,
+                "UndoneByZaloUserId" TEXT NULL,
+                "UndoFailure" TEXT NULL,
+                CONSTRAINT "FK_ZaloBotActionHistory_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotActionHistory_SessionId_CreatedAt" ON "ZaloBotActionHistory" ("SessionId", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotActionHistory_SessionId_IsUndoable_UndoneAt" ON "ZaloBotActionHistory" ("SessionId", "IsUndoable", "UndoneAt");""");
+    }
+
+    private static async Task EnsurePostgresWaitlistAndActionHistoryTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "SessionWaitlistEntries" (
+                "Id" text NOT NULL CONSTRAINT "PK_SessionWaitlistEntries" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "ZaloUserId" text NOT NULL,
+                "DisplayName" text NOT NULL,
+                "Status" text NOT NULL DEFAULT 'Waiting',
+                "SessionPlayerId" text NULL,
+                "InvitedAt" timestamp with time zone NULL,
+                "InviteExpiresAt" timestamp with time zone NULL,
+                "AcceptedAt" timestamp with time zone NULL,
+                "LastNotifiedAt" timestamp with time zone NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "Version" integer NOT NULL DEFAULT 0,
+                CONSTRAINT "FK_SessionWaitlistEntries_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_SessionWaitlistEntries_SessionPlayers_SessionPlayerId"
+                    FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE SET NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_SessionWaitlistEntries_SessionId_ZaloUserId" ON "SessionWaitlistEntries" ("SessionId", "ZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_SessionWaitlistEntries_SessionId_Status_CreatedAt" ON "SessionWaitlistEntries" ("SessionId", "Status", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_SessionWaitlistEntries_InviteExpiresAt" ON "SessionWaitlistEntries" ("InviteExpiresAt");""");
+
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloBotActionHistory" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloBotActionHistory" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "ActorZaloUserId" text NULL,
+                "ActorName" text NOT NULL,
+                "ActionType" text NOT NULL,
+                "Summary" text NOT NULL,
+                "BeforeStateJson" text NOT NULL,
+                "AfterStateJson" text NOT NULL,
+                "BeforeHash" text NOT NULL,
+                "AfterHash" text NOT NULL,
+                "IsUndoable" boolean NOT NULL DEFAULT TRUE,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UndoneAt" timestamp with time zone NULL,
+                "UndoneByZaloUserId" text NULL,
+                "UndoFailure" text NULL,
+                CONSTRAINT "FK_ZaloBotActionHistory_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotActionHistory_SessionId_CreatedAt" ON "ZaloBotActionHistory" ("SessionId", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloBotActionHistory_SessionId_IsUndoable_UndoneAt" ON "ZaloBotActionHistory" ("SessionId", "IsUndoable", "UndoneAt");""");
     }
 }
