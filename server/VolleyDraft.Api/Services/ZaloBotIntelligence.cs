@@ -32,6 +32,7 @@ public enum ZaloBotIntent
     ShareSlot,
     TeamImage,
     ScheduleReminder,
+    ScheduleReminderConfirm,
     ReminderStatus,
     CancelReminder,
     GeneralChat
@@ -124,13 +125,18 @@ public static class ZaloBotIntelligence
     public static bool IsCancel(string value)
     {
         var normalized = Normalize(value);
-        return normalized is "huy" or "cancel" or "thoi" or "bo qua" or "khong can nua";
+        return normalized is "huy" or "cancel" or "thoi" or "bo qua" or "khong can nua" ||
+               normalized.StartsWith("huy ", StringComparison.Ordinal) ||
+               normalized.StartsWith("cancel ", StringComparison.Ordinal);
     }
 
     public static bool IsConfirmation(string value)
     {
         var normalized = Normalize(value);
-        return normalized is "xac nhan" or "xac nhan draft" or "dong y" or "ok chay" or "chay di" or "thuc hien di" ||
+        return normalized is "xac nhan" or "xac nhan draft" or "dong y" or "ok chay" or "chay di" or "thuc hien di" or
+               "duoc" or "ok" or "chot" or "lam di" or "tao di" or "trien khai" ||
+               normalized.StartsWith("chot ", StringComparison.Ordinal) ||
+               normalized.StartsWith("dong y ", StringComparison.Ordinal) ||
                normalized.StartsWith("xac nhan draft ", StringComparison.Ordinal);
     }
 

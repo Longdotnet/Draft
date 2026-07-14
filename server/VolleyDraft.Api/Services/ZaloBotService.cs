@@ -411,6 +411,33 @@ public sealed class ZaloBotService(
             return new BotAnswer("Nhóm này chưa có trận nào đang bật bot. Bạn nhờ admin kiểm tra cấu hình nhé.", null);
         }
 
+        // Resolve an outstanding confirmation before parsing the new text as a
+        // fresh command. This is what makes "xác nhận" execute the exact
+        // previewed reminder instead of re-parsing the word "xác nhận".
+        var pending = await ResolvePendingConversationAsync(activeConnectionId, groupId, incoming.SenderId, normalizedQuestion, sessions, cancellationToken);
+        if (pending.Cancelled)
+        {
+            return new BotAnswer("Đã huỷ yêu cầu đang chờ. Chưa có thay đổi nào được thực hiện.", null, ZaloBotIntent.GeneralChat);
+        }
+        if (pending.ReminderCommand is not null && pending.TargetSessions is { Count: > 0 })
+        {
+            return await HandleReminderCommandAsync(
+                pending.ReminderCommand,
+                sessions,
+                normalizedQuestion,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                true,
+                true,
+                pending.TargetSessions);
+        }
+        if (pending.Clarification is not null)
+        {
+            return new BotAnswer(pending.Clarification, null, ZaloBotIntent.Unknown);
+        }
+
         if (ZaloBotIntelligence.TryParseReminderCommand(question, out var reminderCommand))
         {
             return await HandleReminderCommandAsync(
@@ -435,16 +462,6 @@ public sealed class ZaloBotService(
                 naturalTrigger,
                 naturalAnswer,
                 cancellationToken);
-        }
-
-        var pending = await ResolvePendingConversationAsync(activeConnectionId, groupId, incoming.SenderId, normalizedQuestion, sessions, cancellationToken);
-        if (pending.Cancelled)
-        {
-            return new BotAnswer("Đã huỷ câu hỏi đang chờ. Bạn có thể hỏi câu khác nhé.", null, ZaloBotIntent.GeneralChat);
-        }
-        if (pending.Clarification is not null)
-        {
-            return new BotAnswer(pending.Clarification, null, ZaloBotIntent.Unknown);
         }
 
         ZaloIntentDecision decision;
@@ -899,6 +916,52 @@ public sealed class ZaloBotService(
                     ? "Đang chờ xác nhận draft lại. Gõ @bot xác nhận draft lại để chạy hoặc @bot huỷ."
                     : "Đang chờ xác nhận tự draft. Gõ @bot xác nhận draft để chạy hoặc @bot huỷ.");
         }
+        if (state.PendingIntent == ZaloBotIntent.ScheduleReminderConfirm.ToString())
+        {
+            ReminderConfirmationPayload? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<ReminderConfirmationPayload>(state.PendingPayloadJson);
+            }
+            catch (JsonException)
+            {
+                payload = null;
+            }
+            var targetSessions = payload is null
+                ? []
+                : sessions.Where(session => payload.SessionIds.Contains(session.Id, StringComparer.Ordinal)).ToList();
+            if (payload is not null && targetSessions.Count > 0 && ZaloBotIntelligence.IsConfirmation(normalizedQuestion))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.ScheduleReminderConfirm,
+                    targetSessions[0],
+                    null,
+                    payload.Command,
+                    targetSessions);
+            }
+            var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+            if (ZaloBotIntelligence.TryGetExactCommand(normalizedQuestion, out _) ||
+                newIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+            var action = payload?.Command.Kind switch
+            {
+                ZaloReminderCommandKind.Update => "cập nhật lịch nhắc",
+                ZaloReminderCommandKind.Disable => "tắt lịch nhắc",
+                _ => "tạo lịch nhắc"
+            };
+            return new PendingResolution(
+                false,
+                null,
+                null,
+                $"Mình đang chờ xác nhận để {action}. Gõ @bot xác nhận để thực hiện hoặc @bot huỷ.");
+        }
         if (ZaloBotIntelligence.TryGetExactCommand(normalizedQuestion, out _) ||
             ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent == ZaloBotIntent.Help)
         {
@@ -1010,6 +1073,41 @@ public sealed class ZaloBotService(
         state.PreviousCommand = pendingIntent == ZaloBotIntent.RedraftConfirm
             ? ZaloBotIntent.Redraft.ToString()
             : ZaloBotIntent.AutoDraft.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveReminderConfirmationAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        IReadOnlyList<SessionSnapshot> targets,
+        ZaloReminderCommand command,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.ScheduleReminderConfirm.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new ReminderConfirmationPayload(
+            targets.Select(target => target.Id).ToList(),
+            command));
+        state.PreviousCommand = ZaloBotIntent.ScheduleReminder.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
@@ -1522,7 +1620,9 @@ public sealed class ZaloBotService(
         string groupId,
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken,
-        bool aiCalled)
+        bool aiCalled,
+        bool confirmed = false,
+        IReadOnlyList<SessionSnapshot>? forcedTargets = null)
     {
         await db.ZaloBotConversationStates
             .Where(state => state.ZaloConnectionId == connectionId &&
@@ -1544,8 +1644,10 @@ public sealed class ZaloBotService(
             return new BotAnswer("Nhóm chưa có trận sắp tới có thời gian cụ thể để lên lịch nhắc.", null, intent, aiCalled);
 
         var originalReminderQuestion = ExtractQuestion(incoming);
-        var deterministicCommand = ZaloNaturalCommandParser.EnrichReminder(originalReminderQuestion, command);
-        if (ai.IsConfigured && command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.Update or ZaloReminderCommandKind.TriggerNow)
+        var deterministicCommand = confirmed
+            ? command
+            : ZaloNaturalCommandParser.EnrichReminder(originalReminderQuestion, command);
+        if (!confirmed && ai.IsConfigured && command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.Update or ZaloReminderCommandKind.TriggerNow)
         {
             var extracted = await ai.ParseReminderCommandAsync(
                 new ZaloNaturalReminderContext(
@@ -1567,12 +1669,17 @@ public sealed class ZaloBotService(
                         : extracted.DelayMinutes ?? deterministicCommand.DelayMinutes,
                     ExplicitLocalDate = extracted.ExplicitLocalDate ?? deterministicCommand.ExplicitLocalDate,
                     UseSessionDate = extracted.UseSessionDate || deterministicCommand.UseSessionDate,
-                    // Keep the deterministic extraction when it found a clean message. AI
-                    // sometimes echoes the scheduling preamble into customMessage.
-                    CustomMessage = deterministicCommand.CustomMessage ?? extracted.CustomMessage,
-                    Audience = extracted.Audience == ZaloReminderAudience.All
-                        ? deterministicCommand.Audience
-                        : extracted.Audience,
+                    // Prefer the AI's final wording, but reject a response that merely
+                    // repeats the scheduling instruction. Quoted text remains a safe fallback.
+                    CustomMessage = SelectReminderMessage(
+                        extracted.CustomMessage,
+                        deterministicCommand.CustomMessage,
+                        originalReminderQuestion),
+                    Audience = HasExplicitAllAudience(originalReminderQuestion)
+                        ? ZaloReminderAudience.All
+                        : extracted.Audience == ZaloReminderAudience.All
+                            ? deterministicCommand.Audience
+                            : extracted.Audience,
                     OnlyIfMissingSlots = extracted.OnlyIfMissingSlots || deterministicCommand.OnlyIfMissingSlots,
                     SessionReferences = (extracted.SessionReferences ?? [])
                         .Concat(deterministicCommand.SessionReferences ?? [])
@@ -1586,17 +1693,29 @@ public sealed class ZaloBotService(
                 command = deterministicCommand;
             }
         }
-        else
+        else if (!confirmed)
         {
             command = deterministicCommand;
+        }
+        if (!confirmed &&
+            command.Kind == ZaloReminderCommandKind.Update &&
+            !HasExplicitReminderMessageChange(originalReminderQuestion))
+        {
+            command = command with { CustomMessage = null };
         }
         normalizedQuestion = NormalizeText(string.Join(' ', new[] { normalizedQuestion }
             .Concat(command.SessionReferences ?? [])
             .Where(value => !string.IsNullOrWhiteSpace(value))));
 
         List<SessionSnapshot> targets;
-        var hasExplicitSelector = HasExplicitSessionSelector(sessions, normalizedQuestion);
-        if (hasExplicitSelector)
+        var hasForcedTargets = forcedTargets is not null;
+        var hasExplicitSelector = hasForcedTargets || HasExplicitSessionSelector(sessions, normalizedQuestion);
+        if (hasForcedTargets)
+        {
+            var forcedIds = forcedTargets!.Select(session => session.Id).ToHashSet(StringComparer.Ordinal);
+            targets = upcoming.Where(session => forcedIds.Contains(session.Id)).ToList();
+        }
+        else if (hasExplicitSelector)
         {
             targets = upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList();
             if (targets.Count == 0)
@@ -1620,7 +1739,7 @@ public sealed class ZaloBotService(
         {
             targets = upcoming;
         }
-        if (!hasExplicitSelector &&
+        if (!hasForcedTargets && !hasExplicitSelector &&
             (command.Kind == ZaloReminderCommandKind.TriggerNow ||
              command.Kind == ZaloReminderCommandKind.Schedule && !command.Repeats))
         {
@@ -1688,6 +1807,24 @@ public sealed class ZaloBotService(
         {
             var denial = await GetOperatorDenialAsync(target, incoming.SenderId, intent, aiCalled);
             if (denial is not null) return denial;
+        }
+
+        if (!confirmed &&
+            configuration.GetValue("ZaloBot:MultiReminderEnabled", true) &&
+            command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.Update or ZaloReminderCommandKind.Disable)
+        {
+            await SaveReminderConfirmationAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                targets,
+                command,
+                cancellationToken);
+            return new BotAnswer(
+                BuildReminderConfirmation(command, targets, now),
+                null,
+                intent,
+                aiCalled);
         }
 
         if (configuration.GetValue("ZaloBot:MultiReminderEnabled", true))
@@ -2686,6 +2823,90 @@ public sealed class ZaloBotService(
         return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
     }
 
+    private static string? SelectReminderMessage(
+        string? aiMessage,
+        string? deterministicMessage,
+        string originalQuestion)
+    {
+        foreach (var candidate in new[] { aiMessage, deterministicMessage })
+        {
+            var cleaned = Clean(candidate, 2000);
+            if (string.IsNullOrWhiteSpace(cleaned)) continue;
+            var normalized = ZaloBotIntelligence.Normalize(cleaned);
+            if (normalized.Length < 2 || normalized == ZaloBotIntelligence.Normalize(originalQuestion)) continue;
+            if (Regex.IsMatch(
+                    normalized,
+                    @"(?:tao|dat|hen|len)\s+lich|(?:tag|nhac)\s+(?:moi\s+nguoi|thanh\s+vien)|ngay\s+mai.*\b(?:[0-2]?\d\s*h|gio)\b",
+                    RegexOptions.CultureInvariant))
+                continue;
+            return cleaned.Trim(' ', ',', '.', ':', ';', '"', '\'', '“', '”');
+        }
+        return null;
+    }
+
+    private static bool HasExplicitAllAudience(string question)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(question);
+        return Regex.IsMatch(
+            normalized,
+            @"(?:moi\s+nguoi|ca\s+nhom|moi\s+thanh\s+vien|toan\s+bo|tat\s+ca|nguoi\s+trong\s+nhom)",
+            RegexOptions.CultureInvariant);
+    }
+
+    private static bool HasExplicitReminderMessageChange(string question) =>
+        Regex.IsMatch(
+            ZaloBotIntelligence.Normalize(question),
+            @"(?:doi|thay|sua|cap\s+nhat)\s+(?:lai\s+)?(?:noi\s+dung|tin\s+nhan)|noi\s+dung\s+(?:thanh|la)",
+            RegexOptions.CultureInvariant);
+
+    private static string BuildReminderConfirmation(
+        ZaloReminderCommand command,
+        IReadOnlyList<SessionSnapshot> targets,
+        DateTimeOffset now)
+    {
+        var operation = command.Kind switch
+        {
+            ZaloReminderCommandKind.Update => "cập nhật",
+            ZaloReminderCommandKind.Disable => "tắt",
+            _ => "tạo"
+        };
+        var audience = command.Audience == ZaloReminderAudience.Roster
+            ? "những người đã vote hoặc share slot"
+            : "cả nhóm (@all)";
+        var targetLines = targets.Select(target =>
+        {
+            var dueAt = command.Kind == ZaloReminderCommandKind.Disable
+                ? (DateTimeOffset?)null
+                : ComputeReminderDueAt(command, target, now);
+            var timing = dueAt is null
+                ? "giữ nguyên thời gian hiện tại"
+                : FormatVietnamTime(dueAt.Value);
+            return $"- {target.Name}: {timing}";
+        });
+        var frequency = command.Kind == ZaloReminderCommandKind.Disable
+            ? "Lịch sẽ không gửi thêm nữa."
+            : command.Kind == ZaloReminderCommandKind.Update && command.DelayMinutes is null
+                ? "Giữ nguyên tần suất hiện tại."
+            : command.Repeats && command.DelayMinutes is not null
+                ? $"Sau lần đầu, lặp lại mỗi {FormatDuration(command.DelayMinutes.Value)}."
+                : "Chỉ gửi một lần.";
+        var content = command.Kind == ZaloReminderCommandKind.Update && string.IsNullOrWhiteSpace(command.CustomMessage)
+            ? "Giữ nguyên nội dung hiện tại."
+            : string.IsNullOrWhiteSpace(command.CustomMessage)
+                ? "Bot sẽ tự soạn lời nhắc phù hợp với mục đích của bạn và dữ liệu trận."
+            : $"Nội dung dự kiến: “{command.CustomMessage.Trim()}”";
+        var condition = command.Kind == ZaloReminderCommandKind.Disable
+            ? string.Empty
+            : command.Kind == ZaloReminderCommandKind.Update
+                ? " Giữ nguyên điều kiện gửi hiện tại."
+            : command.OnlyIfMissingSlots
+                ? " Chỉ gửi nếu trận vẫn còn thiếu slot."
+                : "";
+        return $"Mình hiểu bạn muốn {operation} lịch nhắc:\n" +
+               string.Join("\n", targetLines) +
+               $"\nGửi cho: {audience}.\n{content}\n{frequency}{condition}\n\nGõ @bot xác nhận để thực hiện hoặc @bot huỷ. Chưa có thay đổi nào được lưu.";
+    }
+
     private static ZaloBotSettingsResponse ToSettings(MatchSession session) => new(
         session.Id,
         session.StartTime,
@@ -2740,10 +2961,19 @@ public sealed class ZaloBotService(
         bool AiCalled = false,
         bool TextGeneratedByAi = false);
     private sealed record SessionSelection(SessionSnapshot? Session, string? Clarification);
-    private sealed record PendingResolution(bool Cancelled, ZaloBotIntent? Intent, SessionSnapshot? Session, string? Clarification)
+    private sealed record PendingResolution(
+        bool Cancelled,
+        ZaloBotIntent? Intent,
+        SessionSnapshot? Session,
+        string? Clarification,
+        ZaloReminderCommand? ReminderCommand = null,
+        IReadOnlyList<SessionSnapshot>? TargetSessions = null)
     {
         public static PendingResolution None { get; } = new(false, null, null, null);
     }
+    private sealed record ReminderConfirmationPayload(
+        IReadOnlyList<string> SessionIds,
+        ZaloReminderCommand Command);
     private sealed record PlayerProfileValues(PlayerGender? Gender, PlayerRole? Role, PlayerLevel? Level);
     private sealed record SessionSnapshot(
         string Id,

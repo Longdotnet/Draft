@@ -97,6 +97,32 @@ public sealed class ZaloNaturalCommandTests
     }
 
     [Fact]
+    public void Reminder_parser_targets_participants_and_not_the_whole_group()
+    {
+        var command = ZaloNaturalCommandParser.EnrichReminder(
+            "tạo lịch nhắc ngày mai T4 5h chiều, tag thành viên đã tham gia vào ngày đó thôi",
+            new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, null, false),
+            new DateTimeOffset(2026, 7, 14, 8, 0, 0, TimeSpan.FromHours(7)));
+
+        Assert.Equal(ZaloReminderAudience.Roster, command.Audience);
+        Assert.Equal(new TimeOnly(17, 0), command.LocalTime);
+        Assert.Equal(new DateOnly(2026, 7, 15), command.ExplicitLocalDate);
+    }
+
+    [Fact]
+    public void Reminder_parser_targets_the_whole_group_when_user_says_everyone()
+    {
+        var command = ZaloNaturalCommandParser.EnrichReminder(
+            "đặt scheduler cứ cách 6h tag mỗi người trong nhóm để vote thứ 6",
+            new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, 360, true),
+            new DateTimeOffset(2026, 7, 14, 8, 0, 0, TimeSpan.FromHours(7)));
+
+        Assert.Equal(ZaloReminderAudience.All, command.Audience);
+        Assert.True(command.Repeats);
+        Assert.Equal(360, command.DelayMinutes);
+    }
+
+    [Fact]
     public void Share_parser_requires_two_names_for_plus_two()
     {
         Assert.True(ZaloNaturalCommandParser.TryParseShareSlot(

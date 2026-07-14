@@ -59,6 +59,23 @@ public sealed class ZaloBotIntelligenceTests
         Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
     }
 
+    [Theory]
+    [InlineData("xác nhận")]
+    [InlineData("đồng ý")]
+    [InlineData("chốt đi")]
+    public void Reminder_confirmation_accepts_natural_acknowledgements(string input)
+    {
+        Assert.True(ZaloBotIntelligence.IsConfirmation(input));
+    }
+
+    [Theory]
+    [InlineData("hủy lịch nhắc")]
+    [InlineData("hủy toàn bộ lịch nhắc")]
+    public void Pending_reminder_can_be_cancelled_with_a_full_phrase(string input)
+    {
+        Assert.True(ZaloBotIntelligence.IsCancel(input));
+    }
+
     [Fact]
     public void Weekly_count_question_has_its_own_intent()
     {

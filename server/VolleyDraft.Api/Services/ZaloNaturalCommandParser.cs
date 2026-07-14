@@ -19,7 +19,7 @@ public static class ZaloNaturalCommandParser
         var explicitDate = TryReadDate(normalized, now);
         var audience = Regex.IsMatch(
             normalized,
-            @"(?:nguoi\s+(?:trong\s+)?(?:team|doi)|nguoi\s+(?:(?:da|tham\s+gia)\s+)?vote(?:\s+va\s+share\s+slot)?|nguoi\s+co\s+ten\s+trong\s+danh\s+sach|nguoi\s+(?:da\s+)?dang\s+ky|18\s+nguoi|danh\s+sach\s+(?:choi|vote)|cac\s+voter)",
+            @"(?:nguoi\s+(?:trong\s+)?(?:team|doi)|nguoi\s+(?:(?:da|tham\s+gia)\s+)?vote(?:\s+va\s+share\s+slot)?|nguoi\s+(?:da\s+)?tham\s+gia|thanh\s+vien\s+(?:da\s+)?tham\s+gia|nguoi\s+co\s+ten\s+trong\s+danh\s+sach|nguoi\s+(?:da\s+)?dang\s+ky|18\s+nguoi|danh\s+sach\s+(?:choi|vote)|cac\s+voter)",
             RegexOptions.CultureInvariant)
             ? ZaloReminderAudience.Roster
             : ZaloReminderAudience.All;
@@ -229,13 +229,20 @@ public static class ZaloNaturalCommandParser
 
     private static string? ExtractReminderMessageCleanV2(string question)
     {
+        var quoted = Regex.Match(
+            question,
+            @"[""“](?<message>[^""”]{2,2000})[""”]",
+            RegexOptions.CultureInvariant);
+        if (quoted.Success)
+            return quoted.Groups["message"].Value.Trim(' ', ',', '.', ':', ';', '"', '\'', '“', '”');
+
         var normalized = ZaloBotIntelligence.Normalize(question);
         var markers = Regex.Matches(
             normalized,
             @"(?<![a-z])(?:nhac\s+nho|nhac|nhan)(?![a-z])",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         const string targetPattern =
-            @"(?:moi\s+nguoi|ca\s+nhom|nhung\s+nguoi(?:(?:\s+da|\s+tham\s+gia))?\s+vote(?:\s+va\s+share\s+slot)?|nguoi(?:(?:\s+da|\s+tham\s+gia))?\s+vote(?:\s+va\s+share\s+slot)?|nguoi\s+co\s+ten\s+trong\s+danh\s+sach|nhung\s+nguoi\s+trong\s+(?:team|doi|danh\s+sach)|nguoi\s+trong\s+(?:team|doi|danh\s+sach)|18\s+nguoi(?:\s+da)?\s+vote)";
+            @"(?:moi\s+nguoi|ca\s+nhom|nhung\s+nguoi(?:(?:\s+da|\s+tham\s+gia))?\s+vote(?:\s+va\s+share\s+slot)?|nguoi(?:(?:\s+da|\s+tham\s+gia))?\s+vote(?:\s+va\s+share\s+slot)?|nguoi\s+(?:da\s+)?tham\s+gia|thanh\s+vien\s+(?:da\s+)?tham\s+gia|nguoi\s+co\s+ten\s+trong\s+danh\s+sach|nhung\s+nguoi\s+trong\s+(?:team|doi|danh\s+sach)|nguoi\s+trong\s+(?:team|doi|danh\s+sach)|18\s+nguoi(?:\s+da)?\s+vote)";
 
         for (var index = markers.Count - 1; index >= 0; index -= 1)
         {
@@ -265,7 +272,7 @@ public static class ZaloNaturalCommandParser
         var normalized = ZaloBotIntelligence.Normalize(value);
         return Regex.IsMatch(
             normalized,
-            @"^(?:chi\s+)?(?:nhac\s+)?(?:cho\s+)?(?:nhung\s+)?(?:nguoi\s+(?:(?:da|tham\s+gia)\s+)?vote|nguoi\s+trong\s+(?:team|doi|danh\s+sach)|nguoi\s+co\s+ten\s+trong\s+danh\s+sach|ca\s+nhom|moi\s+nguoi)$",
+            @"^(?:chi\s+)?(?:nhac\s+)?(?:cho\s+)?(?:nhung\s+)?(?:nguoi\s+(?:(?:da|tham\s+gia)\s+)?vote|nguoi\s+(?:da\s+)?tham\s+gia|thanh\s+vien\s+(?:da\s+)?tham\s+gia|nguoi\s+trong\s+(?:team|doi|danh\s+sach)|nguoi\s+co\s+ten\s+trong\s+danh\s+sach|ca\s+nhom|moi\s+nguoi)$",
             RegexOptions.CultureInvariant);
     }
 
