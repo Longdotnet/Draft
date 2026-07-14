@@ -2,8 +2,7 @@ name: Reminder scheduler
 
 on:
   schedule:
-    - cron: "1,16,31,46 * * * *"
-      timezone: "Asia/Ho_Chi_Minh"
+    - cron: "1/15 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -19,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Report trigger
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "schedule=${{ github.event.schedule || 'manual' }}"
+          echo "started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
       - name: Wake Render services
         env:
           SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
