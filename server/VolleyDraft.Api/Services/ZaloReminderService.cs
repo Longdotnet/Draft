@@ -214,6 +214,16 @@ public sealed class ZaloReminderService(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        await db.ZaloReminderSchedules
+            .Where(schedule => schedule.Enabled &&
+                               schedule.Session.StartTime != null &&
+                               schedule.Session.StartTime <= now)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(schedule => schedule.Enabled, false)
+                .SetProperty(schedule => schedule.LeaseToken, (string?)null)
+                .SetProperty(schedule => schedule.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(schedule => schedule.UpdatedAt, now), cancellationToken);
+
         var schedules = await db.ZaloReminderSchedules
             .Include(schedule => schedule.Session)
             .ThenInclude(session => session.ZaloConnection)
@@ -260,14 +270,35 @@ public sealed class ZaloReminderService(
             var slotCount = counts.GetValueOrDefault(session.Id);
             if (schedule.OnlyIfMissingSlots && slotCount >= capacity)
             {
-                await CompleteNaturalScheduleAsync(schedule, leaseToken, now, sentSuccessfully: false, cancellationToken);
+                if (schedule.StopWhenFull || ZaloNaturalCommandParser.RequestsStopWhenFull(schedule.Message))
+                    await DisableNaturalScheduleAsync(schedule.Id, leaseToken, now, cancellationToken);
+                else
+                    await CompleteNaturalScheduleAsync(schedule, leaseToken, now, sentSuccessfully: false, cancellationToken);
                 skipped += 1;
                 continue;
             }
 
-            var body = string.IsNullOrWhiteSpace(schedule.Message)
-                ? $"Nhắc lịch {session.Name}: còn thiếu {Math.Max(0, capacity - slotCount)} slot ({slotCount}/{capacity}). Trận lúc {(session.StartTime is null ? "chưa chốt giờ" : FormatVietnamTime(session.StartTime.Value))}{(string.IsNullOrWhiteSpace(session.Location) ? string.Empty : $" tại {session.Location}")}."
-                : $"{session.Name}: {schedule.Message.Trim()}";
+            var storedMessage = ZaloNaturalCommandParser.SanitizeReminderMessage(
+                schedule.Message,
+                schedule.Message ?? string.Empty);
+            var missingSlots = Math.Max(0, capacity - slotCount);
+            var factualBody = string.IsNullOrWhiteSpace(storedMessage)
+                ? $"Nhắc vote {session.Name}: hiện còn thiếu {missingSlots} slot ({slotCount}/{capacity}). Trận lúc {(session.StartTime is null ? "chưa chốt giờ" : FormatVietnamTime(session.StartTime.Value))}{(string.IsNullOrWhiteSpace(session.Location) ? string.Empty : $" tại {session.Location}")}. Mọi người vào vote giúp nhé!"
+                : schedule.OnlyIfMissingSlots
+                    ? $"{session.Name} hiện còn thiếu {missingSlots} slot ({slotCount}/{capacity}). {storedMessage}"
+                    : $"{session.Name}: {storedMessage}";
+            var body = factualBody;
+            if (ai.IsConfigured && configuration.GetValue("ZaloBot:AiStyleEnabled", true))
+            {
+                var rewritten = await ai.RewriteFactualAnswerAsync(
+                    new ZaloAiRewriteContext(
+                        "Viết lời nhắc tự nhiên cho đúng đối tượng nhận của buổi bóng chuyền.",
+                        "Nhóm bóng chuyền",
+                        ZaloBotIntent.ScheduleReminder,
+                        factualBody),
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(rewritten)) body = rewritten.Trim();
+            }
             var audience = await BuildAudienceMessageAsync(schedule, body, cancellationToken);
             var idempotencyKey = $"natural-reminder:{schedule.Id}:{dueAt.ToUnixTimeSeconds()}";
             try
@@ -335,12 +366,34 @@ public sealed class ZaloReminderService(
         CancellationToken cancellationToken)
     {
         var repeats = schedule.Repeats && schedule.IntervalMinutes is >= 5 and <= 10_080;
+        var nextRunAt = repeats
+            ? now.AddMinutes(schedule.IntervalMinutes!.Value)
+            : schedule.NextRunAt;
+        var continues = repeats &&
+                        (schedule.Session.StartTime is null || nextRunAt < schedule.Session.StartTime.Value);
         await db.ZaloReminderSchedules
             .Where(item => item.Id == schedule.Id && item.LeaseToken == leaseToken)
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(item => item.LastRunAt, sentSuccessfully ? now : schedule.LastRunAt)
-                .SetProperty(item => item.NextRunAt, repeats ? now.AddMinutes(schedule.IntervalMinutes!.Value) : schedule.NextRunAt)
-                .SetProperty(item => item.Enabled, repeats)
+                .SetProperty(item => item.NextRunAt, nextRunAt)
+                .SetProperty(item => item.Enabled, continues)
+                .SetProperty(item => item.LeaseToken, (string?)null)
+                .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(item => item.FailureCount, 0)
+                .SetProperty(item => item.LastError, (string?)null)
+                .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+    }
+
+    private async Task DisableNaturalScheduleAsync(
+        string scheduleId,
+        string leaseToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await db.ZaloReminderSchedules
+            .Where(item => item.Id == scheduleId && item.LeaseToken == leaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(item => item.Enabled, false)
                 .SetProperty(item => item.LeaseToken, (string?)null)
                 .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
                 .SetProperty(item => item.FailureCount, 0)

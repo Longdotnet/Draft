@@ -135,6 +135,7 @@ public sealed class ZaloBotIntelligenceTests
 
     [Theory]
     [InlineData("hãy lấy danh sách 3 team hôm nay và gửi cho tui", ZaloBotIntent.TeamLineup)]
+    [InlineData("gửi lại team rồi tag từng người", ZaloBotIntent.TeamLineup)]
     [InlineData("cập nhật số lượng đã vote trên web", ZaloBotIntent.SyncPoll)]
     [InlineData("tự khui túi mù rồi draft tự bốc team và chụp màn hình", ZaloBotIntent.AutoDraft)]
     [InlineData("gửi ảnh đội hình ba team", ZaloBotIntent.TeamImage)]

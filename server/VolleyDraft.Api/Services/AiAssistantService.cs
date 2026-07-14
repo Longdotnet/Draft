@@ -75,7 +75,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         var prompt = """
             Bạn trích xuất lệnh nhắc lịch cho bot bóng chuyền. Chỉ trả về một JSON object, không markdown.
             Schema:
-            {"kind":"Schedule","delayMinutes":null,"repeats":false,"localTime":"17:00","explicitLocalDate":null,"useSessionDate":true,"customMessage":"nhớ lên sân và đem theo nước","audience":"All","onlyIfMissingSlots":false,"sessionReferences":["T4","T6","CN"]}
+            {"kind":"Schedule","delayMinutes":null,"repeats":false,"localTime":"17:00","explicitLocalDate":null,"useSessionDate":true,"customMessage":"Mọi người nhớ lên sân và mang theo nước nhé!","audience":"All","onlyIfMissingSlots":false,"sessionReferences":["T4","T6","CN"],"stopWhenFull":false}
 
             Quy tắc:
             - kind chỉ là Schedule, Update, TriggerNow, Status hoặc Disable.
@@ -87,6 +87,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             - Nếu giờ áp dụng vào ngày của từng buổi, useSessionDate=true. "mai" dùng explicitLocalDate theo CurrentVietnamTime.
             - audience=Roster khi chỉ nhắc người đã vote/người trong team/danh sách; ngược lại All.
             - onlyIfMissingSlots=true chỉ khi có điều kiện thiếu người, thiếu slot hoặc chưa đủ.
+            - stopWhenFull=true khi người dùng nói đủ vote/đủ slot thì thôi, dừng hoặc ngừng nhắc.
             - customMessage là câu hoàn chỉnh bot sẽ gửi vào group, không phải nguyên văn câu lệnh của người dùng.
             - Bỏ toàn bộ phần ra lệnh, thời gian, tên buổi, đối tượng nhận và các từ như "tạo lịch", "tag thành viên".
             - Nếu người dùng có đặt nội dung trong dấu ngoặc kép, giữ đúng ý nhưng viết lại tự nhiên, ngắn gọn.
@@ -136,6 +137,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                 ? parsedAudience
                 : ZaloReminderAudience.All;
             var onlyIfMissing = root.TryGetProperty("onlyIfMissingSlots", out var missingElement) && missingElement.ValueKind == JsonValueKind.True;
+            var stopWhenFull = root.TryGetProperty("stopWhenFull", out var stopElement) && stopElement.ValueKind == JsonValueKind.True;
             var references = root.TryGetProperty("sessionReferences", out var referencesElement) && referencesElement.ValueKind == JsonValueKind.Array
                 ? referencesElement.EnumerateArray()
                     .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
@@ -155,7 +157,8 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                 customMessage,
                 audience,
                 onlyIfMissing,
-                references);
+                references,
+                stopWhenFull);
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {

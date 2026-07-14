@@ -15,6 +15,7 @@ public sealed class ZaloReminderSchedule
     public string? Message { get; set; }
     public ZaloReminderAudience Audience { get; set; } = ZaloReminderAudience.All;
     public bool OnlyIfMissingSlots { get; set; }
+    public bool StopWhenFull { get; set; }
     public bool Repeats { get; set; }
     public int? IntervalMinutes { get; set; }
     public bool Enabled { get; set; } = true;

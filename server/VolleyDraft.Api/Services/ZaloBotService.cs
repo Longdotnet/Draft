@@ -309,6 +309,7 @@ public sealed class ZaloBotService(
         }
         if (!response.TextGeneratedByAi &&
             response.Intent != ZaloBotIntent.GeneralChat &&
+            response.Mentions is not { Count: > 0 } &&
             ai.IsConfigured &&
             configuration.GetValue("ZaloBot:AiStyleEnabled", true) &&
             await IsAiCallAllowedAsync(connection.Id, groupId, incoming.SenderId, cancellationToken))
@@ -340,13 +341,25 @@ public sealed class ZaloBotService(
         var senderName = (Clean(incoming.SenderName, 50) ?? "bạn").TrimStart('@');
         var mentionLabel = $"@{senderName}";
         var reply = $"{mentionLabel} {response.Text.Trim()}";
+        var outgoingMentions = new List<BridgeOutgoingMention>
+        {
+            new(NormalizeId(incoming.SenderId), 0, mentionLabel.Length)
+        };
+        if (response.Mentions is { Count: > 0 })
+        {
+            var responseOffset = mentionLabel.Length + 1;
+            outgoingMentions.AddRange(response.Mentions.Select(mention => mention with
+            {
+                Pos = mention.Pos + responseOffset
+            }));
+        }
         try
         {
             await bridge.SendGroupMessageAsync(
                 connection.AccountZaloId,
                 groupId,
                 reply,
-                [new BridgeOutgoingMention(NormalizeId(incoming.SenderId), 0, mentionLabel.Length)],
+                outgoingMentions,
                 response.ImageUrl,
                 $"{accountId}:{messageId}");
         }
@@ -560,9 +573,13 @@ public sealed class ZaloBotService(
             var state = await draftService.GetDraftStateAsync(session.AdminUserId, session.Id);
             if (!state.IsSuccess || state.Value is null)
                 return new BotAnswer(state.Error ?? "Mình chưa đọc được đội hình của buổi này.", null, decision.Intent);
-            var text = FormatTeamLineup(session.Name, state.Value.TeamPreview);
+            var lineup = await BuildTeamLineupMessageAsync(
+                session.Name,
+                state.Value.TeamPreview,
+                ZaloTeamLineupFormatter.WantsPlayerMentions(question),
+                cancellationToken);
             var imageUrl = decision.Intent == ZaloBotIntent.TeamImage ? teamCards.GetPublicUrl(session.Id) : null;
-            return new BotAnswer(text, imageUrl, decision.Intent);
+            return new BotAnswer(lineup.Text, imageUrl, decision.Intent, Mentions: lineup.Mentions);
         }
 
         if (decision.Intent == ZaloBotIntent.UpdatePlayerProfile)
@@ -1698,7 +1715,8 @@ public sealed class ZaloBotService(
                     SessionReferences = (extracted.SessionReferences ?? [])
                         .Concat(deterministicCommand.SessionReferences ?? [])
                         .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList()
+                        .ToList(),
+                    StopWhenFull = extracted.StopWhenFull || deterministicCommand.StopWhenFull
                 };
                 aiCalled = true;
             }
@@ -1780,12 +1798,14 @@ public sealed class ZaloBotService(
                     var frequency = schedule.Repeats && schedule.IntervalMinutes is not null
                         ? $"lặp lại mỗi {FormatDuration(schedule.IntervalMinutes.Value)}"
                         : "chỉ gửi một lần";
-                    var condition = schedule.OnlyIfMissingSlots ? ", nếu trận vẫn còn thiếu slot" : string.Empty;
-                    var content = string.IsNullOrWhiteSpace(schedule.Message)
-                        ? ""
-                        : $"\n   Tin nhắn: “{schedule.Message.Trim()}”";
+                    var condition = schedule.OnlyIfMissingSlots
+                        ? schedule.StopWhenFull || ZaloNaturalCommandParser.RequestsStopWhenFull(schedule.Message)
+                            ? ", tự dừng khi đủ slot"
+                            : ", chỉ gửi khi vẫn còn thiếu slot"
+                        : string.Empty;
+                    var content = FormatReminderContentForDisplay(schedule.Message);
                     return $"{index + 1}. {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)} — {FormatVietnamTime(schedule.NextRunAt)}\n" +
-                           $"   Gửi cho {recipients}, {frequency}{condition}.{content}";
+                           $"   Gửi cho {recipients}, {frequency}{condition}.\n   {content}";
                 }));
             }
             var legacyTargets = targets.Where(session => session.ReminderEnabled).ToList();
@@ -1978,6 +1998,10 @@ public sealed class ZaloBotService(
                 question,
                 @"(?:du\s+hay\s+thieu|khong\s+can\s+thieu|luon\s+nhac|van\s+nhac\s+khi\s+du)",
                 RegexOptions.CultureInvariant);
+            var changesStopWhenFull = Regex.IsMatch(
+                question,
+                @"du\s+(?:vote|slot|nguoi).*(?:thoi|dung|ngung)",
+                RegexOptions.CultureInvariant);
             var changesMessage = !string.IsNullOrWhiteSpace(command.CustomMessage) && Regex.IsMatch(
                 question,
                 @"(?:doi|thay|sua|cap\s+nhat)\s+(?:lai\s+)?(?:noi\s+dung|tin\s+nhan)|noi\s+dung\s+(?:thanh|la)",
@@ -2019,6 +2043,8 @@ public sealed class ZaloBotService(
                     primary.Audience = mentionsRoster ? ZaloReminderAudience.Roster : ZaloReminderAudience.All;
                 if (changesMissingCondition)
                     primary.OnlyIfMissingSlots = !removesMissingCondition;
+                if (changesStopWhenFull)
+                    primary.StopWhenFull = command.StopWhenFull;
                 if (changesMessage)
                     primary.Message = Clean(command.CustomMessage, 2000);
                 if (command.DelayMinutes is >= 5)
@@ -2076,8 +2102,8 @@ public sealed class ZaloBotService(
                 var frequency = schedule.Repeats && schedule.IntervalMinutes is not null
                     ? $"lặp mỗi {FormatDuration(schedule.IntervalMinutes.Value)}"
                     : "chỉ gửi một lần";
-                var message = string.IsNullOrWhiteSpace(schedule.Message) ? string.Empty : $"\n   Tin nhắn: “{schedule.Message.Trim()}”";
-                return $"- {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)}: {FormatVietnamTime(schedule.NextRunAt)}, gửi cho {recipients}, {frequency}.{message}";
+                var content = FormatReminderContentForDisplay(schedule.Message);
+                return $"- {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)}: {FormatVietnamTime(schedule.NextRunAt)}, gửi cho {recipients}, {frequency}.\n   {content}";
             });
             var consolidationNote = consolidated > 0
                 ? $"\nMình cũng đã gộp {consolidated} lịch trùng cùng thời điểm."
@@ -2114,7 +2140,8 @@ public sealed class ZaloBotService(
                 schedule.NextRunAt == dueAt &&
                 schedule.Message == message &&
                 schedule.Audience == command.Audience &&
-                schedule.OnlyIfMissingSlots == command.OnlyIfMissingSlots,
+                schedule.OnlyIfMissingSlots == command.OnlyIfMissingSlots &&
+                schedule.StopWhenFull == command.StopWhenFull,
                 cancellationToken);
             if (!duplicate)
             {
@@ -2126,6 +2153,7 @@ public sealed class ZaloBotService(
                     Message = message,
                     Audience = command.Audience,
                     OnlyIfMissingSlots = command.OnlyIfMissingSlots,
+                    StopWhenFull = command.StopWhenFull,
                     Repeats = command.Repeats && command.DelayMinutes is >= 5,
                     IntervalMinutes = command.Repeats ? command.DelayMinutes : null,
                     NextRunAt = dueAt.Value,
@@ -2155,15 +2183,17 @@ public sealed class ZaloBotService(
             : $"Mình đã tạo {created.Count} lịch nhắc cho {recipients}:\n" +
               string.Join("\n", created.Select(item => $"- {item.Session.Name}: {FormatVietnamTime(item.DueAt)}"));
         var content = string.IsNullOrWhiteSpace(command.CustomMessage)
-            ? "Bot sẽ thông báo số slot còn thiếu tại thời điểm đó."
-            : $"Tin nhắn bot sẽ gửi: “{command.CustomMessage.Trim()}”.";
+            ? "Nội dung sẽ được bot soạn theo số slot thực tế tại thời điểm gửi."
+            : $"Nội dung nhắc: {command.CustomMessage.Trim()}";
         var frequency = command.Repeats && command.DelayMinutes is not null
             ? $"Sau lần đầu, lịch sẽ lặp lại mỗi {FormatDuration(command.DelayMinutes.Value)}."
             : created.Count == 1
                 ? "Lịch này chỉ gửi một lần."
                 : "Mỗi lịch chỉ gửi một lần.";
         var condition = command.OnlyIfMissingSlots
-            ? " Nếu lúc đó trận đã đủ slot, bot sẽ tự bỏ qua."
+            ? command.StopWhenFull
+                ? " Khi trận đủ slot, lịch sẽ tự dừng. Lịch cũng tự tắt khi đã tới giờ trận."
+                : " Nếu lúc đó trận đã đủ slot, bot sẽ bỏ qua lượt nhắc."
             : string.Empty;
         var skippedText = skipped.Count == 0 ? string.Empty : $"\nKhông tạo được cho: {string.Join("; ", skipped)}";
         return new BotAnswer(
@@ -2239,18 +2269,46 @@ public sealed class ZaloBotService(
     }
 
     private static string FormatTeamLineup(string sessionName, IReadOnlyList<TeamPreviewResponse> teams)
+        => ZaloTeamLineupFormatter.Format(sessionName, teams).Text;
+
+    private async Task<ZaloTeamLineupMessage> BuildTeamLineupMessageAsync(
+        string sessionName,
+        IReadOnlyList<TeamPreviewResponse> teams,
+        bool mentionPlayers,
+        CancellationToken cancellationToken)
     {
-        if (teams.Count == 0 || teams.All(team => team.Slots.Count == 0))
-            return $"{sessionName} chưa có kết quả chia team. Dùng lệnh 9 nếu bạn là operator và muốn tự chạy draft.";
-        var sections = teams.Take(3).Select(team =>
-        {
-            var captain = string.IsNullOrWhiteSpace(team.CaptainName) ? "chưa chọn captain" : $"captain {team.CaptainName}";
-            var players = team.Slots.Count == 0
-                ? "chưa có thành viên"
-                : string.Join(", ", team.Slots.Select(slot => slot.DisplayName));
-            return $"{team.TeamName} ({captain}): {players}";
-        });
-        return $"Đội hình {sessionName}:\n" + string.Join("\n", sections);
+        if (!mentionPlayers) return ZaloTeamLineupFormatter.Format(sessionName, teams);
+
+        var slotIds = teams
+            .SelectMany(team => team.Slots)
+            .Select(slot => slot.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (slotIds.Count == 0) return ZaloTeamLineupFormatter.Format(sessionName, teams);
+
+        var links = await db.DraftSlotPlayers
+            .AsNoTracking()
+            .Where(link => slotIds.Contains(link.DraftSlotId))
+            .OrderBy(link => link.DraftSlotId)
+            .ThenBy(link => link.RotationOrder)
+            .Select(link => new
+            {
+                link.DraftSlotId,
+                link.SessionPlayer.DisplayName,
+                ZaloUserId = link.SessionPlayer.PlayerProfile == null
+                    ? null
+                    : link.SessionPlayer.PlayerProfile.ZaloUserId
+            })
+            .ToListAsync(cancellationToken);
+        var playersBySlot = links
+            .GroupBy(link => link.DraftSlotId, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<ZaloTeamMentionPlayer>)group
+                    .Select(link => new ZaloTeamMentionPlayer(link.DisplayName, Clean(link.ZaloUserId, 100)))
+                    .ToList(),
+                StringComparer.Ordinal);
+        return ZaloTeamLineupFormatter.Format(sessionName, teams, playersBySlot);
     }
 
     private async Task<bool> IsAiCallAllowedAsync(string connectionId, string groupId, string senderId, CancellationToken cancellationToken)
@@ -2307,11 +2365,17 @@ public sealed class ZaloBotService(
             var teamSession = teamSelection.Session!;
             var state = await draftService.GetDraftStateAsync(teamSession.AdminUserId, teamSession.Id);
             if (!state.IsSuccess || state.Value is null) return new BotAnswer(state.Error ?? "Không đọc được đội hình.", null, decision.Intent, true);
+            var lineup = await BuildTeamLineupMessageAsync(
+                teamSession.Name,
+                state.Value.TeamPreview,
+                ZaloTeamLineupFormatter.WantsPlayerMentions(ExtractQuestion(incoming)),
+                cancellationToken);
             return new BotAnswer(
-                FormatTeamLineup(teamSession.Name, state.Value.TeamPreview),
+                lineup.Text,
                 decision.Intent == ZaloBotIntent.TeamImage ? teamCards.GetPublicUrl(teamSession.Id) : null,
                 decision.Intent,
-                true);
+                true,
+                Mentions: lineup.Mentions);
         }
         if (decision.Intent == ZaloBotIntent.UpdatePlayerProfile)
             return await UpdatePlayerProfileAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
@@ -2844,7 +2908,9 @@ public sealed class ZaloBotService(
     {
         foreach (var candidate in new[] { aiMessage, deterministicMessage })
         {
-            var cleaned = Clean(candidate, 2000);
+            var cleaned = ZaloNaturalCommandParser.SanitizeReminderMessage(
+                Clean(candidate, 2000),
+                originalQuestion);
             if (string.IsNullOrWhiteSpace(cleaned)) continue;
             var normalized = ZaloBotIntelligence.Normalize(cleaned);
             if (normalized.Length < 2 || normalized == ZaloBotIntelligence.Normalize(originalQuestion)) continue;
@@ -2856,6 +2922,14 @@ public sealed class ZaloBotService(
             return cleaned.Trim(' ', ',', '.', ':', ';', '"', '\'', '“', '”');
         }
         return null;
+    }
+
+    private static string FormatReminderContentForDisplay(string? storedMessage)
+    {
+        var content = ZaloNaturalCommandParser.SanitizeReminderMessage(storedMessage, storedMessage ?? string.Empty);
+        return string.IsNullOrWhiteSpace(content)
+            ? "Nội dung: bot sẽ viết theo số slot thực tế lúc gửi."
+            : $"Nội dung: {content}";
     }
 
     private static bool HasExplicitAllAudience(string question)
@@ -2908,13 +2982,15 @@ public sealed class ZaloBotService(
             ? "Giữ nguyên nội dung hiện tại."
             : string.IsNullOrWhiteSpace(command.CustomMessage)
                 ? "Bot sẽ tự soạn lời nhắc phù hợp với mục đích của bạn và dữ liệu trận."
-            : $"Nội dung dự kiến: “{command.CustomMessage.Trim()}”";
+            : $"Nội dung nhắc dự kiến: {command.CustomMessage.Trim()}";
         var condition = command.Kind == ZaloReminderCommandKind.Disable
             ? string.Empty
             : command.Kind == ZaloReminderCommandKind.Update
                 ? " Giữ nguyên điều kiện gửi hiện tại."
             : command.OnlyIfMissingSlots
-                ? " Chỉ gửi nếu trận vẫn còn thiếu slot."
+                ? command.StopWhenFull
+                    ? " Chỉ gửi khi còn thiếu slot và tự dừng khi đủ; lịch cũng tự tắt khi tới giờ trận."
+                    : " Chỉ gửi nếu trận vẫn còn thiếu slot."
                 : "";
         return $"Mình hiểu bạn muốn {operation} lịch nhắc:\n" +
                string.Join("\n", targetLines) +
@@ -2973,7 +3049,8 @@ public sealed class ZaloBotService(
         string? ImageUrl,
         ZaloBotIntent Intent = ZaloBotIntent.Unknown,
         bool AiCalled = false,
-        bool TextGeneratedByAi = false);
+        bool TextGeneratedByAi = false,
+        IReadOnlyList<BridgeOutgoingMention>? Mentions = null);
     private sealed record SessionSelection(SessionSnapshot? Session, string? Clarification);
     private sealed record PendingResolution(
         bool Cancelled,

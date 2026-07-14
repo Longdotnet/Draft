@@ -25,8 +25,9 @@ public static class ZaloNaturalCommandParser
             : ZaloReminderAudience.All;
         var explicitlyOnlyIfMissing = Regex.IsMatch(
             normalized,
-            @"(?:thieu\s+(?:nguoi|slot)|chua\s+du|con\s+thieu|rut\s+vote)",
+            @"(?:thieu\s+(?:nguoi|slot)|chua\s+du|con\s+thieu|rut\s+vote|du\s+(?:vote|slot|nguoi).*(?:thoi|dung|ngung))",
             RegexOptions.CultureInvariant);
+        var stopWhenFull = RequestsStopWhenFull(normalized);
         var customMessage = ExtractReminderMessageCleanV2(question);
         if (basic.Kind == ZaloReminderCommandKind.Update && IsAudienceOnlyInstruction(customMessage))
         {
@@ -58,8 +59,48 @@ public static class ZaloNaturalCommandParser
             CustomMessage = customMessage,
             Audience = audience,
             OnlyIfMissingSlots = onlyIfMissing,
-            SessionReferences = sessionReferences
+            SessionReferences = sessionReferences,
+            StopWhenFull = stopWhenFull
         };
+    }
+
+    public static string? SanitizeReminderMessage(string? candidate, string originalQuestion)
+    {
+        var cleaned = candidate?.Trim(' ', ',', '.', ':', ';', '"', '\'', '“', '”');
+        if (string.IsNullOrWhiteSpace(cleaned)) return null;
+
+        var normalized = ZaloBotIntelligence.Normalize(cleaned);
+        var containsSchedulingControls = Regex.IsMatch(
+            normalized,
+            @"(?:cu|cach|moi)\s+\d+\s*(?:h|gio|tieng|phut)|khi\s+nao.*(?:du|qua\s+ngay).*(?:thoi|dung|ngung)|qua\s+(?:ngay|buoi|tran).*(?:thoi|dung|ngung)|(?:tao|dat|hen|len)\s+lich",
+            RegexOptions.CultureInvariant);
+        var looksLikeAudienceInstruction = Regex.IsMatch(
+            normalized,
+            @"^(?:tag|mention|nhac)\s+(?:moi\s+nguoi|ca\s+nhom|thanh\s+vien|nguoi\s+vote)",
+            RegexOptions.CultureInvariant);
+        if (!containsSchedulingControls && !looksLikeAudienceInstruction)
+            return cleaned;
+
+        var source = ZaloBotIntelligence.Normalize(originalQuestion);
+        if (Regex.IsMatch(source, @"\bvote\b", RegexOptions.CultureInvariant))
+            return "Mọi người vào vote giúp để buổi chơi sớm đủ người nhé!";
+        if (source.Contains("mang nuoc", StringComparison.Ordinal) &&
+            source.Contains("dung gio", StringComparison.Ordinal))
+            return "Mọi người nhớ mang nước và đến đúng giờ nhé!";
+        if (source.Contains("mang nuoc", StringComparison.Ordinal))
+            return "Mọi người nhớ mang nước nhé!";
+        if (Regex.IsMatch(source, @"(?:len\s+san|tham\s+gia|co\s+mat)", RegexOptions.CultureInvariant))
+            return "Mọi người nhớ có mặt đúng giờ nhé!";
+        return null;
+    }
+
+    public static bool RequestsStopWhenFull(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        return Regex.IsMatch(
+            ZaloBotIntelligence.Normalize(value),
+            @"du\s+(?:vote|slot|nguoi).*(?:thoi|dung|ngung)",
+            RegexOptions.CultureInvariant);
     }
 
     public static bool TryParseShareSlot(string question, out ZaloShareSlotCommand command)

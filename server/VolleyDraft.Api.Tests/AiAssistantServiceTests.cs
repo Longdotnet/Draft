@@ -26,6 +26,24 @@ public sealed class AiAssistantServiceTests
         Assert.Equal(new TimeOnly(17, 0), result!.LocalTime);
         Assert.Null(result.DelayMinutes);
         Assert.Equal(["T4"], result.SessionReferences);
+        Assert.False(result.StopWhenFull);
+    }
+
+    [Fact]
+    public async Task Reminder_extraction_reads_stop_when_full()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"kind\":\"Schedule\",\"delayMinutes\":360,\"repeats\":true,\"localTime\":null,\"explicitLocalDate\":null,\"useSessionDate\":false,\"customMessage\":\"Mọi người vào vote giúp nhé!\",\"audience\":\"All\",\"onlyIfMissingSlots\":true,\"sessionReferences\":[\"T6\"],\"stopWhenFull\":true}"}}]}""");
+
+        var result = await service.ParseReminderCommandAsync(new ZaloNaturalReminderContext(
+            "cứ 6h nhắc vote T6, đủ thì thôi",
+            "Thanh Long",
+            [],
+            new DateTimeOffset(2026, 7, 14, 20, 43, 0, TimeSpan.FromHours(7))));
+
+        Assert.NotNull(result);
+        Assert.True(result!.StopWhenFull);
+        Assert.True(result.OnlyIfMissingSlots);
     }
 
     [Fact]

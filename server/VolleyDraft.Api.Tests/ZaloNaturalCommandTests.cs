@@ -123,6 +123,37 @@ public sealed class ZaloNaturalCommandTests
     }
 
     [Fact]
+    public void Vote_reminder_stops_when_full_and_does_not_keep_scheduling_words_as_message()
+    {
+        var question = "tạo lịch nhắc vote thứ 6 cho mn cách 6h, khi nào đủ vote hoặc qua ngày thì thôi";
+        Assert.True(ZaloBotIntelligence.TryParseReminderCommand(question, out var basic));
+
+        var command = ZaloNaturalCommandParser.EnrichReminder(
+            question,
+            basic,
+            new DateTimeOffset(2026, 7, 14, 20, 43, 0, TimeSpan.FromHours(7)));
+        var message = ZaloNaturalCommandParser.SanitizeReminderMessage(command.CustomMessage, question);
+
+        Assert.True(command.Repeats);
+        Assert.Equal(360, command.DelayMinutes);
+        Assert.True(command.OnlyIfMissingSlots);
+        Assert.True(command.StopWhenFull);
+        Assert.Equal("Mọi người vào vote giúp để buổi chơi sớm đủ người nhé!", message);
+        Assert.DoesNotContain("cách 6h", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Legacy_raw_vote_message_is_cleaned_before_display_or_send()
+    {
+        var raw = "vote thứ 6 cho mọi người cách 6h, khi nào đủ vote hoặc qua ngày thì thôi";
+
+        var result = ZaloNaturalCommandParser.SanitizeReminderMessage(raw, raw);
+
+        Assert.Equal("Mọi người vào vote giúp để buổi chơi sớm đủ người nhé!", result);
+        Assert.True(ZaloNaturalCommandParser.RequestsStopWhenFull(raw));
+    }
+
+    [Fact]
     public void Share_parser_requires_two_names_for_plus_two()
     {
         Assert.True(ZaloNaturalCommandParser.TryParseShareSlot(

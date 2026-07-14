@@ -77,6 +77,36 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Natural_reminder_persists_stop_when_full_policy()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        fixture.Db.MatchSessions.Add(new MatchSession
+        {
+            Id = "natural-reminder-session",
+            AdminUserId = "admin",
+            Name = "T6"
+        });
+        fixture.Db.ZaloReminderSchedules.Add(new ZaloReminderSchedule
+        {
+            Id = "stop-when-full",
+            SessionId = "natural-reminder-session",
+            CreatedBySenderId = "sender",
+            CreatedBySenderName = "Thanh Long",
+            OnlyIfMissingSlots = true,
+            StopWhenFull = true,
+            Repeats = true,
+            IntervalMinutes = 360,
+            NextRunAt = DateTimeOffset.UtcNow.AddHours(6)
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var stored = await fixture.Db.ZaloReminderSchedules.SingleAsync();
+
+        Assert.True(stored.StopWhenFull);
+    }
+
+    [Fact]
     public async Task Finished_draft_can_swap_two_regular_players_and_recalculate_team_scores()
     {
         await using var fixture = await DbFixture.CreateAsync();
