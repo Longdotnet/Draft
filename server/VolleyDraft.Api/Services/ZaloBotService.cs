@@ -1545,7 +1545,7 @@ public sealed class ZaloBotService(
 
         var originalReminderQuestion = ExtractQuestion(incoming);
         var deterministicCommand = ZaloNaturalCommandParser.EnrichReminder(originalReminderQuestion, command);
-        if (ai.IsConfigured)
+        if (ai.IsConfigured && command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.TriggerNow)
         {
             var extracted = await ai.ParseReminderCommandAsync(
                 new ZaloNaturalReminderContext(
@@ -1635,32 +1635,42 @@ public sealed class ZaloBotService(
             if (naturalSchedules.Count > 0)
             {
                 var sessionNames = targets.ToDictionary(item => item.Id, item => item.Name, StringComparer.Ordinal);
-                var lines = naturalSchedules.Select(schedule =>
-                    $"- {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)}: {FormatVietnamTime(schedule.NextRunAt)}" +
-                    (schedule.Repeats && schedule.IntervalMinutes is not null
-                        ? $", lặp mỗi {FormatDuration(schedule.IntervalMinutes.Value)}"
-                        : ", một lần") +
-                    (schedule.OnlyIfMissingSlots ? ", chỉ gửi khi thiếu slot" : string.Empty) +
-                    (schedule.Audience == ZaloReminderAudience.Roster ? ", nhắc danh sách người chơi" : ", @all") +
-                    (string.IsNullOrWhiteSpace(schedule.Message) ? string.Empty : $": {schedule.Message}"));
-                return new BotAnswer("Các lịch nhắc đang hoạt động:\n" + string.Join("\n", lines), null, intent, aiCalled);
+                var lines = naturalSchedules.Select((schedule, index) =>
+                {
+                    var recipients = schedule.Audience == ZaloReminderAudience.Roster
+                        ? "những người có tên trong danh sách"
+                        : "cả nhóm (@all)";
+                    var frequency = schedule.Repeats && schedule.IntervalMinutes is not null
+                        ? $"lặp lại mỗi {FormatDuration(schedule.IntervalMinutes.Value)}"
+                        : "chỉ gửi một lần";
+                    var condition = schedule.OnlyIfMissingSlots ? ", nếu trận vẫn còn thiếu slot" : string.Empty;
+                    var content = string.IsNullOrWhiteSpace(schedule.Message)
+                        ? ""
+                        : $"\n   Tin nhắn: “{schedule.Message.Trim()}”";
+                    return $"{index + 1}. {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)} — {FormatVietnamTime(schedule.NextRunAt)}\n" +
+                           $"   Gửi cho {recipients}, {frequency}{condition}.{content}";
+                });
+                return new BotAnswer(
+                    $"Bạn đang có {naturalSchedules.Count} lịch nhắc hoạt động:\n{string.Join("\n", lines)}",
+                    null,
+                    intent,
+                    aiCalled);
             }
-            var statusLines = targets.Select(session =>
+            var legacyTargets = targets.Where(session => session.ReminderEnabled).ToList();
+            if (legacyTargets.Count == 0)
+                return new BotAnswer("Hiện chưa có lịch nhắc nào đang hoạt động cho các trận sắp tới.", null, intent, aiCalled);
+            var statusLines = legacyTargets.Select(session =>
             {
-                if (!session.ReminderEnabled) return $"- {session.Name}: đang tắt";
                 var next = session.NextReminderAt is null
                     ? "đang chờ hệ thống tính lượt đầu"
                     : $"lần kiểm tra kế tiếp khoảng {FormatVietnamTime(session.NextReminderAt.Value)}";
                 var repeat = session.ReminderRepeats
                     ? $", lặp mỗi {FormatDuration(session.ReminderIntervalMinutes)}"
-                    : ", chỉ một lần";
+                    : ", chỉ gửi một lần";
                 return $"- {session.Name}: {next}{repeat}";
             });
             return new BotAnswer(
-                "Lịch nhắc hiện tại:\n" + string.Join("\n", statusLines) +
-                (hasExplicitSelector
-                    ? "\nĐây là lịch riêng của trận bạn vừa chọn; lịch các trận khác không bị thay đổi."
-                    : "\nKhi nhiều lịch cùng đến hạn, bot ưu tiên trận gần nhất còn thiếu slot; trận đã đủ sẽ được bỏ qua."),
+                $"Bạn đang có {legacyTargets.Count} lịch nhắc hoạt động:\n{string.Join("\n", statusLines)}",
                 null,
                 intent,
                 aiCalled);
@@ -1851,23 +1861,27 @@ public sealed class ZaloBotService(
                 intent,
                 aiCalled);
         }
-        var lines = created.Select(item =>
-            $"- {item.Session.Name}: {FormatVietnamTime(item.DueAt)}" +
-            (command.Repeats && command.DelayMinutes is not null
-                ? $", lặp mỗi {FormatDuration(command.DelayMinutes.Value)}"
-                : ", một lần"));
-        var audience = command.Audience == ZaloReminderAudience.Roster
-            ? "chỉ mention những người đang có trong danh sách"
-            : "tag @all";
-        var condition = command.OnlyIfMissingSlots
-            ? ", chỉ gửi nếu lúc đó còn thiếu slot"
-            : string.Empty;
+        var recipients = command.Audience == ZaloReminderAudience.Roster
+            ? "những người có tên trong danh sách (gồm người vote và share slot)"
+            : "cả nhóm (@all)";
+        var timing = created.Count == 1
+            ? $"Mình đã hẹn nhắc {recipients} của {created[0].Session.Name} vào {FormatVietnamTime(created[0].DueAt)}."
+            : $"Mình đã tạo {created.Count} lịch nhắc cho {recipients}:\n" +
+              string.Join("\n", created.Select(item => $"- {item.Session.Name}: {FormatVietnamTime(item.DueAt)}"));
         var content = string.IsNullOrWhiteSpace(command.CustomMessage)
-            ? "nhắc tình trạng thiếu slot"
-            : $"nội dung: {command.CustomMessage}";
+            ? "Bot sẽ thông báo số slot còn thiếu tại thời điểm đó."
+            : $"Tin nhắn bot sẽ gửi: “{command.CustomMessage.Trim()}”.";
+        var frequency = command.Repeats && command.DelayMinutes is not null
+            ? $"Sau lần đầu, lịch sẽ lặp lại mỗi {FormatDuration(command.DelayMinutes.Value)}."
+            : created.Count == 1
+                ? "Lịch này chỉ gửi một lần."
+                : "Mỗi lịch chỉ gửi một lần.";
+        var condition = command.OnlyIfMissingSlots
+            ? " Nếu lúc đó trận đã đủ slot, bot sẽ tự bỏ qua."
+            : string.Empty;
+        var skippedText = skipped.Count == 0 ? string.Empty : $"\nKhông tạo được cho: {string.Join("; ", skipped)}";
         return new BotAnswer(
-            $"Đã tạo {created.Count} lịch nhắc độc lập ({audience}{condition}, {content}):\n{string.Join("\n", lines)}" +
-            (skipped.Count == 0 ? string.Empty : $"\nBỏ qua: {string.Join("; ", skipped)}"),
+            $"{timing}\n{content}\n{frequency}{condition}{skippedText}",
             null,
             intent,
             aiCalled);

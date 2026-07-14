@@ -143,7 +143,20 @@ public static class ZaloBotIntelligence
             (Has(q, "len lich", "hen lich", "dat lich") && Has(q, "cho moi nguoi", "tag", "bao", "thong bao"));
         if (!mentionsReminder) return false;
 
-        if (Has(q, "xem lich nhac", "lich nhac hien tai", "lich reminder", "khi nao nhac", "bao gio nhac", "con hen nhac"))
+        if (Has(q,
+                "xem lich nhac",
+                "danh sach lich nhac",
+                "liet ke lich nhac",
+                "cac lich nhac",
+                "lich nhac hien tai",
+                "lich reminder",
+                "co lich nhac nao",
+                "cho tui coi lich nhac",
+                "cho toi coi lich nhac",
+                "dua lich nhac",
+                "khi nao nhac",
+                "bao gio nhac",
+                "con hen nhac"))
         {
             command = new ZaloReminderCommand(ZaloReminderCommandKind.Status, null, true);
             return true;

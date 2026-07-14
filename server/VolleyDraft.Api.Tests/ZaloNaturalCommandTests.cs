@@ -6,6 +6,16 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloNaturalCommandTests
 {
+    [Theory]
+    [InlineData("có thể đưa danh sách lịch nhắc cho tui coi được không?")]
+    [InlineData("liệt kê các lịch nhắc hiện tại")]
+    [InlineData("bot đang có lịch nhắc nào vậy?")]
+    public void Reminder_parser_recognizes_natural_status_questions(string question)
+    {
+        Assert.True(ZaloBotIntelligence.TryParseReminderCommand(question, out var command));
+        Assert.Equal(ZaloReminderCommandKind.Status, command.Kind);
+    }
+
     [Fact]
     public void Reminder_parser_reads_clock_three_sessions_and_custom_message()
     {
