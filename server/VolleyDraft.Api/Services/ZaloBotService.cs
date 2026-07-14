@@ -1545,7 +1545,7 @@ public sealed class ZaloBotService(
 
         var originalReminderQuestion = ExtractQuestion(incoming);
         var deterministicCommand = ZaloNaturalCommandParser.EnrichReminder(originalReminderQuestion, command);
-        if (ai.IsConfigured && command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.TriggerNow)
+        if (ai.IsConfigured && command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.Update or ZaloReminderCommandKind.TriggerNow)
         {
             var extracted = await ai.ParseReminderCommandAsync(
                 new ZaloNaturalReminderContext(
@@ -1558,6 +1558,9 @@ public sealed class ZaloBotService(
             {
                 command = extracted with
                 {
+                    // AI extracts entities and phrasing; the validated router owns the
+                    // operation so a model response cannot turn a query into a mutation.
+                    Kind = command.Kind,
                     LocalTime = extracted.LocalTime ?? deterministicCommand.LocalTime,
                     DelayMinutes = (extracted.LocalTime ?? deterministicCommand.LocalTime) is not null
                         ? null
@@ -1632,10 +1635,11 @@ public sealed class ZaloBotService(
                 .Where(schedule => statusTargetIds.Contains(schedule.SessionId) && schedule.Enabled)
                 .OrderBy(schedule => schedule.NextRunAt)
                 .ToListAsync(cancellationToken);
+            var lines = new List<string>();
             if (naturalSchedules.Count > 0)
             {
                 var sessionNames = targets.ToDictionary(item => item.Id, item => item.Name, StringComparer.Ordinal);
-                var lines = naturalSchedules.Select((schedule, index) =>
+                lines.AddRange(naturalSchedules.Select((schedule, index) =>
                 {
                     var recipients = schedule.Audience == ZaloReminderAudience.Roster
                         ? "những người có tên trong danh sách"
@@ -1649,17 +1653,10 @@ public sealed class ZaloBotService(
                         : $"\n   Tin nhắn: “{schedule.Message.Trim()}”";
                     return $"{index + 1}. {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)} — {FormatVietnamTime(schedule.NextRunAt)}\n" +
                            $"   Gửi cho {recipients}, {frequency}{condition}.{content}";
-                });
-                return new BotAnswer(
-                    $"Bạn đang có {naturalSchedules.Count} lịch nhắc hoạt động:\n{string.Join("\n", lines)}",
-                    null,
-                    intent,
-                    aiCalled);
+                }));
             }
             var legacyTargets = targets.Where(session => session.ReminderEnabled).ToList();
-            if (legacyTargets.Count == 0)
-                return new BotAnswer("Hiện chưa có lịch nhắc nào đang hoạt động cho các trận sắp tới.", null, intent, aiCalled);
-            var statusLines = legacyTargets.Select(session =>
+            foreach (var session in legacyTargets)
             {
                 var next = session.NextReminderAt is null
                     ? "đang chờ hệ thống tính lượt đầu"
@@ -1667,10 +1664,12 @@ public sealed class ZaloBotService(
                 var repeat = session.ReminderRepeats
                     ? $", lặp mỗi {FormatDuration(session.ReminderIntervalMinutes)}"
                     : ", chỉ gửi một lần";
-                return $"- {session.Name}: {next}{repeat}";
-            });
+                lines.Add($"{lines.Count + 1}. {session.Name} — {next}{repeat}, nhắc cả nhóm nếu còn thiếu slot.");
+            }
+            if (lines.Count == 0)
+                return new BotAnswer("Hiện chưa có lịch nhắc nào đang hoạt động cho các trận sắp tới.", null, intent, aiCalled);
             return new BotAnswer(
-                $"Bạn đang có {legacyTargets.Count} lịch nhắc hoạt động:\n{string.Join("\n", statusLines)}",
+                $"Bạn đang có {lines.Count} lịch nhắc hoạt động:\n{string.Join("\n", lines)}",
                 null,
                 intent,
                 aiCalled);
@@ -1784,6 +1783,8 @@ public sealed class ZaloBotService(
         var targetIds = targets.Select(target => target.Id).ToList();
         if (command.Kind == ZaloReminderCommandKind.Disable)
         {
+            var legacyEnabled = await db.MatchSessions
+                .CountAsync(session => targetIds.Contains(session.Id) && session.ReminderEnabled, cancellationToken);
             var disabled = await db.ZaloReminderSchedules
                 .Where(schedule => targetIds.Contains(schedule.SessionId) && schedule.Enabled)
                 .ExecuteUpdateAsync(updates => updates
@@ -1796,8 +1797,142 @@ public sealed class ZaloBotService(
                 .ExecuteUpdateAsync(updates => updates
                     .SetProperty(session => session.ReminderEnabled, false)
                     .SetProperty(session => session.NextReminderAt, (DateTimeOffset?)null), cancellationToken);
+            var totalDisabled = disabled + legacyEnabled;
             return new BotAnswer(
-                $"Đã tắt {disabled} lịch nhắc đang hoạt động cho {string.Join(", ", targets.Select(item => item.Name))}.",
+                totalDisabled > 0
+                    ? $"Mình đã tắt {totalDisabled} lịch nhắc đang hoạt động. Phạm vi đã kiểm tra: {string.Join(", ", targets.Select(item => item.Name))}."
+                    : $"Không có lịch nhắc nào đang hoạt động trong phạm vi: {string.Join(", ", targets.Select(item => item.Name))}.",
+                null,
+                intent,
+                aiCalled);
+        }
+
+        if (command.Kind == ZaloReminderCommandKind.Update)
+        {
+            var question = ZaloBotIntelligence.Normalize(ExtractQuestion(incoming));
+            var mentionsRoster = Regex.IsMatch(
+                question,
+                @"(?:chi\s+nhac|thay\s+vi.*nhac|doi.*(?:thanh|sang)).*(?:nguoi\s+(?:(?:da|tham\s+gia)\s+)?vote|nguoi\s+trong\s+(?:team|doi|danh\s+sach)|nguoi\s+co\s+ten\s+trong\s+danh\s+sach)",
+                RegexOptions.CultureInvariant);
+            var mentionsAll = Regex.IsMatch(
+                question,
+                @"(?:chi\s+nhac|doi.*(?:thanh|sang)|chuyen.*(?:thanh|sang)).*(?:ca\s+nhom|moi\s+nguoi|@all)",
+                RegexOptions.CultureInvariant);
+            var changesAudience = mentionsRoster || mentionsAll;
+            var changesMissingCondition = Regex.IsMatch(
+                question,
+                @"(?:chi\s+nhac|chi\s+gui|bo\s+qua).*(?:thieu\s+(?:nguoi|slot)|chua\s+du|du\s+slot)",
+                RegexOptions.CultureInvariant);
+            var removesMissingCondition = Regex.IsMatch(
+                question,
+                @"(?:du\s+hay\s+thieu|khong\s+can\s+thieu|luon\s+nhac|van\s+nhac\s+khi\s+du)",
+                RegexOptions.CultureInvariant);
+            var changesMessage = !string.IsNullOrWhiteSpace(command.CustomMessage) && Regex.IsMatch(
+                question,
+                @"(?:doi|thay|sua|cap\s+nhat)\s+(?:lai\s+)?(?:noi\s+dung|tin\s+nhan)|noi\s+dung\s+(?:thanh|la)",
+                RegexOptions.CultureInvariant);
+
+            var activeSchedules = await db.ZaloReminderSchedules
+                .Where(schedule => targetIds.Contains(schedule.SessionId) && schedule.Enabled)
+                .OrderBy(schedule => schedule.CreatedAt)
+                .ToListAsync(cancellationToken);
+            var updated = new List<ZaloReminderSchedule>();
+            var consolidated = 0;
+            var ambiguousTargets = new List<string>();
+            foreach (var target in targets)
+            {
+                var candidates = activeSchedules.Where(schedule => schedule.SessionId == target.Id).ToList();
+                var hasScheduleSelector = command.LocalTime is not null || command.ExplicitLocalDate is not null;
+                var selectorMatches = candidates.AsEnumerable();
+                if (command.LocalTime is not null)
+                {
+                    selectorMatches = selectorMatches.Where(schedule =>
+                        TimeOnly.FromDateTime(schedule.NextRunAt.ToOffset(VietnamOffset).DateTime) == command.LocalTime);
+                }
+                if (command.ExplicitLocalDate is not null)
+                {
+                    selectorMatches = selectorMatches.Where(schedule =>
+                        DateOnly.FromDateTime(schedule.NextRunAt.ToOffset(VietnamOffset).DateTime) == command.ExplicitLocalDate);
+                }
+                var matchedCandidates = hasScheduleSelector ? selectorMatches.ToList() : [];
+                if (matchedCandidates.Count > 0) candidates = matchedCandidates;
+                if (candidates.Count == 0) continue;
+                if (matchedCandidates.Count == 0 && candidates.Select(item => item.NextRunAt).Distinct().Count() > 1)
+                {
+                    ambiguousTargets.Add(target.Name);
+                    continue;
+                }
+
+                var primary = candidates[0];
+                if (changesAudience)
+                    primary.Audience = mentionsRoster ? ZaloReminderAudience.Roster : ZaloReminderAudience.All;
+                if (changesMissingCondition)
+                    primary.OnlyIfMissingSlots = !removesMissingCondition;
+                if (changesMessage)
+                    primary.Message = Clean(command.CustomMessage, 2000);
+                if (command.DelayMinutes is >= 5)
+                {
+                    primary.Repeats = command.Repeats;
+                    primary.IntervalMinutes = command.Repeats ? command.DelayMinutes : null;
+                    primary.NextRunAt = now.AddMinutes(command.DelayMinutes.Value);
+                }
+                else if (command.LocalTime is not null || command.ExplicitLocalDate is not null)
+                {
+                    var changedDueAt = ComputeReminderDueAt(command, target, now);
+                    if (changedDueAt is not null && (target.StartTime is null || changedDueAt < target.StartTime))
+                        primary.NextRunAt = changedDueAt.Value;
+                }
+                primary.LeaseToken = null;
+                primary.LeaseUntil = null;
+                primary.UpdatedAt = now;
+                updated.Add(primary);
+
+                foreach (var duplicate in candidates.Skip(1).Where(item => item.NextRunAt == primary.NextRunAt))
+                {
+                    duplicate.Enabled = false;
+                    duplicate.LeaseToken = null;
+                    duplicate.LeaseUntil = null;
+                    duplicate.UpdatedAt = now;
+                    consolidated += 1;
+                }
+            }
+
+            if (updated.Count == 0)
+            {
+                if (ambiguousTargets.Count > 0)
+                {
+                    return new BotAnswer(
+                        $"Có nhiều lịch nhắc khác giờ cho {string.Join(", ", ambiguousTargets)}. Bạn hãy xem danh sách lịch nhắc rồi nói rõ lịch cũ muốn đổi, ví dụ: “đổi lịch 17:00 của T4 thành 18:00”.",
+                        null,
+                        intent,
+                        aiCalled);
+                }
+                return new BotAnswer(
+                    $"Mình chưa tìm thấy lịch nhắc đang hoạt động khớp với yêu cầu trong: {string.Join(", ", targets.Select(item => item.Name))}. Bạn có thể hỏi “xem danh sách lịch nhắc” để kiểm tra trước.",
+                    null,
+                    intent,
+                    aiCalled);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            schedulerTrigger.TryTrigger();
+
+            var sessionNames = targets.ToDictionary(item => item.Id, item => item.Name, StringComparer.Ordinal);
+            var updateLines = updated.Select(schedule =>
+            {
+                var recipients = schedule.Audience == ZaloReminderAudience.Roster
+                    ? "những người có tên trong danh sách (vote và share slot)"
+                    : "cả nhóm (@all)";
+                var frequency = schedule.Repeats && schedule.IntervalMinutes is not null
+                    ? $"lặp mỗi {FormatDuration(schedule.IntervalMinutes.Value)}"
+                    : "chỉ gửi một lần";
+                var message = string.IsNullOrWhiteSpace(schedule.Message) ? string.Empty : $"\n   Tin nhắn: “{schedule.Message.Trim()}”";
+                return $"- {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)}: {FormatVietnamTime(schedule.NextRunAt)}, gửi cho {recipients}, {frequency}.{message}";
+            });
+            var consolidationNote = consolidated > 0
+                ? $"\nMình cũng đã gộp {consolidated} lịch trùng cùng thời điểm."
+                : string.Empty;
+            return new BotAnswer(
+                $"Mình đã cập nhật {updated.Count} lịch nhắc:\n{string.Join("\n", updateLines)}{consolidationNote}",
                 null,
                 intent,
                 aiCalled);

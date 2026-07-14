@@ -33,6 +33,7 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("cứ mỗi 8h tag @all nếu thiếu slot", ZaloReminderCommandKind.Schedule, 480, true)]
     [InlineData("nhắc T6 ngay", ZaloReminderCommandKind.TriggerNow, 0, true)]
     [InlineData("xem lịch nhắc T6", ZaloReminderCommandKind.Status, null, true)]
+    [InlineData("lịch nhắc cho thứ 6 cách 8h hiện tại đâu?", ZaloReminderCommandKind.Status, null, true)]
     [InlineData("tắt nhắc CN", ZaloReminderCommandKind.Disable, null, false)]
     [InlineData("nhắc sau 30 phút chỉ một lần", ZaloReminderCommandKind.Schedule, 30, false)]
     [InlineData("cứ 30 phút nhắc T6 một lần", ZaloReminderCommandKind.Schedule, 30, true)]

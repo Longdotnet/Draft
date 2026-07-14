@@ -10,10 +10,30 @@ public sealed class ZaloNaturalCommandTests
     [InlineData("có thể đưa danh sách lịch nhắc cho tui coi được không?")]
     [InlineData("liệt kê các lịch nhắc hiện tại")]
     [InlineData("bot đang có lịch nhắc nào vậy?")]
+    [InlineData("lịch nhắc cho thứ 6 cách 8h hiện tại đâu?")]
     public void Reminder_parser_recognizes_natural_status_questions(string question)
     {
         Assert.True(ZaloBotIntelligence.TryParseReminderCommand(question, out var command));
         Assert.Equal(ZaloReminderCommandKind.Status, command.Kind);
+    }
+
+    [Fact]
+    public void Reminder_parser_recognizes_update_instead_of_creating_another_schedule()
+    {
+        Assert.True(ZaloBotIntelligence.TryParseReminderCommand(
+            "thay đổi lịch nhắc thứ 4 5h chiều ngày mai, thay vì nhắc cả nhóm chỉ nhắc cho những người tham gia vote",
+            out var basic));
+        Assert.Equal(ZaloReminderCommandKind.Update, basic.Kind);
+
+        var command = ZaloNaturalCommandParser.EnrichReminder(
+            "thay đổi lịch nhắc thứ 4 5h chiều ngày mai, thay vì nhắc cả nhóm chỉ nhắc cho những người tham gia vote",
+            basic,
+            new DateTimeOffset(2026, 7, 14, 8, 0, 0, TimeSpan.FromHours(7)));
+
+        Assert.Equal(ZaloReminderAudience.Roster, command.Audience);
+        Assert.Equal(new TimeOnly(17, 0), command.LocalTime);
+        Assert.Equal(new DateOnly(2026, 7, 15), command.ExplicitLocalDate);
+        Assert.Null(command.CustomMessage);
     }
 
     [Fact]
@@ -63,6 +83,17 @@ public sealed class ZaloNaturalCommandTests
         Assert.Equal(new DateOnly(2026, 7, 15), command.ExplicitLocalDate);
         Assert.Equal(ZaloReminderAudience.Roster, command.Audience);
         Assert.Equal("nhớ tham gia và mang nước theo", command.CustomMessage);
+    }
+
+    [Fact]
+    public void Reminder_parser_removes_wrapping_quotes_from_message()
+    {
+        var command = ZaloNaturalCommandParser.EnrichReminder(
+            "đặt lịch nhắc 5h chiều ngày mai cho thứ 4 nhắc mọi người \" nhớ mang nước và tham gia \"",
+            new ZaloReminderCommand(ZaloReminderCommandKind.Schedule, null, false),
+            new DateTimeOffset(2026, 7, 14, 8, 0, 0, TimeSpan.FromHours(7)));
+
+        Assert.Equal("nhớ mang nước và tham gia", command.CustomMessage);
     }
 
     [Fact]

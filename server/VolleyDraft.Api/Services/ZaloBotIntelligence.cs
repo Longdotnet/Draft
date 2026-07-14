@@ -40,6 +40,7 @@ public enum ZaloBotIntent
 public enum ZaloReminderCommandKind
 {
     Schedule,
+    Update,
     TriggerNow,
     Status,
     Disable
@@ -156,7 +157,15 @@ public static class ZaloBotIntelligence
                 "dua lich nhac",
                 "khi nao nhac",
                 "bao gio nhac",
-                "con hen nhac"))
+                "con hen nhac") ||
+            (Has(q, "lich nhac") && Has(q,
+                "hien tai dau",
+                "dau roi",
+                "o dau",
+                "con khong",
+                "co khong",
+                "da dat chua",
+                "da hen chua")))
         {
             command = new ZaloReminderCommand(ZaloReminderCommandKind.Status, null, true);
             return true;
@@ -165,6 +174,17 @@ public static class ZaloBotIntelligence
         if (Has(q, "tat nhac", "dung nhac", "huy lich nhac", "bo lich nhac", "khong nhac nua", "tat reminder"))
         {
             command = new ZaloReminderCommand(ZaloReminderCommandKind.Disable, null, false);
+            return true;
+        }
+
+        if (Has(q,
+                "thay doi lich nhac",
+                "doi lich nhac",
+                "sua lich nhac",
+                "chinh lich nhac",
+                "cap nhat lich nhac"))
+        {
+            command = new ZaloReminderCommand(ZaloReminderCommandKind.Update, null, false);
             return true;
         }
 

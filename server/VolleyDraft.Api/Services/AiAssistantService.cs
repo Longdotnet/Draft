@@ -78,7 +78,9 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             {"kind":"Schedule","delayMinutes":null,"repeats":false,"localTime":"17:00","explicitLocalDate":null,"useSessionDate":true,"customMessage":"nhớ lên sân và đem theo nước","audience":"All","onlyIfMissingSlots":false,"sessionReferences":["T4","T6","CN"]}
 
             Quy tắc:
-            - kind chỉ là Schedule, TriggerNow, Status hoặc Disable.
+            - kind chỉ là Schedule, Update, TriggerNow, Status hoặc Disable.
+            - Update khi người dùng muốn đổi giờ, nội dung, đối tượng nhận hoặc điều kiện của một lịch đang có. Không biến Update thành Schedule.
+            - Câu hỏi một lịch đang ở đâu/còn không/đã đặt chưa là Status, kể cả trong câu có nhắc lại chu kỳ như "cách 8h".
             - "5h chiều" là localTime 17:00, KHÔNG phải delay 5 giờ.
             - "cứ/mỗi 8 tiếng" là delayMinutes 480 và repeats=true.
             - Nếu người dùng nêu nhiều buổi như T4, T6, CN, trả đủ từng mục trong sessionReferences.
