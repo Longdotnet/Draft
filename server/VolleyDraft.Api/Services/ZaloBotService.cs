@@ -570,7 +570,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nBạn cũng có thể nói tự nhiên: “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Undo chỉ khôi phục dữ liệu backend và luôn hỏi xác nhận, không thu hồi tin Zalo.\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nBạn cũng có thể nói: “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Undo chỉ khôi phục dữ liệu backend và luôn hỏi xác nhận, không thu hồi tin Zalo.\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null,
                 ZaloBotIntent.Help);
         }
