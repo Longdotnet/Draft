@@ -1649,12 +1649,26 @@ public sealed class ZaloBotService(
             : ZaloNaturalCommandParser.EnrichReminder(originalReminderQuestion, command);
         if (!confirmed && ai.IsConfigured && command.Kind is ZaloReminderCommandKind.Schedule or ZaloReminderCommandKind.Update or ZaloReminderCommandKind.TriggerNow)
         {
+            var recentReminderMessages = await db.ZaloGroupMessages
+                .AsNoTracking()
+                .Where(message => message.ZaloConnectionId == connectionId && message.GroupId == groupId)
+                .OrderByDescending(message => message.SentAt)
+                .Take(20)
+                .OrderBy(message => message.SentAt)
+                .Select(message => new ZaloAiMessage(
+                    message.IsFromBot ? "assistant" : "user",
+                    message.SenderId,
+                    message.SenderName,
+                    message.Content,
+                    message.SentAt))
+                .ToListAsync(cancellationToken);
             var extracted = await ai.ParseReminderCommandAsync(
                 new ZaloNaturalReminderContext(
                     originalReminderQuestion,
                     incoming.SenderName,
                     sessions.Take(10).Select(session => new ZaloAiSessionReference(session.Id, session.Name, session.StartTime)).ToList(),
-                    DateTimeOffset.UtcNow.ToOffset(VietnamOffset)),
+                    DateTimeOffset.UtcNow.ToOffset(VietnamOffset),
+                    recentReminderMessages),
                 cancellationToken);
             if (extracted is not null)
             {
