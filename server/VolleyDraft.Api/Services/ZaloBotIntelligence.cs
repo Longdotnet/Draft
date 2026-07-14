@@ -68,7 +68,9 @@ public sealed record ZaloReminderCommand(
     ZaloReminderAudience Audience = ZaloReminderAudience.All,
     bool OnlyIfMissingSlots = true,
     IReadOnlyList<string>? SessionReferences = null,
-    bool StopWhenFull = false);
+    bool StopWhenFull = false,
+    bool AllowAfterSessionStart = false,
+    bool IncludePaymentQr = false);
 
 public sealed record ZaloShareSlotCommand(
     string Anchor,
@@ -342,7 +344,10 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.AutoDraft, .98, q, false, null, "auto_draft_phrase");
         if (Has(q, "cap nhat so luong da vote", "cap nhat nguoi vote", "dong bo vote", "sync vote", "import poll", "lay nguoi da vote", "cap nhat poll len web"))
             return new(ZaloBotIntent.SyncPoll, .98, q, false, null, "sync_poll_phrase");
-        if (Has(q, "chup man hinh 3 team", "anh 3 team", "anh doi hinh", "gui anh team", "gui hinh team", "the doi hinh"))
+        if (Has(q,
+                "chup man hinh 3 team", "chup danh sach team", "anh 3 team", "anh doi hinh",
+                "gui anh team", "gui hinh team", "gui card", "card 3 team", "card ba team",
+                "card doi hinh", "anh card", "the doi hinh"))
             return new(ZaloBotIntent.TeamImage, .96, q, false, null, "team_image_phrase");
         if (Has(q,
                 "danh sach 3 team", "danh sach ba team", "danh sach team", "danh sach cac team",

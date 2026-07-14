@@ -27,6 +27,7 @@ public static class ZaloNaturalCommandParser
             normalized,
             @"(?:thieu\s+(?:nguoi|slot)|chua\s+du|con\s+thieu|rut\s+vote|du\s+(?:vote|slot|nguoi).*(?:thoi|dung|ngung))",
             RegexOptions.CultureInvariant);
+        var includePaymentQr = RequestsPaymentQr(normalized);
         var stopWhenFull = RequestsStopWhenFull(normalized);
         var customMessage = ExtractReminderMessageCleanV2(question);
         if (basic.Kind == ZaloReminderCommandKind.Update && IsAudienceOnlyInstruction(customMessage))
@@ -38,11 +39,11 @@ public static class ZaloNaturalCommandParser
         {
             customMessage = null;
         }
-        var onlyIfMissing = explicitlyOnlyIfMissing || customMessage is null;
+        var onlyIfMissing = !includePaymentQr && (explicitlyOnlyIfMissing || customMessage is null);
 
         var sessionReferences = Regex.Matches(
                 normalized,
-                @"(?<![a-z0-9])(?:t[2-7]|cn|thu\s+(?:hai|ba|tu|nam|sau|bay)|chu\s+nhat)(?![a-z0-9])",
+                @"(?<![a-z0-9])(?:t[2-7]|cn|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chu\s+nhat)(?![a-z0-9])",
                 RegexOptions.CultureInvariant)
             .Select(match => match.Value)
             .Distinct(StringComparer.Ordinal)
@@ -60,7 +61,9 @@ public static class ZaloNaturalCommandParser
             Audience = audience,
             OnlyIfMissingSlots = onlyIfMissing,
             SessionReferences = sessionReferences,
-            StopWhenFull = stopWhenFull
+            StopWhenFull = !includePaymentQr && stopWhenFull,
+            AllowAfterSessionStart = includePaymentQr,
+            IncludePaymentQr = includePaymentQr
         };
     }
 
@@ -100,6 +103,15 @@ public static class ZaloNaturalCommandParser
         return Regex.IsMatch(
             ZaloBotIntelligence.Normalize(value),
             @"du\s+(?:vote|slot|nguoi).*(?:thoi|dung|ngung)",
+            RegexOptions.CultureInvariant);
+    }
+
+    public static bool RequestsPaymentQr(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        return Regex.IsMatch(
+            ZaloBotIntelligence.Normalize(value),
+            @"(?:\bqr\b|ma\s+qr|thanh\s+toan|chuyen\s+khoan|dong\s+tien|tien\s+(?:san|tran))",
             RegexOptions.CultureInvariant);
     }
 

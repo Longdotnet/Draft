@@ -151,6 +151,8 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("cập nhật số lượng đã vote trên web", ZaloBotIntent.SyncPoll)]
     [InlineData("tự khui túi mù rồi draft tự bốc team và chụp màn hình", ZaloBotIntent.AutoDraft)]
     [InlineData("gửi ảnh đội hình ba team", ZaloBotIntent.TeamImage)]
+    [InlineData("gửi card 3 team cho tui", ZaloBotIntent.TeamImage)]
+    [InlineData("chụp danh sách team", ZaloBotIntent.TeamImage)]
     [InlineData("draft lại trận hôm nay từ đầu", ZaloBotIntent.Redraft)]
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", ZaloBotIntent.SwapTeamPlayers)]
     [InlineData("+1 số lượng vote cho bạn của Nick Tran", ZaloBotIntent.AddGuestPlayer)]
@@ -246,12 +248,12 @@ public sealed class ZaloBotIntelligenceTests
     public void Team_card_renderer_outputs_a_png()
     {
         var bytes = SimpleTeamCardPng.Render(
-            "Trận hôm nay",
+            "Volley Draft Thứ Tư 15/07",
             new DateTimeOffset(2026, 7, 13, 18, 0, 0, TimeSpan.FromHours(7)),
             [
-                new TeamCardTeam("Team A", "Thanh Long", ["Thanh Long", "An", "Bình"]),
-                new TeamCardTeam("Team B", "Minh", ["Minh", "Hà", "Phúc"]),
-                new TeamCardTeam("Team C", "Nam", ["Nam", "Linh", "Huy"])
+                new TeamCardTeam("Team A", "Thanh Tuyền", ["Thanh Tuyền", "Đặng Thế Nguyễn", "Minh Nam", "Thế Hoàng", "Tô An", "Trần Long Nhật"]),
+                new TeamCardTeam("Team B", "Ngọc Huyền", ["Ngọc Huyền", "Anh Duy", "Đoàn Trí Tài", "Nick Tran / Vivian", "Thanh Long", "Trọng Hòa"]),
+                new TeamCardTeam("Team C", "Nguyễn Trí Nhân", ["Nguyễn Trí Nhân", "Duy Nam", "Nguyễn Thanh Tâm", "Thành Đạt", "Thanh Trúc", "Vinh"])
             ]);
 
         Assert.True(bytes.Length > 1_000);

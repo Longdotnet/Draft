@@ -219,7 +219,8 @@ public sealed class ZaloReminderService(
         await db.ZaloReminderSchedules
             .Where(schedule => schedule.Enabled &&
                                schedule.Session.StartTime != null &&
-                               schedule.Session.StartTime <= now)
+                               schedule.Session.StartTime <= now &&
+                               !schedule.AllowAfterSessionStart)
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(schedule => schedule.Enabled, false)
                 .SetProperty(schedule => schedule.LeaseToken, (string?)null)
@@ -310,6 +311,7 @@ public sealed class ZaloReminderService(
                     session.ZaloGroupId!,
                     audience.Message,
                     audience.Mentions,
+                    imageUrl: schedule.IncludePaymentQr ? session.PaymentQrImageUrl : null,
                     idempotencyKey: idempotencyKey);
                 await CompleteNaturalScheduleAsync(schedule, leaseToken, now, sentSuccessfully: true, cancellationToken);
                 if (!await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
@@ -371,8 +373,11 @@ public sealed class ZaloReminderService(
         var nextRunAt = repeats
             ? now.AddMinutes(schedule.IntervalMinutes!.Value)
             : schedule.NextRunAt;
+        var postSessionCutoff = schedule.Session.StartTime?.AddHours(24);
         var continues = repeats &&
-                        (schedule.Session.StartTime is null || nextRunAt < schedule.Session.StartTime.Value);
+                        (schedule.AllowAfterSessionStart
+                            ? postSessionCutoff is null || nextRunAt < postSessionCutoff
+                            : schedule.Session.StartTime is null || nextRunAt < schedule.Session.StartTime.Value);
         await db.ZaloReminderSchedules
             .Where(item => item.Id == schedule.Id && item.LeaseToken == leaseToken)
             .ExecuteUpdateAsync(updates => updates

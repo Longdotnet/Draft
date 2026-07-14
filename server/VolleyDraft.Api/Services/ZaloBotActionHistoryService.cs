@@ -80,7 +80,8 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         var reminders = await db.ZaloReminderSchedules.AsNoTracking().Where(item => item.SessionId == sessionId)
             .OrderBy(item => item.Id)
             .Select(item => new ReminderState(item.Id, item.CreatedBySenderId, item.CreatedBySenderName,
-                item.Message, item.Audience, item.OnlyIfMissingSlots, item.StopWhenFull, item.Repeats,
+                item.Message, item.Audience, item.OnlyIfMissingSlots, item.StopWhenFull,
+                item.AllowAfterSessionStart, item.IncludePaymentQr, item.Repeats,
                 item.IntervalMinutes, item.Enabled, item.NextRunAt, item.LastRunAt, item.FailureCount,
                 item.LastError, item.CreatedAt, item.UpdatedAt))
             .ToListAsync(cancellationToken);
@@ -340,6 +341,7 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
             Id = state.Id, SessionId = sessionId, CreatedBySenderId = state.CreatedBySenderId,
             CreatedBySenderName = state.CreatedBySenderName, Message = state.Message, Audience = state.Audience,
             OnlyIfMissingSlots = state.OnlyIfMissingSlots, StopWhenFull = state.StopWhenFull,
+            AllowAfterSessionStart = state.AllowAfterSessionStart, IncludePaymentQr = state.IncludePaymentQr,
             Repeats = state.Repeats, IntervalMinutes = state.IntervalMinutes, Enabled = state.Enabled,
             NextRunAt = state.NextRunAt, LastRunAt = state.LastRunAt, FailureCount = state.FailureCount,
             LastError = state.LastError, CreatedAt = state.CreatedAt, UpdatedAt = state.UpdatedAt
@@ -437,7 +439,8 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         int TurnOrder, DraftTurnStatus Status, string? OpenedBagId, DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
     private sealed record ReminderState(string Id, string CreatedBySenderId, string CreatedBySenderName,
         string? Message, ZaloReminderAudience Audience, bool OnlyIfMissingSlots, bool StopWhenFull,
-        bool Repeats, int? IntervalMinutes, bool Enabled, DateTimeOffset NextRunAt, DateTimeOffset? LastRunAt,
+        bool AllowAfterSessionStart, bool IncludePaymentQr, bool Repeats, int? IntervalMinutes,
+        bool Enabled, DateTimeOffset NextRunAt, DateTimeOffset? LastRunAt,
         int FailureCount, string? LastError, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
     private sealed record WaitlistState(string Id, string ZaloUserId, string DisplayName, SessionWaitlistStatus Status,
         string? SessionPlayerId, DateTimeOffset? InvitedAt, DateTimeOffset? InviteExpiresAt,

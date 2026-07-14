@@ -1954,6 +1954,7 @@ public sealed class ZaloBotService(
                 cancellationToken);
             if (extracted is not null)
             {
+                var includePaymentQr = deterministicCommand.IncludePaymentQr;
                 command = extracted with
                 {
                     // AI extracts entities and phrasing; the validated router owns the
@@ -1976,12 +1977,16 @@ public sealed class ZaloBotService(
                         : extracted.Audience == ZaloReminderAudience.All
                             ? deterministicCommand.Audience
                             : extracted.Audience,
-                    OnlyIfMissingSlots = extracted.OnlyIfMissingSlots || deterministicCommand.OnlyIfMissingSlots,
+                    OnlyIfMissingSlots = !includePaymentQr &&
+                                         (extracted.OnlyIfMissingSlots || deterministicCommand.OnlyIfMissingSlots),
                     SessionReferences = (extracted.SessionReferences ?? [])
                         .Concat(deterministicCommand.SessionReferences ?? [])
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToList(),
-                    StopWhenFull = extracted.StopWhenFull || deterministicCommand.StopWhenFull
+                    StopWhenFull = !includePaymentQr &&
+                                   (extracted.StopWhenFull || deterministicCommand.StopWhenFull),
+                    AllowAfterSessionStart = deterministicCommand.AllowAfterSessionStart,
+                    IncludePaymentQr = includePaymentQr
                 };
                 aiCalled = true;
             }
@@ -2068,9 +2073,12 @@ public sealed class ZaloBotService(
                             ? ", tự dừng khi đủ slot"
                             : ", chỉ gửi khi vẫn còn thiếu slot"
                         : string.Empty;
+                    var attachment = schedule.IncludePaymentQr
+                        ? ", gửi kèm QR thanh toán"
+                        : string.Empty;
                     var content = FormatReminderContentForDisplay(schedule.Message);
                     return $"{index + 1}. {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)} — {FormatVietnamTime(schedule.NextRunAt)}\n" +
-                           $"   Gửi cho {recipients}, {frequency}{condition}.\n   {content}";
+                           $"   Gửi cho {recipients}, {frequency}{condition}{attachment}.\n   {content}";
                 }));
             }
             var legacyTargets = targets.Where(session => session.ReminderEnabled).ToList();
@@ -2106,6 +2114,19 @@ public sealed class ZaloBotService(
         {
             var denial = await GetOperatorDenialAsync(target, incoming.SenderId, intent, aiCalled);
             if (denial is not null) return denial;
+        }
+
+        if (command.IncludePaymentQr)
+        {
+            var missingQr = targets.Where(target => string.IsNullOrWhiteSpace(target.PaymentQrImageUrl)).ToList();
+            if (missingQr.Count > 0)
+            {
+                return new BotAnswer(
+                    $"Chưa thể lên lịch gửi QR vì admin chưa cấu hình ảnh thanh toán cho: {string.Join(", ", missingQr.Select(target => target.Name))}.",
+                    null,
+                    intent,
+                    aiCalled);
+            }
         }
 
         if (!confirmed &&
@@ -2331,6 +2352,13 @@ public sealed class ZaloBotService(
                     primary.StopWhenFull = command.StopWhenFull;
                 if (changesMessage)
                     primary.Message = Clean(command.CustomMessage, 2000);
+                if (command.IncludePaymentQr)
+                {
+                    primary.IncludePaymentQr = true;
+                    primary.AllowAfterSessionStart = true;
+                    primary.OnlyIfMissingSlots = false;
+                    primary.StopWhenFull = false;
+                }
                 if (command.DelayMinutes is >= 5)
                 {
                     primary.Repeats = command.Repeats;
@@ -2340,7 +2368,8 @@ public sealed class ZaloBotService(
                 else if (command.LocalTime is not null || command.ExplicitLocalDate is not null)
                 {
                     var changedDueAt = ComputeReminderDueAt(command, target, now);
-                    if (changedDueAt is not null && (target.StartTime is null || changedDueAt < target.StartTime))
+                    if (changedDueAt is not null &&
+                        (target.StartTime is null || changedDueAt < target.StartTime || primary.AllowAfterSessionStart))
                         primary.NextRunAt = changedDueAt.Value;
                 }
                 primary.LeaseToken = null;
@@ -2411,7 +2440,9 @@ public sealed class ZaloBotService(
                 skipped.Add($"{target.Name} (không xác định được thời gian)");
                 continue;
             }
-            if (target.StartTime is not null && dueAt >= target.StartTime && command.Kind != ZaloReminderCommandKind.TriggerNow)
+            if (target.StartTime is not null && dueAt >= target.StartTime &&
+                command.Kind != ZaloReminderCommandKind.TriggerNow &&
+                !command.AllowAfterSessionStart)
             {
                 skipped.Add($"{target.Name} (giờ nhắc không còn trước giờ trận)");
                 continue;
@@ -2425,7 +2456,9 @@ public sealed class ZaloBotService(
                 schedule.Message == message &&
                 schedule.Audience == command.Audience &&
                 schedule.OnlyIfMissingSlots == command.OnlyIfMissingSlots &&
-                schedule.StopWhenFull == command.StopWhenFull,
+                schedule.StopWhenFull == command.StopWhenFull &&
+                schedule.AllowAfterSessionStart == command.AllowAfterSessionStart &&
+                schedule.IncludePaymentQr == command.IncludePaymentQr,
                 cancellationToken);
             if (!duplicate)
             {
@@ -2438,6 +2471,8 @@ public sealed class ZaloBotService(
                     Audience = command.Audience,
                     OnlyIfMissingSlots = command.OnlyIfMissingSlots,
                     StopWhenFull = command.StopWhenFull,
+                    AllowAfterSessionStart = command.AllowAfterSessionStart,
+                    IncludePaymentQr = command.IncludePaymentQr,
                     Repeats = command.Repeats && command.DelayMinutes is >= 5,
                     IntervalMinutes = command.Repeats ? command.DelayMinutes : null,
                     NextRunAt = dueAt.Value,
@@ -2469,6 +2504,9 @@ public sealed class ZaloBotService(
         var content = string.IsNullOrWhiteSpace(command.CustomMessage)
             ? "Nội dung sẽ được bot soạn theo số slot thực tế tại thời điểm gửi."
             : $"Nội dung nhắc: {command.CustomMessage.Trim()}";
+        var attachment = command.IncludePaymentQr
+            ? " Bot sẽ gửi kèm ảnh QR thanh toán đã cấu hình của trận."
+            : string.Empty;
         var frequency = command.Repeats && command.DelayMinutes is not null
             ? $"Sau lần đầu, lịch sẽ lặp lại mỗi {FormatDuration(command.DelayMinutes.Value)}."
             : created.Count == 1
@@ -2481,7 +2519,7 @@ public sealed class ZaloBotService(
             : string.Empty;
         var skippedText = skipped.Count == 0 ? string.Empty : $"\nKhông tạo được cho: {string.Join("; ", skipped)}";
         return new BotAnswer(
-            $"{timing}\n{content}\n{frequency}{condition}{skippedText}",
+            $"{timing}\n{content}{attachment}\n{frequency}{condition}{skippedText}",
             null,
             intent,
             aiCalled);
@@ -3532,9 +3570,12 @@ public sealed class ZaloBotService(
                     ? " Chỉ gửi khi còn thiếu slot và tự dừng khi đủ; lịch cũng tự tắt khi tới giờ trận."
                     : " Chỉ gửi nếu trận vẫn còn thiếu slot."
                 : "";
+        var attachment = command.IncludePaymentQr
+            ? " Bot sẽ gửi kèm ảnh QR thanh toán đã cấu hình của trận."
+            : string.Empty;
         return $"Mình hiểu bạn muốn {operation} lịch nhắc:\n" +
                string.Join("\n", targetLines) +
-               $"\nGửi cho: {audience}.\n{content}\n{frequency}{condition}\n\nGõ @bot xác nhận để thực hiện hoặc @bot huỷ. Chưa có thay đổi nào được lưu.";
+               $"\nGửi cho: {audience}.\n{content}{attachment}\n{frequency}{condition}\n\nGõ @bot xác nhận để thực hiện hoặc @bot huỷ. Chưa có thay đổi nào được lưu.";
     }
 
     private static ZaloBotSettingsResponse ToSettings(MatchSession session) => new(

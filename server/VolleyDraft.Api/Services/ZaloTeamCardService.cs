@@ -1,30 +1,96 @@
-using System.Buffers.Binary;
 using System.Globalization;
-using System.IO.Compression;
-using System.Text;
+using System.Net;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using SkiaSharp;
 using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed class ZaloTeamCardService(VolleyDraftDbContext db, IConfiguration configuration)
+public sealed class ZaloTeamCardService(
+    VolleyDraftDbContext db,
+    IConfiguration configuration,
+    IHttpClientFactory httpClientFactory,
+    IMemoryCache cache,
+    ILogger<ZaloTeamCardService> logger)
 {
+    private const int MaxAvatarBytes = 2 * 1024 * 1024;
+
     public async Task<GeneratedTeamCard?> GenerateAsync(string sessionId, CancellationToken cancellationToken = default)
     {
-        var session = await db.MatchSessions.AsNoTracking().SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
+        var session = await db.MatchSessions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
         if (session is null) return null;
-        var teams = await db.Teams.AsNoTracking()
+
+        var trackedTeams = await db.Teams.AsNoTracking()
             .Include(team => team.CaptainSessionPlayer)
             .Include(team => team.AssignedSlots)
+                .ThenInclude(slot => slot.Players)
+                .ThenInclude(link => link.SessionPlayer)
             .Where(team => team.SessionId == sessionId)
             .OrderBy(team => team.Name)
-            .Select(team => new TeamCardTeam(
-                team.Name,
-                team.CaptainSessionPlayer == null ? null : team.CaptainSessionPlayer.DisplayName,
-                team.AssignedSlots.OrderByDescending(slot => slot.IsCaptainSlot).ThenBy(slot => slot.DisplayName)
-                    .Select(slot => slot.DisplayName).ToList()))
             .ToListAsync(cancellationToken);
-        return new GeneratedTeamCard(SimpleTeamCardPng.Render(session.Name, session.StartTime, teams), "image/png");
+
+        var avatarUrls = trackedTeams
+            .SelectMany(team => team.AssignedSlots)
+            .SelectMany(slot => slot.Players)
+            .Select(link => link.SessionPlayer.AvatarUrl)
+            .Where(url => IsHttpUrl(url))
+            .Select(url => url!)
+            .Distinct(StringComparer.Ordinal)
+            .Take(40)
+            .ToList();
+        var avatarTasks = avatarUrls.ToDictionary(
+            url => url,
+            url => LoadAvatarAsync(url, cancellationToken),
+            StringComparer.Ordinal);
+        await Task.WhenAll(avatarTasks.Values);
+        var avatars = avatarTasks.ToDictionary(
+            item => item.Key,
+            item => item.Value.Result,
+            StringComparer.Ordinal);
+
+        var teams = trackedTeams.Select(team =>
+        {
+            var slots = team.AssignedSlots
+                .OrderByDescending(slot => slot.IsCaptainSlot)
+                .ThenBy(slot => slot.DisplayName)
+                .Select(slot =>
+                {
+                    var players = slot.Players
+                        .OrderBy(link => link.RotationOrder)
+                        .Select(link =>
+                        {
+                            var player = link.SessionPlayer;
+                            avatars.TryGetValue(player.AvatarUrl ?? string.Empty, out var avatarData);
+                            return new TeamCardPlayer(
+                                player.DisplayName,
+                                player.AvatarUrl,
+                                avatarData,
+                                player.Id == team.CaptainSessionPlayerId);
+                        })
+                        .ToList();
+                    if (players.Count == 0)
+                    {
+                        players.Add(new TeamCardPlayer(
+                            slot.DisplayName,
+                            null,
+                            null,
+                            slot.IsCaptainSlot));
+                    }
+                    return new TeamCardSlot(slot.DisplayName, players, slot.IsCaptainSlot);
+                })
+                .ToList();
+            return new TeamCardTeam(
+                team.Name,
+                team.CaptainSessionPlayer?.DisplayName,
+                team.TotalAverageScore,
+                slots);
+        }).ToList();
+
+        return new GeneratedTeamCard(
+            SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams),
+            "image/png");
     }
 
     public string GetPublicUrl(string sessionId)
@@ -35,196 +101,410 @@ public sealed class ZaloTeamCardService(VolleyDraftDbContext db, IConfiguration 
         configured ??= "http://localhost:5030";
         return $"{configured}/api/public/sessions/{Uri.EscapeDataString(sessionId)}/team-card.png?v={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
     }
+
+    private async Task<byte[]?> LoadAvatarAsync(string url, CancellationToken cancellationToken)
+    {
+        var cacheKey = $"team-card-avatar:{url}";
+        if (cache.TryGetValue<AvatarCacheEntry>(cacheKey, out var cached)) return cached?.Data;
+
+        byte[]? result = null;
+        try
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                uri.Scheme is not ("http" or "https") ||
+                !await IsPublicHostAsync(uri, cancellationToken))
+            {
+                return null;
+            }
+
+            var client = httpClientFactory.CreateClient("TeamCardAvatars");
+            using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode ||
+                response.Content.Headers.ContentLength > MaxAvatarBytes ||
+                response.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true)
+            {
+                return null;
+            }
+
+            await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var output = new MemoryStream();
+            var buffer = new byte[16 * 1024];
+            while (true)
+            {
+                var read = await input.ReadAsync(buffer, cancellationToken);
+                if (read == 0) break;
+                if (output.Length + read > MaxAvatarBytes) return null;
+                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            }
+            var bytes = output.ToArray();
+            using var decoded = SKBitmap.Decode(bytes);
+            if (decoded is not null && decoded.Width > 0 && decoded.Height > 0) result = bytes;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException)
+        {
+            logger.LogDebug(exception, "Could not load team-card avatar Host={Host}",
+                Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "invalid");
+        }
+        finally
+        {
+            cache.Set(
+                cacheKey,
+                new AvatarCacheEntry(result),
+                result is null ? TimeSpan.FromMinutes(15) : TimeSpan.FromHours(6));
+        }
+        return result;
+    }
+
+    private static async Task<bool> IsPublicHostAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        if (uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)) return false;
+        try
+        {
+            var addresses = await Dns.GetHostAddressesAsync(uri.DnsSafeHost, cancellationToken);
+            return addresses.Length > 0 && addresses.All(IsPublicAddress);
+        }
+        catch (Exception exception) when (exception is System.Net.Sockets.SocketException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPublicAddress(IPAddress address)
+    {
+        if (IPAddress.IsLoopback(address)) return false;
+        var bytes = address.MapToIPv6().GetAddressBytes();
+        if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork || address.IsIPv4MappedToIPv6)
+        {
+            var ipv4 = address.MapToIPv4().GetAddressBytes();
+            return ipv4[0] != 10 &&
+                   ipv4[0] != 127 &&
+                   !(ipv4[0] == 169 && ipv4[1] == 254) &&
+                   !(ipv4[0] == 172 && ipv4[1] is >= 16 and <= 31) &&
+                   !(ipv4[0] == 192 && ipv4[1] == 168);
+        }
+        return !(bytes[0] == 0xfc || bytes[0] == 0xfd || (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80));
+    }
+
+    private static bool IsHttpUrl(string? value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
+
+    private sealed record AvatarCacheEntry(byte[]? Data);
 }
 
 public sealed record GeneratedTeamCard(byte[] Data, string ContentType);
-public sealed record TeamCardTeam(string Name, string? CaptainName, IReadOnlyList<string> Players);
+public sealed record TeamCardPlayer(string Name, string? AvatarUrl = null, byte[]? AvatarData = null, bool IsCaptain = false);
+public sealed record TeamCardSlot(string DisplayName, IReadOnlyList<TeamCardPlayer> Players, bool IsCaptainSlot = false);
+public sealed record TeamCardTeam(
+    string Name,
+    string? CaptainName,
+    double AverageScore,
+    IReadOnlyList<TeamCardSlot> Slots)
+{
+    public TeamCardTeam(string name, string? captainName, IReadOnlyList<string> players)
+        : this(
+            name,
+            captainName,
+            0,
+            players.Select((player, index) => new TeamCardSlot(
+                player,
+                [new TeamCardPlayer(player, IsCaptain: string.Equals(player, captainName, StringComparison.OrdinalIgnoreCase))],
+                index == 0 && string.Equals(player, captainName, StringComparison.OrdinalIgnoreCase))).ToList())
+    {
+    }
+}
 
 internal static class SimpleTeamCardPng
 {
-    private const int Width = 1200;
-    private const int Height = 760;
-    private static readonly Dictionary<char, string[]> Font = BuildFont();
+    private const int Width = 1440;
+    private const int Height = 900;
+    private static readonly SKColor BackgroundTop = new(9, 18, 38);
+    private static readonly SKColor BackgroundBottom = new(24, 39, 66);
+    private static readonly SKColor TextPrimary = new(15, 23, 42);
+    private static readonly SKColor TextSecondary = new(71, 85, 105);
+    private static readonly SKTypeface RegularTypeface = FindTypeface(SKFontStyle.Normal);
+    private static readonly SKTypeface BoldTypeface = FindTypeface(SKFontStyle.Bold);
+    private static readonly SKColor[] TeamColors =
+    [
+        new(14, 165, 233),
+        new(249, 115, 22),
+        new(34, 197, 94),
+        new(168, 85, 247)
+    ];
 
-    public static byte[] Render(string sessionName, DateTimeOffset? startTime, IReadOnlyList<TeamCardTeam> teams)
+    public static byte[] Render(
+        string sessionName,
+        DateTimeOffset? startTime,
+        IReadOnlyList<TeamCardTeam> teams) =>
+        Render(sessionName, startTime, null, teams);
+
+    public static byte[] Render(
+        string sessionName,
+        DateTimeOffset? startTime,
+        string? location,
+        IReadOnlyList<TeamCardTeam> teams)
     {
-        var canvas = new Canvas(Width, Height, new Rgb(245, 247, 251));
-        canvas.FillRect(0, 0, Width, 120, new Rgb(15, 23, 42));
-        canvas.DrawText("VOLLEY DRAFT", 48, 30, 6, new Rgb(56, 189, 248));
-        canvas.DrawText(ToAscii(sessionName), 48, 76, 3, new Rgb(255, 255, 255));
-        if (startTime is not null)
+        using var surface = SKSurface.Create(new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul))
+            ?? throw new InvalidOperationException("Could not create team-card canvas.");
+        var canvas = surface.Canvas;
+        using (var background = new SKPaint
+               {
+                   Shader = SKShader.CreateLinearGradient(
+                       new SKPoint(0, 0),
+                       new SKPoint(Width, Height),
+                       [BackgroundTop, BackgroundBottom],
+                       null,
+                       SKShaderTileMode.Clamp)
+               })
         {
-            var local = startTime.Value.ToOffset(TimeSpan.FromHours(7));
-            canvas.DrawText(local.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture), 850, 78, 3, new Rgb(203, 213, 225));
+            canvas.DrawRect(new SKRect(0, 0, Width, Height), background);
         }
 
-        var colors = new[] { new Rgb(14, 165, 233), new Rgb(249, 115, 22), new Rgb(34, 197, 94) };
+        DrawText(canvas, "VOLLEY DRAFT • ĐỘI HÌNH", 48, 48, 25, new SKColor(125, 211, 252), true);
+        DrawText(canvas, sessionName, 48, 95, 42, SKColors.White, true, 930);
+        var metadata = BuildMetadata(startTime, location);
+        DrawText(canvas, metadata, 48, 139, 22, new SKColor(203, 213, 225), false, 1180);
+
         var cards = teams.Take(3).ToList();
         if (cards.Count == 0)
         {
-            canvas.DrawText("CHUA CO KET QUA CHIA TEAM", 250, 350, 5, new Rgb(100, 116, 139));
-            return canvas.EncodePng();
+            DrawRoundedRect(canvas, new SKRect(220, 280, 1220, 650), 30, new SKColor(255, 255, 255, 235));
+            DrawText(canvas, "Chưa có kết quả chia đội", 420, 470, 42, TextSecondary, true, 700);
+            return Encode(surface);
         }
 
-        const int gap = 24;
-        const int margin = 30;
-        var cardWidth = (Width - margin * 2 - gap * 2) / 3;
+        const float margin = 40;
+        const float gap = 24;
+        const float top = 180;
+        const float bottom = 850;
+        var cardWidth = (Width - margin * 2 - gap * 2) / 3f;
         for (var index = 0; index < cards.Count; index += 1)
         {
             var team = cards[index];
-            var x = margin + index * (cardWidth + gap);
-            canvas.FillRect(x, 145, cardWidth, 580, new Rgb(255, 255, 255));
-            canvas.FillRect(x, 145, cardWidth, 72, colors[index]);
-            canvas.DrawText(ToAscii(team.Name), x + 24, 170, 4, new Rgb(255, 255, 255), cardWidth - 48);
-            var captain = string.IsNullOrWhiteSpace(team.CaptainName) ? "CAPTAIN: CHUA CHON" : $"CAPTAIN: {ToAscii(team.CaptainName)}";
-            canvas.DrawText(captain, x + 24, 238, 2, new Rgb(71, 85, 105), cardWidth - 48);
-            var players = team.Players.Count == 0 ? ["CHUA CO THANH VIEN"] : team.Players;
-            for (var playerIndex = 0; playerIndex < players.Count && playerIndex < 11; playerIndex += 1)
+            var color = TeamColors[index % TeamColors.Length];
+            var left = margin + index * (cardWidth + gap);
+            DrawTeamCard(canvas, new SKRect(left, top, left + cardWidth, bottom), team, color);
+        }
+
+        using var image = surface.Snapshot();
+        using var data = image.Encode(SKEncodedImageFormat.Png, 92);
+        return data.ToArray();
+    }
+
+    private static void DrawTeamCard(SKCanvas canvas, SKRect rect, TeamCardTeam team, SKColor color)
+    {
+        var shadowRect = rect;
+        shadowRect.Offset(0, 7);
+        DrawRoundedRect(canvas, shadowRect, 25, new SKColor(0, 0, 0, 45));
+        DrawRoundedRect(canvas, rect, 25, new SKColor(248, 250, 252));
+        var header = new SKRect(rect.Left, rect.Top, rect.Right, rect.Top + 124);
+        DrawTopRoundedHeader(canvas, header, 25, color);
+
+        DrawText(canvas, team.Name, rect.Left + 25, rect.Top + 46, 31, SKColors.White, true, rect.Width - 145);
+        var score = team.AverageScore.ToString("0.0", CultureInfo.InvariantCulture);
+        DrawPill(canvas, $"ĐIỂM {score}", rect.Right - 112, rect.Top + 22, 88, 30, new SKColor(255, 255, 255, 52), SKColors.White);
+        var captain = string.IsNullOrWhiteSpace(team.CaptainName) ? "Chưa chọn đội trưởng" : $"Đội trưởng: {team.CaptainName}";
+        DrawText(canvas, captain, rect.Left + 25, rect.Top + 88, 19, new SKColor(240, 249, 255), false, rect.Width - 50);
+
+        var playerCount = team.Slots.Sum(slot => Math.Max(1, slot.Players.Count));
+        DrawText(canvas, $"{playerCount} người", rect.Left + 25, rect.Top + 160, 20, TextPrimary, true);
+        DrawText(canvas, $"{team.Slots.Count} slot", rect.Left + 145, rect.Top + 160, 20, TextSecondary, false);
+        using (var separator = new SKPaint { Color = new SKColor(226, 232, 240), StrokeWidth = 1.5f, IsAntialias = true })
+            canvas.DrawLine(rect.Left + 25, rect.Top + 180, rect.Right - 25, rect.Top + 180, separator);
+
+        var rowTop = rect.Top + 195;
+        const float rowHeight = 70;
+        var slots = team.Slots.Take(6).ToList();
+        for (var index = 0; index < slots.Count; index += 1)
+        {
+            DrawSlotRow(canvas, rect.Left + 18, rowTop + index * rowHeight, rect.Width - 36, rowHeight - 6, index + 1, slots[index], color);
+        }
+        if (slots.Count == 0)
+            DrawText(canvas, "Chưa có thành viên", rect.Left + 80, rowTop + 70, 23, TextSecondary, false, rect.Width - 130);
+
+        DrawText(canvas, "Tạo tự động bởi Volley Draft", rect.Left + 25, rect.Bottom - 22, 14, new SKColor(148, 163, 184), false, rect.Width - 50);
+    }
+
+    private static void DrawSlotRow(
+        SKCanvas canvas,
+        float x,
+        float y,
+        float width,
+        float height,
+        int number,
+        TeamCardSlot slot,
+        SKColor color)
+    {
+        var background = number % 2 == 0 ? new SKColor(241, 245, 249) : new SKColor(248, 250, 252);
+        DrawRoundedRect(canvas, new SKRect(x, y, x + width, y + height), 13, background);
+        DrawText(canvas, number.ToString(CultureInfo.InvariantCulture), x + 10, y + 39, 17, new SKColor(148, 163, 184), true);
+
+        var avatarX = x + 50;
+        var centerY = y + height / 2;
+        var displayedPlayers = slot.Players.Take(2).ToList();
+        for (var index = displayedPlayers.Count - 1; index >= 0; index -= 1)
+        {
+            var player = displayedPlayers[index];
+            DrawAvatar(canvas, avatarX + index * 25, centerY, 21, player, color);
+        }
+        var names = string.Join(" / ", slot.Players.Select(player => player.Name));
+        var nameX = avatarX + (displayedPlayers.Count > 1 ? 58 : 34);
+        var hasCaptain = slot.IsCaptainSlot || slot.Players.Any(player => player.IsCaptain);
+        DrawText(canvas, names, nameX, y + 31, 18, TextPrimary, true, x + width - nameX - 10);
+        if (slot.Players.Count > 1)
+            DrawText(canvas, "SHARE SLOT", nameX, y + 52, 12, color, true, 100);
+        else if (hasCaptain)
+            DrawPill(canvas, "ĐỘI TRƯỞNG", nameX, y + 39, 91, 18, new SKColor(254, 243, 199), new SKColor(180, 83, 9), 10);
+    }
+
+    private static void DrawAvatar(SKCanvas canvas, float centerX, float centerY, float radius, TeamCardPlayer player, SKColor teamColor)
+    {
+        using var border = new SKPaint { Color = SKColors.White, IsAntialias = true };
+        canvas.DrawCircle(centerX, centerY, radius + 2.5f, border);
+        if (player.AvatarData is not null)
+        {
+            using var bitmap = SKBitmap.Decode(player.AvatarData);
+            if (bitmap is not null)
             {
-                var label = $"{playerIndex + 1}. {ToAscii(players[playerIndex])}";
-                canvas.DrawText(label, x + 24, 285 + playerIndex * 38, 2, new Rgb(15, 23, 42), cardWidth - 48);
-            }
-            canvas.DrawText($"TOTAL: {team.Players.Count}", x + 24, 684, 2, colors[index]);
-        }
-        return canvas.EncodePng();
-    }
-
-    private static string ToAscii(string value)
-    {
-        var decomposed = value.ToUpperInvariant().Normalize(NormalizationForm.FormD);
-        var builder = new StringBuilder();
-        foreach (var character in decomposed)
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark) continue;
-            builder.Append(character == 'Đ' ? 'D' : character);
-        }
-        return builder.ToString().Normalize(NormalizationForm.FormC);
-    }
-
-    private sealed class Canvas
-    {
-        private readonly int width;
-        private readonly int height;
-        private readonly byte[] pixels;
-
-        public Canvas(int width, int height, Rgb background)
-        {
-            this.width = width;
-            this.height = height;
-            pixels = new byte[width * height * 4];
-            FillRect(0, 0, width, height, background);
-        }
-
-        public void FillRect(int x, int y, int rectWidth, int rectHeight, Rgb color)
-        {
-            for (var py = Math.Max(0, y); py < Math.Min(height, y + rectHeight); py += 1)
-            for (var px = Math.Max(0, x); px < Math.Min(width, x + rectWidth); px += 1)
-                SetPixel(px, py, color);
-        }
-
-        public void DrawText(string text, int x, int y, int scale, Rgb color, int maxWidth = int.MaxValue)
-        {
-            var cursor = x;
-            foreach (var character in text)
-            {
-                if (cursor + 6 * scale > x + maxWidth) break;
-                if (!Font.TryGetValue(character, out var glyph)) glyph = Font['?'];
-                for (var row = 0; row < glyph.Length; row += 1)
-                for (var column = 0; column < glyph[row].Length; column += 1)
-                    if (glyph[row][column] == '1') FillRect(cursor + column * scale, y + row * scale, scale, scale, color);
-                cursor += 6 * scale;
+                using var clip = new SKPath();
+                clip.AddCircle(centerX, centerY, radius);
+                canvas.Save();
+                canvas.ClipPath(clip, SKClipOperation.Intersect, true);
+                var source = CropSquare(bitmap.Width, bitmap.Height);
+                canvas.DrawBitmap(bitmap, source, new SKRect(centerX - radius, centerY - radius, centerX + radius, centerY + radius));
+                canvas.Restore();
+                return;
             }
         }
 
-        private void SetPixel(int x, int y, Rgb color)
-        {
-            var offset = (y * width + x) * 4;
-            pixels[offset] = color.R;
-            pixels[offset + 1] = color.G;
-            pixels[offset + 2] = color.B;
-            pixels[offset + 3] = 255;
-        }
-
-        public byte[] EncodePng()
-        {
-            using var output = new MemoryStream();
-            output.Write([137, 80, 78, 71, 13, 10, 26, 10]);
-            var header = new byte[13];
-            BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0, 4), width);
-            BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4, 4), height);
-            header[8] = 8;
-            header[9] = 6;
-            WriteChunk(output, "IHDR", header);
-            using var raw = new MemoryStream();
-            for (var row = 0; row < height; row += 1)
-            {
-                raw.WriteByte(0);
-                raw.Write(pixels, row * width * 4, width * 4);
-            }
-            raw.Position = 0;
-            using var compressed = new MemoryStream();
-            using (var zlib = new ZLibStream(compressed, CompressionLevel.Fastest, true)) raw.CopyTo(zlib);
-            WriteChunk(output, "IDAT", compressed.ToArray());
-            WriteChunk(output, "IEND", []);
-            return output.ToArray();
-        }
+        using var fallback = new SKPaint { Color = AvatarColor(player.Name, teamColor), IsAntialias = true };
+        canvas.DrawCircle(centerX, centerY, radius, fallback);
+        var initials = Initials(player.Name);
+        using var text = TextPaint(13, SKColors.White, true);
+        var textWidth = text.MeasureText(initials);
+        canvas.DrawText(initials, centerX - textWidth / 2, centerY + 5, text);
     }
 
-    private static void WriteChunk(Stream stream, string type, byte[] data)
+    private static SKRect CropSquare(int width, int height)
     {
-        Span<byte> length = stackalloc byte[4];
-        BinaryPrimitives.WriteInt32BigEndian(length, data.Length);
-        stream.Write(length);
-        var typeBytes = Encoding.ASCII.GetBytes(type);
-        stream.Write(typeBytes);
-        stream.Write(data);
-        var crcInput = new byte[typeBytes.Length + data.Length];
-        typeBytes.CopyTo(crcInput, 0);
-        data.CopyTo(crcInput, typeBytes.Length);
-        Span<byte> crc = stackalloc byte[4];
-        BinaryPrimitives.WriteUInt32BigEndian(crc, Crc32(crcInput));
-        stream.Write(crc);
+        var size = Math.Min(width, height);
+        return new SKRect((width - size) / 2f, (height - size) / 2f, (width + size) / 2f, (height + size) / 2f);
     }
 
-    private static uint Crc32(byte[] data)
+    private static void DrawPill(
+        SKCanvas canvas,
+        string text,
+        float x,
+        float y,
+        float width,
+        float height,
+        SKColor background,
+        SKColor foreground,
+        float fontSize = 12)
     {
-        var crc = 0xffffffffu;
-        foreach (var value in data)
+        DrawRoundedRect(canvas, new SKRect(x, y, x + width, y + height), height / 2, background);
+        using var paint = TextPaint(fontSize, foreground, true);
+        var textWidth = paint.MeasureText(text);
+        canvas.DrawText(text, x + (width - textWidth) / 2, y + height / 2 + fontSize * .36f, paint);
+    }
+
+    private static void DrawText(
+        SKCanvas canvas,
+        string text,
+        float x,
+        float baseline,
+        float fontSize,
+        SKColor color,
+        bool bold,
+        float maxWidth = float.MaxValue)
+    {
+        using var paint = TextPaint(fontSize, color, bold);
+        var fitted = FitText(text, paint, maxWidth);
+        canvas.DrawText(fitted, x, baseline, paint);
+    }
+
+    private static SKPaint TextPaint(float fontSize, SKColor color, bool bold) => new()
+    {
+        Color = color,
+        TextSize = fontSize,
+        Typeface = bold ? BoldTypeface : RegularTypeface,
+        IsAntialias = true,
+        SubpixelText = true
+    };
+
+    private static string FitText(string value, SKPaint paint, float maxWidth)
+    {
+        if (maxWidth == float.MaxValue || paint.MeasureText(value) <= maxWidth) return value;
+        var text = value.Trim();
+        while (text.Length > 1 && paint.MeasureText(text + "…") > maxWidth) text = text[..^1].TrimEnd();
+        return text + "…";
+    }
+
+    private static void DrawRoundedRect(SKCanvas canvas, SKRect rect, float radius, SKColor color)
+    {
+        using var paint = new SKPaint { Color = color, IsAntialias = true };
+        canvas.DrawRoundRect(rect, radius, radius, paint);
+    }
+
+    private static void DrawTopRoundedHeader(SKCanvas canvas, SKRect rect, float radius, SKColor color)
+    {
+        using var paint = new SKPaint { Color = color, IsAntialias = true };
+        using var path = new SKPath();
+        path.MoveTo(rect.Left, rect.Bottom);
+        path.LineTo(rect.Left, rect.Top + radius);
+        path.QuadTo(rect.Left, rect.Top, rect.Left + radius, rect.Top);
+        path.LineTo(rect.Right - radius, rect.Top);
+        path.QuadTo(rect.Right, rect.Top, rect.Right, rect.Top + radius);
+        path.LineTo(rect.Right, rect.Bottom);
+        path.Close();
+        canvas.DrawPath(path, paint);
+    }
+
+    private static string BuildMetadata(DateTimeOffset? startTime, string? location)
+    {
+        var parts = new List<string>();
+        if (startTime is not null)
         {
-            crc ^= value;
-            for (var bit = 0; bit < 8; bit += 1) crc = (crc & 1) == 1 ? 0xedb88320u ^ (crc >> 1) : crc >> 1;
+            var local = startTime.Value.ToOffset(TimeSpan.FromHours(7));
+            parts.Add(local.ToString("HH:mm • dddd, dd/MM/yyyy", new CultureInfo("vi-VN")));
         }
-        return crc ^ 0xffffffffu;
+        if (!string.IsNullOrWhiteSpace(location)) parts.Add(location.Trim());
+        return parts.Count == 0 ? "Thông tin trận đang được cập nhật" : string.Join("  •  ", parts);
     }
 
-    private static Dictionary<char, string[]> BuildFont()
+    private static string Initials(string name)
     {
-        var rows = new Dictionary<char, string>
-        {
-            [' '] = "00000/00000/00000/00000/00000/00000/00000", ['?'] = "01110/10001/00001/00010/00100/00000/00100",
-            ['.'] = "00000/00000/00000/00000/00000/00110/00110", [':'] = "00000/00110/00110/00000/00110/00110/00000",
-            ['-'] = "00000/00000/00000/11111/00000/00000/00000", ['/'] = "00001/00010/00100/01000/10000/00000/00000",
-            ['0'] = "01110/10001/10011/10101/11001/10001/01110", ['1'] = "00100/01100/00100/00100/00100/00100/01110",
-            ['2'] = "01110/10001/00001/00010/00100/01000/11111", ['3'] = "11110/00001/00001/01110/00001/00001/11110",
-            ['4'] = "00010/00110/01010/10010/11111/00010/00010", ['5'] = "11111/10000/10000/11110/00001/00001/11110",
-            ['6'] = "01110/10000/10000/11110/10001/10001/01110", ['7'] = "11111/00001/00010/00100/01000/01000/01000",
-            ['8'] = "01110/10001/10001/01110/10001/10001/01110", ['9'] = "01110/10001/10001/01111/00001/00001/01110",
-            ['A'] = "01110/10001/10001/11111/10001/10001/10001", ['B'] = "11110/10001/10001/11110/10001/10001/11110",
-            ['C'] = "01110/10001/10000/10000/10000/10001/01110", ['D'] = "11110/10001/10001/10001/10001/10001/11110",
-            ['E'] = "11111/10000/10000/11110/10000/10000/11111", ['F'] = "11111/10000/10000/11110/10000/10000/10000",
-            ['G'] = "01110/10001/10000/10111/10001/10001/01110", ['H'] = "10001/10001/10001/11111/10001/10001/10001",
-            ['I'] = "01110/00100/00100/00100/00100/00100/01110", ['J'] = "00111/00010/00010/00010/10010/10010/01100",
-            ['K'] = "10001/10010/10100/11000/10100/10010/10001", ['L'] = "10000/10000/10000/10000/10000/10000/11111",
-            ['M'] = "10001/11011/10101/10101/10001/10001/10001", ['N'] = "10001/11001/10101/10011/10001/10001/10001",
-            ['O'] = "01110/10001/10001/10001/10001/10001/01110", ['P'] = "11110/10001/10001/11110/10000/10000/10000",
-            ['Q'] = "01110/10001/10001/10001/10101/10010/01101", ['R'] = "11110/10001/10001/11110/10100/10010/10001",
-            ['S'] = "01111/10000/10000/01110/00001/00001/11110", ['T'] = "11111/00100/00100/00100/00100/00100/00100",
-            ['U'] = "10001/10001/10001/10001/10001/10001/01110", ['V'] = "10001/10001/10001/10001/10001/01010/00100",
-            ['W'] = "10001/10001/10001/10101/10101/10101/01010", ['X'] = "10001/10001/01010/00100/01010/10001/10001",
-            ['Y'] = "10001/10001/01010/00100/00100/00100/00100", ['Z'] = "11111/00001/00010/00100/01000/10000/11111"
-        };
-        return rows.ToDictionary(item => item.Key, item => item.Value.Split('/'));
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return "?";
+        var first = parts[0][0].ToString();
+        var last = parts.Length > 1 ? parts[^1][0].ToString() : string.Empty;
+        return (first + last).ToUpper(new CultureInfo("vi-VN"));
     }
 
-    private readonly record struct Rgb(byte R, byte G, byte B);
+    private static SKColor AvatarColor(string name, SKColor fallback)
+    {
+        uint hash = 2166136261;
+        foreach (var character in name)
+        {
+            hash ^= character;
+            hash *= 16777619;
+        }
+        var factor = .72f + (hash % 18) / 100f;
+        return new SKColor(
+            (byte)Math.Clamp(fallback.Red * factor, 0, 255),
+            (byte)Math.Clamp(fallback.Green * factor, 0, 255),
+            (byte)Math.Clamp(fallback.Blue * factor, 0, 255));
+    }
+
+    private static SKTypeface FindTypeface(SKFontStyle style) =>
+        SKTypeface.FromFamilyName("Noto Sans", style) ??
+        SKTypeface.FromFamilyName("DejaVu Sans", style) ??
+        SKTypeface.FromFamilyName("Segoe UI", style) ??
+        SKTypeface.Default;
+
+    private static byte[] Encode(SKSurface surface)
+    {
+        using var image = surface.Snapshot();
+        using var data = image.Encode(SKEncodedImageFormat.Png, 92);
+        return data.ToArray();
+    }
 }

@@ -61,6 +61,8 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloReminderScheduleTables(db);
             await EnsureSqliteWaitlistAndActionHistoryTables(db);
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" INTEGER NOT NULL DEFAULT 0");
+            await EnsureSqliteColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" INTEGER NOT NULL DEFAULT 0");
+            await EnsureSqliteColumn(db, "ZaloReminderSchedules", "IncludePaymentQr", "\"IncludePaymentQr\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" TEXT NULL");
@@ -131,6 +133,8 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloReminderScheduleTables(db);
             await EnsurePostgresWaitlistAndActionHistoryTables(db);
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" boolean NOT NULL DEFAULT FALSE");
+            await EnsurePostgresColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" boolean NOT NULL DEFAULT FALSE");
+            await EnsurePostgresColumn(db, "ZaloReminderSchedules", "IncludePaymentQr", "\"IncludePaymentQr\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" bigint NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" integer NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" timestamp with time zone NULL");
@@ -727,6 +731,8 @@ public static class DatabaseSchemaPatch
                 "Audience" TEXT NOT NULL DEFAULT 'All',
                 "OnlyIfMissingSlots" INTEGER NOT NULL DEFAULT 0,
                 "StopWhenFull" INTEGER NOT NULL DEFAULT 0,
+                "AllowAfterSessionStart" INTEGER NOT NULL DEFAULT 0,
+                "IncludePaymentQr" INTEGER NOT NULL DEFAULT 0,
                 "Repeats" INTEGER NOT NULL DEFAULT 0,
                 "IntervalMinutes" INTEGER NULL,
                 "Enabled" INTEGER NOT NULL DEFAULT 1,
@@ -760,6 +766,8 @@ public static class DatabaseSchemaPatch
                 "Audience" text NOT NULL DEFAULT 'All',
                 "OnlyIfMissingSlots" boolean NOT NULL DEFAULT FALSE,
                 "StopWhenFull" boolean NOT NULL DEFAULT FALSE,
+                "AllowAfterSessionStart" boolean NOT NULL DEFAULT FALSE,
+                "IncludePaymentQr" boolean NOT NULL DEFAULT FALSE,
                 "Repeats" boolean NOT NULL DEFAULT FALSE,
                 "IntervalMinutes" integer NULL,
                 "Enabled" boolean NOT NULL DEFAULT TRUE,

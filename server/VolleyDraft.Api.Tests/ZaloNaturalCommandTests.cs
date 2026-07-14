@@ -110,6 +110,25 @@ public sealed class ZaloNaturalCommandTests
     }
 
     [Fact]
+    public void Payment_qr_reminder_can_run_after_the_match_and_never_depends_on_missing_slots()
+    {
+        var question = "lên schedular vào lúc 9h tối thứ 4, bạn sẽ gửi QR thanh toán của thứ 4 vào nhóm này, và tag những người đã tham gia";
+        Assert.True(ZaloBotIntelligence.TryParseReminderCommand(question, out var basic));
+        var command = ZaloNaturalCommandParser.EnrichReminder(
+            question,
+            basic,
+            new DateTimeOffset(2026, 7, 15, 0, 10, 0, TimeSpan.FromHours(7)));
+
+        Assert.Equal(new TimeOnly(21, 0), command.LocalTime);
+        Assert.Equal(ZaloReminderAudience.Roster, command.Audience);
+        Assert.True(command.UseSessionDate);
+        Assert.True(command.IncludePaymentQr);
+        Assert.True(command.AllowAfterSessionStart);
+        Assert.False(command.OnlyIfMissingSlots);
+        Assert.False(command.StopWhenFull);
+    }
+
+    [Fact]
     public void Reminder_parser_targets_the_whole_group_when_user_says_everyone()
     {
         var command = ZaloNaturalCommandParser.EnrichReminder(
