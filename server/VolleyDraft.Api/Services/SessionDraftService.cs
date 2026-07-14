@@ -477,6 +477,194 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return ServiceResult<GuestPlayerAddResult>.Created(new(ToPlayerResponse(player), count, session.TeamCount));
     }
 
+    public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync(
+        string adminUserId,
+        string sessionId,
+        string anchorPlayerReference,
+        IReadOnlyList<ShareSlotParticipantInput> partnerInputs)
+    {
+        var inputs = partnerInputs
+            .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
+            .Select(item => item with
+            {
+                DisplayName = item.DisplayName.Trim().TrimStart('@'),
+                ZaloUserId = string.IsNullOrWhiteSpace(item.ZaloUserId)
+                    ? null
+                    : NormalizeZaloId(item.ZaloUserId)
+            })
+            .DistinctBy(item => item.ZaloUserId ?? ZaloBotIntelligence.Normalize(item.DisplayName), StringComparer.Ordinal)
+            .ToList();
+        if (inputs.Count is < 1 or > 2)
+            return BadRequest<PreDraftSharedSlotResult>("Share slot chỉ nhận +1 hoặc +2 người; +2 phải có đúng hai tên khác nhau.");
+
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null) return NotFound<PreDraftSharedSlotResult>("Không tìm thấy session.");
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+            return BadRequest<PreDraftSharedSlotResult>("Chỉ ghép share slot kiểu này trước khi draft bắt đầu.");
+
+        var sessionPlayers = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId)
+            .ToListAsync();
+        var anchorResolution = ResolveSessionPlayer(sessionPlayers.Where(player => player.IsPresent).ToList(), anchorPlayerReference);
+        if (anchorResolution.Player is null)
+            return BadRequest<PreDraftSharedSlotResult>(anchorResolution.Error!);
+        var anchor = anchorResolution.Player;
+
+        var currentSlot = await db.DraftSlots
+            .Include(slot => slot.Players.OrderBy(link => link.RotationOrder))
+            .ThenInclude(link => link.SessionPlayer)
+            .SingleOrDefaultAsync(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                slot.Players.Any(link => link.SessionPlayerId == anchor.Id));
+        if (currentSlot is null && anchor.IsInsideSharedSlot)
+            return ServiceResult<PreDraftSharedSlotResult>.Failure(StatusCodes.Status409Conflict, "Dữ liệu share slot của người chơi đang không đồng bộ.");
+        if ((currentSlot?.Players.Count ?? 1) + inputs.Count > 3)
+            return BadRequest<PreDraftSharedSlotResult>("Một share slot chỉ hỗ trợ người chính và tối đa 2 người chơi chung.");
+
+        var addedPlayers = new List<SessionPlayer>();
+        var newlyAddedNames = new List<string>();
+        foreach (var input in inputs)
+        {
+            SessionPlayer? partner = null;
+            if (input.ZaloUserId is not null)
+            {
+                partner = sessionPlayers.FirstOrDefault(player =>
+                    NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == input.ZaloUserId);
+            }
+            partner ??= sessionPlayers.FirstOrDefault(player =>
+                ZaloBotIntelligence.Normalize(player.DisplayName) == ZaloBotIntelligence.Normalize(input.DisplayName));
+
+            if (partner is null)
+            {
+                PlayerProfile? profile = null;
+                if (input.ZaloUserId is not null)
+                {
+                    profile = await db.PlayerProfiles.SingleOrDefaultAsync(item => item.ZaloUserId == input.ZaloUserId);
+                    if (profile is null)
+                    {
+                        profile = new PlayerProfile
+                        {
+                            ZaloUserId = input.ZaloUserId,
+                            DisplayName = input.DisplayName,
+                            AvatarUrl = input.AvatarUrl,
+                            DefaultRole = PlayerRole.New,
+                            DefaultLevel = PlayerLevel.New
+                        };
+                        db.PlayerProfiles.Add(profile);
+                    }
+                    else
+                    {
+                        profile.DisplayName = input.DisplayName;
+                        profile.AvatarUrl ??= input.AvatarUrl;
+                        profile.DefaultRole ??= PlayerRole.New;
+                        profile.DefaultLevel ??= PlayerLevel.New;
+                        profile.LastSyncedAt = DateTimeOffset.UtcNow;
+                        profile.UpdatedAt = DateTimeOffset.UtcNow;
+                    }
+                }
+
+                partner = new SessionPlayer
+                {
+                    SessionId = sessionId,
+                    PlayerProfileId = profile?.Id,
+                    PlayerProfile = profile,
+                    DisplayName = input.DisplayName,
+                    AvatarUrl = input.AvatarUrl ?? profile?.AvatarUrl,
+                    Gender = profile?.Gender is PlayerGender.Male or PlayerGender.Female
+                        ? profile.Gender.Value
+                        : PlayerGender.Unknown,
+                    Role = profile?.DefaultRole ?? PlayerRole.New,
+                    Level = profile?.DefaultLevel ?? PlayerLevel.New,
+                    Score = CalculateScore(profile?.DefaultRole ?? PlayerRole.New, profile?.DefaultLevel ?? PlayerLevel.New),
+                    IsPresent = true,
+                    IsCaptainEligible = false
+                };
+                db.SessionPlayers.Add(partner);
+                sessionPlayers.Add(partner);
+                newlyAddedNames.Add(partner.DisplayName);
+            }
+            else
+            {
+                partner.IsPresent = true;
+            }
+
+            if (partner.Id == anchor.Id)
+                return BadRequest<PreDraftSharedSlotResult>("Người chính không thể tự share slot với chính mình.");
+            if (addedPlayers.Any(item => item.Id == partner.Id))
+                return BadRequest<PreDraftSharedSlotResult>("Danh sách +2 phải gồm hai người khác nhau.");
+            if (partner.IsInsideSharedSlot && currentSlot?.Players.All(link => link.SessionPlayerId != partner.Id) != false)
+                return BadRequest<PreDraftSharedSlotResult>($"{partner.DisplayName} đang nằm trong một share slot khác.");
+            if (currentSlot?.Players.Any(link => link.SessionPlayerId == partner.Id) == true)
+                return ServiceResult<PreDraftSharedSlotResult>.Failure(StatusCodes.Status409Conflict, $"{partner.DisplayName} đã share slot với {anchor.DisplayName}.");
+            addedPlayers.Add(partner);
+        }
+
+        var slot = currentSlot ?? new DraftSlot
+        {
+            SessionId = sessionId,
+            Type = DraftSlotType.Shared,
+            Role = anchor.Role
+        };
+        if (currentSlot is null)
+        {
+            slot.Players.Add(new DraftSlotPlayer
+            {
+                DraftSlotId = slot.Id,
+                SessionPlayerId = anchor.Id,
+                SessionPlayer = anchor,
+                RotationOrder = 1
+            });
+            anchor.IsInsideSharedSlot = true;
+            db.DraftSlots.Add(slot);
+        }
+        var nextOrder = slot.Players.Count + 1;
+        foreach (var partner in addedPlayers)
+        {
+            slot.Players.Add(new DraftSlotPlayer
+            {
+                DraftSlotId = slot.Id,
+                SessionPlayerId = partner.Id,
+                SessionPlayer = partner,
+                RotationOrder = nextOrder++
+            });
+            partner.IsInsideSharedSlot = true;
+        }
+        var allSlotPlayers = slot.Players.OrderBy(link => link.RotationOrder).Select(link => link.SessionPlayer).ToList();
+        slot.DisplayName = string.Join(" / ", allSlotPlayers.Select(player => player.DisplayName));
+        slot.AverageScore = allSlotPlayers.Average(player => player.Score);
+        slot.Gender = CombinedGender(allSlotPlayers);
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        var presentPlayers = await db.SessionPlayers.CountAsync(player => player.SessionId == sessionId && player.IsPresent);
+        var sharedPlayerCount = await db.DraftSlotPlayers
+            .CountAsync(link => link.DraftSlot.SessionId == sessionId && link.DraftSlot.Type == DraftSlotType.Shared && link.SessionPlayer.IsPresent);
+        var sharedSlotCount = await db.DraftSlots
+            .CountAsync(item => item.SessionId == sessionId && item.Type == DraftSlotType.Shared && item.Players.Any(link => link.SessionPlayer.IsPresent));
+        var effectiveSlotCount = presentPlayers - sharedPlayerCount + sharedSlotCount;
+        var incompleteNames = allSlotPlayers
+            .Where(player => player.Gender == PlayerGender.Unknown ||
+                             (player.PlayerProfile is not null &&
+                              (player.PlayerProfile.Gender is null or PlayerGender.Unknown ||
+                               player.PlayerProfile.DefaultRole is null ||
+                               player.PlayerProfile.DefaultLevel is null)))
+            .Select(player => player.DisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        await transaction.CommitAsync();
+        return ServiceResult<PreDraftSharedSlotResult>.Created(new(
+            anchor.DisplayName,
+            addedPlayers.Select(player => player.DisplayName).ToList(),
+            newlyAddedNames,
+            slot.DisplayName,
+            presentPlayers,
+            effectiveSlotCount,
+            incompleteNames));
+    }
+
     public async Task<ServiceResult<IReadOnlyList<SessionPlayerResponse>>> GetPlayersAsync(
         string adminUserId,
         string sessionId)
@@ -1041,6 +1229,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 var opened = await OpenBagAsync(adminUserId, sessionId, bag.Id);
                 if (!opened.IsSuccess)
                     return ServiceResult<DraftStateResponse>.Failure(opened.StatusCode, opened.Error!);
+                // OpenBagAsync uses ExecuteUpdate for optimistic concurrency. Clear tracked
+                // bag/slot entities so the next automatic pick cannot reuse stale IsOpened or
+                // AssignedTeamId values from this DbContext.
+                db.ChangeTracker.Clear();
             }
             return ServiceResult<DraftStateResponse>.Failure(StatusCodes.Status409Conflict, "Auto draft vượt quá giới hạn 200 lượt, đã dừng để bảo vệ dữ liệu.");
         }
@@ -1337,10 +1529,19 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var players = await db.SessionPlayers
             .Where(player => player.SessionId == sessionId && player.IsPresent)
             .ToListAsync();
-        if (!IsValidRosterSize(players.Count, session.TeamCount))
+        var sharedPlayerCount = await db.DraftSlotPlayers.CountAsync(link =>
+            link.DraftSlot.SessionId == sessionId &&
+            link.DraftSlot.Type == DraftSlotType.Shared &&
+            link.SessionPlayer.IsPresent);
+        var sharedSlotCount = await db.DraftSlots.CountAsync(slot =>
+            slot.SessionId == sessionId &&
+            slot.Type == DraftSlotType.Shared &&
+            slot.Players.Any(link => link.SessionPlayer.IsPresent));
+        var effectiveSlotCount = players.Count - sharedPlayerCount + sharedSlotCount;
+        if (!IsValidRosterSize(effectiveSlotCount, session.TeamCount))
         {
             return BadRequest<DraftStateResponse>(
-                $"Cần ít nhất {session.TeamCount * 2} người chơi và tổng số người phải chia hết cho {session.TeamCount}.");
+                $"Cần ít nhất {session.TeamCount * 2} slot và tổng số slot sau khi tính người share ({effectiveSlotCount}) phải chia hết cho {session.TeamCount} team.");
         }
 
         await ClearDraftRunArtifacts(sessionId);
@@ -2798,6 +2999,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return teamCount > 0 && slotCount >= teamCount * 2 && slotCount % teamCount == 0;
     }
 
+    private static string NormalizeZaloId(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        return normalized.EndsWith("_0", StringComparison.Ordinal) ? normalized[..^2] : normalized;
+    }
+
     private static int GetNextValidRosterSize(int playerCount, int teamCount)
     {
         var minimum = teamCount * 2;
@@ -3019,6 +3226,20 @@ public sealed record GuestPlayerAddResult(
     SessionPlayerResponse Player,
     int PresentPlayerCount,
     int TeamCount);
+
+public sealed record ShareSlotParticipantInput(
+    string DisplayName,
+    string? ZaloUserId = null,
+    string? AvatarUrl = null);
+
+public sealed record PreDraftSharedSlotResult(
+    string AnchorPlayerName,
+    IReadOnlyList<string> PartnerPlayerNames,
+    IReadOnlyList<string> NewlyAddedPlayerNames,
+    string SlotDisplayName,
+    int PresentPlayerCount,
+    int EffectiveSlotCount,
+    IReadOnlyList<string> NeedsProfileUpdateNames);
 
 public sealed record PostDraftSharedSlotResult(
     string AnchorPlayerName,

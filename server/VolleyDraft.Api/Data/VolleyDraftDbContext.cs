@@ -24,6 +24,7 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<DraftTurn> DraftTurns => Set<DraftTurn>();
     public DbSet<TeamPreferenceGroup> TeamPreferenceGroups => Set<TeamPreferenceGroup>();
     public DbSet<TeamPreferenceGroupPlayer> TeamPreferenceGroupPlayers => Set<TeamPreferenceGroupPlayer>();
+    public DbSet<ZaloReminderSchedule> ZaloReminderSchedules => Set<ZaloReminderSchedule>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -163,6 +164,22 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.HasOne(asset => asset.AdminUser)
                 .WithMany()
                 .HasForeignKey(asset => asset.AdminUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloReminderSchedule>(entity =>
+        {
+            entity.Property(schedule => schedule.CreatedBySenderId).HasMaxLength(100);
+            entity.Property(schedule => schedule.CreatedBySenderName).HasMaxLength(160);
+            entity.Property(schedule => schedule.Message).HasMaxLength(2000);
+            entity.Property(schedule => schedule.Audience).HasConversion<string>();
+            entity.Property(schedule => schedule.LeaseToken).HasMaxLength(80);
+            entity.Property(schedule => schedule.LastError).HasMaxLength(1000);
+            entity.HasIndex(schedule => new { schedule.Enabled, schedule.NextRunAt });
+            entity.HasIndex(schedule => schedule.SessionId);
+            entity.HasOne(schedule => schedule.Session)
+                .WithMany(session => session.ReminderSchedules)
+                .HasForeignKey(schedule => schedule.SessionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

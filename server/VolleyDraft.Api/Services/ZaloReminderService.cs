@@ -10,6 +10,10 @@ public sealed record ReminderRunResult(
     int FailedCount,
     int SkippedCount);
 
+internal sealed record AudienceMessage(
+    string Message,
+    IReadOnlyList<BridgeOutgoingMention> Mentions);
+
 public sealed class ZaloReminderService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
@@ -25,6 +29,8 @@ public sealed class ZaloReminderService(
         var now = DateTimeOffset.UtcNow;
         await RefreshPollRostersAsync(now, cancellationToken);
         db.ChangeTracker.Clear();
+        var naturalScheduleResult = await SendDueNaturalSchedulesAsync(now, cancellationToken);
+        db.ChangeTracker.Clear();
 
         var sessions = await db.MatchSessions
             .Include(session => session.ZaloConnection)
@@ -38,7 +44,7 @@ public sealed class ZaloReminderService(
                               session.ZaloConnection.Status == ZaloConnectionStatus.Connected &&
                               session.Status != SessionStatus.Cancelled)
             .ToListAsync(cancellationToken);
-        if (sessions.Count == 0) return new ReminderRunResult(0, 0, 0, 0);
+        if (sessions.Count == 0) return naturalScheduleResult;
 
         var sessionIds = sessions.Select(session => session.Id).ToList();
         var counts = await GetEffectiveSlotCountsAsync(sessionIds, cancellationToken);
@@ -197,7 +203,183 @@ public sealed class ZaloReminderService(
             }
         }
 
-        return new ReminderRunResult(groups.Count, sentCount, failedCount, skippedCount);
+        return new ReminderRunResult(
+            naturalScheduleResult.GroupCount + groups.Count,
+            naturalScheduleResult.SentCount + sentCount,
+            naturalScheduleResult.FailedCount + failedCount,
+            naturalScheduleResult.SkippedCount + skippedCount);
+    }
+
+    private async Task<ReminderRunResult> SendDueNaturalSchedulesAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var schedules = await db.ZaloReminderSchedules
+            .Include(schedule => schedule.Session)
+            .ThenInclude(session => session.ZaloConnection)
+            .Where(schedule => schedule.Enabled &&
+                               schedule.NextRunAt <= now &&
+                               (schedule.LeaseUntil == null || schedule.LeaseUntil < now) &&
+                               schedule.Session.BotEnabled &&
+                               schedule.Session.Status != SessionStatus.Cancelled &&
+                               schedule.Session.ZaloConnectionId != null &&
+                               schedule.Session.ZaloGroupId != null &&
+                               schedule.Session.ZaloConnection != null &&
+                               schedule.Session.ZaloConnection.Status == ZaloConnectionStatus.Connected)
+            .OrderBy(schedule => schedule.NextRunAt)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+        if (schedules.Count == 0) return new ReminderRunResult(0, 0, 0, 0);
+
+        var counts = await GetEffectiveSlotCountsAsync(
+            schedules.Select(schedule => schedule.SessionId).Distinct(StringComparer.Ordinal).ToList(),
+            cancellationToken);
+        var sent = 0;
+        var failed = 0;
+        var skipped = 0;
+        foreach (var schedule in schedules)
+        {
+            var leaseToken = Guid.NewGuid().ToString("n");
+            var dueAt = schedule.NextRunAt;
+            var claimed = await db.ZaloReminderSchedules
+                .Where(item => item.Id == schedule.Id &&
+                               item.Enabled &&
+                               item.NextRunAt <= now &&
+                               (item.LeaseUntil == null || item.LeaseUntil < now))
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(item => item.LeaseToken, leaseToken)
+                    .SetProperty(item => item.LeaseUntil, now.AddMinutes(5)), cancellationToken);
+            if (claimed == 0)
+            {
+                skipped += 1;
+                continue;
+            }
+
+            var session = schedule.Session;
+            var capacity = session.TeamCount * session.TeamSize;
+            var slotCount = counts.GetValueOrDefault(session.Id);
+            if (schedule.OnlyIfMissingSlots && slotCount >= capacity)
+            {
+                await CompleteNaturalScheduleAsync(schedule, leaseToken, now, sentSuccessfully: false, cancellationToken);
+                skipped += 1;
+                continue;
+            }
+
+            var body = string.IsNullOrWhiteSpace(schedule.Message)
+                ? $"Nhắc lịch {session.Name}: còn thiếu {Math.Max(0, capacity - slotCount)} slot ({slotCount}/{capacity}). Trận lúc {(session.StartTime is null ? "chưa chốt giờ" : FormatVietnamTime(session.StartTime.Value))}{(string.IsNullOrWhiteSpace(session.Location) ? string.Empty : $" tại {session.Location}")}."
+                : $"{session.Name}: {schedule.Message.Trim()}";
+            var audience = await BuildAudienceMessageAsync(schedule, body, cancellationToken);
+            var idempotencyKey = $"natural-reminder:{schedule.Id}:{dueAt.ToUnixTimeSeconds()}";
+            try
+            {
+                await bridge.SendGroupMessageAsync(
+                    session.ZaloConnection!.AccountZaloId,
+                    session.ZaloGroupId!,
+                    audience.Message,
+                    audience.Mentions,
+                    idempotencyKey: idempotencyKey);
+                await CompleteNaturalScheduleAsync(schedule, leaseToken, now, sentSuccessfully: true, cancellationToken);
+                if (!await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
+                        item.ZaloConnectionId == session.ZaloConnectionId && item.MessageId == idempotencyKey,
+                        cancellationToken))
+                {
+                    db.ZaloGroupMessages.Add(new ZaloGroupMessage
+                    {
+                        ZaloConnectionId = session.ZaloConnectionId!,
+                        GroupId = session.ZaloGroupId!,
+                        MessageId = idempotencyKey,
+                        SenderId = session.ZaloConnection.AccountZaloId,
+                        SenderName = session.ZaloConnection.DisplayName,
+                        Content = audience.Message,
+                        IsFromBot = true,
+                        SentAt = now,
+                        ReceivedAt = now
+                    });
+                    await db.SaveChangesAsync(cancellationToken);
+                }
+                sent += 1;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                failed += 1;
+                var retryMinutes = Math.Clamp(configuration.GetValue("Scheduler:RetryMinutes", 10), 5, 60);
+                await db.ZaloReminderSchedules
+                    .Where(item => item.Id == schedule.Id && item.LeaseToken == leaseToken)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(item => item.NextRunAt, now.AddMinutes(retryMinutes))
+                        .SetProperty(item => item.LeaseToken, (string?)null)
+                        .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
+                        .SetProperty(item => item.FailureCount, item => item.FailureCount + 1)
+                        .SetProperty(item => item.LastError, Truncate(exception.Message, 1000))
+                        .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+                logger.LogWarning(exception, "Could not send natural reminder {ScheduleId} for session {SessionId}", schedule.Id, session.Id);
+            }
+        }
+
+        return new ReminderRunResult(
+            schedules.Select(item => item.Session.ZaloGroupId).Distinct(StringComparer.Ordinal).Count(),
+            sent,
+            failed,
+            skipped);
+    }
+
+    private async Task CompleteNaturalScheduleAsync(
+        ZaloReminderSchedule schedule,
+        string leaseToken,
+        DateTimeOffset now,
+        bool sentSuccessfully,
+        CancellationToken cancellationToken)
+    {
+        var repeats = schedule.Repeats && schedule.IntervalMinutes is >= 5 and <= 10_080;
+        await db.ZaloReminderSchedules
+            .Where(item => item.Id == schedule.Id && item.LeaseToken == leaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(item => item.LastRunAt, sentSuccessfully ? now : schedule.LastRunAt)
+                .SetProperty(item => item.NextRunAt, repeats ? now.AddMinutes(schedule.IntervalMinutes!.Value) : schedule.NextRunAt)
+                .SetProperty(item => item.Enabled, repeats)
+                .SetProperty(item => item.LeaseToken, (string?)null)
+                .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(item => item.FailureCount, 0)
+                .SetProperty(item => item.LastError, (string?)null)
+                .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+    }
+
+    private async Task<AudienceMessage> BuildAudienceMessageAsync(
+        ZaloReminderSchedule schedule,
+        string body,
+        CancellationToken cancellationToken)
+    {
+        if (schedule.Audience == ZaloReminderAudience.All)
+            return new AudienceMessage($"@all {body}", [new BridgeOutgoingMention("-1", 0, 4)]);
+
+        var players = await db.SessionPlayers
+            .AsNoTracking()
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == schedule.SessionId &&
+                             player.IsPresent &&
+                             player.PlayerProfile != null &&
+                             player.PlayerProfile.ZaloUserId != "")
+            .OrderBy(player => player.DisplayName)
+            .ToListAsync(cancellationToken);
+        if (players.Count == 0)
+            return new AudienceMessage($"@all {body}", [new BridgeOutgoingMention("-1", 0, 4)]);
+
+        var builder = new System.Text.StringBuilder();
+        var mentions = new List<BridgeOutgoingMention>();
+        foreach (var player in players.DistinctBy(item => item.PlayerProfile!.ZaloUserId, StringComparer.Ordinal))
+        {
+            if (builder.Length > 0) builder.Append(' ');
+            var label = $"@{player.DisplayName.TrimStart('@')}";
+            var position = builder.Length;
+            builder.Append(label);
+            mentions.Add(new BridgeOutgoingMention(player.PlayerProfile!.ZaloUserId, position, label.Length));
+        }
+        builder.Append(' ').Append(body);
+        return new AudienceMessage(builder.ToString(), mentions);
     }
 
     private async Task RefreshPollRostersAsync(DateTimeOffset now, CancellationToken cancellationToken)
@@ -207,7 +389,11 @@ public sealed class ZaloReminderService(
         var candidates = await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.BotEnabled &&
-                              session.ReminderEnabled &&
+                              (session.ReminderEnabled ||
+                               db.ZaloReminderSchedules.Any(schedule =>
+                                   schedule.SessionId == session.Id &&
+                                   schedule.Enabled &&
+                                   schedule.OnlyIfMissingSlots)) &&
                               session.StartTime != null &&
                               session.StartTime > now &&
                               session.ZaloConnectionId != null &&

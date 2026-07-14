@@ -186,6 +186,105 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Plus_two_before_draft_adds_two_named_people_but_keeps_eighteen_effective_slots()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession
+        {
+            Id = "pre-draft-share",
+            AdminUserId = "admin",
+            Name = "T6",
+            TeamCount = 3,
+            TeamSize = 6
+        };
+        for (var index = 1; index <= 18; index += 1)
+        {
+            session.Players.Add(new SessionPlayer
+            {
+                Id = $"player-{index}",
+                SessionId = session.Id,
+                DisplayName = index == 1 ? "Nick Tran" : $"Player {index}",
+                Gender = PlayerGender.Male,
+                Role = PlayerRole.Attack,
+                Level = PlayerLevel.Average,
+                Score = 2,
+                IsPresent = true
+            });
+        }
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var result = await service.SharePreDraftSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            [
+                new ShareSlotParticipantInput("An", "zalo-an"),
+                new ShareSlotParticipantInput("Bình", "zalo-binh")
+            ]);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(20, result.Value!.PresentPlayerCount);
+        Assert.Equal(18, result.Value.EffectiveSlotCount);
+        Assert.Equal(["An", "Bình"], result.Value.NewlyAddedPlayerNames);
+        Assert.Equal(2, result.Value.NeedsProfileUpdateNames.Count);
+        fixture.Db.ChangeTracker.Clear();
+        var sharedSlot = await fixture.Db.DraftSlots
+            .Include(slot => slot.Players)
+            .SingleAsync(slot => slot.SessionId == session.Id && slot.Type == DraftSlotType.Shared);
+        Assert.Equal(3, sharedSlot.Players.Count);
+        Assert.Equal(2, await fixture.Db.PlayerProfiles.CountAsync(profile =>
+            profile.ZaloUserId == "zalo-an" || profile.ZaloUserId == "zalo-binh"));
+
+        Assert.True((await service.UpdatePlayerProfileFromBotAsync(
+            "admin", session.Id, "An", PlayerGender.Male, null, null)).IsSuccess);
+        Assert.True((await service.UpdatePlayerProfileFromBotAsync(
+            "admin", session.Id, "Bình", PlayerGender.Female, null, null)).IsSuccess);
+        var drafted = await service.AutoRunDraftAsync("admin", session.Id);
+        Assert.True(drafted.IsSuccess, drafted.Error);
+        Assert.Equal(SessionStatus.Finished, drafted.Value!.SessionStatus);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(18, await fixture.Db.DraftSlots.CountAsync(slot => slot.SessionId == session.Id));
+        Assert.Equal(20, await fixture.Db.SessionPlayers.CountAsync(player => player.SessionId == session.Id && player.IsPresent));
+    }
+
+    [Fact]
+    public async Task Multiple_independent_reminders_can_be_saved_for_different_sessions()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var sessions = new[] { "T4", "T6", "CN" }
+            .Select(name => new MatchSession
+            {
+                Id = $"session-{name}",
+                AdminUserId = "admin",
+                Name = name,
+                BotEnabled = true
+            })
+            .ToList();
+        fixture.Db.MatchSessions.AddRange(sessions);
+        var dueAt = DateTimeOffset.UtcNow.AddHours(1);
+        foreach (var session in sessions)
+        {
+            fixture.Db.ZaloReminderSchedules.Add(new ZaloReminderSchedule
+            {
+                SessionId = session.Id,
+                CreatedBySenderId = "operator",
+                CreatedBySenderName = "Operator",
+                Message = "Nhớ lên sân và đem theo nước",
+                Audience = ZaloReminderAudience.All,
+                NextRunAt = dueAt,
+                Enabled = true
+            });
+        }
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        Assert.Equal(3, await fixture.Db.ZaloReminderSchedules.CountAsync(schedule => schedule.Enabled));
+        Assert.Equal(3, await fixture.Db.ZaloReminderSchedules.Select(schedule => schedule.SessionId).Distinct().CountAsync());
+    }
+
+    [Fact]
     public async Task External_partner_can_join_existing_finished_team_as_shared_slot()
     {
         await using var fixture = await DbFixture.CreateAsync();

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
@@ -47,7 +48,20 @@ public enum ZaloReminderCommandKind
 public sealed record ZaloReminderCommand(
     ZaloReminderCommandKind Kind,
     int? DelayMinutes,
-    bool Repeats);
+    bool Repeats,
+    TimeOnly? LocalTime = null,
+    DateOnly? ExplicitLocalDate = null,
+    bool UseSessionDate = false,
+    string? CustomMessage = null,
+    ZaloReminderAudience Audience = ZaloReminderAudience.All,
+    bool OnlyIfMissingSlots = true,
+    IReadOnlyList<string>? SessionReferences = null);
+
+public sealed record ZaloShareSlotCommand(
+    string Anchor,
+    IReadOnlyList<string> Partners,
+    int RequestedPartnerCount,
+    string? SessionReference = null);
 
 public sealed record ZaloIntentDecision(
     ZaloBotIntent Intent,
@@ -222,6 +236,8 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
+        if (ZaloNaturalCommandParser.TryParseShareSlot(value, out _))
+            return new(ZaloBotIntent.ShareSlot, .99, q, false, null, "share_slot_natural_phrase");
         if ((q.StartsWith("+1 ", StringComparison.Ordinal) || Has(q, "them 1 nguoi", "cong 1 nguoi", "+1 so luong vote", "+1 slot")) &&
             Has(q, "ban", "nguoi", "vote", "slot"))
             return new(ZaloBotIntent.AddGuestPlayer, .99, q, false, null, "add_guest_player_phrase");

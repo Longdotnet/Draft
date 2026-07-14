@@ -555,7 +555,7 @@ public sealed class ZaloBotService(
             return await AddGuestPlayerAsync(decision, sessions, normalizedQuestion, question, incoming, false);
 
         if (decision.Intent == ZaloBotIntent.ShareSlot)
-            return await ShareSlotAsync(decision, sessions, normalizedQuestion, question, incoming, false);
+            return await ShareSlotAsync(decision, sessions, normalizedQuestion, question, incoming, cancellationToken, false);
 
         if (decision.Intent == ZaloBotIntent.IncompleteProfiles)
             return await ListIncompleteProfilesAsync(
@@ -1182,40 +1182,131 @@ public sealed class ZaloBotService(
         string normalizedQuestion,
         string originalQuestion,
         ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
         bool aiCalled)
     {
-        if (!ZaloBotIntelligence.TryExtractSharePlayerNames(originalQuestion, out var rawAnchor, out var rawPartner))
-            return new BotAnswer("Mình chưa nhận ra hai người cần share. Ví dụ: @bot Nick Tran muốn share slot với Thanh Tuyền.", null, decision.Intent, aiCalled);
+        ZaloNaturalCommandParser.TryParseShareSlot(originalQuestion, out var fallbackCommand);
+        if (fallbackCommand.RequestedPartnerCount == 0 &&
+            ZaloBotIntelligence.TryExtractSharePlayerNames(originalQuestion, out var legacyAnchor, out var legacyPartner))
+        {
+            fallbackCommand = new ZaloShareSlotCommand(legacyAnchor, [legacyPartner], 1);
+        }
+        var mentionedUsers = ExtractMentionedUsers(incoming);
+        ZaloShareSlotCommand? aiCommand = null;
+        if (ai.IsConfigured)
+        {
+            aiCommand = await ai.ParseShareSlotCommandAsync(
+                new ZaloNaturalShareContext(
+                    originalQuestion,
+                    incoming.SenderName,
+                    mentionedUsers,
+                    sessions.Take(10).Select(session => new ZaloAiSessionReference(session.Id, session.Name, session.StartTime)).ToList()),
+                cancellationToken);
+            aiCalled |= aiCommand is not null;
+        }
+        var command = aiCommand ?? (fallbackCommand.RequestedPartnerCount > 0 ? fallbackCommand : null);
+        if (command is null)
+            return new BotAnswer("Mình chưa nhận ra người chính và người chơi chung. Ví dụ: @bot Nick Tran muốn share slot với An; hoặc @bot Nick Tran xin +2 cho An và Bình.", null, decision.Intent, aiCalled);
+
+        var senderAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than" };
+        var requestedOwnSlot = senderAliases.Contains(NormalizeText(command.Anchor), StringComparer.Ordinal) ||
+                               NormalizeText(command.Anchor) == NormalizeText(incoming.SenderName);
+        var rawAnchor = requestedOwnSlot
+            ? incoming.SenderName
+            : command.Anchor;
+        var partners = command.Partners
+            .Select(name => name.Trim().TrimStart('@'))
+            .Where(name => name.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (command.RequestedPartnerCount is < 1 or > 2 || partners.Count != command.RequestedPartnerCount)
+        {
+            return new BotAnswer(
+                command.RequestedPartnerCount == 2
+                    ? "Lệnh +2 phải có đúng hai người khác nhau. Ví dụ: @bot Nick Tran xin +2 cho An và Bình."
+                    : "Lệnh +1 phải có đúng một người chơi chung.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var selector = NormalizeText(string.Join(' ', new[]
+        {
+            normalizedQuestion,
+            command.SessionReference,
+            decision.SessionReference
+        }.Where(value => !string.IsNullOrWhiteSpace(value))));
         var matchingSessions = sessions
-            .Where(session => ResolvePlayerReference(rawAnchor, session.PlayerNames) is not null)
+            .Where(session => ResolvePlayerReference(rawAnchor, session.PlayerNames) is not null ||
+                              (requestedOwnSlot && session.SenderIsListed))
             .ToList();
         var finishedMatchingSessions = matchingSessions.Where(session => session.Status == SessionStatus.Finished).ToList();
         var selected = finishedMatchingSessions.Count == 1
             ? new SessionSelection(finishedMatchingSessions[0], null)
             : matchingSessions.Count == 1
                 ? new SessionSelection(matchingSessions[0], null)
-            : SelectSession(sessions, normalizedQuestion);
+            : SelectSession(sessions, selector);
         if (selected.Clarification is not null)
             return new BotAnswer(selected.Clarification + " Hãy gửi lại đầy đủ lệnh share slot kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
         var session = selected.Session!;
-        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
-        if (denial is not null) return denial;
-        var anchor = ResolvePlayerReference(rawAnchor, session.PlayerNames);
+        var isSelfServicePreDraft = session.Status != SessionStatus.Finished &&
+                                    requestedOwnSlot &&
+                                    session.SenderIsListed;
+        if (!isSelfServicePreDraft)
+        {
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+            if (denial is not null) return denial;
+        }
+        var anchor = isSelfServicePreDraft && !string.IsNullOrWhiteSpace(session.SenderPlayerName)
+            ? session.SenderPlayerName
+            : ResolvePlayerReference(rawAnchor, session.PlayerNames);
         if (anchor is null)
             return new BotAnswer($"Không tìm thấy '{rawAnchor}' trong đội hình.", null, decision.Intent, aiCalled);
-        var existingPartner = ResolvePlayerReference(rawPartner, session.PlayerNames);
-        var partner = existingPartner ?? (NormalizeText(rawPartner) == "ban"
-            ? NextExternalShareName(anchor, session.PlayerNames)
-            : rawPartner);
-        var shared = await draftService.SharePostDraftSlotAsync(session.AdminUserId, session.Id, anchor, partner);
-        if (!shared.IsSuccess || shared.Value is null)
-            return new BotAnswer(shared.Error ?? "Không cập nhật được share slot.", null, decision.Intent, aiCalled);
-        var result = shared.Value;
-        var profileNote = result.NeedsProfileUpdate
-            ? " Hồ sơ người mới chưa có giới tính; cần cập nhật trước nếu sau này draft lại."
-            : string.Empty;
+
+        if (session.Status != SessionStatus.Finished)
+        {
+            var participantInputs = partners.Select(partnerName =>
+            {
+                var existing = ResolvePlayerReference(partnerName, session.PlayerNames);
+                var mention = FindMentionedUser(partnerName, mentionedUsers);
+                return new ShareSlotParticipantInput(existing ?? partnerName, mention?.ZaloUserId);
+            }).ToList();
+            var shared = await draftService.SharePreDraftSlotAsync(
+                session.AdminUserId,
+                session.Id,
+                anchor,
+                participantInputs);
+            if (!shared.IsSuccess || shared.Value is null)
+                return new BotAnswer(shared.Error ?? "Không cập nhật được share slot trước draft.", null, decision.Intent, aiCalled);
+            var result = shared.Value;
+            var profileNote = result.NeedsProfileUpdateNames.Count == 0
+                ? string.Empty
+                : $" Cần cập nhật ít nhất giới tính trước khi draft cho: {string.Join(", ", result.NeedsProfileUpdateNames)}.";
+            return new BotAnswer(
+                $"Đã ghép {result.SlotDisplayName} thành một share slot của {session.Name}. Danh sách có {result.PresentPlayerCount} người nhưng draft tính {result.EffectiveSlotCount} slot.{profileNote}",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var completed = new List<PostDraftSharedSlotResult>();
+        foreach (var rawPartner in partners)
+        {
+            var existingPartner = ResolvePlayerReference(rawPartner, session.PlayerNames);
+            var partner = existingPartner ?? (NormalizeText(rawPartner) == "ban"
+                ? NextExternalShareName(anchor, session.PlayerNames.Concat(completed.Select(item => item.PartnerPlayerName)).ToList())
+                : rawPartner);
+            var shared = await draftService.SharePostDraftSlotAsync(session.AdminUserId, session.Id, anchor, partner);
+            if (!shared.IsSuccess || shared.Value is null)
+                return new BotAnswer(shared.Error ?? "Không cập nhật được share slot.", null, decision.Intent, aiCalled);
+            completed.Add(shared.Value);
+        }
+        var profileNames = completed.Where(item => item.NeedsProfileUpdate).Select(item => item.PartnerPlayerName).ToList();
+        var postDraftProfileNote = profileNames.Count == 0
+            ? string.Empty
+            : $" Cần cập nhật giới tính cho: {string.Join(", ", profileNames)} nếu draft lại.";
         return new BotAnswer(
-            $"Đã cập nhật {result.AnchorPlayerName} và {result.PartnerPlayerName} share slot tại {result.TeamName}.{profileNote}",
+            $"Đã ghép {anchor} share slot với {string.Join(" và ", completed.Select(item => item.PartnerPlayerName))} tại {completed[0].TeamName}.{postDraftProfileNote}",
             null,
             decision.Intent,
             aiCalled);
@@ -1452,6 +1543,52 @@ public sealed class ZaloBotService(
         if (upcoming.Count == 0)
             return new BotAnswer("Nhóm chưa có trận sắp tới có thời gian cụ thể để lên lịch nhắc.", null, intent, aiCalled);
 
+        var originalReminderQuestion = ExtractQuestion(incoming);
+        var deterministicCommand = ZaloNaturalCommandParser.EnrichReminder(originalReminderQuestion, command);
+        if (ai.IsConfigured)
+        {
+            var extracted = await ai.ParseReminderCommandAsync(
+                new ZaloNaturalReminderContext(
+                    originalReminderQuestion,
+                    incoming.SenderName,
+                    sessions.Take(10).Select(session => new ZaloAiSessionReference(session.Id, session.Name, session.StartTime)).ToList(),
+                    DateTimeOffset.UtcNow.ToOffset(VietnamOffset)),
+                cancellationToken);
+            if (extracted is not null)
+            {
+                command = extracted with
+                {
+                    LocalTime = extracted.LocalTime ?? deterministicCommand.LocalTime,
+                    DelayMinutes = (extracted.LocalTime ?? deterministicCommand.LocalTime) is not null
+                        ? null
+                        : extracted.DelayMinutes ?? deterministicCommand.DelayMinutes,
+                    ExplicitLocalDate = extracted.ExplicitLocalDate ?? deterministicCommand.ExplicitLocalDate,
+                    UseSessionDate = extracted.UseSessionDate || deterministicCommand.UseSessionDate,
+                    CustomMessage = extracted.CustomMessage ?? deterministicCommand.CustomMessage,
+                    Audience = extracted.Audience == ZaloReminderAudience.All
+                        ? deterministicCommand.Audience
+                        : extracted.Audience,
+                    OnlyIfMissingSlots = extracted.OnlyIfMissingSlots || deterministicCommand.OnlyIfMissingSlots,
+                    SessionReferences = (extracted.SessionReferences ?? [])
+                        .Concat(deterministicCommand.SessionReferences ?? [])
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                };
+                aiCalled = true;
+            }
+            else
+            {
+                command = deterministicCommand;
+            }
+        }
+        else
+        {
+            command = deterministicCommand;
+        }
+        normalizedQuestion = NormalizeText(string.Join(' ', new[] { normalizedQuestion }
+            .Concat(command.SessionReferences ?? [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))));
+
         List<SessionSnapshot> targets;
         var hasExplicitSelector = HasExplicitSessionSelector(sessions, normalizedQuestion);
         if (hasExplicitSelector)
@@ -1465,7 +1602,7 @@ public sealed class ZaloBotService(
                     intent,
                     aiCalled);
             }
-            if (targets.Count > 1)
+            if (targets.Count > 1 && command.SessionReferences is null)
             {
                 return new BotAnswer(
                     $"Có nhiều trận khớp: {string.Join(", ", targets.Take(5).Select(FormatSessionChoice))}. Hãy gửi lại cả lệnh kèm ngày cụ thể.",
@@ -1487,6 +1624,25 @@ public sealed class ZaloBotService(
 
         if (command.Kind == ZaloReminderCommandKind.Status)
         {
+            var statusTargetIds = targets.Select(item => item.Id).ToList();
+            var naturalSchedules = await db.ZaloReminderSchedules
+                .AsNoTracking()
+                .Where(schedule => statusTargetIds.Contains(schedule.SessionId) && schedule.Enabled)
+                .OrderBy(schedule => schedule.NextRunAt)
+                .ToListAsync(cancellationToken);
+            if (naturalSchedules.Count > 0)
+            {
+                var sessionNames = targets.ToDictionary(item => item.Id, item => item.Name, StringComparer.Ordinal);
+                var lines = naturalSchedules.Select(schedule =>
+                    $"- {sessionNames.GetValueOrDefault(schedule.SessionId, schedule.SessionId)}: {FormatVietnamTime(schedule.NextRunAt)}" +
+                    (schedule.Repeats && schedule.IntervalMinutes is not null
+                        ? $", lặp mỗi {FormatDuration(schedule.IntervalMinutes.Value)}"
+                        : ", một lần") +
+                    (schedule.OnlyIfMissingSlots ? ", chỉ gửi khi thiếu slot" : string.Empty) +
+                    (schedule.Audience == ZaloReminderAudience.Roster ? ", nhắc danh sách người chơi" : ", @all") +
+                    (string.IsNullOrWhiteSpace(schedule.Message) ? string.Empty : $": {schedule.Message}"));
+                return new BotAnswer("Các lịch nhắc đang hoạt động:\n" + string.Join("\n", lines), null, intent, aiCalled);
+            }
             var statusLines = targets.Select(session =>
             {
                 if (!session.ReminderEnabled) return $"- {session.Name}: đang tắt";
@@ -1508,7 +1664,7 @@ public sealed class ZaloBotService(
                 aiCalled);
         }
 
-        if (command.Kind == ZaloReminderCommandKind.Schedule && command.DelayMinutes is null)
+        if (command.Kind == ZaloReminderCommandKind.Schedule && command.DelayMinutes is null && command.LocalTime is null)
         {
             return new BotAnswer(
                 "Bạn cho mình biết khoảng thời gian nhé. Ví dụ: @bot cứ 6 tiếng nhắc nếu còn thiếu slot; @bot cứ 30 phút nhắc T6 nếu còn thiếu; hoặc @bot nhắc ngay.",
@@ -1521,6 +1677,17 @@ public sealed class ZaloBotService(
         {
             var denial = await GetOperatorDenialAsync(target, incoming.SenderId, intent, aiCalled);
             if (denial is not null) return denial;
+        }
+
+        if (configuration.GetValue("ZaloBot:MultiReminderEnabled", true))
+        {
+            return await ApplyNaturalReminderCommandAsync(
+                command,
+                targets,
+                incoming,
+                intent,
+                aiCalled,
+                cancellationToken);
         }
 
         var targetIds = targets.Select(target => target.Id).ToList();
@@ -1591,6 +1758,143 @@ public sealed class ZaloBotService(
                 intent,
                 aiCalled)
         };
+    }
+
+    private async Task<BotAnswer> ApplyNaturalReminderCommandAsync(
+        ZaloReminderCommand command,
+        IReadOnlyList<SessionSnapshot> targets,
+        ZaloIncomingMessageEvent incoming,
+        ZaloBotIntent intent,
+        bool aiCalled,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var targetIds = targets.Select(target => target.Id).ToList();
+        if (command.Kind == ZaloReminderCommandKind.Disable)
+        {
+            var disabled = await db.ZaloReminderSchedules
+                .Where(schedule => targetIds.Contains(schedule.SessionId) && schedule.Enabled)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(schedule => schedule.Enabled, false)
+                    .SetProperty(schedule => schedule.LeaseToken, (string?)null)
+                    .SetProperty(schedule => schedule.LeaseUntil, (DateTimeOffset?)null)
+                    .SetProperty(schedule => schedule.UpdatedAt, now), cancellationToken);
+            await db.MatchSessions
+                .Where(session => targetIds.Contains(session.Id))
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.ReminderEnabled, false)
+                    .SetProperty(session => session.NextReminderAt, (DateTimeOffset?)null), cancellationToken);
+            return new BotAnswer(
+                $"Đã tắt {disabled} lịch nhắc đang hoạt động cho {string.Join(", ", targets.Select(item => item.Name))}.",
+                null,
+                intent,
+                aiCalled);
+        }
+
+        var created = new List<(SessionSnapshot Session, DateTimeOffset DueAt)>();
+        var skipped = new List<string>();
+        foreach (var target in targets)
+        {
+            var dueAt = command.Kind == ZaloReminderCommandKind.TriggerNow
+                ? now
+                : ComputeReminderDueAt(command, target, now);
+            if (dueAt is null)
+            {
+                skipped.Add($"{target.Name} (không xác định được thời gian)");
+                continue;
+            }
+            if (target.StartTime is not null && dueAt >= target.StartTime && command.Kind != ZaloReminderCommandKind.TriggerNow)
+            {
+                skipped.Add($"{target.Name} (giờ nhắc không còn trước giờ trận)");
+                continue;
+            }
+
+            var message = Clean(command.CustomMessage, 2000);
+            var duplicate = await db.ZaloReminderSchedules.AsNoTracking().AnyAsync(schedule =>
+                schedule.SessionId == target.Id &&
+                schedule.Enabled &&
+                schedule.NextRunAt == dueAt &&
+                schedule.Message == message &&
+                schedule.Audience == command.Audience &&
+                schedule.OnlyIfMissingSlots == command.OnlyIfMissingSlots,
+                cancellationToken);
+            if (!duplicate)
+            {
+                db.ZaloReminderSchedules.Add(new ZaloReminderSchedule
+                {
+                    SessionId = target.Id,
+                    CreatedBySenderId = NormalizeId(incoming.SenderId),
+                    CreatedBySenderName = Clean(incoming.SenderName, 160) ?? "Thành viên Zalo",
+                    Message = message,
+                    Audience = command.Audience,
+                    OnlyIfMissingSlots = command.OnlyIfMissingSlots,
+                    Repeats = command.Repeats && command.DelayMinutes is >= 5,
+                    IntervalMinutes = command.Repeats ? command.DelayMinutes : null,
+                    NextRunAt = dueAt.Value,
+                    Enabled = true,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+            created.Add((target, dueAt.Value));
+        }
+        await db.SaveChangesAsync(cancellationToken);
+        schedulerTrigger.TryTrigger();
+
+        if (created.Count == 0)
+        {
+            return new BotAnswer(
+                "Chưa tạo được lịch nhắc. " + string.Join("; ", skipped),
+                null,
+                intent,
+                aiCalled);
+        }
+        var lines = created.Select(item =>
+            $"- {item.Session.Name}: {FormatVietnamTime(item.DueAt)}" +
+            (command.Repeats && command.DelayMinutes is not null
+                ? $", lặp mỗi {FormatDuration(command.DelayMinutes.Value)}"
+                : ", một lần"));
+        var audience = command.Audience == ZaloReminderAudience.Roster
+            ? "chỉ mention những người đang có trong danh sách"
+            : "tag @all";
+        var condition = command.OnlyIfMissingSlots
+            ? ", chỉ gửi nếu lúc đó còn thiếu slot"
+            : string.Empty;
+        var content = string.IsNullOrWhiteSpace(command.CustomMessage)
+            ? "nhắc tình trạng thiếu slot"
+            : $"nội dung: {command.CustomMessage}";
+        return new BotAnswer(
+            $"Đã tạo {created.Count} lịch nhắc độc lập ({audience}{condition}, {content}):\n{string.Join("\n", lines)}" +
+            (skipped.Count == 0 ? string.Empty : $"\nBỏ qua: {string.Join("; ", skipped)}"),
+            null,
+            intent,
+            aiCalled);
+    }
+
+    private static DateTimeOffset? ComputeReminderDueAt(
+        ZaloReminderCommand command,
+        SessionSnapshot target,
+        DateTimeOffset utcNow)
+    {
+        if (command.DelayMinutes is >= 0) return utcNow.AddMinutes(command.DelayMinutes.Value);
+        if (command.LocalTime is null) return null;
+        var localNow = utcNow.ToOffset(VietnamOffset);
+        DateOnly date;
+        if (command.ExplicitLocalDate is not null)
+        {
+            date = command.ExplicitLocalDate.Value;
+        }
+        else if (command.UseSessionDate && target.StartTime is not null)
+        {
+            date = DateOnly.FromDateTime(target.StartTime.Value.ToOffset(VietnamOffset).DateTime);
+        }
+        else
+        {
+            date = DateOnly.FromDateTime(localNow.Date);
+            if (date.ToDateTime(command.LocalTime.Value) <= localNow.DateTime) date = date.AddDays(1);
+        }
+        var localDateTime = date.ToDateTime(command.LocalTime.Value, DateTimeKind.Unspecified);
+        return new DateTimeOffset(localDateTime, VietnamOffset).ToUniversalTime();
     }
 
     private static string FormatDuration(int minutes)
@@ -1712,7 +2016,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.AddGuestPlayer)
             return await AddGuestPlayerAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
         if (decision.Intent == ZaloBotIntent.ShareSlot)
-            return await ShareSlotAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
+            return await ShareSlotAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, cancellationToken, true);
         if (decision.Intent == ZaloBotIntent.IncompleteProfiles)
             return await ListIncompleteProfilesAsync(
                 decision,
@@ -1877,6 +2181,8 @@ public sealed class ZaloBotService(
             playersBySession.GetValueOrDefault(session.Id)?.Count ?? 0,
             session.TeamCount * session.TeamSize,
             playersBySession.GetValueOrDefault(session.Id)?.Any(player => NormalizeId(player.ZaloUserId) == normalizedSenderId) == true,
+            playersBySession.GetValueOrDefault(session.Id)?
+                .FirstOrDefault(player => NormalizeId(player.ZaloUserId) == normalizedSenderId)?.DisplayName,
             latestPolls.GetValueOrDefault(session.Id),
             playersBySession.GetValueOrDefault(session.Id)?
                 .Select(player => player.DisplayName)
@@ -2140,6 +2446,38 @@ public sealed class ZaloBotService(
         return value.Trim();
     }
 
+    private static IReadOnlyList<ZaloMentionedUser> ExtractMentionedUsers(ZaloIncomingMessageEvent incoming)
+    {
+        var users = new List<ZaloMentionedUser>();
+        foreach (var mention in incoming.Mentions.Where(item =>
+                     NormalizeId(item.Uid) != NormalizeId(incoming.BotId)))
+        {
+            if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos + mention.Len > incoming.Content.Length) continue;
+            var displayName = incoming.Content.Substring(mention.Pos, mention.Len).Trim().TrimStart('@');
+            if (displayName.Length == 0) continue;
+            users.Add(new ZaloMentionedUser(NormalizeId(mention.Uid), displayName));
+        }
+        return users
+            .GroupBy(item => item.ZaloUserId, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static ZaloMentionedUser? FindMentionedUser(
+        string playerReference,
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers)
+    {
+        var normalized = NormalizeText(playerReference);
+        var exact = mentionedUsers.FirstOrDefault(item => NormalizeText(item.DisplayName) == normalized);
+        if (exact is not null) return exact;
+        return mentionedUsers
+            .Select(item => new { Item = item, Score = ZaloBotIntelligence.TokenSimilarity(item.DisplayName, playerReference) })
+            .Where(item => item.Score >= .78)
+            .OrderByDescending(item => item.Score)
+            .Select(item => item.Item)
+            .FirstOrDefault();
+    }
+
     private static string? CombineSettings(IEnumerable<string?> values)
     {
         var distinct = values
@@ -2276,6 +2614,7 @@ public sealed class ZaloBotService(
         int PlayerCount,
         int Capacity,
         bool SenderIsListed,
+        string? SenderPlayerName,
         string? LatestPoll,
         IReadOnlyList<string> PlayerNames);
 }

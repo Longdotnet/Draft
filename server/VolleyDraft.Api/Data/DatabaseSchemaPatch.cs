@@ -58,6 +58,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloBotLearningTables(db);
             await EnsureSqliteZaloBotConversationTables(db);
             await EnsureSqliteZaloBotImageTables(db);
+            await EnsureSqliteZaloReminderScheduleTables(db);
             await EnsureSqliteColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" TEXT NULL");
@@ -125,6 +126,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloBotLearningTables(db);
             await EnsurePostgresZaloBotConversationTables(db);
             await EnsurePostgresZaloBotImageTables(db);
+            await EnsurePostgresZaloReminderScheduleTables(db);
             await EnsurePostgresColumn(db, "ZaloBotImageAssets", "Size", "\"Size\" bigint NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyAttemptCount", "\"ReplyAttemptCount\" integer NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "BotReplySentAt", "\"BotReplySentAt\" timestamp with time zone NULL");
@@ -707,5 +709,69 @@ public static class DatabaseSchemaPatch
             """);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotImageAssets_AdminUserId_CreatedAt" ON "ZaloBotImageAssets" ("AdminUserId", "CreatedAt");""");
+    }
+
+    private static async Task EnsureSqliteZaloReminderScheduleTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloReminderSchedules" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloReminderSchedules" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "CreatedBySenderId" TEXT NOT NULL,
+                "CreatedBySenderName" TEXT NOT NULL,
+                "Message" TEXT NULL,
+                "Audience" TEXT NOT NULL DEFAULT 'All',
+                "OnlyIfMissingSlots" INTEGER NOT NULL DEFAULT 0,
+                "Repeats" INTEGER NOT NULL DEFAULT 0,
+                "IntervalMinutes" INTEGER NULL,
+                "Enabled" INTEGER NOT NULL DEFAULT 1,
+                "NextRunAt" TEXT NOT NULL,
+                "LastRunAt" TEXT NULL,
+                "LeaseToken" TEXT NULL,
+                "LeaseUntil" TEXT NULL,
+                "FailureCount" INTEGER NOT NULL DEFAULT 0,
+                "LastError" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloReminderSchedules_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloReminderSchedules_Enabled_NextRunAt" ON "ZaloReminderSchedules" ("Enabled", "NextRunAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloReminderSchedules_SessionId" ON "ZaloReminderSchedules" ("SessionId");""");
+    }
+
+    private static async Task EnsurePostgresZaloReminderScheduleTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloReminderSchedules" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloReminderSchedules" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "CreatedBySenderId" text NOT NULL,
+                "CreatedBySenderName" text NOT NULL,
+                "Message" text NULL,
+                "Audience" text NOT NULL DEFAULT 'All',
+                "OnlyIfMissingSlots" boolean NOT NULL DEFAULT FALSE,
+                "Repeats" boolean NOT NULL DEFAULT FALSE,
+                "IntervalMinutes" integer NULL,
+                "Enabled" boolean NOT NULL DEFAULT TRUE,
+                "NextRunAt" timestamp with time zone NOT NULL,
+                "LastRunAt" timestamp with time zone NULL,
+                "LeaseToken" text NULL,
+                "LeaseUntil" timestamp with time zone NULL,
+                "FailureCount" integer NOT NULL DEFAULT 0,
+                "LastError" text NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloReminderSchedules_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloReminderSchedules_Enabled_NextRunAt" ON "ZaloReminderSchedules" ("Enabled", "NextRunAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloReminderSchedules_SessionId" ON "ZaloReminderSchedules" ("SessionId");""");
     }
 }
