@@ -169,4 +169,21 @@ public sealed class ZaloNaturalCommandTests
         Assert.Equal(2, incomplete.RequestedPartnerCount);
         Assert.Single(incomplete.Partners);
     }
+
+    [Theory]
+    [InlineData("sửa share slot của Vivian từ Thanh Long sang Vinh cho T4", "Vivian", "Thanh Long", "Vinh", "t4")]
+    [InlineData("đổi share slot Vivian từ Thanh Long sang Vinh Thứ 4", "Vivian", "Thanh Long", "Vinh", "thu 4")]
+    public void Repair_share_parser_extracts_old_and_new_anchor(
+        string question,
+        string partner,
+        string wrongAnchor,
+        string correctAnchor,
+        string sessionReference)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseRepairShareSlot(question, out var command));
+        Assert.Equal(partner, command.Partner);
+        Assert.Equal(wrongAnchor, command.WrongAnchor);
+        Assert.Equal(correctAnchor, command.CorrectAnchor);
+        Assert.Equal(sessionReference, command.SessionReference);
+    }
 }

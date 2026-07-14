@@ -29,7 +29,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, ActionHistory, UndoAction, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, ActionHistory, UndoAction, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -43,6 +43,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             - Muốn cập nhật giới tính/vị trí/trình độ người chơi là UpdatePlayerProfile.
             - Muốn +1/thêm khách không thể vote Zalo là AddGuestPlayer.
             - Muốn hai người đánh chung/share một slot là ShareSlot.
+            - Muốn sửa một share slot đã ghép nhầm sau khi draft là RepairShareSlot. Đây là thao tác thay đổi đội hình và cần bot hỏi xác nhận trước.
             - Muốn hẹn bot tag nhóm sau/mỗi một số giờ hoặc nhắc ngay là ScheduleReminder.
             - Muốn xem lần nhắc kế tiếp hoặc lịch nhắc hiện tại là ReminderStatus.
             - Muốn tắt, dừng hoặc huỷ lịch nhắc là CancelReminder.

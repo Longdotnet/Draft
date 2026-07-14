@@ -448,6 +448,27 @@ public sealed class ZaloBotService(
                 true,
                 pending.TargetSessions);
         }
+        if (pending.RepairCommand is not null && pending.Session is not null)
+        {
+            var repairConfirmed = pending.Intent == ZaloBotIntent.RepairShareSlotConfirm;
+            return await HandleRepairShareSlotAsync(
+                new ZaloIntentDecision(
+                    repairConfirmed ? ZaloBotIntent.RepairShareSlotConfirm : ZaloBotIntent.RepairShareSlot,
+                    1,
+                    pending.Session.Name,
+                    false,
+                    null,
+                    repairConfirmed ? "repair_share_slot_confirmation" : "repair_share_slot_session_selected"),
+                [pending.Session],
+                pending.Session.Name,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false,
+                repairConfirmed,
+                pending.RepairCommand);
+        }
         if (!string.IsNullOrWhiteSpace(pending.ActionHistoryId) && pending.Session is not null)
         {
             var denial = await GetOperatorDenialAsync(pending.Session, incoming.SenderId, ZaloBotIntent.UndoActionConfirm, false);
@@ -472,6 +493,11 @@ public sealed class ZaloBotService(
             ZaloBotIntent.WaitlistStatus or ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
         {
             return await HandleWaitlistIntentAsync(
+                earlyDecision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
+        }
+        if (earlyDecision.Intent == ZaloBotIntent.RepairShareSlot)
+        {
+            return await HandleRepairShareSlotAsync(
                 earlyDecision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
         }
 
@@ -621,6 +647,9 @@ public sealed class ZaloBotService(
 
         if (decision.Intent == ZaloBotIntent.ShareSlot)
             return await ShareSlotAsync(decision, sessions, normalizedQuestion, question, incoming, cancellationToken, false);
+
+        if (decision.Intent == ZaloBotIntent.RepairShareSlot)
+            return await HandleRepairShareSlotAsync(decision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
 
         if (decision.Intent == ZaloBotIntent.IncompleteProfiles)
             return await ListIncompleteProfilesAsync(
@@ -994,6 +1023,60 @@ public sealed class ZaloBotService(
             return new PendingResolution(false, null, null,
                 "Mình đang chờ xác nhận hoàn tác dữ liệu. Gõ @bot xác nhận để khôi phục, hoặc @bot huỷ.");
         }
+        if (state.PendingIntent == ZaloBotIntent.RepairShareSlotConfirm.ToString())
+        {
+            RepairShareSlotConfirmationPayload? payload;
+            try { payload = JsonSerializer.Deserialize<RepairShareSlotConfirmationPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var actionSession = payload is null ? null : sessions.SingleOrDefault(session => session.Id == payload.SessionId);
+            if (payload is not null && actionSession is not null && ZaloBotIntelligence.IsConfirmation(normalizedQuestion))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.RepairShareSlotConfirm,
+                    actionSession,
+                    null,
+                    RepairCommand: payload.Command);
+            }
+            var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+            if (newIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+            return new PendingResolution(false, null, null,
+                "Mình đang chờ xác nhận sửa share slot. Gõ @bot xác nhận để cập nhật đội hình, hoặc @bot huỷ.");
+        }
+        if (state.PendingIntent == ZaloBotIntent.RepairShareSlot.ToString())
+        {
+            RepairShareSlotSelectionPayload? payload;
+            try { payload = JsonSerializer.Deserialize<RepairShareSlotSelectionPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var repairCandidates = payload is null
+                ? []
+                : sessions.Where(session => payload.SessionIds.Contains(session.Id, StringComparer.Ordinal)).ToList();
+            var repairMatchedIds = ZaloBotIntelligence.ResolveSessionReference(
+                normalizedQuestion,
+                repairCandidates.Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime)).ToList());
+            var repairMatches = repairCandidates.Where(session => repairMatchedIds.Contains(session.Id)).ToList();
+            if (payload is not null && repairMatches.Count == 1)
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.RepairShareSlot,
+                    repairMatches[0],
+                    null,
+                    RepairCommand: payload.Command);
+            }
+            var repairChoices = repairCandidates.Take(4).Select(FormatSessionChoice);
+            return new PendingResolution(false, null, null,
+                $"Mình vẫn chưa xác định được trận cần sửa. Bạn trả lời bằng thứ, ngày hoặc tên trận: {string.Join(", ", repairChoices)}; hoặc gõ huỷ.");
+        }
         if (state.PendingIntent == ZaloBotIntent.ScheduleReminderConfirm.ToString())
         {
             ReminderConfirmationPayload? payload;
@@ -1218,6 +1301,70 @@ public sealed class ZaloBotService(
         state.PendingPayloadJson = JsonSerializer.Serialize(new UndoConfirmationPayload(sessionId, actionId));
         state.PreviousCommand = ZaloBotIntent.UndoAction.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveRepairShareSlotConfirmationAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string sessionId,
+        ZaloRepairShareSlotCommand command,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId && item.GroupId == groupId && item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.RepairShareSlotConfirm.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new RepairShareSlotConfirmationPayload(sessionId, command));
+        state.PreviousCommand = ZaloBotIntent.RepairShareSlot.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveRepairShareSlotSelectionAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        IReadOnlyList<SessionSnapshot> candidates,
+        ZaloRepairShareSlotCommand command,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId && item.GroupId == groupId && item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.RepairShareSlot.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new RepairShareSlotSelectionPayload(
+            candidates.Select(candidate => candidate.Id).ToList(),
+            command));
+        state.PreviousCommand = ZaloBotIntent.RepairShareSlot.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15), 1, 120));
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
     }
@@ -2569,6 +2716,98 @@ public sealed class ZaloBotService(
         return !HasAny(selector, "hien tai", "co danh sach", "ai dang", "xem", "trang thai", "du 18", "slot trong", "khi co slot");
     }
 
+    private async Task<BotAnswer> HandleRepairShareSlotAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string selector,
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
+        bool aiCalled,
+        bool confirmed = false,
+        ZaloRepairShareSlotCommand? confirmedCommand = null)
+    {
+        var command = confirmedCommand;
+        if (command is null && !ZaloNaturalCommandParser.TryParseRepairShareSlot(ExtractQuestion(incoming), out command))
+        {
+            return new BotAnswer(
+                "Mình cần biết người đang share sai, người share và người chính mới. Ví dụ: `@bot sửa share slot của Vivian từ Thanh Long sang Vinh cho T4`.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var commandSelector = NormalizeText(string.Join(' ', new[]
+        {
+            selector,
+            command.SessionReference,
+            decision.SessionReference
+        }.Where(value => !string.IsNullOrWhiteSpace(value))));
+        var selected = SelectSession(sessions, commandSelector);
+        if (selected.Session is null)
+        {
+            var candidates = sessions.Where(IsUpcoming).Take(8).ToList();
+            if (candidates.Count == 0) candidates = sessions.Take(8).ToList();
+            await SaveRepairShareSlotSelectionAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                candidates,
+                command,
+                cancellationToken);
+            return new BotAnswer(
+                $"Mình cần biết trận nào để sửa. Bạn trả lời bằng thứ, ngày hoặc tên trận: {string.Join(", ", candidates.Take(4).Select(FormatSessionChoice))}.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var session = selected.Session;
+        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+        if (denial is not null) return denial;
+
+        if (!confirmed)
+        {
+            await SaveRepairShareSlotConfirmationAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                session.Id,
+                command,
+                cancellationToken);
+            return new BotAnswer(
+                $"Mình hiểu bạn muốn sửa đội hình {session.Name}: tháo {command.Partner} khỏi share slot của {command.WrongAnchor}, rồi ghép {command.Partner} vào slot của {command.CorrectAnchor}. Chưa có dữ liệu nào thay đổi. Gõ `@bot xác nhận` để thực hiện hoặc `@bot huỷ`.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
+        var repaired = await draftService.RepairPostDraftSharedSlotAsync(
+            session.AdminUserId,
+            session.Id,
+            command.WrongAnchor,
+            command.Partner,
+            command.CorrectAnchor);
+        if (!repaired.IsSuccess || repaired.Value is null)
+            return new BotAnswer(repaired.Error ?? "Không thể sửa share slot sau draft.", null, decision.Intent, aiCalled);
+
+        await actionHistory.RecordAsync(
+            session.Id,
+            incoming.SenderId,
+            incoming.SenderName,
+            "RepairShareSlot",
+            $"Sửa share slot {command.Partner}: {command.WrongAnchor} → {command.CorrectAnchor} trong {session.Name}",
+            before,
+            cancellationToken);
+        return new BotAnswer(
+            $"Đã sửa đội hình {session.Name}: {repaired.Value.PartnerPlayerName} đã được chuyển từ slot của {repaired.Value.FromAnchorPlayerName} ({repaired.Value.FromTeamName}) sang slot của {repaired.Value.ToAnchorPlayerName} ({repaired.Value.ToTeamName}). Đã tính lại điểm hai team.",
+            null,
+            decision.Intent,
+            aiCalled);
+    }
+
     private async Task<BotAnswer> HandleActionHistoryIntentAsync(
         ZaloIntentDecision decision,
         IReadOnlyList<SessionSnapshot> sessions,
@@ -2619,6 +2858,8 @@ public sealed class ZaloBotService(
         if (decision.Intent is ZaloBotIntent.WaitlistJoin or ZaloBotIntent.WaitlistLeave or
             ZaloBotIntent.WaitlistStatus or ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
             return await HandleWaitlistIntentAsync(decision, sessions, selector, connectionId, groupId, incoming, cancellationToken, true);
+        if (decision.Intent == ZaloBotIntent.RepairShareSlot)
+            return await HandleRepairShareSlotAsync(decision, sessions, selector, connectionId, groupId, incoming, cancellationToken, true);
         if (decision.Intent is ZaloBotIntent.ActionHistory or ZaloBotIntent.UndoAction)
             return await HandleActionHistoryIntentAsync(decision, sessions, selector, connectionId, groupId, incoming, cancellationToken, true);
         if (decision.Intent is ZaloBotIntent.ScheduleReminder or ZaloBotIntent.ReminderStatus or ZaloBotIntent.CancelReminder)
@@ -3358,7 +3599,8 @@ public sealed class ZaloBotService(
         string? Clarification,
         ZaloReminderCommand? ReminderCommand = null,
         IReadOnlyList<SessionSnapshot>? TargetSessions = null,
-        string? ActionHistoryId = null)
+        string? ActionHistoryId = null,
+        ZaloRepairShareSlotCommand? RepairCommand = null)
     {
         public static PendingResolution None { get; } = new(false, null, null, null);
     }
@@ -3366,6 +3608,12 @@ public sealed class ZaloBotService(
         IReadOnlyList<string> SessionIds,
         ZaloReminderCommand Command);
     private sealed record UndoConfirmationPayload(string SessionId, string ActionId);
+    private sealed record RepairShareSlotSelectionPayload(
+        IReadOnlyList<string> SessionIds,
+        ZaloRepairShareSlotCommand Command);
+    private sealed record RepairShareSlotConfirmationPayload(
+        string SessionId,
+        ZaloRepairShareSlotCommand Command);
     private sealed record PlayerProfileValues(PlayerGender? Gender, PlayerRole? Role, PlayerLevel? Level);
     private sealed record SessionSnapshot(
         string Id,

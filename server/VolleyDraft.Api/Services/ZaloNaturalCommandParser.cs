@@ -161,6 +161,39 @@ public static class ZaloNaturalCommandParser
             currentCommand?.SessionReference);
     }
 
+    public static bool TryParseRepairShareSlot(string question, out ZaloRepairShareSlotCommand command)
+    {
+        command = new ZaloRepairShareSlotCommand(string.Empty, string.Empty, string.Empty);
+        var value = question?.Trim() ?? string.Empty;
+        var match = Regex.Match(
+            value,
+            @"(?:sửa|sua|đổi|doi|chuyển|chuyen|chỉnh\s+sửa|chinh\s+sua).*?share\s+slot\s+(?:của|cua)?\s*(?<partner>.+?)\s+(?:từ|tu|đang\s+share\s+với|dang\s+share\s+voi|share\s+với|share\s+voi)\s+(?<wrong>.+?)\s+(?:sang|qua|cho)\s+(?<target>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return false;
+
+        var partner = CleanPerson(match.Groups["partner"].Value);
+        var wrongAnchor = CleanPerson(match.Groups["wrong"].Value);
+        var targetWithSession = CleanPerson(match.Groups["target"].Value);
+        string? sessionReference = null;
+        var sessionMatch = Regex.Match(
+            targetWithSession,
+            @"\s+(?<reference>(?:t[2-7]|cn|thứ\s+[2-7]|thu\s+[2-7])(?:\s+(?:ngày|ngay)?\s*\d{1,2}(?:/\d{1,2})?)?)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (sessionMatch.Success)
+        {
+            sessionReference = ZaloBotIntelligence.Normalize(sessionMatch.Groups["reference"].Value.Trim());
+            targetWithSession = targetWithSession[..sessionMatch.Index].Trim();
+            targetWithSession = Regex.Replace(
+                targetWithSession,
+                @"\s+(?:cho|trận|tran|buổi|buoi)$",
+                string.Empty,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant).Trim();
+        }
+
+        command = new ZaloRepairShareSlotCommand(partner, wrongAnchor, targetWithSession, sessionReference);
+        return partner.Length > 0 && wrongAnchor.Length > 0 && targetWithSession.Length > 0;
+    }
+
     public static IReadOnlyList<string> SplitPeople(string value)
     {
         var cleaned = Regex.Replace(

@@ -167,6 +167,15 @@ public sealed class ZaloBotIntelligenceTests
         Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
     }
 
+    [Fact]
+    public void Repair_share_slot_is_a_protected_admin_intent()
+    {
+        var decision = ZaloBotIntelligence.ClassifyDeterministically(
+            "sửa share slot của Vivian từ Thanh Long sang Vinh cho T4");
+
+        Assert.Equal(ZaloBotIntent.RepairShareSlot, decision.Intent);
+    }
+
     [Theory]
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", "Thanh Tuyền", "Nick Tran")]
     [InlineData("swap Thanh Tuyền với Nick Tran", "Thanh Tuyền", "Nick Tran")]

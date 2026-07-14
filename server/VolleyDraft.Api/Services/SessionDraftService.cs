@@ -1477,6 +1477,127 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
     }
 
+    public async Task<ServiceResult<PostDraftShareRepairResult>> RepairPostDraftSharedSlotAsync(
+        string adminUserId,
+        string sessionId,
+        string wrongAnchorPlayerReference,
+        string partnerReference,
+        string correctAnchorPlayerReference)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil })
+            .SingleOrDefaultAsync();
+        if (currentLease is null) return NotFound<PostDraftShareRepairResult>("Không tìm thấy session.");
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+            return ServiceResult<PostDraftShareRepairResult>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật đội hình này.");
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == sessionId &&
+                              session.AdminUserId == adminUserId &&
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "RepairPostDraftShareSlot")
+                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(2)));
+        if (claimed == 0)
+            return ServiceResult<PostDraftShareRepairResult>.Failure(StatusCodes.Status409Conflict, "Đang có thao tác khác cập nhật đội hình này.");
+
+        try
+        {
+            var session = await db.MatchSessions.SingleAsync(item => item.Id == sessionId);
+            if (session.Status != SessionStatus.Finished)
+                return BadRequest<PostDraftShareRepairResult>("Chỉ dùng sửa share slot này sau khi draft đã hoàn tất.");
+
+            var slots = await db.DraftSlots
+                .Include(slot => slot.AssignedTeam)
+                .Include(slot => slot.Players.OrderBy(link => link.RotationOrder))
+                .ThenInclude(link => link.SessionPlayer)
+                .Where(slot => slot.SessionId == sessionId && slot.AssignedTeamId != null)
+                .ToListAsync();
+            var wrongAnchor = ResolveDraftPlayerSlot(slots, wrongAnchorPlayerReference);
+            if (wrongAnchor.Match is null)
+                return BadRequest<PostDraftShareRepairResult>(wrongAnchor.Error!);
+            var correctAnchor = ResolveDraftPlayerSlot(slots, correctAnchorPlayerReference);
+            if (correctAnchor.Match is null)
+                return BadRequest<PostDraftShareRepairResult>(correctAnchor.Error!);
+            if (wrongAnchor.Match.Slot.Id == correctAnchor.Match.Slot.Id)
+                return BadRequest<PostDraftShareRepairResult>("Slot cũ và slot mới đang là cùng một slot.");
+
+            var sourceSlot = wrongAnchor.Match.Slot;
+            var targetSlot = correctAnchor.Match.Slot;
+            if (sourceSlot.Type != DraftSlotType.Shared)
+                return BadRequest<PostDraftShareRepairResult>($"{wrongAnchorPlayerReference} hiện không nằm trong shared slot.");
+            if (targetSlot.Type == DraftSlotType.Shared)
+                return BadRequest<PostDraftShareRepairResult>($"Slot của {correctAnchorPlayerReference} đã là shared slot; bot không tự ghép chồng thêm.");
+
+            var partnerResolution = ResolveSessionPlayer(
+                slots.SelectMany(slot => slot.Players.Select(link => link.SessionPlayer)).DistinctBy(player => player.Id).ToList(),
+                partnerReference);
+            if (partnerResolution.Player is null)
+                return BadRequest<PostDraftShareRepairResult>(partnerResolution.Error!);
+            var partner = partnerResolution.Player;
+            var sourceLink = sourceSlot.Players.SingleOrDefault(link => link.SessionPlayerId == partner.Id);
+            if (sourceLink is null)
+                return BadRequest<PostDraftShareRepairResult>($"Không tìm thấy {partner.DisplayName} trong shared slot của {wrongAnchorPlayerReference}.");
+            if (targetSlot.Players.Any(link => link.SessionPlayerId == partner.Id))
+                return BadRequest<PostDraftShareRepairResult>($"{partner.DisplayName} đã nằm trong slot của {correctAnchorPlayerReference}.");
+
+            var fromTeamName = sourceSlot.AssignedTeam!.Name;
+            var toTeamName = targetSlot.AssignedTeam!.Name;
+            sourceSlot.Players.Remove(sourceLink);
+            db.DraftSlotPlayers.Remove(sourceLink);
+            partner.IsInsideSharedSlot = false;
+            RefreshDraftSlotSummary(sourceSlot);
+
+            targetSlot.Players.Add(new DraftSlotPlayer
+            {
+                DraftSlotId = targetSlot.Id,
+                SessionPlayerId = partner.Id,
+                SessionPlayer = partner,
+                RotationOrder = targetSlot.Players.Count == 0 ? 1 : targetSlot.Players.Max(link => link.RotationOrder) + 1
+            });
+            targetSlot.Type = DraftSlotType.Shared;
+            partner.IsInsideSharedSlot = true;
+            RefreshDraftSlotSummary(targetSlot);
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            await RecalculateTeamScore(sourceSlot.AssignedTeamId!);
+            await RecalculateTeamScore(targetSlot.AssignedTeamId!);
+
+            return ServiceResult<PostDraftShareRepairResult>.Success(new(
+                partner.DisplayName,
+                wrongAnchor.Match.PlayerName,
+                fromTeamName,
+                correctAnchor.Match.PlayerName,
+                toTeamName,
+                targetSlot.DisplayName));
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == sessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
+    private static void RefreshDraftSlotSummary(DraftSlot slot)
+    {
+        var players = slot.Players
+            .OrderBy(link => link.RotationOrder)
+            .Select(link => link.SessionPlayer)
+            .ToList();
+        if (players.Count == 0) return;
+        slot.Type = players.Count > 1 ? DraftSlotType.Shared : DraftSlotType.Single;
+        slot.DisplayName = string.Join(" / ", players.Select(player => player.DisplayName));
+        slot.AverageScore = players.Average(player => player.Score);
+        slot.Gender = CombinedGender(players);
+    }
+
     private async Task<ServiceResult<DraftStateResponse>> StartDraftRunAsync(
         string adminUserId,
         string sessionId,
@@ -3247,3 +3368,11 @@ public sealed record PostDraftSharedSlotResult(
     string TeamName,
     bool PartnerWasAdded,
     bool NeedsProfileUpdate);
+
+public sealed record PostDraftShareRepairResult(
+    string PartnerPlayerName,
+    string FromAnchorPlayerName,
+    string FromTeamName,
+    string ToAnchorPlayerName,
+    string ToTeamName,
+    string NewSlotDisplayName);

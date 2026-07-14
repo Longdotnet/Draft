@@ -30,6 +30,8 @@ public enum ZaloBotIntent
     UpdatePlayerProfile,
     AddGuestPlayer,
     ShareSlot,
+    RepairShareSlot,
+    RepairShareSlotConfirm,
     TeamImage,
     ScheduleReminder,
     ScheduleReminderConfirm,
@@ -72,6 +74,12 @@ public sealed record ZaloShareSlotCommand(
     string Anchor,
     IReadOnlyList<string> Partners,
     int RequestedPartnerCount,
+    string? SessionReference = null);
+
+public sealed record ZaloRepairShareSlotCommand(
+    string Partner,
+    string WrongAnchor,
+    string CorrectAnchor,
     string? SessionReference = null);
 
 public sealed record ZaloIntentDecision(
@@ -294,6 +302,8 @@ public static class ZaloBotIntelligence
                 null,
                 explanation ? "waitlist_explanation_phrase" : "waitlist_status_phrase");
         }
+        if (ZaloNaturalCommandParser.TryParseRepairShareSlot(value, out _))
+            return new(ZaloBotIntent.RepairShareSlot, .99, q, false, null, "repair_share_slot_phrase");
         if (Has(q, "lich su thao tac", "xem thao tac", "vua thay doi gi", "nhung thay doi gan day"))
             return new(ZaloBotIntent.ActionHistory, .98, q, false, null, "action_history_phrase");
         if (Regex.IsMatch(q, @"(?:^|\s)(?:undo|hoan tac|khoi phuc)(?:\s|$)", RegexOptions.CultureInvariant))
@@ -371,7 +381,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.UndoActionConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.UndoActionConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;
