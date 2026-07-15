@@ -173,6 +173,44 @@ public static class ZaloNaturalCommandParser
             currentCommand?.SessionReference);
     }
 
+    public static bool TryParseSlotTransfer(string question, out ZaloSlotTransferCommand command)
+    {
+        command = new ZaloSlotTransferCommand(string.Empty, string.Empty);
+        var value = question?.Trim() ?? string.Empty;
+        var patterns = new[]
+        {
+            @"^(?<from>.+?)\s+(?:muốn\s+|muon\s+)?(?:rút|rut|hủy|huy|bỏ|bo|pass|nhường|nhuong)(?:\s+(?:slot|suất|suat))?\s+(?:(?:nhường|nhuong|lại|lai)\s+)?cho\s+(?<to>.+)$",
+            @"^(?<from>.+?)\s+(?:muốn\s+|muon\s+)?(?:nhường|nhuong|pass)\s+(?:slot|suất|suat)\s+(?:cho|lại\s+cho)\s+(?<to>.+)$"
+        };
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(value, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!match.Success) continue;
+            var from = CleanPerson(match.Groups["from"].Value);
+            var to = CleanPerson(match.Groups["to"].Value);
+            if (from.Length >= 2 && to.Length >= 2 &&
+                !string.Equals(ZaloBotIntelligence.Normalize(from), ZaloBotIntelligence.Normalize(to), StringComparison.Ordinal))
+            {
+                command = new ZaloSlotTransferCommand(from, to);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static ZaloSlotTransferCommand? BindExplicitSlotTransferMentions(
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers,
+        ZaloSlotTransferCommand? currentCommand)
+    {
+        if (mentionedUsers.Count != 2) return currentCommand;
+        return new ZaloSlotTransferCommand(
+            mentionedUsers[0].DisplayName.Trim().TrimStart('@'),
+            mentionedUsers[1].DisplayName.Trim().TrimStart('@'),
+            currentCommand?.SessionReference,
+            mentionedUsers[0].ZaloUserId,
+            mentionedUsers[1].ZaloUserId);
+    }
+
     public static bool TryParseRepairShareSlot(string question, out ZaloRepairShareSlotCommand command)
     {
         command = new ZaloRepairShareSlotCommand(string.Empty, string.Empty, string.Empty);

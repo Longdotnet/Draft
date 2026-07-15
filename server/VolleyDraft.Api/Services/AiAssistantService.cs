@@ -29,7 +29,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, ActionHistory, UndoAction, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -49,6 +49,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             - Muốn tắt, dừng hoặc huỷ lịch nhắc là CancelReminder.
             - Muốn xếp hàng chờ/có slot thì gọi là WaitlistJoin; rút khỏi hàng chờ là WaitlistLeave; xem ai/vị trí đang chờ là WaitlistStatus.
             - Người đang được bot gọi mà đồng ý lấy slot là WaitlistAccept; nhường/bỏ qua lời mời là WaitlistDecline.
+            - Người đã có slot muốn rút/pass/nhường slot cho người khác là SlotTransfer. Đây là thay đổi đội hình và cần hỏi xác nhận trước.
             - Muốn xem các thay đổi dữ liệu gần đây là ActionHistory. Muốn hoàn tác/undo thay đổi backend gần nhất là UndoAction.
             - UndoAction là khôi phục dữ liệu website/backend, không phải thu hồi hoặc sửa tin nhắn Zalo.
             - Không tự chọn session. Chỉ chép ngày/tên/thứ mà người dùng thực sự nói vào sessionReference.
@@ -230,6 +231,60 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             logger.LogWarning(exception, "AI share-slot extraction returned invalid JSON: {Output}", Truncate(content, 500));
+            return null;
+        }
+    }
+
+    public async Task<ZaloSlotTransferCommand?> ParseSlotTransferCommandAsync(
+        ZaloNaturalSlotTransferContext context,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured) return null;
+        var prompt = """
+            Bạn trích xuất yêu cầu chuyển slot của bot quản lý bóng chuyền. Chỉ trả về đúng một JSON object, không markdown.
+            Schema: {"fromPlayer":"Nguyễn Thanh Tâm","toPlayer":"Sin","sessionReference":"T4"}
+
+            fromPlayer là người đang có slot và muốn rút/pass/nhường slot.
+            toPlayer là người được nhận slot.
+            Nếu MentionedUsers có đúng hai người, bắt buộc dùng người thứ nhất làm fromPlayer và người thứ hai làm toPlayer, không dùng SenderName để thay thế.
+            Nếu câu dùng “tui/mình/em” làm fromPlayer thì dùng SenderName.
+            Chỉ lấy tên và ngày/trận thực sự có trong Question hoặc MentionedUsers; không tự bịa.
+            Đây chỉ là trích xuất dữ liệu. Không tự quyết định quyền, không tự thực hiện thay đổi.
+            """;
+        var payload = new
+        {
+            model = configuration["Ai:Model"],
+            temperature = 0,
+            max_tokens = 180,
+            messages = new object[]
+            {
+                new { role = "system", content = prompt },
+                new { role = "user", content = JsonSerializer.Serialize(context, JsonOptions) }
+            }
+        };
+        var content = await SendForContentAsync(
+            configuration["Ai:Endpoint"]!,
+            configuration["Ai:ApiKey"]!,
+            payload,
+            "slot_transfer_extraction",
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(content)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(StripCodeFence(content));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var from = ReadJsonString(root, "fromPlayer")?.Trim().TrimStart('@');
+            var to = ReadJsonString(root, "toPlayer")?.Trim().TrimStart('@');
+            var sessionReference = ReadJsonString(root, "sessionReference")?.Trim();
+            if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to) ||
+                string.Equals(ZaloBotIntelligence.Normalize(from), ZaloBotIntelligence.Normalize(to), StringComparison.Ordinal))
+                return null;
+            return new ZaloSlotTransferCommand(from, to, sessionReference);
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            logger.LogWarning(exception, "AI slot-transfer extraction returned invalid JSON: {Output}", Truncate(content, 500));
             return null;
         }
     }
@@ -476,6 +531,12 @@ public sealed record ZaloNaturalShareContext(
     string SenderName,
     IReadOnlyList<ZaloMentionedUser> MentionedUsers,
     IReadOnlyList<ZaloAiSessionReference> AvailableSessions);
+public sealed record ZaloNaturalSlotTransferContext(
+    string Question,
+    string SenderName,
+    IReadOnlyList<ZaloMentionedUser> MentionedUsers,
+    IReadOnlyList<ZaloAiSessionReference> AvailableSessions,
+    IReadOnlyList<ZaloAiMessage>? RecentMessages = null);
 public sealed record ZaloAiSessionReference(string Id, string Name, DateTimeOffset? StartTime);
 
 public sealed record ZaloAiContext(

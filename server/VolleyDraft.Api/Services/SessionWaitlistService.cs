@@ -40,16 +40,22 @@ public sealed class SessionWaitlistService(
             return BadRequest("Không xác định được tài khoản Zalo cần thêm vào danh sách chờ.");
         var session = await db.MatchSessions.AsNoTracking().SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
         if (session is null) return NotFound("Không tìm thấy buổi đấu.");
-        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
-            return BadRequest("Buổi này đã bắt đầu draft hoặc đã kết thúc nên không thể vào danh sách chờ.");
+        var now = DateTimeOffset.UtcNow;
+        if (session.Status == SessionStatus.Drafting)
+            return BadRequest("Đội hình đang được draft. Bạn chờ draft xong rồi gửi lại yêu cầu vào danh sách chờ nhé.");
+        if (session.Status == SessionStatus.Cancelled)
+            return BadRequest("Buổi này đã bị huỷ nên không thể vào danh sách chờ.");
+        if (session.StartTime is not null && session.StartTime <= now)
+            return BadRequest("Buổi này đã tới hoặc qua giờ trận nên không thể vào danh sách chờ.");
         var alreadyPresent = await db.SessionPlayers.AsNoTracking().AnyAsync(item =>
             item.SessionId == sessionId && item.IsPresent && item.PlayerProfile != null && item.PlayerProfile.ZaloUserId == zaloUserId,
             cancellationToken);
         if (alreadyPresent)
-            return ServiceResult<WaitlistMutationResult>.Failure(StatusCodes.Status409Conflict, $"{displayName} đã có tên trong danh sách chính thức của {session.Name}.");
+            return ServiceResult<WaitlistMutationResult>.Failure(
+                StatusCodes.Status409Conflict,
+                $"{displayName} đã có slot chính thức trong {session.Name} nên không cần xếp thêm vào waitlist. Nếu muốn đăng ký chờ cho người khác, hãy mention đúng người đó.");
 
         var before = await actionHistory.CaptureAsync(sessionId, cancellationToken);
-        var now = DateTimeOffset.UtcNow;
         var entry = await db.SessionWaitlistEntries.SingleOrDefaultAsync(item =>
             item.SessionId == sessionId && item.ZaloUserId == zaloUserId, cancellationToken);
         if (entry is not null && entry.Status is SessionWaitlistStatus.Waiting or SessionWaitlistStatus.Invited)
@@ -282,7 +288,8 @@ public sealed class SessionWaitlistService(
         var session = await db.MatchSessions.Include(item => item.ZaloConnection)
             .SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
         if (session?.ZaloConnection is null || !session.BotEnabled || string.IsNullOrWhiteSpace(session.ZaloGroupId) ||
-            session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
+            session.Status is SessionStatus.Drafting or SessionStatus.Cancelled ||
+            (session.StartTime is not null && session.StartTime <= now))
             return;
 
         var expired = await db.SessionWaitlistEntries

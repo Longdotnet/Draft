@@ -72,6 +72,35 @@ public sealed class ZaloBotIntelligenceTests
     }
 
     [Theory]
+    [InlineData("@Sin muốn vào waitlist thứ 4")]
+    [InlineData("xin thêm @Sin vào danh sách chờ T4")]
+    public void Waitlist_join_with_a_named_player_is_not_misclassified_as_status(string input)
+    {
+        var decision = ZaloBotIntelligence.ClassifyDeterministically(input);
+
+        Assert.Equal(ZaloBotIntent.WaitlistJoin, decision.Intent);
+    }
+
+    [Theory]
+    [InlineData("@Nguyễn Thanh Tâm muốn rút nhường cho @Sin")]
+    [InlineData("@Nguyen Thanh Tam hủy slot cho @Sin")]
+    public void Slot_transfer_is_distinguished_from_accepting_a_waitlist_invitation(string input)
+    {
+        var decision = ZaloBotIntelligence.ClassifyDeterministically(input);
+
+        Assert.Equal(ZaloBotIntent.SlotTransfer, decision.Intent);
+    }
+
+    [Fact]
+    public void Slot_transfer_confirmation_is_not_accepted_as_ai_classifier_output()
+    {
+        const string json = "{\"intent\":\"SlotTransferConfirm\",\"confidence\":1}";
+
+        Assert.False(ZaloBotIntelligence.TryParseClassifierJson(json, out var result));
+        Assert.Equal(ZaloBotIntent.Unknown, result.Intent);
+    }
+
+    [Theory]
     [InlineData("xác nhận")]
     [InlineData("đồng ý")]
     [InlineData("chốt đi")]

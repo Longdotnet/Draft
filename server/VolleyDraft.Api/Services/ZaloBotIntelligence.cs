@@ -42,6 +42,8 @@ public enum ZaloBotIntent
     WaitlistStatus,
     WaitlistAccept,
     WaitlistDecline,
+    SlotTransfer,
+    SlotTransferConfirm,
     ActionHistory,
     UndoAction,
     UndoActionConfirm,
@@ -77,6 +79,13 @@ public sealed record ZaloShareSlotCommand(
     IReadOnlyList<string> Partners,
     int RequestedPartnerCount,
     string? SessionReference = null);
+
+public sealed record ZaloSlotTransferCommand(
+    string FromPlayer,
+    string ToPlayer,
+    string? SessionReference = null,
+    string? FromZaloUserId = null,
+    string? ToZaloUserId = null);
 
 public sealed record ZaloRepairShareSlotCommand(
     string Partner,
@@ -280,6 +289,8 @@ public static class ZaloBotIntelligence
         var q = Normalize(value);
         if (TryGetExactCommand(q, out var command))
             return new(IntentForCommand(command), 1, null, false, null, "exact_numeric_command");
+        if (ZaloNaturalCommandParser.TryParseSlotTransfer(value, out _))
+            return new(ZaloBotIntent.SlotTransfer, .99, q, false, null, "slot_transfer_phrase");
         if (Has(q, "nhuong nguoi sau", "nhuong slot", "bo qua slot", "khong nhan slot", "tu choi slot"))
             return new(ZaloBotIntent.WaitlistDecline, .99, q, false, null, "waitlist_decline_phrase");
         if (Has(q, "nhan slot", "chot slot", "lay slot", "dong y nhan", "xac nhan tham gia") &&
@@ -289,7 +300,7 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.WaitlistLeave, .99, q, false, null, "waitlist_leave_phrase");
         if (Has(q, "xem danh sach cho", "danh sach waitlist", "ai dang cho", "vi tri cho", "toi dang cho thu may", "tui dang cho thu may"))
             return new(ZaloBotIntent.WaitlistStatus, .98, q, false, null, "waitlist_status_phrase");
-        if (Has(q, "vao danh sach cho", "them tui vao waitlist", "xep tui cho", "giu cho tui mot suat cho", "co slot goi tui", "co nguoi rut goi tui", "neu trong slot cho tui") ||
+        if (Has(q, "vao danh sach cho", "vao waitlist", "muon vao waitlist", "xin vao waitlist", "tham gia waitlist", "them tui vao waitlist", "xep tui cho", "giu cho tui mot suat cho", "co slot goi tui", "co nguoi rut goi tui", "neu trong slot cho tui") ||
             (Has(q, "co nguoi rut", "co slot trong", "co cho trong", "khi co slot") &&
              Has(q, "goi tui", "bao tui", "nhac tui", "keu tui", "cho tui vao")))
             return new(ZaloBotIntent.WaitlistJoin, .98, q, false, null, "waitlist_join_phrase");
@@ -386,7 +397,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.UndoActionConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;

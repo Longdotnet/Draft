@@ -469,6 +469,27 @@ public sealed class ZaloBotService(
                 repairConfirmed,
                 pending.RepairCommand);
         }
+        if (pending.TransferCommand is not null && pending.Session is not null)
+        {
+            var transferConfirmed = pending.Intent == ZaloBotIntent.SlotTransferConfirm;
+            return await HandleSlotTransferAsync(
+                new ZaloIntentDecision(
+                    transferConfirmed ? ZaloBotIntent.SlotTransferConfirm : ZaloBotIntent.SlotTransfer,
+                    1,
+                    pending.Session.Name,
+                    false,
+                    null,
+                    transferConfirmed ? "slot_transfer_confirmation" : "slot_transfer_session_selected"),
+                [pending.Session],
+                pending.Session.Name,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false,
+                transferConfirmed,
+                pending.TransferCommand);
+        }
         if (!string.IsNullOrWhiteSpace(pending.ActionHistoryId) && pending.Session is not null)
         {
             var denial = await GetOperatorDenialAsync(pending.Session, incoming.SenderId, ZaloBotIntent.UndoActionConfirm, false);
@@ -489,6 +510,11 @@ public sealed class ZaloBotService(
         }
 
         var earlyDecision = ZaloBotIntelligence.ClassifyDeterministically(question);
+        if (earlyDecision.Intent == ZaloBotIntent.SlotTransfer)
+        {
+            return await HandleSlotTransferAsync(
+                earlyDecision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
+        }
         if (earlyDecision.Intent is ZaloBotIntent.WaitlistJoin or ZaloBotIntent.WaitlistLeave or
             ZaloBotIntent.WaitlistStatus or ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
         {
@@ -600,6 +626,9 @@ public sealed class ZaloBotService(
                 null,
                 ZaloBotIntent.Help);
         }
+
+        if (decision.Intent == ZaloBotIntent.SlotTransfer)
+            return await HandleSlotTransferAsync(decision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
 
         if (decision.Intent is ZaloBotIntent.WaitlistJoin or ZaloBotIntent.WaitlistLeave or
             ZaloBotIntent.WaitlistStatus or ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
@@ -1077,6 +1106,49 @@ public sealed class ZaloBotService(
             return new PendingResolution(false, null, null,
                 $"Mình vẫn chưa xác định được trận cần sửa. Bạn trả lời bằng thứ, ngày hoặc tên trận: {string.Join(", ", repairChoices)}; hoặc gõ huỷ.");
         }
+        if (state.PendingIntent == ZaloBotIntent.SlotTransferConfirm.ToString())
+        {
+            SlotTransferConfirmationPayload? payload;
+            try { payload = JsonSerializer.Deserialize<SlotTransferConfirmationPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var actionSession = payload is null ? null : sessions.SingleOrDefault(session => session.Id == payload.SessionId);
+            if (payload is not null && actionSession is not null && ZaloBotIntelligence.IsConfirmation(normalizedQuestion))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(false, ZaloBotIntent.SlotTransferConfirm, actionSession, null,
+                    TransferCommand: payload.Command);
+            }
+            var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+            if (newIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+            return new PendingResolution(false, null, null,
+                "Mình đang chờ xác nhận chuyển slot. Gõ @bot xác nhận để cập nhật đội hình hoặc @bot huỷ.");
+        }
+        if (state.PendingIntent == ZaloBotIntent.SlotTransfer.ToString())
+        {
+            SlotTransferSelectionPayload? payload;
+            try { payload = JsonSerializer.Deserialize<SlotTransferSelectionPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var transferCandidates = payload is null
+                ? []
+                : sessions.Where(session => payload.SessionIds.Contains(session.Id, StringComparer.Ordinal)).ToList();
+            var selected = SelectSession(transferCandidates, normalizedQuestion);
+            if (payload is not null && selected.Session is not null)
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(false, ZaloBotIntent.SlotTransfer, selected.Session, null,
+                    TransferCommand: payload.Command);
+            }
+            var transferChoices = transferCandidates.Take(4).Select(FormatSessionChoice);
+            return new PendingResolution(false, null, null,
+                $"Mình chưa xác định được trận cần chuyển slot. Bạn trả lời bằng thứ, ngày hoặc tên trận: {string.Join(", ", transferChoices)}; hoặc gõ huỷ.");
+        }
         if (state.PendingIntent == ZaloBotIntent.ScheduleReminderConfirm.ToString())
         {
             ReminderConfirmationPayload? payload;
@@ -1364,6 +1436,73 @@ public sealed class ZaloBotService(
             candidates.Select(candidate => candidate.Id).ToList(),
             command));
         state.PreviousCommand = ZaloBotIntent.RepairShareSlot.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15), 1, 120));
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveSlotTransferConfirmationAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string sessionId,
+        ZaloSlotTransferCommand command,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.SlotTransferConfirm.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new SlotTransferConfirmationPayload(sessionId, command));
+        state.PreviousCommand = ZaloBotIntent.SlotTransfer.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveSlotTransferSelectionAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        IReadOnlyList<SessionSnapshot> candidates,
+        ZaloSlotTransferCommand command,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.SlotTransfer.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new SlotTransferSelectionPayload(
+            candidates.Select(candidate => candidate.Id).ToList(), command));
+        state.PreviousCommand = ZaloBotIntent.SlotTransfer.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15), 1, 120));
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
@@ -2707,7 +2846,17 @@ public sealed class ZaloBotService(
 
         if (decision.Intent == ZaloBotIntent.WaitlistJoin)
         {
-            var result = await waitlists.JoinAsync(session.Id, incoming.SenderId, incoming.SenderName,
+            var mentionedTarget = ExtractMentionedUsers(incoming).FirstOrDefault();
+            var delegated = mentionedTarget is not null &&
+                            NormalizeId(mentionedTarget.ZaloUserId) != NormalizeId(incoming.SenderId);
+            if (delegated)
+            {
+                var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+                if (denial is not null) return denial;
+            }
+            var targetId = delegated ? mentionedTarget!.ZaloUserId : incoming.SenderId;
+            var targetName = delegated ? mentionedTarget!.DisplayName : incoming.SenderName;
+            var result = await waitlists.JoinAsync(session.Id, targetId, targetName,
                 incoming.SenderId, incoming.SenderName, cancellationToken);
             return new BotAnswer(result.IsSuccess && result.Value is not null ? result.Value.Message : result.Error ?? "Không thể vào danh sách chờ.", null, decision.Intent, aiCalled);
         }
@@ -2752,6 +2901,145 @@ public sealed class ZaloBotService(
         if (!HasAny(selector, "waitlist", "danh sach cho")) return false;
         if (!HasAny(selector, "giai thich", "cach hoat dong", "hoat dong nhu nao", "chi tiet", "la gi", "huong dan")) return false;
         return !HasAny(selector, "hien tai", "co danh sach", "ai dang", "xem", "trang thai", "du 18", "slot trong", "khi co slot");
+    }
+
+    private async Task<BotAnswer> HandleSlotTransferAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string selector,
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
+        bool aiCalled,
+        bool confirmed = false,
+        ZaloSlotTransferCommand? confirmedCommand = null)
+    {
+        var mentionedUsers = ExtractMentionedUsers(incoming);
+        ZaloSlotTransferCommand? command = confirmedCommand;
+        if (command is null && ZaloNaturalCommandParser.TryParseSlotTransfer(ExtractQuestion(incoming), out var parsed))
+            command = parsed;
+        if (command is null && aiCalled && ai.IsConfigured)
+        {
+            var recentMessages = await db.ZaloGroupMessages
+                .AsNoTracking()
+                .Where(message => message.ZaloConnectionId == connectionId && message.GroupId == groupId)
+                .OrderByDescending(message => message.SentAt)
+                .Take(20)
+                .OrderBy(message => message.SentAt)
+                .Select(message => new ZaloAiMessage(
+                    message.IsFromBot ? "assistant" : "user",
+                    message.SenderId,
+                    message.SenderName,
+                    message.Content,
+                    message.SentAt))
+                .ToListAsync(cancellationToken);
+            var extracted = await ai.ParseSlotTransferCommandAsync(
+                new ZaloNaturalSlotTransferContext(
+                    ExtractQuestion(incoming),
+                    incoming.SenderName,
+                    mentionedUsers,
+                    sessions.Take(10)
+                        .Select(session => new ZaloAiSessionReference(session.Id, session.Name, session.StartTime))
+                        .ToList(),
+                    recentMessages),
+                cancellationToken);
+            if (extracted is not null)
+            {
+                command = extracted;
+                aiCalled = true;
+            }
+        }
+        command = ZaloNaturalCommandParser.BindExplicitSlotTransferMentions(mentionedUsers, command) ?? command;
+        if (command is null)
+        {
+            return new BotAnswer(
+                "Mình chưa xác định được người nhường và người nhận slot. Bạn có thể nói: @bot @NgườiA muốn rút nhường slot cho @NgườiB, kèm thứ hoặc tên trận.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var sessionSelector = NormalizeText(string.Join(' ', new[]
+        {
+            selector,
+            command.SessionReference
+        }.Where(value => !string.IsNullOrWhiteSpace(value))));
+        var selected = await SelectSessionAsync(
+            sessions,
+            sessionSelector,
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            decision.Intent,
+            cancellationToken);
+        if (selected.Clarification is not null)
+        {
+            await SaveSlotTransferSelectionAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                sessions.Where(session => IsUpcoming(session)).Take(8).ToList() is { Count: > 0 } candidates
+                    ? candidates
+                    : sessions.Take(8).ToList(),
+                command,
+                cancellationToken);
+            return new BotAnswer(selected.Clarification, null, decision.Intent, aiCalled);
+        }
+        var session = selected.Session;
+        if (session is null)
+            return new BotAnswer("Mình chưa xác định được trận cần chuyển slot.", null, decision.Intent, aiCalled);
+
+        var fromId = command.FromZaloUserId ?? FindMentionedUser(command.FromPlayer, mentionedUsers)?.ZaloUserId;
+        var toId = command.ToZaloUserId ?? FindMentionedUser(command.ToPlayer, mentionedUsers)?.ZaloUserId;
+        var senderIsFrom = (fromId is not null && NormalizeId(fromId) == NormalizeId(incoming.SenderId)) ||
+                           NormalizeText(command.FromPlayer) == NormalizeText(incoming.SenderName);
+        if (!senderIsFrom)
+        {
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+            if (denial is not null) return denial;
+        }
+
+        if (!confirmed)
+        {
+            await SaveSlotTransferConfirmationAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                session.Id,
+                command,
+                cancellationToken);
+            return new BotAnswer(
+                $"Mình hiểu là {command.FromPlayer} muốn rút slot của {session.Name} và chuyển slot đó cho {command.ToPlayer}. Đội hình hiện tại sẽ được cập nhật, không draft lại toàn bộ. Gõ @bot xác nhận để thực hiện hoặc @bot huỷ.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
+        var result = await draftService.TransferPostDraftSlotAsync(
+            session.AdminUserId,
+            session.Id,
+            command.FromPlayer,
+            new ShareSlotParticipantInput(command.ToPlayer, toId));
+        if (!result.IsSuccess || result.Value is null)
+            return new BotAnswer(result.Error ?? "Không thể chuyển slot.", null, decision.Intent, aiCalled);
+        await actionHistory.RecordAsync(
+            session.Id,
+            incoming.SenderId,
+            incoming.SenderName,
+            "SlotTransfer",
+            $"Chuyển slot từ {result.Value.FromPlayerName} cho {result.Value.ToPlayerName} trong {session.Name}",
+            before,
+            cancellationToken);
+        var profileNote = result.Value.NeedsProfileUpdate
+            ? " Cần cập nhật hồ sơ của người nhận trước khi có thao tác draft lại."
+            : string.Empty;
+        return new BotAnswer(
+            $"Đã cập nhật {session.Name}: {result.Value.FromPlayerName} rút slot, {result.Value.ToPlayerName} nhận slot tại {result.Value.TeamName}. Không draft lại toàn bộ đội hình.{profileNote}",
+            null,
+            ZaloBotIntent.SlotTransferConfirm,
+            aiCalled);
     }
 
     private async Task<BotAnswer> HandleRepairShareSlotAsync(
@@ -2893,6 +3181,8 @@ public sealed class ZaloBotService(
         CancellationToken cancellationToken)
     {
         var selector = NormalizeText(string.Join(' ', new[] { normalizedQuestion, decision.SessionReference }.Where(value => !string.IsNullOrWhiteSpace(value))));
+        if (decision.Intent is ZaloBotIntent.SlotTransfer or ZaloBotIntent.SlotTransferConfirm)
+            return await HandleSlotTransferAsync(decision, sessions, selector, connectionId, groupId, incoming, cancellationToken, true);
         if (decision.Intent is ZaloBotIntent.WaitlistJoin or ZaloBotIntent.WaitlistLeave or
             ZaloBotIntent.WaitlistStatus or ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
             return await HandleWaitlistIntentAsync(decision, sessions, selector, connectionId, groupId, incoming, cancellationToken, true);
@@ -3641,7 +3931,8 @@ public sealed class ZaloBotService(
         ZaloReminderCommand? ReminderCommand = null,
         IReadOnlyList<SessionSnapshot>? TargetSessions = null,
         string? ActionHistoryId = null,
-        ZaloRepairShareSlotCommand? RepairCommand = null)
+        ZaloRepairShareSlotCommand? RepairCommand = null,
+        ZaloSlotTransferCommand? TransferCommand = null)
     {
         public static PendingResolution None { get; } = new(false, null, null, null);
     }
@@ -3655,6 +3946,12 @@ public sealed class ZaloBotService(
     private sealed record RepairShareSlotConfirmationPayload(
         string SessionId,
         ZaloRepairShareSlotCommand Command);
+    private sealed record SlotTransferSelectionPayload(
+        IReadOnlyList<string> SessionIds,
+        ZaloSlotTransferCommand Command);
+    private sealed record SlotTransferConfirmationPayload(
+        string SessionId,
+        ZaloSlotTransferCommand Command);
     private sealed record PlayerProfileValues(PlayerGender? Gender, PlayerRole? Role, PlayerLevel? Level);
     private sealed record SessionSnapshot(
         string Id,

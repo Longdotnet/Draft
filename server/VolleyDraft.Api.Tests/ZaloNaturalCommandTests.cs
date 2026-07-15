@@ -190,6 +190,37 @@ public sealed class ZaloNaturalCommandTests
     }
 
     [Theory]
+    [InlineData("@Nguyễn Thanh Tâm muốn rút nhường cho @Sin", "Nguyễn Thanh Tâm", "Sin")]
+    [InlineData("@Nguyen Thanh Tam muốn hủy nhường cho @Sin", "Nguyen Thanh Tam", "Sin")]
+    [InlineData("Thanh Tâm pass slot cho Sin", "Thanh Tâm", "Sin")]
+    public void Slot_transfer_parser_extracts_the_player_giving_and_receiving_the_slot(
+        string question,
+        string fromPlayer,
+        string toPlayer)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseSlotTransfer(question, out var command));
+        Assert.Equal(fromPlayer, command.FromPlayer);
+        Assert.Equal(toPlayer, command.ToPlayer);
+    }
+
+    [Fact]
+    public void Explicit_slot_transfer_mentions_bind_in_message_order()
+    {
+        var command = ZaloNaturalCommandParser.BindExplicitSlotTransferMentions(
+            [
+                new ZaloMentionedUser("tam-id", "Nguyễn Thanh Tâm"),
+                new ZaloMentionedUser("sin-id", "Sin")
+            ],
+            null);
+
+        Assert.NotNull(command);
+        Assert.Equal("Nguyễn Thanh Tâm", command!.FromPlayer);
+        Assert.Equal("Sin", command.ToPlayer);
+        Assert.Equal("tam-id", command.FromZaloUserId);
+        Assert.Equal("sin-id", command.ToZaloUserId);
+    }
+
+    [Theory]
     [InlineData("sửa share slot của Vivian từ Thanh Long sang Vinh cho T4", "Vivian", "Thanh Long", "Vinh", "t4")]
     [InlineData("đổi share slot Vivian từ Thanh Long sang Vinh Thứ 4", "Vivian", "Thanh Long", "Vinh", "thu 4")]
     public void Repair_share_parser_extracts_old_and_new_anchor(
