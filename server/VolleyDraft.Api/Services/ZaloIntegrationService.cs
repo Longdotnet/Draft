@@ -212,6 +212,99 @@ public sealed class ZaloIntegrationService(
         }
     }
 
+    public async Task<ServiceResult<IReadOnlyList<BridgeMember>>> ResolveMembersAsync(
+        string adminUserId,
+        string sessionId,
+        IReadOnlyList<string> memberIds)
+    {
+        var ids = memberIds
+            .Select(NormalizeId)
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ids.Count == 0)
+            return ServiceResult<IReadOnlyList<BridgeMember>>.Success([]);
+
+        var linked = await GetLinkedSessionAsync(adminUserId, sessionId);
+        if (linked.Result is not null)
+        {
+            return ServiceResult<IReadOnlyList<BridgeMember>>.Failure(
+                linked.Result.StatusCode,
+                linked.Result.Error!);
+        }
+
+        try
+        {
+            var members = await bridge.GetMembersAsync(ReadCredentials(linked.Connection!), ids);
+            return ServiceResult<IReadOnlyList<BridgeMember>>.Success(members);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            return BridgeFailure<IReadOnlyList<BridgeMember>>(exception);
+        }
+    }
+
+    public async Task<ServiceResult<int>> HydrateMissingMemberAvatarsAsync(
+        string adminUserId,
+        string sessionId)
+    {
+        var linked = await GetLinkedSessionAsync(adminUserId, sessionId);
+        if (linked.Result is not null)
+            return ServiceResult<int>.Failure(linked.Result.StatusCode, linked.Result.Error!);
+
+        var players = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId && player.IsPresent && player.PlayerProfile != null)
+            .ToListAsync();
+        var changed = 0;
+        foreach (var player in players)
+        {
+            if (string.IsNullOrWhiteSpace(player.AvatarUrl) &&
+                !string.IsNullOrWhiteSpace(player.PlayerProfile?.AvatarUrl))
+            {
+                player.AvatarUrl = player.PlayerProfile.AvatarUrl;
+                changed += 1;
+            }
+        }
+
+        var missingIds = players
+            .Where(player => string.IsNullOrWhiteSpace(player.AvatarUrl) &&
+                             !string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId))
+            .Select(player => NormalizeId(player.PlayerProfile!.ZaloUserId))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (missingIds.Count == 0)
+        {
+            if (changed > 0) await db.SaveChangesAsync();
+            return ServiceResult<int>.Success(changed);
+        }
+
+        try
+        {
+            var members = await bridge.GetMembersAsync(ReadCredentials(linked.Connection!), missingIds);
+            var memberById = members
+                .Where(member => !string.IsNullOrWhiteSpace(member.AvatarUrl))
+                .GroupBy(member => NormalizeId(member.ZaloUserId), StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            foreach (var player in players.Where(player => string.IsNullOrWhiteSpace(player.AvatarUrl)))
+            {
+                var zaloUserId = NormalizeId(player.PlayerProfile?.ZaloUserId ?? string.Empty);
+                if (!memberById.TryGetValue(zaloUserId, out var member)) continue;
+                player.AvatarUrl = member.AvatarUrl;
+                player.PlayerProfile!.AvatarUrl = member.AvatarUrl;
+                player.PlayerProfile.LastSyncedAt = DateTimeOffset.UtcNow;
+                player.PlayerProfile.UpdatedAt = DateTimeOffset.UtcNow;
+                changed += 1;
+            }
+            if (changed > 0) await db.SaveChangesAsync();
+            return ServiceResult<int>.Success(changed);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            return BridgeFailure<int>(exception);
+        }
+    }
+
     public async Task<ServiceResult<ZaloImportPreviewResponse>> CreateImportPreviewAsync(
         string adminUserId,
         string sessionId,

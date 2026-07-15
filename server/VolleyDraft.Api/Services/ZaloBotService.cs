@@ -311,6 +311,7 @@ public sealed class ZaloBotService(
         }
         if (!response.TextGeneratedByAi &&
             response.Intent != ZaloBotIntent.GeneralChat &&
+            ZaloBotIntelligence.CanUseAiStyleRewrite(response.Intent) &&
             response.Mentions is not { Count: > 0 } &&
             ai.IsConfigured &&
             configuration.GetValue("ZaloBot:AiStyleEnabled", true) &&
@@ -1759,6 +1760,10 @@ public sealed class ZaloBotService(
         if (selected.Clarification is not null)
             return new BotAnswer(selected.Clarification + " Hãy gửi lại đầy đủ lệnh share slot kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
         var session = selected.Session!;
+        var mentionedMembers = await ResolveZaloMembersAsync(
+            session,
+            mentionedUsers.Select(user => user.ZaloUserId),
+            cancellationToken);
         var isSelfServicePreDraft = session.Status != SessionStatus.Finished &&
                                     requestedOwnSlot &&
                                     session.SenderIsListed;
@@ -1780,7 +1785,9 @@ public sealed class ZaloBotService(
             {
                 var existing = ResolvePlayerReference(partnerName, session.PlayerNames);
                 var mention = FindMentionedUser(partnerName, mentionedUsers);
-                return new ShareSlotParticipantInput(existing ?? partnerName, mention?.ZaloUserId);
+                var mentionId = mention?.ZaloUserId;
+                mentionedMembers.TryGetValue(NormalizeId(mentionId ?? string.Empty), out var member);
+                return new ShareSlotParticipantInput(existing ?? partnerName, mentionId, member?.AvatarUrl);
             }).ToList();
             var shared = await draftService.SharePreDraftSlotAsync(
                 session.AdminUserId,
@@ -1809,7 +1816,14 @@ public sealed class ZaloBotService(
             var partner = existingPartner ?? (NormalizeText(rawPartner) == "ban"
                 ? NextExternalShareName(anchor, session.PlayerNames.Concat(completed.Select(item => item.PartnerPlayerName)).ToList())
                 : rawPartner);
-            var shared = await draftService.SharePostDraftSlotAsync(session.AdminUserId, session.Id, anchor, partner);
+            var mention = FindMentionedUser(rawPartner, mentionedUsers);
+            var mentionId = mention?.ZaloUserId;
+            mentionedMembers.TryGetValue(NormalizeId(mentionId ?? string.Empty), out var member);
+            var shared = await draftService.SharePostDraftSlotAsync(
+                session.AdminUserId,
+                session.Id,
+                anchor,
+                new ShareSlotParticipantInput(partner, mentionId, member?.AvatarUrl));
             if (!shared.IsSuccess || shared.Value is null)
                 return new BotAnswer(shared.Error ?? "Không cập nhật được share slot.", null, decision.Intent, aiCalled);
             completed.Add(shared.Value);
@@ -3017,11 +3031,16 @@ public sealed class ZaloBotService(
         }
 
         var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
+        var transferMembers = await ResolveZaloMembersAsync(
+            session,
+            toId is null ? [] : [toId],
+            cancellationToken);
+        transferMembers.TryGetValue(NormalizeId(toId ?? string.Empty), out var replacementMember);
         var result = await draftService.TransferPostDraftSlotAsync(
             session.AdminUserId,
             session.Id,
             command.FromPlayer,
-            new ShareSlotParticipantInput(command.ToPlayer, toId));
+            new ShareSlotParticipantInput(command.ToPlayer, toId, replacementMember?.AvatarUrl));
         if (!result.IsSuccess || result.Value is null)
             return new BotAnswer(result.Error ?? "Không thể chuyển slot.", null, decision.Intent, aiCalled);
         await actionHistory.RecordAsync(
@@ -3687,6 +3706,34 @@ public sealed class ZaloBotService(
             .GroupBy(item => item.ZaloUserId, StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
+    }
+
+    private async Task<IReadOnlyDictionary<string, BridgeMember>> ResolveZaloMembersAsync(
+        SessionSnapshot session,
+        IEnumerable<string> memberIds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var ids = memberIds
+            .Select(NormalizeId)
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ids.Count == 0) return new Dictionary<string, BridgeMember>(StringComparer.Ordinal);
+
+        var result = await zaloIntegration.ResolveMembersAsync(session.AdminUserId, session.Id, ids);
+        if (!result.IsSuccess || result.Value is null)
+        {
+            logger.LogWarning(
+                "Could not resolve Zalo member avatars for Session={SessionId}: {Error}",
+                session.Id,
+                result.Error);
+            return new Dictionary<string, BridgeMember>(StringComparer.Ordinal);
+        }
+
+        return result.Value
+            .GroupBy(member => NormalizeId(member.ZaloUserId), StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
     }
 
     private static ZaloMentionedUser? FindMentionedUser(

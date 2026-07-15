@@ -4,11 +4,13 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using SkiaSharp;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
 public sealed class ZaloTeamCardService(
     VolleyDraftDbContext db,
+    ZaloIntegrationService zaloIntegration,
     IConfiguration configuration,
     IHttpClientFactory httpClientFactory,
     IMemoryCache cache,
@@ -22,19 +24,42 @@ public sealed class ZaloTeamCardService(
             .SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
         if (session is null) return null;
 
+        var hydrated = await zaloIntegration.HydrateMissingMemberAvatarsAsync(session.AdminUserId, session.Id);
+        if (!hydrated.IsSuccess)
+        {
+            logger.LogWarning(
+                "Could not hydrate missing team-card avatars for Session={SessionId}: {Error}",
+                session.Id,
+                hydrated.Error);
+        }
+
         var trackedTeams = await db.Teams.AsNoTracking()
             .Include(team => team.CaptainSessionPlayer)
             .Include(team => team.AssignedSlots)
                 .ThenInclude(slot => slot.Players)
                 .ThenInclude(link => link.SessionPlayer)
+                .ThenInclude(player => player.PlayerProfile)
             .Where(team => team.SessionId == sessionId)
             .OrderBy(team => team.Name)
             .ToListAsync(cancellationToken);
 
+        var playerNames = trackedTeams
+            .SelectMany(team => team.AssignedSlots)
+            .SelectMany(slot => slot.Players)
+            .Select(link => link.SessionPlayer.DisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var fallbackAvatarByName = (await db.PlayerProfiles.AsNoTracking()
+                .Where(profile => profile.AvatarUrl != null && playerNames.Contains(profile.DisplayName))
+                .Select(profile => new { profile.DisplayName, profile.AvatarUrl })
+                .ToListAsync(cancellationToken))
+            .GroupBy(profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().AvatarUrl, StringComparer.OrdinalIgnoreCase);
+
         var avatarUrls = trackedTeams
             .SelectMany(team => team.AssignedSlots)
             .SelectMany(slot => slot.Players)
-            .Select(link => link.SessionPlayer.AvatarUrl)
+            .Select(link => GetAvatarUrl(link.SessionPlayer, fallbackAvatarByName))
             .Where(url => IsHttpUrl(url))
             .Select(url => url!)
             .Distinct(StringComparer.Ordinal)
@@ -62,10 +87,11 @@ public sealed class ZaloTeamCardService(
                         .Select(link =>
                         {
                             var player = link.SessionPlayer;
-                            avatars.TryGetValue(player.AvatarUrl ?? string.Empty, out var avatarData);
+                            var avatarUrl = GetAvatarUrl(player, fallbackAvatarByName);
+                            avatars.TryGetValue(avatarUrl ?? string.Empty, out var avatarData);
                             return new TeamCardPlayer(
                                 player.DisplayName,
-                                player.AvatarUrl,
+                                avatarUrl,
                                 avatarData,
                                 player.Id == team.CaptainSessionPlayerId);
                         })
@@ -91,6 +117,15 @@ public sealed class ZaloTeamCardService(
         return new GeneratedTeamCard(
             SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams),
             "image/png");
+    }
+
+    private static string? GetAvatarUrl(
+        SessionPlayer player,
+        IReadOnlyDictionary<string, string?> fallbackAvatarByName)
+    {
+        if (!string.IsNullOrWhiteSpace(player.AvatarUrl)) return player.AvatarUrl;
+        if (!string.IsNullOrWhiteSpace(player.PlayerProfile?.AvatarUrl)) return player.PlayerProfile.AvatarUrl;
+        return fallbackAvatarByName.GetValueOrDefault(player.DisplayName);
     }
 
     public string GetPublicUrl(string sessionId)

@@ -329,4 +329,25 @@ public sealed class ZaloBotIntelligenceTests
     {
         Assert.True(ZaloBotIntelligence.IsProtectedBusinessFactText(value));
     }
+
+    [Theory]
+    [InlineData(ZaloBotIntent.Roster)]
+    [InlineData(ZaloBotIntent.TeamLineup)]
+    [InlineData(ZaloBotIntent.RedraftConfirm)]
+    [InlineData(ZaloBotIntent.UpdatePlayerProfile)]
+    [InlineData(ZaloBotIntent.ShareSlot)]
+    [InlineData(ZaloBotIntent.SlotTransferConfirm)]
+    public void Ai_style_rewrite_is_disabled_for_structured_or_mutating_answers(ZaloBotIntent intent)
+    {
+        Assert.False(ZaloBotIntelligence.CanUseAiStyleRewrite(intent));
+    }
+
+    [Theory]
+    [InlineData(ZaloBotIntent.SessionSchedule)]
+    [InlineData(ZaloBotIntent.LocationParking)]
+    [InlineData(ZaloBotIntent.MissingSlots)]
+    public void Ai_style_rewrite_remains_available_for_low_risk_information(ZaloBotIntent intent)
+    {
+        Assert.True(ZaloBotIntelligence.CanUseAiStyleRewrite(intent));
+    }
 }

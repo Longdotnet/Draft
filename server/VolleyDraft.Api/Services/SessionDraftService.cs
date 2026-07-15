@@ -1333,11 +1333,22 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
     }
 
-    public async Task<ServiceResult<PostDraftSharedSlotResult>> SharePostDraftSlotAsync(
+    public Task<ServiceResult<PostDraftSharedSlotResult>> SharePostDraftSlotAsync(
         string adminUserId,
         string sessionId,
         string anchorPlayerReference,
         string partnerReference)
+        => SharePostDraftSlotAsync(
+            adminUserId,
+            sessionId,
+            anchorPlayerReference,
+            new ShareSlotParticipantInput(partnerReference));
+
+    public async Task<ServiceResult<PostDraftSharedSlotResult>> SharePostDraftSlotAsync(
+        string adminUserId,
+        string sessionId,
+        string anchorPlayerReference,
+        ShareSlotParticipantInput partnerInput)
     {
         var leaseToken = Guid.NewGuid().ToString("n");
         var now = DateTimeOffset.UtcNow;
@@ -1361,6 +1372,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         try
         {
+            var partnerReference = partnerInput.DisplayName.Trim().TrimStart('@');
+            if (partnerReference.Length is < 2 or > 160)
+                return BadRequest<PostDraftSharedSlotResult>("Tên người share slot không hợp lệ.");
+            var partnerZaloId = string.IsNullOrWhiteSpace(partnerInput.ZaloUserId)
+                ? null
+                : NormalizeZaloId(partnerInput.ZaloUserId);
             var session = await db.MatchSessions.SingleAsync(item => item.Id == sessionId);
             if (session.Status != SessionStatus.Finished)
                 return BadRequest<PostDraftSharedSlotResult>("Chỉ ghép share slot sau khi draft đã hoàn tất.");
@@ -1374,16 +1391,23 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             if (anchor.Match is null) return BadRequest<PostDraftSharedSlotResult>(anchor.Error!);
 
             var sessionPlayers = await db.SessionPlayers
+                .Include(player => player.PlayerProfile)
                 .Where(player => player.SessionId == sessionId && player.IsPresent)
                 .ToListAsync();
             var normalizedPartnerReference = ZaloBotIntelligence.Normalize(partnerReference);
+            var partnerByZaloId = partnerZaloId is null
+                ? null
+                : sessionPlayers.FirstOrDefault(player =>
+                    NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == partnerZaloId);
             var exactPartner = sessionPlayers
                 .Where(player => ZaloBotIntelligence.Normalize(player.DisplayName) == normalizedPartnerReference)
                 .ToList();
             var isExternalGuestLabel = normalizedPartnerReference.StartsWith("ban cua ", StringComparison.Ordinal) ||
                                        normalizedPartnerReference.StartsWith("ban share cung ", StringComparison.Ordinal);
-            var partnerResolution = exactPartner.Count == 1
-                ? new SessionPlayerResolution(exactPartner[0], null, false)
+            var partnerResolution = partnerByZaloId is not null
+                ? new SessionPlayerResolution(partnerByZaloId, null, false)
+                : exactPartner.Count == 1
+                    ? new SessionPlayerResolution(exactPartner[0], null, false)
                 : isExternalGuestLabel
                     ? new SessionPlayerResolution(null, $"Không tìm thấy '{partnerReference}' trong danh sách.", true)
                     : ResolveSessionPlayer(sessionPlayers, partnerReference);
@@ -1392,16 +1416,50 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             DraftSlot? previousPartnerSlot = null;
             if (partnerResolution.Player is null)
             {
-                if (!partnerResolution.CanCreateNew)
+                if (!partnerResolution.CanCreateNew && partnerZaloId is null)
                     return BadRequest<PostDraftSharedSlotResult>(partnerResolution.Error!);
+                PlayerProfile? profile = null;
+                if (partnerZaloId is not null)
+                {
+                    profile = await db.PlayerProfiles.SingleOrDefaultAsync(item => item.ZaloUserId == partnerZaloId);
+                    if (profile is null)
+                    {
+                        profile = new PlayerProfile
+                        {
+                            ZaloUserId = partnerZaloId,
+                            DisplayName = partnerReference,
+                            AvatarUrl = partnerInput.AvatarUrl,
+                            DefaultRole = PlayerRole.New,
+                            DefaultLevel = PlayerLevel.New,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            LastSyncedAt = now
+                        };
+                        db.PlayerProfiles.Add(profile);
+                    }
+                    else
+                    {
+                        profile.DisplayName = partnerReference;
+                        profile.AvatarUrl ??= partnerInput.AvatarUrl;
+                        profile.DefaultRole ??= PlayerRole.New;
+                        profile.DefaultLevel ??= PlayerLevel.New;
+                        profile.UpdatedAt = now;
+                        profile.LastSyncedAt = now;
+                    }
+                }
                 partner = new SessionPlayer
                 {
                     SessionId = sessionId,
-                    DisplayName = partnerReference.Trim(),
-                    Gender = PlayerGender.Unknown,
-                    Role = PlayerRole.New,
-                    Level = PlayerLevel.New,
-                    Score = CalculateScore(PlayerRole.New, PlayerLevel.New),
+                    PlayerProfileId = profile?.Id,
+                    PlayerProfile = profile,
+                    DisplayName = partnerReference,
+                    AvatarUrl = partnerInput.AvatarUrl ?? profile?.AvatarUrl,
+                    Gender = profile?.Gender is PlayerGender.Male or PlayerGender.Female
+                        ? profile.Gender.Value
+                        : PlayerGender.Unknown,
+                    Role = profile?.DefaultRole ?? PlayerRole.New,
+                    Level = profile?.DefaultLevel ?? PlayerLevel.New,
+                    Score = CalculateScore(profile?.DefaultRole ?? PlayerRole.New, profile?.DefaultLevel ?? PlayerLevel.New),
                     IsPresent = true,
                     IsCaptainEligible = false,
                     IsInsideSharedSlot = true
@@ -1412,18 +1470,55 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             else
             {
                 partner = partnerResolution.Player;
+                if (partnerZaloId is not null)
+                {
+                    var profile = partner.PlayerProfile ??
+                                  await db.PlayerProfiles.SingleOrDefaultAsync(item => item.ZaloUserId == partnerZaloId);
+                    if (profile is null)
+                    {
+                        profile = new PlayerProfile
+                        {
+                            ZaloUserId = partnerZaloId,
+                            DisplayName = partner.DisplayName,
+                            AvatarUrl = partnerInput.AvatarUrl,
+                            Gender = partner.Gender,
+                            DefaultRole = partner.Role,
+                            DefaultLevel = partner.Level,
+                            CreatedAt = now,
+                            UpdatedAt = now,
+                            LastSyncedAt = now
+                        };
+                        db.PlayerProfiles.Add(profile);
+                    }
+                    else
+                    {
+                        profile.AvatarUrl ??= partnerInput.AvatarUrl;
+                        profile.UpdatedAt = now;
+                        profile.LastSyncedAt = now;
+                    }
+                    partner.PlayerProfile = profile;
+                    partner.PlayerProfileId = profile.Id;
+                    partner.AvatarUrl ??= partnerInput.AvatarUrl ?? profile.AvatarUrl;
+                }
+                partner.AvatarUrl ??= partner.PlayerProfile?.AvatarUrl;
                 if (partner.Id == anchor.Match.PlayerId)
                     return BadRequest<PostDraftSharedSlotResult>("Không thể share slot một người với chính họ.");
                 previousPartnerSlot = slots.SingleOrDefault(slot => slot.Players.Any(link => link.SessionPlayerId == partner.Id));
                 if (previousPartnerSlot is null)
                     return BadRequest<PostDraftSharedSlotResult>($"{partner.DisplayName} chưa có slot trong đội hình đã draft.");
                 if (previousPartnerSlot.Id == anchor.Match.Slot.Id)
+                {
+                    // The relationship may already be correct while an older record is
+                    // still missing its Zalo profile/avatar. Persist that enrichment even
+                    // though no team-slot move is required.
+                    await db.SaveChangesAsync();
                     return ServiceResult<PostDraftSharedSlotResult>.Success(new(
                         anchor.Match.PlayerName,
                         partner.DisplayName,
                         anchor.Match.Slot.AssignedTeam!.Name,
                         false,
                         partner.Gender == PlayerGender.Unknown));
+                }
                 if (previousPartnerSlot.IsCaptainSlot)
                     return BadRequest<PostDraftSharedSlotResult>("Không thể chuyển captain vào share slot khác.");
                 if (previousPartnerSlot.Type == DraftSlotType.Shared || partner.IsInsideSharedSlot)
@@ -1549,6 +1644,41 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 : slots.FirstOrDefault(slot => slot.Players.Any(link => link.SessionPlayerId == target.Id));
             if (targetSlot is not null)
                 return BadRequest<PostDraftSlotTransferResult>($"{target!.DisplayName} đã có slot trong đội hình nên không thể nhận thêm slot.");
+
+            if (target is not null && replacementZaloId is not null)
+            {
+                var profile = target.PlayerProfile ??
+                              await db.PlayerProfiles.SingleOrDefaultAsync(item => item.ZaloUserId == replacementZaloId);
+                if (profile is null)
+                {
+                    profile = new PlayerProfile
+                    {
+                        ZaloUserId = replacementZaloId,
+                        DisplayName = target.DisplayName,
+                        AvatarUrl = replacement.AvatarUrl,
+                        Gender = target.Gender,
+                        DefaultRole = target.Role,
+                        DefaultLevel = target.Level,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        LastSyncedAt = now
+                    };
+                    db.PlayerProfiles.Add(profile);
+                }
+                else
+                {
+                    profile.AvatarUrl ??= replacement.AvatarUrl;
+                    profile.UpdatedAt = now;
+                    profile.LastSyncedAt = now;
+                }
+                target.PlayerProfile = profile;
+                target.PlayerProfileId = profile.Id;
+                target.AvatarUrl ??= replacement.AvatarUrl ?? profile.AvatarUrl;
+            }
+            else if (target is not null)
+            {
+                target.AvatarUrl ??= target.PlayerProfile?.AvatarUrl;
+            }
 
             var targetWasAdded = target is null;
             if (target is null)
@@ -1830,15 +1960,37 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var players = await db.SessionPlayers
             .Where(player => player.SessionId == sessionId && player.IsPresent)
             .ToListAsync();
-        var sharedPlayerCount = await db.DraftSlotPlayers.CountAsync(link =>
-            link.DraftSlot.SessionId == sessionId &&
-            link.DraftSlot.Type == DraftSlotType.Shared &&
-            link.SessionPlayer.IsPresent);
-        var sharedSlotCount = await db.DraftSlots.CountAsync(slot =>
-            slot.SessionId == sessionId &&
-            slot.Type == DraftSlotType.Shared &&
-            slot.Players.Any(link => link.SessionPlayer.IsPresent));
-        var effectiveSlotCount = players.Count - sharedPlayerCount + sharedSlotCount;
+        var sharedMemberships = await db.DraftSlotPlayers
+            .Where(link =>
+                link.DraftSlot.SessionId == sessionId &&
+                link.DraftSlot.Type == DraftSlotType.Shared &&
+                link.SessionPlayer.IsPresent)
+            .Select(link => new { link.DraftSlotId, link.SessionPlayerId })
+            .Distinct()
+            .ToListAsync();
+        var duplicatedSharedPlayer = sharedMemberships
+            .GroupBy(link => link.SessionPlayerId)
+            .FirstOrDefault(group => group.Select(link => link.DraftSlotId).Distinct().Count() > 1);
+        if (duplicatedSharedPlayer is not null)
+        {
+            var duplicatedName = players
+                .FirstOrDefault(player => player.Id == duplicatedSharedPlayer.Key)?.DisplayName ?? duplicatedSharedPlayer.Key;
+            return BadRequest<DraftStateResponse>(
+                $"Dữ liệu share slot không hợp lệ: {duplicatedName} đang nằm trong nhiều slot. Hãy sửa share slot trước khi draft lại.");
+        }
+
+        // Draft-slot membership is the source of truth. IsInsideSharedSlot is only a
+        // denormalized flag and older post-draft operations could leave the anchor flag
+        // stale. Trusting that flag caused the anchor to be generated once as a regular
+        // slot and once again inside the shared slot, displacing another player.
+        var sharedPlayerIds = sharedMemberships
+            .Select(link => link.SessionPlayerId)
+            .ToHashSet(StringComparer.Ordinal);
+        var sharedSlotCount = sharedMemberships
+            .Select(link => link.DraftSlotId)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+        var effectiveSlotCount = players.Count - sharedPlayerIds.Count + sharedSlotCount;
         if (!IsValidRosterSize(effectiveSlotCount, session.TeamCount))
         {
             return BadRequest<DraftStateResponse>(
@@ -1849,8 +2001,11 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         await EnsureCaptainSlots(session);
         await AttachCaptainSharedSlots(sessionId, teamIdByCaptainId);
 
+        foreach (var player in players)
+            player.IsInsideSharedSlot = sharedPlayerIds.Contains(player.Id);
+
         var singlePlayers = players
-            .Where(player => !player.IsInsideSharedSlot && !captainIds.Contains(player.Id))
+            .Where(player => !sharedPlayerIds.Contains(player.Id) && !captainIds.Contains(player.Id))
             .ToList();
 
         foreach (var player in singlePlayers)

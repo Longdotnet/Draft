@@ -113,6 +113,20 @@ public static class ZaloBotIntelligence
         "luon", "nua", "cai", "do", "nay", "kia", "duoc", "khong", "phai"
     };
 
+    /// <summary>
+    /// AI style rewriting is intentionally limited to low-risk informational replies.
+    /// Operational replies contain canonical player names, profile values or mutation
+    /// results and must be rendered directly from database data. Smaller/free models
+    /// have been observed "correcting" Vietnamese names and values even when prompted
+    /// not to do so.
+    /// </summary>
+    public static bool CanUseAiStyleRewrite(ZaloBotIntent intent) => intent is
+        ZaloBotIntent.SessionSchedule or
+        ZaloBotIntent.LocationParking or
+        ZaloBotIntent.MissingSlots or
+        ZaloBotIntent.UpcomingSessions or
+        ZaloBotIntent.WeeklySessionCount;
+
     public static string Normalize(string value)
     {
         var decomposed = (value ?? string.Empty).ToLowerInvariant().Normalize(NormalizationForm.FormD);

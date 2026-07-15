@@ -280,6 +280,96 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Redraft_uses_shared_slot_membership_and_never_duplicates_anchor_or_drops_player()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession
+        {
+            Id = "redraft-shared-slot",
+            AdminUserId = "admin",
+            Name = "Thứ 4 15/7",
+            TeamCount = 3,
+            TeamSize = 6
+        };
+        for (var index = 1; index <= 18; index += 1)
+        {
+            var name = index switch
+            {
+                4 => "Vinh",
+                5 => "Thanh Long",
+                _ => $"Player {index}"
+            };
+            session.Players.Add(new SessionPlayer
+            {
+                Id = $"redraft-player-{index}",
+                SessionId = session.Id,
+                DisplayName = name,
+                AvatarUrl = $"https://avatars.example/{index}.jpg",
+                Gender = index % 2 == 0 ? PlayerGender.Male : PlayerGender.Female,
+                Role = PlayerRole.Attack,
+                Level = index <= 3 ? PlayerLevel.Good : PlayerLevel.Average,
+                Score = index <= 3 ? 3 : 2,
+                IsPresent = true,
+                IsCaptainEligible = true
+            });
+        }
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var firstDraft = await service.AutoRunDraftAsync("admin", session.Id);
+        Assert.True(firstDraft.IsSuccess, firstDraft.Error);
+
+        var shared = await service.SharePostDraftSlotAsync(
+            "admin",
+            session.Id,
+            "Vinh",
+            new ShareSlotParticipantInput("Vivian", "zalo-vivian", "https://avatars.example/vivian.jpg"));
+        Assert.True(shared.IsSuccess, shared.Error);
+        Assert.True((await service.UpdatePlayerProfileFromBotAsync(
+            "admin", session.Id, "Vivian", PlayerGender.Female, PlayerRole.Defense, PlayerLevel.New)).IsSuccess);
+
+        // Simulate data written by an older deployment where the anchor's denormalized
+        // flag was stale although its DraftSlotPlayer relationship was correct.
+        fixture.Db.ChangeTracker.Clear();
+        await fixture.Db.SessionPlayers
+            .Where(player => player.Id == "redraft-player-4")
+            .ExecuteUpdateAsync(updates => updates.SetProperty(player => player.IsInsideSharedSlot, false));
+
+        var redraft = await service.AutoRunDraftAsync("admin", session.Id, restart: true);
+        Assert.True(redraft.IsSuccess, redraft.Error);
+
+        fixture.Db.ChangeTracker.Clear();
+        var assignedLinks = await fixture.Db.DraftSlotPlayers
+            .AsNoTracking()
+            .Where(link => link.DraftSlot.SessionId == session.Id && link.DraftSlot.AssignedTeamId != null)
+            .Select(link => new
+            {
+                link.SessionPlayerId,
+                link.SessionPlayer.DisplayName,
+                link.DraftSlotId,
+                link.DraftSlot.Type
+            })
+            .ToListAsync();
+
+        Assert.Equal(19, assignedLinks.Count);
+        Assert.Equal(19, assignedLinks.Select(link => link.SessionPlayerId).Distinct().Count());
+        Assert.Single(assignedLinks, link => link.DisplayName == "Vinh");
+        Assert.Single(assignedLinks, link => link.DisplayName == "Vivian");
+        Assert.Single(assignedLinks, link => link.DisplayName == "Thanh Long");
+        Assert.Equal(
+            assignedLinks.Single(link => link.DisplayName == "Vinh").DraftSlotId,
+            assignedLinks.Single(link => link.DisplayName == "Vivian").DraftSlotId);
+
+        var vivian = await fixture.Db.SessionPlayers
+            .AsNoTracking()
+            .Include(player => player.PlayerProfile)
+            .SingleAsync(player => player.SessionId == session.Id && player.DisplayName == "Vivian");
+        Assert.Equal("https://avatars.example/vivian.jpg", vivian.AvatarUrl);
+        Assert.Equal("https://avatars.example/vivian.jpg", vivian.PlayerProfile!.AvatarUrl);
+    }
+
+    [Fact]
     public async Task Multiple_independent_reminders_can_be_saved_for_different_sessions()
     {
         await using var fixture = await DbFixture.CreateAsync();
@@ -335,6 +425,34 @@ public sealed class ZaloBotPersistenceTests
         Assert.Equal(2, slot.Players.Count);
         Assert.Equal("team-b", slot.AssignedTeamId);
         Assert.Equal(6, await fixture.Db.SessionPlayers.CountAsync(player => player.SessionId == session.Id));
+    }
+
+    [Fact]
+    public async Task Repeating_existing_share_with_explicit_mention_backfills_zalo_avatar()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        var service = new SessionDraftService(fixture.Db);
+
+        var legacyShare = await service.SharePostDraftSlotAsync(
+            "admin", session.Id, "Nick Tran", "Vivian");
+        Assert.True(legacyShare.IsSuccess, legacyShare.Error);
+
+        var enrichedShare = await service.SharePostDraftSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            new ShareSlotParticipantInput("Vivian", "zalo-vivian", "https://avatars.example/vivian.jpg"));
+        Assert.True(enrichedShare.IsSuccess, enrichedShare.Error);
+
+        fixture.Db.ChangeTracker.Clear();
+        var vivian = await fixture.Db.SessionPlayers
+            .AsNoTracking()
+            .Include(player => player.PlayerProfile)
+            .SingleAsync(player => player.SessionId == session.Id && player.DisplayName == "Vivian");
+        Assert.Equal("https://avatars.example/vivian.jpg", vivian.AvatarUrl);
+        Assert.Equal("zalo-vivian", vivian.PlayerProfile!.ZaloUserId);
+        Assert.Equal("https://avatars.example/vivian.jpg", vivian.PlayerProfile.AvatarUrl);
     }
 
     [Fact]
