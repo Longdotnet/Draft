@@ -142,12 +142,15 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         db.ZaloBotActionHistory.Add(action);
         await db.SaveChangesAsync(cancellationToken);
 
-        var staleIds = await db.ZaloBotActionHistory
+        var activeRows = await db.ZaloBotActionHistory.AsNoTracking()
             .Where(item => item.SessionId == sessionId && item.IsUndoable && item.UndoneAt == null)
+            .Select(item => new { item.Id, item.CreatedAt })
+            .ToListAsync(cancellationToken);
+        var staleIds = activeRows
             .OrderByDescending(item => item.CreatedAt)
             .Skip(30)
             .Select(item => item.Id)
-            .ToListAsync(cancellationToken);
+            .ToList();
         if (staleIds.Count > 0)
         {
             await db.ZaloBotActionHistory.Where(item => staleIds.Contains(item.Id))
@@ -164,19 +167,194 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
     {
         if (!await db.MatchSessions.AsNoTracking().AnyAsync(item => item.Id == sessionId && item.AdminUserId == adminUserId, cancellationToken))
             return ServiceResult<IReadOnlyList<ZaloBotActionHistoryResponse>>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
-        var rows = await db.ZaloBotActionHistory.AsNoTracking()
+        var allRows = await db.ZaloBotActionHistory.AsNoTracking()
             .Where(item => item.SessionId == sessionId)
-            .OrderByDescending(item => item.CreatedAt)
-            .Take(Math.Clamp(count, 1, 50))
+            .Select(item => new ZaloBotActionHistoryResponse(
+                item.Id, item.SessionId, item.ActorZaloUserId, item.ActorName, item.ActionType,
+                item.Summary, item.IsUndoable, item.CreatedAt, item.UndoneAt,
+                item.UndoneByZaloUserId, item.UndoFailure))
             .ToListAsync(cancellationToken);
-        return ServiceResult<IReadOnlyList<ZaloBotActionHistoryResponse>>.Success(rows.Select(ToResponse).ToList());
+        var rows = allRows.OrderByDescending(item => item.CreatedAt)
+            .Take(Math.Clamp(count, 1, 50))
+            .ToList();
+        return ServiceResult<IReadOnlyList<ZaloBotActionHistoryResponse>>.Success(rows);
     }
 
-    public async Task<ZaloBotActionHistory?> GetLatestUndoableAsync(string sessionId, CancellationToken cancellationToken = default) =>
-        await db.ZaloBotActionHistory.AsNoTracking()
+    public async Task<ZaloBotActionHistory?> GetLatestUndoableAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        var rows = await db.ZaloBotActionHistory.AsNoTracking()
             .Where(item => item.SessionId == sessionId && item.IsUndoable && item.UndoneAt == null)
-            .OrderByDescending(item => item.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        return rows.OrderByDescending(item => item.CreatedAt).FirstOrDefault();
+    }
+
+    public async Task<ServiceResult<PagedResponse<DraftSnapshotResponse>>> GetDraftSnapshotsAsync(
+        string adminUserId,
+        string sessionId,
+        int page = 1,
+        int pageSize = 6,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await OwnsSessionAsync(adminUserId, sessionId, cancellationToken))
+            return ServiceResult<PagedResponse<DraftSnapshotResponse>>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 20);
+        var query = db.ZaloBotActionHistory.AsNoTracking()
+            .Where(item => item.SessionId == sessionId && item.ActionType == "DraftSnapshot");
+        var total = await query.CountAsync(cancellationToken);
+        var allRows = await query
+            .Select(item => new DraftSnapshotResponse(
+                item.Id, item.SessionId, item.Summary, item.ActorName, item.CreatedAt, item.AfterHash))
+            .ToListAsync(cancellationToken);
+        var rows = allRows.OrderByDescending(item => item.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+        return ServiceResult<PagedResponse<DraftSnapshotResponse>>.Success(new(
+            rows,
+            page,
+            pageSize,
+            total,
+            Math.Max(1, (int)Math.Ceiling(total / (double)pageSize))));
+    }
+
+    public async Task<ServiceResult<DraftSnapshotResponse>> CreateDraftSnapshotAsync(
+        string adminUserId,
+        string sessionId,
+        string? name,
+        string actorName,
+        CancellationToken cancellationToken = default)
+    {
+        var session = await db.MatchSessions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == sessionId && item.AdminUserId == adminUserId, cancellationToken);
+        if (session is null)
+            return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
+        if (session.Status != SessionStatus.Finished ||
+            !await db.DraftSlots.AsNoTracking().AnyAsync(item => item.SessionId == sessionId && item.AssignedTeamId != null, cancellationToken))
+            return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status400BadRequest, "Chỉ lưu snapshot sau khi đã có đội hình hoàn chỉnh.");
+
+        var capture = await CaptureAsync(sessionId, cancellationToken);
+        var localNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
+        var snapshotName = Clean(name, 160) ?? $"Đội hình {localNow:dd/MM HH:mm}";
+        var row = new ZaloBotActionHistory
+        {
+            SessionId = sessionId,
+            ActorZaloUserId = Clean(adminUserId, 100),
+            ActorName = Clean(actorName, 160) ?? "Admin website",
+            ActionType = "DraftSnapshot",
+            Summary = snapshotName,
+            BeforeStateJson = capture.Json,
+            AfterStateJson = capture.Json,
+            BeforeHash = capture.Hash,
+            AfterHash = capture.Hash,
+            IsUndoable = false,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.ZaloBotActionHistory.Add(row);
+        await db.SaveChangesAsync(cancellationToken);
+        return ServiceResult<DraftSnapshotResponse>.Success(ToSnapshotResponse(row));
+    }
+
+    public async Task<ServiceResult<DraftSnapshotResponse>> RestoreDraftSnapshotAsync(
+        string adminUserId,
+        string sessionId,
+        string snapshotId,
+        string expectedStateToken,
+        string actorName,
+        CancellationToken cancellationToken = default)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil, session.StartTime })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (currentLease is null)
+            return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
+        if (currentLease.StartTime is not null && currentLease.StartTime <= now)
+            return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status400BadRequest, "Buổi đấu đã bắt đầu nên không thể khôi phục snapshot đội hình.");
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+            return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status409Conflict, "Đội hình đang được cập nhật ở nơi khác.");
+
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId &&
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "RestoreDraftSnapshot")
+                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(3)), cancellationToken);
+        if (claimed == 0)
+            return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status409Conflict, "Đội hình vừa được cập nhật ở nơi khác. Hãy tải lại.");
+
+        try
+        {
+            var snapshotRow = await db.ZaloBotActionHistory.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.Id == snapshotId && item.SessionId == sessionId && item.ActionType == "DraftSnapshot", cancellationToken);
+            if (snapshotRow is null)
+                return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy snapshot đội hình.");
+            if (!string.Equals(await GetDraftStateTokenAsync(sessionId, cancellationToken), expectedStateToken, StringComparison.Ordinal))
+                return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status409Conflict, "Đội hình đã thay đổi. Hãy tải lại trước khi khôi phục snapshot.");
+
+            SessionState? snapshot;
+            try
+            {
+                snapshot = JsonSerializer.Deserialize<SessionState>(snapshotRow.AfterStateJson, JsonOptions);
+            }
+            catch (JsonException exception)
+            {
+                logger.LogError(exception, "Invalid draft snapshot {SnapshotId}", snapshotId);
+                snapshot = null;
+            }
+            if (snapshot is null)
+                return ServiceResult<DraftSnapshotResponse>.Failure(StatusCodes.Status500InternalServerError, "Snapshot đội hình không hợp lệ.");
+
+            await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+            var before = await CaptureAsync(sessionId, cancellationToken);
+            await RestoreDraftOnlyAsync(sessionId, snapshot, cancellationToken);
+            await RecordAsync(
+                sessionId,
+                adminUserId,
+                actorName,
+                "DraftSnapshotRestore",
+                $"Khôi phục snapshot “{snapshotRow.Summary}”",
+                before,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return ServiceResult<DraftSnapshotResponse>.Success(ToSnapshotResponse(snapshotRow));
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Could not restore draft snapshot {SnapshotId}", snapshotId);
+            return ServiceResult<DraftSnapshotResponse>.Failure(
+                StatusCodes.Status500InternalServerError,
+                "Không thể khôi phục snapshot. Không có thay đổi dở dang nào được lưu.");
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == sessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null), cancellationToken);
+        }
+    }
+
+    public async Task<ServiceResult<DeleteResponse>> DeleteDraftSnapshotAsync(
+        string adminUserId,
+        string sessionId,
+        string snapshotId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await OwnsSessionAsync(adminUserId, sessionId, cancellationToken))
+            return ServiceResult<DeleteResponse>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy buổi đấu.");
+        var deleted = await db.ZaloBotActionHistory
+            .Where(item => item.Id == snapshotId && item.SessionId == sessionId && item.ActionType == "DraftSnapshot")
+            .ExecuteDeleteAsync(cancellationToken);
+        return deleted == 0
+            ? ServiceResult<DeleteResponse>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy snapshot đội hình.")
+            : ServiceResult<DeleteResponse>.Success(new DeleteResponse("Đã xoá snapshot đội hình."));
+    }
 
     public async Task<ServiceResult<ZaloBotActionHistoryResponse>> UndoAsync(
         string adminUserId,
@@ -239,6 +417,217 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
             return ServiceResult<ZaloBotActionHistoryResponse>.Failure(
                 StatusCodes.Status500InternalServerError,
                 "Không thể khôi phục dữ liệu của thao tác này. Không có thay đổi dở dang nào được lưu.");
+        }
+    }
+
+    private Task<bool> OwnsSessionAsync(string adminUserId, string sessionId, CancellationToken cancellationToken) =>
+        db.MatchSessions.AsNoTracking()
+            .AnyAsync(item => item.Id == sessionId && item.AdminUserId == adminUserId, cancellationToken);
+
+    private async Task<string> GetDraftStateTokenAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var teams = await db.Teams.AsNoTracking()
+            .Include(team => team.CaptainSessionPlayer)
+            .Where(team => team.SessionId == sessionId)
+            .OrderBy(team => team.Name)
+            .ToListAsync(cancellationToken);
+        var teamIds = teams.Select(team => team.Id).ToList();
+        var slots = await db.DraftSlots.AsNoTracking()
+            .Where(slot => slot.AssignedTeamId != null && teamIds.Contains(slot.AssignedTeamId))
+            .OrderByDescending(slot => slot.IsCaptainSlot)
+            .ThenBy(slot => slot.DisplayName)
+            .ToListAsync(cancellationToken);
+        var preview = teams.Select(team => new TeamPreviewResponse(
+            team.Id,
+            team.Name,
+            team.CaptainSessionPlayer?.DisplayName,
+            slots.Where(slot => slot.AssignedTeamId == team.Id)
+                .Select(slot => new TeamSlotPreviewResponse(
+                    slot.Id, slot.DisplayName, slot.Type, slot.Gender,
+                    slot.IsCaptainSlot, slot.AverageScore))
+                .ToList()))
+            .ToList();
+        return DraftBoardStateToken.Create(preview);
+    }
+
+    private async Task RestoreDraftOnlyAsync(
+        string sessionId,
+        SessionState snapshot,
+        CancellationToken cancellationToken)
+    {
+        var waitlistPlayerLinks = await db.SessionWaitlistEntries
+            .Where(item => item.SessionId == sessionId && item.SessionPlayerId != null)
+            .Select(item => new { item.Id, item.SessionPlayerId })
+            .ToListAsync(cancellationToken);
+
+        await db.Teams.Where(item => item.SessionId == sessionId)
+            .ExecuteUpdateAsync(update => update.SetProperty(item => item.CaptainSessionPlayerId, (string?)null), cancellationToken);
+        await db.MatchSessions.Where(item => item.Id == sessionId)
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(item => item.CurrentTurnTeamId, (string?)null)
+                .SetProperty(item => item.CurrentTurnCaptainSessionPlayerId, (string?)null), cancellationToken);
+        await db.DraftTurns.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        await db.BlindBags.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        await db.DraftRounds.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        var preferenceIds = await db.TeamPreferenceGroups.Where(item => item.SessionId == sessionId)
+            .Select(item => item.Id).ToListAsync(cancellationToken);
+        await db.TeamPreferenceGroupPlayers.Where(item => preferenceIds.Contains(item.TeamPreferenceGroupId))
+            .ExecuteDeleteAsync(cancellationToken);
+        await db.TeamPreferenceGroups.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        var slotIds = await db.DraftSlots.Where(item => item.SessionId == sessionId)
+            .Select(item => item.Id).ToListAsync(cancellationToken);
+        await db.DraftSlotPlayers.Where(item => slotIds.Contains(item.DraftSlotId)).ExecuteDeleteAsync(cancellationToken);
+        await db.DraftSlots.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        await db.SessionPlayers.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        db.ChangeTracker.Clear();
+
+        var profileIdMap = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var state in snapshot.Profiles)
+        {
+            var profile = await db.PlayerProfiles.SingleOrDefaultAsync(item => item.Id == state.Id, cancellationToken);
+            if (profile is null && !string.IsNullOrWhiteSpace(state.ZaloUserId))
+                profile = await db.PlayerProfiles.SingleOrDefaultAsync(item => item.ZaloUserId == state.ZaloUserId, cancellationToken);
+            if (profile is null)
+            {
+                profile = new PlayerProfile
+                {
+                    Id = state.Id,
+                    ZaloUserId = state.ZaloUserId,
+                    DisplayName = state.DisplayName,
+                    AvatarUrl = state.AvatarUrl,
+                    Gender = state.Gender,
+                    DefaultRole = state.DefaultRole,
+                    DefaultLevel = state.DefaultLevel,
+                    LastSyncedAt = state.LastSyncedAt,
+                    GenderUpdatedAt = state.GenderUpdatedAt,
+                    GenderUpdatedByUserId = state.GenderUpdatedByUserId,
+                    CreatedAt = state.CreatedAt,
+                    UpdatedAt = state.UpdatedAt
+                };
+                db.PlayerProfiles.Add(profile);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            profileIdMap[state.Id] = profile.Id;
+        }
+
+        db.SessionPlayers.AddRange(snapshot.Players.Select(state => new SessionPlayer
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            UserId = state.UserId,
+            PlayerProfileId = state.PlayerProfileId is not null && profileIdMap.TryGetValue(state.PlayerProfileId, out var mappedProfileId)
+                ? mappedProfileId
+                : null,
+            DisplayName = state.DisplayName,
+            AvatarUrl = state.AvatarUrl,
+            Role = state.Role,
+            Level = state.Level,
+            Gender = state.Gender,
+            Score = state.Score,
+            IsPresent = state.IsPresent,
+            IsCaptainEligible = state.IsCaptainEligible,
+            IsInsideSharedSlot = state.IsInsideSharedSlot,
+            SourcePollId = state.SourcePollId,
+            SourceOptionIdsJson = state.SourceOptionIdsJson,
+            CreatedAt = state.CreatedAt
+        }));
+        await db.SaveChangesAsync(cancellationToken);
+
+        db.DraftSlots.AddRange(snapshot.Slots.Select(state => new DraftSlot
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            Type = state.Type,
+            DisplayName = state.DisplayName,
+            Role = state.Role,
+            Gender = state.Gender,
+            AverageScore = state.AverageScore,
+            AssignedTeamId = state.AssignedTeamId,
+            IsCaptainSlot = state.IsCaptainSlot,
+            CreatedAt = state.CreatedAt
+        }));
+        db.TeamPreferenceGroups.AddRange(snapshot.PreferenceGroups.Select(state => new TeamPreferenceGroup
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            CreatedAt = state.CreatedAt
+        }));
+        db.DraftRounds.AddRange(snapshot.Rounds.Select(state => new DraftRound
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            RoundNumber = state.RoundNumber,
+            Label = state.Label,
+            Status = state.Status,
+            CreatedAt = state.CreatedAt
+        }));
+        await db.SaveChangesAsync(cancellationToken);
+
+        db.DraftSlotPlayers.AddRange(snapshot.SlotPlayers.Select(state => new DraftSlotPlayer
+        {
+            Id = state.Id,
+            DraftSlotId = state.DraftSlotId,
+            SessionPlayerId = state.SessionPlayerId,
+            RotationOrder = state.RotationOrder
+        }));
+        db.TeamPreferenceGroupPlayers.AddRange(snapshot.PreferencePlayers.Select(state => new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = state.TeamPreferenceGroupId,
+            SessionPlayerId = state.SessionPlayerId,
+            RotationOrder = state.RotationOrder
+        }));
+        db.BlindBags.AddRange(snapshot.Bags.Select(state => new BlindBag
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            RoundId = state.RoundId,
+            DraftSlotId = state.DraftSlotId,
+            PreparedDraftSlotId = state.PreparedDraftSlotId,
+            BagNumber = state.BagNumber,
+            IsOpened = state.IsOpened,
+            OpenedByUserId = state.OpenedByUserId,
+            OpenedForTeamId = state.OpenedForTeamId,
+            OpenedAt = state.OpenedAt
+        }));
+        await db.SaveChangesAsync(cancellationToken);
+
+        db.DraftTurns.AddRange(snapshot.Turns.Select(state => new DraftTurn
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            RoundId = state.RoundId,
+            TeamId = state.TeamId,
+            CaptainSessionPlayerId = state.CaptainSessionPlayerId,
+            TurnOrder = state.TurnOrder,
+            Status = state.Status,
+            OpenedBagId = state.OpenedBagId,
+            CreatedAt = state.CreatedAt,
+            CompletedAt = state.CompletedAt
+        }));
+        await db.SaveChangesAsync(cancellationToken);
+
+        var session = await db.MatchSessions.SingleAsync(item => item.Id == sessionId, cancellationToken);
+        session.Status = snapshot.Match.Status;
+        session.TeamCount = snapshot.Match.TeamCount;
+        session.TeamSize = snapshot.Match.TeamSize;
+        session.CurrentRoundNumber = snapshot.Match.CurrentRoundNumber;
+        session.CurrentTurnTeamId = snapshot.Match.CurrentTurnTeamId;
+        session.CurrentTurnCaptainSessionPlayerId = snapshot.Match.CurrentTurnCaptainSessionPlayerId;
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+        foreach (var teamState in snapshot.Teams)
+        {
+            var team = await db.Teams.SingleAsync(item => item.Id == teamState.Id && item.SessionId == sessionId, cancellationToken);
+            team.Name = teamState.Name;
+            team.CaptainSessionPlayerId = teamState.CaptainSessionPlayerId;
+            team.TotalAverageScore = teamState.TotalAverageScore;
+        }
+        await db.SaveChangesAsync(cancellationToken);
+
+        var restoredPlayerIds = snapshot.Players.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var link in waitlistPlayerLinks.Where(link => link.SessionPlayerId is not null && restoredPlayerIds.Contains(link.SessionPlayerId)))
+        {
+            await db.SessionWaitlistEntries.Where(item => item.Id == link.Id)
+                .ExecuteUpdateAsync(update => update.SetProperty(item => item.SessionPlayerId, link.SessionPlayerId), cancellationToken);
         }
     }
 
@@ -402,6 +791,14 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         action.Id, action.SessionId, action.ActorZaloUserId, action.ActorName, action.ActionType,
         action.Summary, action.IsUndoable, action.CreatedAt, action.UndoneAt,
         action.UndoneByZaloUserId, action.UndoFailure);
+
+    private static DraftSnapshotResponse ToSnapshotResponse(ZaloBotActionHistory action) => new(
+        action.Id,
+        action.SessionId,
+        action.Summary,
+        action.ActorName,
+        action.CreatedAt,
+        action.AfterHash);
 
     private sealed record SessionState(
         MatchState Match, IReadOnlyList<PlayerState> Players, IReadOnlyList<ProfileState> Profiles,

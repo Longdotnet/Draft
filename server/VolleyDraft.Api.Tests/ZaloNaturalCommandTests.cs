@@ -193,6 +193,8 @@ public sealed class ZaloNaturalCommandTests
     [InlineData("@Nguyễn Thanh Tâm muốn rút nhường cho @Sin", "Nguyễn Thanh Tâm", "Sin")]
     [InlineData("@Nguyen Thanh Tam muốn hủy nhường cho @Sin", "Nguyen Thanh Tam", "Sin")]
     [InlineData("Thanh Tâm pass slot cho Sin", "Thanh Tâm", "Sin")]
+    [InlineData("đội trưởng Thanh Tuyền báo bận muốn nhường slot cho Vivian", "Thanh Tuyền", "Vivian")]
+    [InlineData("đội trưởng Nick Tran có việc muốn pass slot cho Sin", "Nick Tran", "Sin")]
     public void Slot_transfer_parser_extracts_the_player_giving_and_receiving_the_slot(
         string question,
         string fromPlayer,

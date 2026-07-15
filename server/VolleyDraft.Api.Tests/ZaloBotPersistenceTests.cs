@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
@@ -559,6 +561,126 @@ public sealed class ZaloBotPersistenceTests
         Assert.Equal(DraftSlotType.Shared, nickSlot.Type);
         Assert.Equal(2, nickSlot.Players.Count);
         Assert.Equal("team-b", nickSlot.AssignedTeamId);
+    }
+
+    [Fact]
+    public async Task Captain_can_transfer_slot_and_receiver_becomes_new_captain()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewPostDraftSlotTransferAsync(
+            "admin", session.Id, "Captain A", new ShareSlotParticipantInput("Bạn Mới"));
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.True(preview.Value!.CaptainTransferred);
+        Assert.Equal("Team A", preview.Value.TeamName);
+
+        var result = await service.TransferPostDraftSlotAsync(
+            "admin", session.Id, "Captain A", new ShareSlotParticipantInput("Bạn Mới"));
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.True(result.Value!.CaptainTransferred);
+        fixture.Db.ChangeTracker.Clear();
+        var replacement = await fixture.Db.SessionPlayers.SingleAsync(player => player.DisplayName == "Bạn Mới");
+        Assert.True(replacement.IsCaptainEligible);
+        Assert.Equal(replacement.Id, await fixture.Db.Teams.Where(team => team.Id == "team-a")
+            .Select(team => team.CaptainSessionPlayerId).SingleAsync());
+        Assert.Equal(replacement.Id, await fixture.Db.DraftSlotPlayers.Where(link => link.DraftSlotId == "captain-slot-a")
+            .Select(link => link.SessionPlayerId).SingleAsync());
+        Assert.False(await fixture.Db.SessionPlayers.Where(player => player.Id == "captain-a")
+            .Select(player => player.IsPresent).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Manual_board_edit_swaps_whole_slots_and_records_one_undoable_action()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var draft = new SessionDraftService(fixture.Db);
+        var board = new DraftBoardService(fixture.Db, draft, history);
+        var state = await draft.GetDraftStateAsync("admin", session.Id);
+        Assert.True(state.IsSuccess, state.Error);
+        var assignments = state.Value!.TeamPreview.SelectMany(team => team.Slots.Select(slot =>
+            new DraftBoardAssignmentRequest(
+                slot.Id,
+                team.TeamId,
+                slot.Id == "thanh-tuyen-slot" ? "team-b" :
+                slot.Id == "nick-tran-slot" ? "team-a" : team.TeamId)))
+            .ToList();
+
+        var result = await board.UpdateAsync(
+            "admin",
+            session.Id,
+            new UpdateDraftBoardRequest(state.Value.StateToken, assignments));
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal("team-b", await fixture.Db.DraftSlots.Where(slot => slot.Id == "thanh-tuyen-slot")
+            .Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.Equal("team-a", await fixture.Db.DraftSlots.Where(slot => slot.Id == "nick-tran-slot")
+            .Select(slot => slot.AssignedTeamId).SingleAsync());
+        var actions = await fixture.Db.ZaloBotActionHistory.Where(action => action.ActionType == "ManualDraftBoardEdit").ToListAsync();
+        Assert.Single(actions);
+        Assert.True(actions[0].IsUndoable);
+    }
+
+    [Fact]
+    public async Task Draft_snapshot_restores_lineup_without_rolling_back_reminders()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        fixture.Db.ZaloReminderSchedules.Add(new ZaloReminderSchedule
+        {
+            SessionId = session.Id,
+            CreatedBySenderId = "admin",
+            CreatedBySenderName = "Admin",
+            Message = "Nhắc đầu tiên",
+            NextRunAt = DateTimeOffset.UtcNow.AddHours(1),
+            Enabled = true
+        });
+        await fixture.Db.SaveChangesAsync();
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var snapshot = await history.CreateDraftSnapshotAsync(
+            "admin", session.Id, "Đội hình ban đầu", "Admin website");
+        Assert.True(snapshot.IsSuccess, snapshot.Error);
+
+        await fixture.Db.DraftSlots.Where(slot => slot.Id == "thanh-tuyen-slot")
+            .ExecuteUpdateAsync(update => update.SetProperty(slot => slot.AssignedTeamId, "team-b"));
+        await fixture.Db.DraftSlots.Where(slot => slot.Id == "nick-tran-slot")
+            .ExecuteUpdateAsync(update => update.SetProperty(slot => slot.AssignedTeamId, "team-a"));
+        fixture.Db.ZaloReminderSchedules.Add(new ZaloReminderSchedule
+        {
+            SessionId = session.Id,
+            CreatedBySenderId = "admin",
+            CreatedBySenderName = "Admin",
+            Message = "Nhắc tạo sau snapshot",
+            NextRunAt = DateTimeOffset.UtcNow.AddHours(2),
+            Enabled = true
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+        var changedState = await new SessionDraftService(fixture.Db).GetDraftStateAsync("admin", session.Id);
+
+        var restored = await history.RestoreDraftSnapshotAsync(
+            "admin",
+            session.Id,
+            snapshot.Value!.Id,
+            changedState.Value!.StateToken,
+            "Admin website");
+
+        Assert.True(restored.IsSuccess, restored.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("team-a", await fixture.Db.DraftSlots.Where(slot => slot.Id == "thanh-tuyen-slot")
+            .Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.Equal("team-b", await fixture.Db.DraftSlots.Where(slot => slot.Id == "nick-tran-slot")
+            .Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.Equal(2, await fixture.Db.ZaloReminderSchedules.CountAsync(schedule => schedule.SessionId == session.Id));
+        Assert.Single(await fixture.Db.ZaloBotActionHistory.Where(action => action.ActionType == "DraftSnapshotRestore").ToListAsync());
     }
 
     private static ZaloBotConversationState State(string connection, string group, string sender) => new()

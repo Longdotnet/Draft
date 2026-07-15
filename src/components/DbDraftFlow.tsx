@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Gift, LogOut, Pencil, Plus, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2, UsersRound, X } from "lucide-react";
+import { Camera, Check, Gift, GripVertical, History, LogOut, Pencil, Plus, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2, UsersRound, X } from "lucide-react";
 import {
   apiFetch,
   ApiRequestError,
@@ -12,6 +12,8 @@ import {
   type DbLevel,
   type DbRole,
   type DraftSlotType,
+  type DraftBoardAssignmentRequest,
+  type DraftSnapshotResponse,
   type DraftStateResponse,
   type OpenBagResponse,
   type PagedResponse,
@@ -21,6 +23,7 @@ import {
   type SessionStatus,
   type SharedSlotResponse,
   type TeamPreferenceGroupResponse,
+  type ZaloBotActionHistoryResponse,
 } from "../api/dbClient";
 import { BlindBagCard } from "./draft/BlindBagCard";
 import { ShootingStarRevealModal } from "./draft/ShootingStarRevealModal";
@@ -195,6 +198,12 @@ export function DbDraftFlow() {
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [pendingReveal, setPendingReveal] = useState<PendingDbReveal | null>(null);
+  const [boardAssignments, setBoardAssignments] = useState<Record<string, string>>({});
+  const [draggedSlotId, setDraggedSlotId] = useState<string | null>(null);
+  const [selectedBoardSlotId, setSelectedBoardSlotId] = useState<string | null>(null);
+  const [draftSnapshots, setDraftSnapshots] = useState<PagedResponse<DraftSnapshotResponse> | null>(null);
+  const [snapshotPage, setSnapshotPage] = useState(1);
+  const [snapshotName, setSnapshotName] = useState("");
 
   const availableForShared = useMemo(
     () => players.filter((player) => !player.isInsideSharedSlot),
@@ -211,6 +220,27 @@ export function DbDraftFlow() {
   const draftReady = draftState?.sessionStatus === "Drafting";
   const captainsReady = (captains?.captains.length ?? 0) === (session?.teamCount ?? 3);
   const canEditRoster = session?.status !== "Drafting" && session?.status !== "Finished";
+  const originalBoardAssignments = useMemo(() => {
+    const assignments: Record<string, string> = {};
+    draftState?.teamPreview.forEach((team) => {
+      team.slots.forEach((slot) => {
+        assignments[slot.id] = team.teamId;
+      });
+    });
+    return assignments;
+  }, [draftState]);
+  const boardHasChanges = useMemo(
+    () => Object.entries(originalBoardAssignments).some(
+      ([slotId, teamId]) => boardAssignments[slotId] !== teamId,
+    ),
+    [boardAssignments, originalBoardAssignments],
+  );
+  const boardCountsAreValid = useMemo(() =>
+    (draftState?.teamPreview ?? []).every((team) => {
+      const expected = team.slots.length;
+      const actual = Object.values(boardAssignments).filter((teamId) => teamId === team.teamId).length;
+      return expected === actual;
+    }), [boardAssignments, draftState]);
 
   useEffect(() => {
     if (!token || !session || draftState?.sessionStatus !== "Drafting") {
@@ -223,6 +253,20 @@ export function DbDraftFlow() {
 
     return () => window.clearInterval(timer);
   }, [token, session, draftState?.sessionStatus]);
+
+  useEffect(() => {
+    if (draftState?.sessionStatus !== "Finished") {
+      setBoardAssignments({});
+      setSelectedBoardSlotId(null);
+      setDraftSnapshots(null);
+      return;
+    }
+    setBoardAssignments(originalBoardAssignments);
+    setSelectedBoardSlotId(null);
+    if (token && session) {
+      void loadDraftSnapshots(1);
+    }
+  }, [draftState?.stateToken, draftState?.sessionStatus, session?.id, token]);
 
   useEffect(() => {
     if (!token || !user) {
@@ -285,6 +329,9 @@ export function DbDraftFlow() {
     setCaptains(null);
     setDraftState(null);
     setSelectedTeamPreferenceIds([]);
+    setBoardAssignments({});
+    setSelectedBoardSlotId(null);
+    setDraftSnapshots(null);
     localStorage.removeItem("volleyDraftToken");
     localStorage.removeItem("volleyDraftUser");
   }
@@ -361,6 +408,11 @@ export function DbDraftFlow() {
     setSelectedTeamPreferenceIds([]);
     setEditingPlayerId(null);
     setPendingReveal(null);
+    setBoardAssignments({});
+    setSelectedBoardSlotId(null);
+    setDraftSnapshots(null);
+    setSnapshotPage(1);
+    setSnapshotName("");
   }
 
   async function refreshSessionData(targetSession: Pick<SessionResponse, "id"> | null = session) {
@@ -681,6 +733,129 @@ export function DbDraftFlow() {
       token,
     });
     setDraftState(response);
+  }
+
+  async function loadDraftSnapshots(page = snapshotPage) {
+    if (!token || !session) return;
+    try {
+      const response = await apiFetch<PagedResponse<DraftSnapshotResponse>>(
+        `/sessions/${session.id}/draft-snapshots?page=${page}&pageSize=6`,
+        { token },
+      );
+      setDraftSnapshots(response);
+      setSnapshotPage(response.page);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không tải được snapshot đội hình.");
+    }
+  }
+
+  function moveBoardSlot(slotId: string, targetTeamId: string) {
+    const slot = draftState?.teamPreview.flatMap((team) => team.slots).find((item) => item.id === slotId);
+    if (!slot || slot.isCaptainSlot || boardAssignments[slotId] === targetTeamId) return;
+    setBoardAssignments((current) => ({ ...current, [slotId]: targetTeamId }));
+    setSelectedBoardSlotId(null);
+  }
+
+  function resetDraftBoardEditor() {
+    setBoardAssignments(originalBoardAssignments);
+    setSelectedBoardSlotId(null);
+    setDraggedSlotId(null);
+  }
+
+  async function saveDraftBoard() {
+    if (!token || !session || !draftState || !boardHasChanges || !boardCountsAreValid) return;
+    const assignments: DraftBoardAssignmentRequest[] = draftState.teamPreview.flatMap((team) =>
+      team.slots.map((slot) => ({
+        slotId: slot.id,
+        expectedTeamId: team.teamId,
+        targetTeamId: boardAssignments[slot.id] ?? team.teamId,
+      })),
+    );
+    await runAction(async () => {
+      const response = await apiFetch<DraftStateResponse>(`/sessions/${session.id}/draft-board`, {
+        method: "PUT",
+        token,
+        body: { expectedStateToken: draftState.stateToken, assignments },
+      });
+      setDraftState(response);
+      await refreshSessionData();
+      await loadSessionPage(sessionPage);
+      return response;
+    }, "Đã lưu đội hình mới. Toàn bộ lần chỉnh này được ghi thành một thao tác.");
+  }
+
+  async function createDraftSnapshot() {
+    if (!token || !session || draftState?.sessionStatus !== "Finished") return;
+    await runAction(async () => {
+      const response = await apiFetch<DraftSnapshotResponse>(`/sessions/${session.id}/draft-snapshots`, {
+        method: "POST",
+        token,
+        body: { name: snapshotName.trim() || null },
+      });
+      setSnapshotName("");
+      await loadDraftSnapshots(1);
+      return response;
+    }, "Đã lưu snapshot đội hình hiện tại.");
+  }
+
+  async function restoreDraftSnapshot(snapshot: DraftSnapshotResponse) {
+    if (!token || !session || !draftState) return;
+    const confirmed = window.confirm(
+      `Khôi phục snapshot “${snapshot.name}”? Đội hình và captain hiện tại sẽ được thay thế. Lịch nhắc và cấu hình bot không bị đổi.`,
+    );
+    if (!confirmed) return;
+    await runAction(async () => {
+      const response = await apiFetch<DraftStateResponse>(
+        `/sessions/${session.id}/draft-snapshots/${snapshot.id}/restore`,
+        {
+          method: "POST",
+          token,
+          body: { expectedStateToken: draftState.stateToken },
+        },
+      );
+      setDraftState(response);
+      await refreshSessionData();
+      await loadSessionPage(sessionPage);
+      return response;
+    }, `Đã khôi phục snapshot “${snapshot.name}”. Bạn vẫn có thể undo thao tác này.`);
+  }
+
+  async function deleteDraftSnapshot(snapshot: DraftSnapshotResponse) {
+    if (!token || !session || !window.confirm(`Xoá snapshot “${snapshot.name}”?`)) return;
+    await runAction(async () => {
+      const response = await apiFetch<DeleteResponse>(
+        `/sessions/${session.id}/draft-snapshots/${snapshot.id}`,
+        { method: "DELETE", token },
+      );
+      const nextPage = draftSnapshots?.items.length === 1 && snapshotPage > 1
+        ? snapshotPage - 1
+        : snapshotPage;
+      await loadDraftSnapshots(nextPage);
+      return response;
+    }, "Đã xoá snapshot.");
+  }
+
+  async function undoLatestBackendAction() {
+    if (!token || !session) return;
+    const response = await runAction(async () => {
+      const history = await apiFetch<ZaloBotActionHistoryResponse[]>(
+        `/sessions/${session.id}/action-history?count=20`,
+        { token },
+      );
+      const latest = history.find((action) => action.isUndoable && !action.undoneAt);
+      if (!latest) throw new Error("Hiện không có thao tác mới nhất nào có thể hoàn tác.");
+      if (!window.confirm(`Hoàn tác thao tác mới nhất: “${latest.summary}”?`)) return null;
+      await apiFetch<ZaloBotActionHistoryResponse>(
+        `/sessions/${session.id}/action-history/${latest.id}/undo`,
+        { method: "POST", token },
+      );
+      const response = await apiFetch<DraftStateResponse>(`/sessions/${session.id}/draft-state`, { token });
+      setDraftState(response);
+      await refreshSessionData();
+      await loadSessionPage(sessionPage);
+      return response;
+    });
+    if (response) setStatusMessage("Đã hoàn tác thay đổi backend gần nhất.");
   }
 
   async function undoLastDraftPick() {
@@ -1544,22 +1719,213 @@ export function DbDraftFlow() {
                       </div>
                     )}
 
-                    <div className="team-preview-grid">
-                      {draftState.teamPreview.map((team) => (
-                        <article className="team-preview" key={team.teamId}>
-                          <div className="card-title-row">
+                    {draftState.sessionStatus === "Finished" ? (
+                      <section className="draft-board-editor" aria-label="Chỉnh đội hình sau draft">
+                        <div className="draft-board-heading">
+                          <div>
+                            <h2>Chỉnh đội hình</h2>
+                            <p>
+                              Kéo slot sang team khác, hoặc chạm một slot rồi chọn team đích. Slot share luôn đi cùng nhau.
+                            </p>
+                          </div>
+                          <Badge tone={boardCountsAreValid ? "good" : "warn"}>
+                            {boardCountsAreValid ? "Đủ slot" : "Cần chuyển bù slot"}
+                          </Badge>
+                        </div>
+
+                        <div className="draft-board-grid">
+                          {draftState.teamPreview.map((team) => {
+                            const slots = draftState.teamPreview
+                              .flatMap((item) => item.slots)
+                              .filter((slot) => boardAssignments[slot.id] === team.teamId);
+                            const score = slots.reduce((total, slot) => total + slot.averageScore, 0);
+                            return (
+                              <article
+                                className="draft-board-team"
+                                key={team.teamId}
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={(event) => {
+                                  event.preventDefault();
+                                  if (draggedSlotId) moveBoardSlot(draggedSlotId, team.teamId);
+                                  setDraggedSlotId(null);
+                                }}
+                              >
+                                <div className="draft-board-team-heading">
+                                  <div>
+                                    <h3>{team.teamName}</h3>
+                                    <p>Đội trưởng: {team.captainName ?? "-"}</p>
+                                  </div>
+                                  <div className="draft-board-metrics">
+                                    <strong>{slots.length}/{team.slots.length}</strong>
+                                    <span>{score.toFixed(1)} điểm</span>
+                                  </div>
+                                </div>
+
+                                {selectedBoardSlotId && boardAssignments[selectedBoardSlotId] !== team.teamId && (
+                                  <button
+                                    className="draft-board-target"
+                                    type="button"
+                                    onClick={() => moveBoardSlot(selectedBoardSlotId, team.teamId)}
+                                  >
+                                    <Check size={16} aria-hidden="true" />
+                                    Chuyển slot đang chọn vào {team.teamName}
+                                  </button>
+                                )}
+
+                                <div className="draft-board-slots">
+                                  {slots.map((slot) => (
+                                    <button
+                                      className={`draft-board-slot${selectedBoardSlotId === slot.id ? " selected" : ""}${slot.isCaptainSlot ? " locked" : ""}`}
+                                      type="button"
+                                      key={slot.id}
+                                      draggable={!slot.isCaptainSlot}
+                                      onDragStart={() => {
+                                        setDraggedSlotId(slot.id);
+                                        setSelectedBoardSlotId(slot.id);
+                                      }}
+                                      onDragEnd={() => setDraggedSlotId(null)}
+                                      onClick={() => {
+                                        if (!slot.isCaptainSlot) {
+                                          setSelectedBoardSlotId((current) => current === slot.id ? null : slot.id);
+                                        }
+                                      }}
+                                    >
+                                      <GripVertical size={17} aria-hidden="true" />
+                                      <span>
+                                        <strong>{slot.displayName}</strong>
+                                        <small>
+                                          {slot.type === "Shared" ? "Share slot" : "Một người"} · {slot.averageScore.toFixed(1)} điểm
+                                        </small>
+                                      </span>
+                                      {slot.isCaptainSlot && <em>Khoá</em>}
+                                    </button>
+                                  ))}
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+
+                        {!boardCountsAreValid && (
+                          <p className="draft-board-warning">
+                            Các team chưa cân số slot. Chuyển thêm một slot theo chiều ngược lại rồi mới lưu.
+                          </p>
+                        )}
+
+                        <div className="action-row draft-board-actions">
+                          <button
+                            className="button-primary"
+                            type="button"
+                            disabled={isBusy || !boardHasChanges || !boardCountsAreValid}
+                            onClick={saveDraftBoard}
+                          >
+                            <Save size={17} aria-hidden="true" />
+                            Lưu đội hình
+                          </button>
+                          <button
+                            className="button-secondary"
+                            type="button"
+                            disabled={isBusy || !boardHasChanges}
+                            onClick={resetDraftBoardEditor}
+                          >
+                            <X size={17} aria-hidden="true" />
+                            Bỏ thay đổi
+                          </button>
+                          <button
+                            className="button-secondary"
+                            type="button"
+                            disabled={isBusy}
+                            onClick={undoLatestBackendAction}
+                          >
+                            <History size={17} aria-hidden="true" />
+                            Undo thao tác mới nhất
+                          </button>
+                        </div>
+
+                        <div className="snapshot-panel">
+                          <div className="snapshot-create-row">
                             <div>
-                              <h3>{team.teamName}</h3>
-                              <p>Captain: {team.captainName ?? "-"}</p>
+                              <h3>Snapshot đội hình</h3>
+                              <p>Lưu một mốc để quay lại đúng đội hình này khi cần.</p>
                             </div>
-                            <strong>{team.slots.length}/6</strong>
+                            <input
+                              value={snapshotName}
+                              maxLength={160}
+                              onChange={(event) => setSnapshotName(event.target.value)}
+                              placeholder="Tên mốc, ví dụ: Đội hình ưng ý lần 1"
+                            />
+                            <button
+                              className="button-secondary"
+                              type="button"
+                              disabled={isBusy || boardHasChanges}
+                              onClick={createDraftSnapshot}
+                              title={boardHasChanges ? "Hãy lưu hoặc bỏ thay đổi trước khi tạo snapshot" : undefined}
+                            >
+                              <Camera size={17} aria-hidden="true" />
+                              Lưu snapshot
+                            </button>
                           </div>
-                          <div className="member-line">
-                            {team.slots.map((slot) => slot.displayName).join(", ")}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
+
+                          {draftSnapshots && draftSnapshots.items.length > 0 ? (
+                            <div className="snapshot-list">
+                              {draftSnapshots.items.map((snapshot) => (
+                                <article className="snapshot-item" key={snapshot.id}>
+                                  <div>
+                                    <strong>{snapshot.name}</strong>
+                                    <span>
+                                      {formatAdminSessionDate(snapshot.createdAt)} · {snapshot.createdBy}
+                                    </span>
+                                  </div>
+                                  <div className="snapshot-actions">
+                                    <button
+                                      className="button-secondary"
+                                      type="button"
+                                      disabled={isBusy || boardHasChanges}
+                                      onClick={() => restoreDraftSnapshot(snapshot)}
+                                    >
+                                      Khôi phục
+                                    </button>
+                                    <button
+                                      className="icon-button danger"
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => deleteDraftSnapshot(snapshot)}
+                                      aria-label={`Xoá snapshot ${snapshot.name}`}
+                                    >
+                                      <Trash2 size={16} aria-hidden="true" />
+                                    </button>
+                                  </div>
+                                </article>
+                              ))}
+                              <PaginationControls
+                                page={draftSnapshots.page}
+                                totalPages={draftSnapshots.totalPages}
+                                onPageChange={(page) => void loadDraftSnapshots(page)}
+                              />
+                            </div>
+                          ) : (
+                            <p className="muted">Chưa có snapshot nào cho buổi này.</p>
+                          )}
+                        </div>
+                      </section>
+                    ) : (
+                      <div className="team-preview-grid">
+                        {draftState.teamPreview.map((team) => (
+                          <article className="team-preview" key={team.teamId}>
+                            <div className="card-title-row">
+                              <div>
+                                <h3>{team.teamName}</h3>
+                                <p>Captain: {team.captainName ?? "-"}</p>
+                              </div>
+                              <strong>{team.slots.length}/6</strong>
+                            </div>
+                            <div className="member-line">
+                              {team.slots.map((slot) => slot.displayName).join(", ")}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
                   </>
                 )}
 

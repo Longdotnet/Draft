@@ -3222,6 +3222,15 @@ public sealed class ZaloBotService(
             if (denial is not null) return denial;
         }
 
+        var preview = await draftService.PreviewPostDraftSlotTransferAsync(
+            session.AdminUserId,
+            session.Id,
+            command.FromPlayer,
+            new ShareSlotParticipantInput(command.ToPlayer, toId),
+            cancellationToken);
+        if (!preview.IsSuccess || preview.Value is null)
+            return new BotAnswer(preview.Error ?? "Không thể kiểm tra yêu cầu chuyển slot.", null, decision.Intent, aiCalled);
+
         if (!confirmed)
         {
             await SaveSlotTransferConfirmationAsync(
@@ -3231,11 +3240,23 @@ public sealed class ZaloBotService(
                 session.Id,
                 command,
                 cancellationToken);
+            var previewCaptainNote = preview.Value.CaptainTransferred
+                ? $" {preview.Value.ToPlayerName} cũng sẽ tiếp quản vai trò đội trưởng của {preview.Value.TeamName}."
+                : string.Empty;
             return new BotAnswer(
-                $"Mình hiểu là {command.FromPlayer} muốn rút slot của {session.Name} và chuyển slot đó cho {command.ToPlayer}. Đội hình hiện tại sẽ được cập nhật, không draft lại toàn bộ. Gõ @bot xác nhận để thực hiện hoặc @bot huỷ.",
+                $"Mình hiểu là {preview.Value.FromPlayerName} muốn rút slot của {session.Name} và chuyển cho {preview.Value.ToPlayerName} tại {preview.Value.TeamName}.{previewCaptainNote} Đội hình sẽ được cập nhật tại chỗ, không draft lại. Gõ @bot xác nhận để thực hiện hoặc @bot huỷ.",
                 null,
                 decision.Intent,
-                aiCalled);
+                aiCalled,
+                ProtectedTerms:
+                [
+                    preview.Value.FromPlayerName,
+                    preview.Value.ToPlayerName,
+                    preview.Value.TeamName,
+                    session.Name,
+                    "@bot xác nhận",
+                    "@bot huỷ"
+                ]);
         }
 
         var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
@@ -3262,11 +3283,21 @@ public sealed class ZaloBotService(
         var profileNote = result.Value.NeedsProfileUpdate
             ? " Cần cập nhật hồ sơ của người nhận trước khi có thao tác draft lại."
             : string.Empty;
+        var captainNote = result.Value.CaptainTransferred
+            ? $" {result.Value.ToPlayerName} hiện là đội trưởng mới của {result.Value.TeamName}."
+            : string.Empty;
         return new BotAnswer(
-            $"Đã cập nhật {session.Name}: {result.Value.FromPlayerName} rút slot, {result.Value.ToPlayerName} nhận slot tại {result.Value.TeamName}. Không draft lại toàn bộ đội hình.{profileNote}",
+            $"Đã cập nhật {session.Name}: {result.Value.FromPlayerName} rút slot, {result.Value.ToPlayerName} nhận slot tại {result.Value.TeamName}.{captainNote} Không draft lại toàn bộ đội hình.{profileNote}",
             null,
             ZaloBotIntent.SlotTransferConfirm,
-            aiCalled);
+            aiCalled,
+            ProtectedTerms:
+            [
+                result.Value.FromPlayerName,
+                result.Value.ToPlayerName,
+                result.Value.TeamName,
+                session.Name
+            ]);
     }
 
     private async Task<BotAnswer> HandleRepairShareSlotAsync(

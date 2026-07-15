@@ -186,7 +186,7 @@ public static class ZaloNaturalCommandParser
         {
             var match = Regex.Match(value, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
             if (!match.Success) continue;
-            var from = CleanPerson(match.Groups["from"].Value);
+            var from = CleanTransferSource(match.Groups["from"].Value);
             var to = CleanPerson(match.Groups["to"].Value);
             if (from.Length >= 2 && to.Length >= 2 &&
                 !string.Equals(ZaloBotIntelligence.Normalize(from), ZaloBotIntelligence.Normalize(to), StringComparison.Ordinal))
@@ -432,4 +432,20 @@ public static class ZaloNaturalCommandParser
 
     private static string CleanPerson(string value) =>
         value.Trim(' ', ',', '.', ':', ';', '@');
+
+    private static string CleanTransferSource(string value)
+    {
+        var cleaned = CleanPerson(value);
+        cleaned = Regex.Replace(
+            cleaned,
+            @"^(?:đội\s+trưởng|doi\s+truong)\s+",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        cleaned = Regex.Replace(
+            cleaned,
+            @"\s+(?:(?:báo|bao)\s+)?(?:bận|ban)(?:\s+(?:đột\s+xuất|dot\s+xuat))?$|\s+(?:có\s+việc|co\s+viec|không\s+(?:đi|tham\s+gia)\s+được|khong\s+(?:di|tham\s+gia)\s+duoc)$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return CleanPerson(cleaned);
+    }
 }

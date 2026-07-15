@@ -555,6 +555,152 @@
     @apply mb-4 flex items-center gap-2 rounded-lg border border-sky-300/20 bg-sky-300/10 px-4 py-3 text-sm font-black text-sky-100;
   }
 
+  .draft-board-editor {
+    @apply grid gap-4 rounded-xl border border-sky-300/20 bg-sky-950/30 p-3 sm:p-4;
+  }
+
+  .draft-board-heading {
+    @apply flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between;
+  }
+
+  .draft-board-heading h2,
+  .snapshot-panel h3 {
+    @apply text-xl font-black text-white;
+  }
+
+  .draft-board-heading p,
+  .snapshot-panel p {
+    @apply mt-1 text-sm font-semibold leading-6 text-slate-300;
+  }
+
+  .draft-board-grid {
+    @apply grid gap-3 xl:grid-cols-3;
+  }
+
+  .draft-board-team {
+    @apply min-h-64 rounded-xl border border-white/10 bg-white/[0.07] p-3 transition hover:border-sky-300/30;
+  }
+
+  .draft-board-team-heading {
+    @apply flex items-start justify-between gap-3 border-b border-white/10 pb-3;
+  }
+
+  .draft-board-team-heading h3 {
+    @apply text-lg font-black text-white;
+  }
+
+  .draft-board-team-heading p {
+    @apply mt-1 text-xs font-bold text-slate-300;
+  }
+
+  .draft-board-metrics {
+    @apply text-right;
+  }
+
+  .draft-board-metrics strong,
+  .draft-board-metrics span {
+    @apply block;
+  }
+
+  .draft-board-metrics strong {
+    @apply text-base font-black text-sky-100;
+  }
+
+  .draft-board-metrics span {
+    @apply mt-1 text-xs font-bold text-slate-400;
+  }
+
+  .draft-board-target {
+    @apply mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-sky-300/50 bg-sky-300/10 px-3 py-2 text-xs font-black text-sky-100 transition hover:bg-sky-300/20;
+  }
+
+  .draft-board-slots {
+    @apply mt-3 grid gap-2;
+  }
+
+  .draft-board-slot {
+    @apply flex w-full items-center gap-2 rounded-lg border border-white/10 bg-slate-950/55 px-3 py-3 text-left text-slate-100 transition hover:border-sky-300/50 hover:bg-sky-950/70;
+    touch-action: manipulation;
+  }
+
+  .draft-board-slot > span {
+    @apply min-w-0 flex-1;
+  }
+
+  .draft-board-slot strong,
+  .draft-board-slot small {
+    @apply block;
+  }
+
+  .draft-board-slot strong {
+    @apply truncate text-sm font-black text-white;
+  }
+
+  .draft-board-slot small {
+    @apply mt-1 text-xs font-bold text-slate-400;
+  }
+
+  .draft-board-slot em {
+    @apply rounded-md bg-orange-400/20 px-2 py-1 text-[10px] font-black not-italic text-orange-100;
+  }
+
+  .draft-board-slot.selected {
+    @apply border-orange-300 bg-orange-400/15 shadow-lg shadow-orange-500/10;
+  }
+
+  .draft-board-slot.locked {
+    @apply cursor-not-allowed border-orange-300/25 bg-orange-950/20;
+  }
+
+  .draft-board-warning {
+    @apply rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-sm font-bold text-amber-100;
+  }
+
+  .draft-board-actions {
+    @apply border-t border-white/10 pt-4;
+  }
+
+  .snapshot-panel {
+    @apply grid gap-4 rounded-xl border border-white/10 bg-slate-950/45 p-3 sm:p-4;
+  }
+
+  .snapshot-create-row {
+    @apply grid gap-3 lg:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_auto] lg:items-end;
+  }
+
+  .snapshot-create-row input {
+    @apply min-h-10 rounded-md border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-white outline-none placeholder:text-slate-500 focus:border-sky-300 focus:ring-4 focus:ring-sky-300/10;
+  }
+
+  .snapshot-list {
+    @apply grid gap-2;
+  }
+
+  .snapshot-item {
+    @apply flex flex-col gap-3 rounded-lg border border-white/10 bg-white/[0.06] p-3 sm:flex-row sm:items-center sm:justify-between;
+  }
+
+  .snapshot-item strong,
+  .snapshot-item span {
+    @apply block;
+  }
+
+  .snapshot-item strong {
+    @apply text-sm font-black text-white;
+  }
+
+  .snapshot-item span {
+    @apply mt-1 text-xs font-bold text-slate-400;
+  }
+
+  .snapshot-actions {
+    @apply flex shrink-0 items-center gap-2;
+  }
+
+  .snapshot-panel .pagination-row {
+    @apply text-slate-300;
+  }
+
   .bag-grid {
     @apply grid gap-3 sm:grid-cols-3;
   }

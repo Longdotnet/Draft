@@ -301,6 +301,22 @@ export type DraftStateResponse = {
   teamPreview: TeamPreviewResponse[];
   message: string | null;
   lastOpenedBag: OpenedBagResultResponse | null;
+  stateToken: string;
+};
+
+export type DraftBoardAssignmentRequest = {
+  slotId: string;
+  expectedTeamId: string;
+  targetTeamId: string;
+};
+
+export type DraftSnapshotResponse = {
+  id: string;
+  sessionId: string;
+  name: string;
+  createdBy: string;
+  createdAt: string;
+  stateHash: string;
 };
 
 export type BlindBagStateResponse = {

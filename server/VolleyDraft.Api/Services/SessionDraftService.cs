@@ -1834,6 +1834,61 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
     }
 
+    public async Task<ServiceResult<PostDraftSlotTransferPreview>> PreviewPostDraftSlotTransferAsync(
+        string adminUserId,
+        string sessionId,
+        string fromPlayerReference,
+        ShareSlotParticipantInput replacement,
+        CancellationToken cancellationToken = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var session = await db.MatchSessions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == sessionId && item.AdminUserId == adminUserId, cancellationToken);
+        if (session is null)
+            return NotFound<PostDraftSlotTransferPreview>("Không tìm thấy session.");
+        if (session.Status != SessionStatus.Finished)
+            return BadRequest<PostDraftSlotTransferPreview>("Chỉ chuyển slot sau khi draft đã hoàn tất.");
+        if (session.StartTime is not null && session.StartTime <= now)
+            return BadRequest<PostDraftSlotTransferPreview>("Trận đã bắt đầu hoặc đã qua giờ nên không thể chuyển slot.");
+
+        var cleanReplacementName = replacement.DisplayName.Trim().TrimStart('@');
+        if (cleanReplacementName.Length is < 2 or > 160)
+            return BadRequest<PostDraftSlotTransferPreview>("Tên người nhận slot không hợp lệ.");
+        var slots = await db.DraftSlots.AsNoTracking()
+            .Include(slot => slot.AssignedTeam)
+            .Include(slot => slot.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(slot => slot.SessionId == sessionId && slot.AssignedTeamId != null)
+            .ToListAsync(cancellationToken);
+        var source = ResolveDraftPlayerSlot(slots, fromPlayerReference);
+        if (source.Match is null)
+            return BadRequest<PostDraftSlotTransferPreview>(source.Error!);
+
+        var replacementZaloId = string.IsNullOrWhiteSpace(replacement.ZaloUserId)
+            ? null
+            : NormalizeZaloId(replacement.ZaloUserId);
+        var players = await db.SessionPlayers.AsNoTracking()
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        var target = replacementZaloId is null
+            ? players.FirstOrDefault(player =>
+                ZaloBotIntelligence.Normalize(player.DisplayName) == ZaloBotIntelligence.Normalize(cleanReplacementName))
+            : players.FirstOrDefault(player => NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == replacementZaloId);
+        target ??= players.FirstOrDefault(player =>
+            ZaloBotIntelligence.Normalize(player.DisplayName) == ZaloBotIntelligence.Normalize(cleanReplacementName));
+        if (target is not null && target.Id == source.Match.PlayerId)
+            return BadRequest<PostDraftSlotTransferPreview>("Người nhường và người nhận slot không thể là cùng một người.");
+        if (target is not null && slots.Any(slot => slot.Players.Any(link => link.SessionPlayerId == target.Id)))
+            return BadRequest<PostDraftSlotTransferPreview>($"{target.DisplayName} đã có slot trong đội hình nên không thể nhận thêm slot.");
+
+        return ServiceResult<PostDraftSlotTransferPreview>.Success(new(
+            source.Match.PlayerName,
+            target?.DisplayName ?? cleanReplacementName,
+            source.Match.Slot.AssignedTeam!.Name,
+            source.Match.Slot.IsCaptainSlot));
+    }
+
     public async Task<ServiceResult<PostDraftSlotTransferResult>> TransferPostDraftSlotAsync(
         string adminUserId,
         string sessionId,
@@ -1878,8 +1933,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var source = ResolveDraftPlayerSlot(slots, fromPlayerReference);
             if (source.Match is null)
                 return BadRequest<PostDraftSlotTransferResult>(source.Error!);
-            if (source.Match.Slot.IsCaptainSlot)
-                return BadRequest<PostDraftSlotTransferResult>("Không thể tự chuyển slot đội trưởng; hãy đổi đội trưởng trước.");
+            var captainTransferred = source.Match.Slot.IsCaptainSlot;
 
             var cleanReplacementName = replacement.DisplayName.Trim().TrimStart('@');
             if (cleanReplacementName.Length is < 2 or > 160)
@@ -2007,6 +2061,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             });
             foreach (var link in sourceSlot.Players)
                 link.SessionPlayer.IsInsideSharedSlot = sourceSlot.Players.Count > 1;
+            if (captainTransferred)
+            {
+                sourceSlot.AssignedTeam!.CaptainSessionPlayerId = target.Id;
+                target.IsCaptainEligible = true;
+                sourceLink.SessionPlayer.IsCaptainEligible = false;
+            }
             RefreshDraftSlotSummary(sourceSlot);
 
             session.UpdatedAt = now;
@@ -2036,7 +2096,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 target.DisplayName,
                 sourceSlot.AssignedTeam!.Name,
                 targetWasAdded,
-                target.Gender == PlayerGender.Unknown));
+                target.Gender == PlayerGender.Unknown,
+                captainTransferred));
         }
         finally
         {
@@ -2581,7 +2642,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             bags,
             teamPreview,
             message,
-            lastOpenedResponse);
+            lastOpenedResponse,
+            DraftBoardStateToken.Create(teamPreview));
 
         return ServiceResult<DraftStateResponse>.Success(response);
     }
@@ -4012,7 +4074,14 @@ public sealed record PostDraftSlotTransferResult(
     string ToPlayerName,
     string TeamName,
     bool ToPlayerWasAdded,
-    bool NeedsProfileUpdate);
+    bool NeedsProfileUpdate,
+    bool CaptainTransferred);
+
+public sealed record PostDraftSlotTransferPreview(
+    string FromPlayerName,
+    string ToPlayerName,
+    string TeamName,
+    bool CaptainTransferred);
 
 public sealed record PostDraftShareRepairResult(
     string PartnerPlayerName,

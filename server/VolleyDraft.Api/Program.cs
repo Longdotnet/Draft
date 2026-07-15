@@ -57,6 +57,7 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<JwtTokenService>();
 builder.Services.AddScoped<PasswordService>();
 builder.Services.AddScoped<SessionDraftService>();
+builder.Services.AddScoped<DraftBoardService>();
 builder.Services.AddScoped<ZaloIntegrationService>();
 builder.Services.AddScoped<ZaloBotService>();
 builder.Services.AddScoped<ZaloBotImageService>();
@@ -716,6 +717,68 @@ sessions.MapGet("/{sessionId}/draft-state", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.GetDraftStateAsync(userId, sessionId)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/draft-board", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateDraftBoardRequest request,
+    DraftBoardService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/draft-snapshots", async (
+    HttpContext httpContext,
+    string sessionId,
+    int? page,
+    int? pageSize,
+    DraftBoardService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetSnapshotsAsync(userId, sessionId, page ?? 1, pageSize ?? 6, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/draft-snapshots", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateDraftSnapshotRequest request,
+    DraftBoardService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.CreateSnapshotAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/draft-snapshots/{snapshotId}/restore", async (
+    HttpContext httpContext,
+    string sessionId,
+    string snapshotId,
+    RestoreDraftSnapshotRequest request,
+    DraftBoardService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.RestoreSnapshotAsync(userId, sessionId, snapshotId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapDelete("/{sessionId}/draft-snapshots/{snapshotId}", async (
+    HttpContext httpContext,
+    string sessionId,
+    string snapshotId,
+    DraftBoardService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.DeleteSnapshotAsync(userId, sessionId, snapshotId, cancellationToken)).ToHttpResult();
 });
 sessions.MapPost("/{sessionId}/blind-bags/{bagId}/prepare-reveal", async (
     HttpContext httpContext,

@@ -367,7 +367,29 @@ public sealed record DraftStateResponse(
     IReadOnlyList<BlindBagStateResponse> Bags,
     IReadOnlyList<TeamPreviewResponse> TeamPreview,
     string? Message,
-    OpenedBagResultResponse? LastOpenedBag);
+    OpenedBagResultResponse? LastOpenedBag,
+    string StateToken);
+
+public sealed record DraftBoardAssignmentRequest(
+    string SlotId,
+    string ExpectedTeamId,
+    string TargetTeamId);
+
+public sealed record UpdateDraftBoardRequest(
+    string ExpectedStateToken,
+    IReadOnlyList<DraftBoardAssignmentRequest> Assignments);
+
+public sealed record CreateDraftSnapshotRequest(string? Name);
+
+public sealed record RestoreDraftSnapshotRequest(string ExpectedStateToken);
+
+public sealed record DraftSnapshotResponse(
+    string Id,
+    string SessionId,
+    string Name,
+    string CreatedBy,
+    DateTimeOffset CreatedAt,
+    string StateHash);
 
 public sealed record DraftViewerResponse(
     string Id,
