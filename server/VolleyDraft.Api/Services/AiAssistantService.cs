@@ -29,7 +29,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -38,6 +38,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             - Muốn cập nhật voter/poll lên website là SyncPoll.
             - Muốn bot tự chọn captain, bắt đầu draft và khui hết túi là AutoDraft.
             - Muốn chia/draft/khui lại một đội hình đã có là Redraft.
+            - Muốn cân bằng lại điểm giữa đúng hai team đã nêu (ví dụ team 2 và team 3, team A-C) là RebalanceTeams. Không dùng Redraft vì team còn lại phải giữ nguyên.
             - Muốn đổi chỗ hai thành viên giữa hai team là SwapTeamPlayers.
             - Muốn biết ai còn thiếu/chưa cập nhật giới tính, vị trí hoặc trình độ là IncompleteProfiles; KHÔNG phải Roster hay UpdatePlayerProfile.
             - Muốn cập nhật giới tính/vị trí/trình độ người chơi là UpdatePlayerProfile.
@@ -342,7 +343,28 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             4. Nếu FactualAnswer có danh sách hoặc nhiều dòng, giữ đủ từng mục và thứ tự.
             5. Không thêm @mention người gửi ở đầu câu; hệ thống sẽ tự mention.
             6. Trả lời ngắn gọn, thân thiện, không markdown, chỉ trả về câu đã viết lại.
+            7. Mọi placeholder dạng [[VD_FACT_n]] là một khối dữ liệu bất biến. Phải chép lại đúng từng ký tự, đúng số lần và không đặt ký tự vào bên trong placeholder.
             """;
+        var protectedAnswer = context.FactualAnswer;
+        var protectedReplacements = new List<AiProtectedReplacement>();
+        var protectedTerms = (context.ProtectedTerms ?? [])
+            .Where(term => !string.IsNullOrWhiteSpace(term))
+            .Distinct(StringComparer.Ordinal)
+            .OrderByDescending(term => term.Length)
+            .ToList();
+        foreach (var term in protectedTerms)
+        {
+            if (!protectedAnswer.Contains(term, StringComparison.Ordinal)) continue;
+            var placeholder = $"[[VD_FACT_{protectedReplacements.Count}]]";
+            var count = CountOccurrences(protectedAnswer, term);
+            protectedAnswer = protectedAnswer.Replace(term, placeholder, StringComparison.Ordinal);
+            protectedReplacements.Add(new AiProtectedReplacement(placeholder, term, count));
+        }
+        var protectedContext = context with
+        {
+            FactualAnswer = protectedAnswer,
+            ProtectedTerms = protectedReplacements.Select(item => item.Placeholder).ToList()
+        };
         var payload = new
         {
             model,
@@ -351,11 +373,22 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             messages = new object[]
             {
                 new { role = "system", content = prompt },
-                new { role = "user", content = JsonSerializer.Serialize(context, JsonOptions) }
+                new { role = "user", content = JsonSerializer.Serialize(protectedContext, JsonOptions) }
             }
         };
 
         var rewritten = await SendForContentAsync(endpoint, apiKey, payload, "answer_rewrite", cancellationToken);
+        if (string.IsNullOrWhiteSpace(rewritten) || protectedReplacements.Any(item =>
+                CountOccurrences(rewritten, item.Placeholder) != item.ExpectedCount))
+        {
+            if (!string.IsNullOrWhiteSpace(rewritten))
+                logger.LogWarning("AI answer rewrite was rejected because immutable placeholders changed. Intent={Intent}", context.Intent);
+            return null;
+        }
+        foreach (var replacement in protectedReplacements)
+        {
+            rewritten = rewritten.Replace(replacement.Placeholder, replacement.OriginalText, StringComparison.Ordinal);
+        }
         if (!IsSafeRewrite(context.FactualAnswer, rewritten))
         {
             if (!string.IsNullOrWhiteSpace(rewritten))
@@ -503,6 +536,24 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             .Distinct(StringComparer.OrdinalIgnoreCase);
         return protectedTokens.All(token => rewritten.Contains(token, StringComparison.OrdinalIgnoreCase));
     }
+
+    private static int CountOccurrences(string value, string token)
+    {
+        if (string.IsNullOrEmpty(value) || string.IsNullOrEmpty(token)) return 0;
+        var count = 0;
+        var index = 0;
+        while ((index = value.IndexOf(token, index, StringComparison.Ordinal)) >= 0)
+        {
+            count += 1;
+            index += token.Length;
+        }
+        return count;
+    }
+
+    private sealed record AiProtectedReplacement(
+        string Placeholder,
+        string OriginalText,
+        int ExpectedCount);
 }
 
 public sealed record ZaloIntentClassifierContext(
@@ -516,7 +567,8 @@ public sealed record ZaloAiRewriteContext(
     string Question,
     string SenderName,
     ZaloBotIntent Intent,
-    string FactualAnswer);
+    string FactualAnswer,
+    IReadOnlyList<string>? ProtectedTerms = null);
 
 public sealed record ZaloAiMessage(string Role, string SenderId, string SenderName, string Content, DateTimeOffset SentAt);
 public sealed record ZaloMentionedUser(string ZaloUserId, string DisplayName);

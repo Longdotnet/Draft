@@ -25,6 +25,8 @@ public enum ZaloBotIntent
     AutoDraftConfirm,
     Redraft,
     RedraftConfirm,
+    RebalanceTeams,
+    RebalanceTeamsConfirm,
     SwapTeamPlayers,
     IncompleteProfiles,
     UpdatePlayerProfile,
@@ -163,6 +165,31 @@ public static class ZaloBotIntelligence
         10 => ZaloBotIntent.TeamImage,
         _ => ZaloBotIntent.Unknown
     };
+
+    public static bool TryParseTeamPair(string value, out int firstTeamOrdinal, out int secondTeamOrdinal)
+    {
+        firstTeamOrdinal = 0;
+        secondTeamOrdinal = 0;
+        var normalized = Normalize(value);
+        var match = Regex.Match(
+            normalized,
+            @"\b(?:team|doi)\s*(?<first>1|2|3|a|b|c|mot|hai|ba)\s*(?:-|va|voi|&|,)\s*(?:(?:team|doi)\s*)?,?\s*(?<second>1|2|3|a|b|c|mot|hai|ba)\b",
+            RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                normalized,
+                @"\b(?<first>[1-3])\s*-\s*(?<second>[1-3])\b",
+                RegexOptions.CultureInvariant);
+        }
+        if (!match.Success) return false;
+
+        firstTeamOrdinal = ParseTeamOrdinal(match.Groups["first"].Value);
+        secondTeamOrdinal = ParseTeamOrdinal(match.Groups["second"].Value);
+        return firstTeamOrdinal is >= 1 and <= 3 &&
+               secondTeamOrdinal is >= 1 and <= 3 &&
+               firstTeamOrdinal != secondTeamOrdinal;
+    }
 
     public static bool IsCancel(string value)
     {
@@ -361,6 +388,9 @@ public static class ZaloBotIntelligence
         if (Has(q, "cap nhat thong tin", "cap nhat ho so", "cap nhat trinh do", "cap nhat gioi tinh") ||
             (q.StartsWith("cap nhat ", StringComparison.Ordinal) && Has(q, " nam", " nu", "tan cong", "phong thu", "chuyen 2", "trung binh", "moi choi")))
             return new(ZaloBotIntent.UpdatePlayerProfile, .98, q, false, null, "update_player_profile_phrase");
+        if (TryParseTeamPair(value, out _, out _) &&
+            Has(q, "can bang", "balance", "can lai", "chia deu lai", "chinh deu lai"))
+            return new(ZaloBotIntent.RebalanceTeams, .99, q, false, null, "rebalance_teams_phrase");
         if (Has(q, "doi vi tri", "doi cho", "swap ") && Has(q, " voi ", " va ", " cho "))
             return new(ZaloBotIntent.SwapTeamPlayers, .99, q, false, null, "swap_team_players_phrase");
         if (Has(q, "draft lai", "chia lai team", "boc lai team", "khui lai tui", "khui lai", "draft lai tu dau"))
@@ -411,7 +441,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;
@@ -425,6 +455,14 @@ public static class ZaloBotIntelligence
             return false;
         }
     }
+
+    private static int ParseTeamOrdinal(string value) => value switch
+    {
+        "1" or "a" or "mot" => 1,
+        "2" or "b" or "hai" => 2,
+        "3" or "c" or "ba" => 3,
+        _ => 0
+    };
 
     public static double TokenJaccard(string left, string right)
         => TokenSimilarity(left, right);

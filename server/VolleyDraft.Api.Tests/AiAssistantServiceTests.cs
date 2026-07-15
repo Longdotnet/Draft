@@ -124,6 +124,43 @@ public sealed class AiAssistantServiceTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task Protected_business_block_can_be_styled_without_changing_names_or_scores()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"Chốt phương án này là đẹp nha:\n[[VD_FACT_0]]\nBạn xác nhận giúp mình."}}]}""");
+        const string facts = "- Vinh / Vivian: Team C → Team B (2 điểm)\n- Nick Tran: Team B → Team C (3 điểm)";
+
+        var result = await service.RewriteFactualAnswerAsync(new ZaloAiRewriteContext(
+            "cân bằng team 2 và team 3",
+            "Thanh Long",
+            ZaloBotIntent.RebalanceTeams,
+            $"Mình có phương án:\n{facts}\nBạn xác nhận giúp mình.",
+            [facts]));
+
+        Assert.NotNull(result);
+        Assert.Contains("Vinh / Vivian", result);
+        Assert.Contains("Nick Tran", result);
+        Assert.Contains("Team C → Team B (2 điểm)", result);
+    }
+
+    [Fact]
+    public async Task Protected_business_block_rewrite_is_rejected_when_placeholder_is_changed()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"Đã cân bằng Vinh qua Team B rồi nha."}}]}""");
+        const string facts = "- Vinh / Vivian: Team C → Team B (2 điểm)";
+
+        var result = await service.RewriteFactualAnswerAsync(new ZaloAiRewriteContext(
+            "cân bằng team 2 và team 3",
+            "Thanh Long",
+            ZaloBotIntent.RebalanceTeams,
+            $"Phương án:\n{facts}",
+            [facts]));
+
+        Assert.Null(result);
+    }
+
     private static AiAssistantService CreateService(HttpStatusCode statusCode, string responseBody)
     {
         var configuration = new ConfigurationBuilder()

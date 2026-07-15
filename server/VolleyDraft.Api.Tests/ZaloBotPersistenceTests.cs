@@ -127,6 +127,93 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Finished_draft_can_preview_and_confirm_two_team_rebalance_without_touching_other_team_or_splitting_share()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession
+        {
+            Id = "rebalance-session",
+            AdminUserId = "admin",
+            Name = "Thứ 4 15/7",
+            Status = SessionStatus.Finished,
+            TeamCount = 3,
+            TeamSize = 3
+        };
+        var players = new[]
+        {
+            PlayerForSession("ra-cap", "Captain A", 2, session.Id),
+            PlayerForSession("ra-one", "A One", 2, session.Id),
+            PlayerForSession("rb-cap", "Captain B", 2, session.Id),
+            PlayerForSession("rb-high", "B High", 5, session.Id),
+            PlayerForSession("rb-share", "B Share", 5, session.Id),
+            PlayerForSession("rb-mid", "B Mid", 4, session.Id),
+            PlayerForSession("rc-cap", "Captain C", 2, session.Id),
+            PlayerForSession("rc-low", "C Low", 1, session.Id),
+            PlayerForSession("rc-mid", "C Mid", 2, session.Id)
+        };
+        session.Players.AddRange(players);
+        var teamA = new Team { Id = "rebalance-a", SessionId = session.Id, Name = "Team A", CaptainSessionPlayerId = "ra-cap" };
+        var teamB = new Team { Id = "rebalance-b", SessionId = session.Id, Name = "Team B", CaptainSessionPlayerId = "rb-cap" };
+        var teamC = new Team { Id = "rebalance-c", SessionId = session.Id, Name = "Team C", CaptainSessionPlayerId = "rc-cap" };
+        session.Teams.AddRange([teamA, teamB, teamC]);
+        session.DraftSlots.AddRange([
+            SlotForSession("ra-cap-slot", players[0], teamA.Id, 2, true, session.Id),
+            SlotForSession("ra-one-slot", players[1], teamA.Id, 2, false, session.Id),
+            SlotForSession("rb-cap-slot", players[2], teamB.Id, 2, true, session.Id),
+            SlotForSession("rb-high-slot", players[3], teamB.Id, 5, false, session.Id),
+            SlotForSession("rb-mid-slot", players[5], teamB.Id, 4, false, session.Id),
+            SlotForSession("rc-cap-slot", players[6], teamC.Id, 2, true, session.Id),
+            SlotForSession("rc-low-slot", players[7], teamC.Id, 1, false, session.Id),
+            SlotForSession("rc-mid-slot", players[8], teamC.Id, 2, false, session.Id)
+        ]);
+        var sharedSlot = session.DraftSlots.Single(slot => slot.Id == "rb-high-slot");
+        sharedSlot.Type = DraftSlotType.Shared;
+        sharedSlot.DisplayName = "B High / B Share";
+        sharedSlot.Players.Add(new DraftSlotPlayer
+        {
+            DraftSlotId = sharedSlot.Id,
+            SessionPlayerId = players[4].Id,
+            SessionPlayer = players[4],
+            RotationOrder = 1
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamRebalanceAsync("admin", session.Id, 2, 3);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.NotNull(preview.Value);
+        Assert.NotEmpty(preview.Value!.Moves);
+        Assert.True(
+            Math.Abs(preview.Value.FirstAfterScore - preview.Value.SecondAfterScore) <
+            Math.Abs(preview.Value.FirstBeforeScore - preview.Value.SecondBeforeScore));
+        var applied = await service.ApplyTeamRebalanceAsync("admin", preview.Value);
+        Assert.True(applied.IsSuccess, applied.Error);
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("rebalance-a", await fixture.Db.DraftSlots
+            .Where(slot => slot.Id == "ra-one-slot")
+            .Select(slot => slot.AssignedTeamId)
+            .SingleAsync());
+        Assert.Equal("rebalance-b", await fixture.Db.DraftSlots
+            .Where(slot => slot.Id == "rb-cap-slot")
+            .Select(slot => slot.AssignedTeamId)
+            .SingleAsync());
+        Assert.Equal("rebalance-c", await fixture.Db.DraftSlots
+            .Where(slot => slot.Id == "rc-cap-slot")
+            .Select(slot => slot.AssignedTeamId)
+            .SingleAsync());
+        Assert.Equal(3, await fixture.Db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == "rebalance-b"));
+        Assert.Equal(3, await fixture.Db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == "rebalance-c"));
+        Assert.Equal(2, await fixture.Db.DraftSlotPlayers.CountAsync(link => link.DraftSlotId == "rb-high-slot"));
+        var teamBScore = await fixture.Db.Teams.Where(team => team.Id == "rebalance-b").Select(team => team.TotalAverageScore).SingleAsync();
+        var teamCScore = await fixture.Db.Teams.Where(team => team.Id == "rebalance-c").Select(team => team.TotalAverageScore).SingleAsync();
+        Assert.Equal(preview.Value.FirstAfterScore, teamBScore, 6);
+        Assert.Equal(preview.Value.SecondAfterScore, teamCScore, 6);
+    }
+
+    [Fact]
     public async Task Gender_only_confirmation_keeps_new_role_and_level_but_unblocks_profile()
     {
         await using var fixture = await DbFixture.CreateAsync();
@@ -506,6 +593,44 @@ public sealed class ZaloBotPersistenceTests
         Level = PlayerLevel.Average,
         IsPresent = true
     };
+
+    private static SessionPlayer PlayerForSession(string id, string name, double score, string sessionId) => new()
+    {
+        Id = id,
+        SessionId = sessionId,
+        DisplayName = name,
+        Score = score,
+        Gender = PlayerGender.Male,
+        Role = PlayerRole.Attack,
+        Level = PlayerLevel.Average,
+        IsPresent = true
+    };
+
+    private static DraftSlot SlotForSession(
+        string id,
+        SessionPlayer player,
+        string teamId,
+        double score,
+        bool isCaptain,
+        string sessionId)
+    {
+        var slot = new DraftSlot
+        {
+            Id = id,
+            SessionId = sessionId,
+            DisplayName = player.DisplayName,
+            AssignedTeamId = teamId,
+            AverageScore = score,
+            IsCaptainSlot = isCaptain
+        };
+        slot.Players.Add(new DraftSlotPlayer
+        {
+            DraftSlotId = slot.Id,
+            SessionPlayerId = player.Id,
+            SessionPlayer = player
+        });
+        return slot;
+    }
 
     private static async Task<MatchSession> SeedFinishedDraftAsync(VolleyDraftDbContext db)
     {

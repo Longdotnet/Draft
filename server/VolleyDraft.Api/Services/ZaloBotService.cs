@@ -311,7 +311,7 @@ public sealed class ZaloBotService(
         }
         if (!response.TextGeneratedByAi &&
             response.Intent != ZaloBotIntent.GeneralChat &&
-            ZaloBotIntelligence.CanUseAiStyleRewrite(response.Intent) &&
+            (ZaloBotIntelligence.CanUseAiStyleRewrite(response.Intent) || response.ProtectedTerms is { Count: > 0 }) &&
             response.Mentions is not { Count: > 0 } &&
             ai.IsConfigured &&
             configuration.GetValue("ZaloBot:AiStyleEnabled", true) &&
@@ -322,7 +322,8 @@ public sealed class ZaloBotService(
                     incomingQuestion,
                     Clean(incoming.SenderName, 160) ?? "Thành viên Zalo",
                     response.Intent,
-                    response.Text),
+                    response.Text,
+                    response.ProtectedTerms),
                 cancellationToken);
             response = response with { AiCalled = true };
             if (!string.IsNullOrWhiteSpace(rewritten))
@@ -491,6 +492,42 @@ public sealed class ZaloBotService(
                 transferConfirmed,
                 pending.TransferCommand);
         }
+        if (pending.RebalancePlan is not null && pending.Session is not null)
+        {
+            var denial = await GetOperatorDenialAsync(
+                pending.Session,
+                incoming.SenderId,
+                ZaloBotIntent.RebalanceTeamsConfirm,
+                false);
+            if (denial is not null) return denial;
+            var before = await actionHistory.CaptureAsync(pending.Session.Id, cancellationToken);
+            var rebalanced = await draftService.ApplyTeamRebalanceAsync(
+                pending.Session.AdminUserId,
+                pending.RebalancePlan,
+                cancellationToken);
+            if (!rebalanced.IsSuccess || rebalanced.Value is null)
+                return new BotAnswer(
+                    rebalanced.Error ?? "Không áp dụng được phương án cân bằng.",
+                    null,
+                    ZaloBotIntent.RebalanceTeamsConfirm);
+
+            var plan = rebalanced.Value.Plan;
+            await actionHistory.RecordAsync(
+                pending.Session.Id,
+                incoming.SenderId,
+                incoming.SenderName,
+                "RebalanceTeams",
+                $"Cân bằng {plan.FirstTeamName} và {plan.SecondTeamName} trong {pending.Session.Name}",
+                before,
+                cancellationToken);
+            var facts = FormatTeamRebalanceFacts(plan);
+            var lineup = FormatTeamLineup(pending.Session.Name, rebalanced.Value.State.TeamPreview);
+            return new BotAnswer(
+                $"Đã cân bằng lại {plan.FirstTeamName} và {plan.SecondTeamName}.\n{facts}\n{lineup}",
+                teamCards.GetPublicUrl(pending.Session.Id),
+                ZaloBotIntent.RebalanceTeamsConfirm,
+                ProtectedTerms: [facts, lineup]);
+        }
         if (!string.IsNullOrWhiteSpace(pending.ActionHistoryId) && pending.Session is not null)
         {
             var denial = await GetOperatorDenialAsync(pending.Session, incoming.SenderId, ZaloBotIntent.UndoActionConfirm, false);
@@ -623,7 +660,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nBạn cũng có thể nói: “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Undo chỉ khôi phục dữ liệu backend và luôn hỏi xác nhận, không thu hồi tin Zalo.\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nBạn cũng có thể nói: “cân bằng team 2 và team 3”, “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Các lệnh thay đổi đội hình sẽ hỏi xác nhận; undo chỉ khôi phục dữ liệu backend, không thu hồi tin Zalo.\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
                 null,
                 ZaloBotIntent.Help);
         }
@@ -769,6 +806,20 @@ public sealed class ZaloBotService(
                 $"Đã {(isRedraft ? "draft lại" : "tự draft")} xong {selected.Name}.\n{FormatTeamLineup(selected.Name, drafted.Value.TeamPreview)}",
                 teamCards.GetPublicUrl(selected.Id),
                 decision.Intent);
+        }
+
+        if (decision.Intent == ZaloBotIntent.RebalanceTeams)
+        {
+            return await RebalanceTeamsAsync(
+                decision,
+                sessions,
+                normalizedQuestion,
+                question,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false);
         }
 
         if (decision.Intent == ZaloBotIntent.SwapTeamPlayers)
@@ -997,6 +1048,36 @@ public sealed class ZaloBotService(
             db.ZaloBotConversationStates.Remove(state);
             await db.SaveChangesAsync(cancellationToken);
             return new PendingResolution(true, null, null, null);
+        }
+        if (state.PendingIntent == ZaloBotIntent.RebalanceTeamsConfirm.ToString())
+        {
+            TeamRebalanceConfirmationPayload? payload;
+            try { payload = JsonSerializer.Deserialize<TeamRebalanceConfirmationPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var actionSession = payload is null ? null : sessions.SingleOrDefault(session => session.Id == payload.SessionId);
+            if (payload is not null && actionSession is not null && ZaloBotIntelligence.IsConfirmation(normalizedQuestion))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.RebalanceTeamsConfirm,
+                    actionSession,
+                    null,
+                    RebalancePlan: payload.Plan);
+            }
+            var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+            if (newIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+            return new PendingResolution(
+                false,
+                null,
+                null,
+                "Mình đang chờ xác nhận phương án cân bằng team. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ.");
         }
         if (state.PendingIntent is not null &&
             (state.PendingIntent == ZaloBotIntent.AutoDraftConfirm.ToString() ||
@@ -1307,6 +1388,39 @@ public sealed class ZaloBotService(
         state.PreviousCommand = pendingIntent == ZaloBotIntent.RedraftConfirm
             ? ZaloBotIntent.Redraft.ToString()
             : ZaloBotIntent.AutoDraft.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveTeamRebalanceConfirmationAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string sessionId,
+        TeamRebalancePlan plan,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.RebalanceTeamsConfirm.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new TeamRebalanceConfirmationPayload(sessionId, plan));
+        state.PreviousCommand = ZaloBotIntent.RebalanceTeams.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
@@ -1926,6 +2040,100 @@ public sealed class ZaloBotService(
             decision.Intent,
             aiCalled);
     }
+
+    private async Task<BotAnswer> RebalanceTeamsAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string originalQuestion,
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
+        bool aiCalled)
+    {
+        if (!ZaloBotIntelligence.TryParseTeamPair(originalQuestion, out var firstTeamOrdinal, out var secondTeamOrdinal))
+        {
+            return new BotAnswer(
+                "Mình hiểu bạn muốn cân bằng đội hình nhưng chưa nhận ra đúng hai team. Bạn ghi rõ như: @bot cân bằng team 2 và team 3, hoặc @bot cân bằng team A-C.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var selected = await SelectSessionAsync(
+            sessions,
+            normalizedQuestion,
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            decision.Intent,
+            cancellationToken);
+        if (selected.Clarification is not null)
+            return new BotAnswer(selected.Clarification, null, decision.Intent, aiCalled);
+        var session = selected.Session!;
+        var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+        if (denial is not null) return denial;
+
+        var preview = await draftService.PreviewTeamRebalanceAsync(
+            session.AdminUserId,
+            session.Id,
+            firstTeamOrdinal,
+            secondTeamOrdinal,
+            cancellationToken);
+        if (!preview.IsSuccess || preview.Value is null)
+            return new BotAnswer(preview.Error ?? "Không tính được phương án cân bằng.", null, decision.Intent, aiCalled);
+        var plan = preview.Value;
+        var facts = FormatTeamRebalanceFacts(plan);
+        if (plan.Moves.Count == 0)
+        {
+            return new BotAnswer(
+                $"{plan.FirstTeamName} và {plan.SecondTeamName} đã là phương án cân bằng tốt nhất mà vẫn giữ nguyên đội trưởng, share slot và nhóm muốn chơi chung.\n{facts}",
+                null,
+                decision.Intent,
+                aiCalled,
+                ProtectedTerms: [facts]);
+        }
+
+        await SaveTeamRebalanceConfirmationAsync(
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            session.Id,
+            plan,
+            cancellationToken);
+        return new BotAnswer(
+            $"Mình đã tính phương án cân bằng {plan.FirstTeamName} và {plan.SecondTeamName}; team còn lại được giữ nguyên.\n{facts}\nNếu thấy ổn, gõ @bot xác nhận để áp dụng hoặc @bot huỷ.",
+            null,
+            decision.Intent,
+            aiCalled,
+            ProtectedTerms: [facts, "@bot xác nhận", "@bot huỷ"]);
+    }
+
+    private static string FormatTeamRebalanceFacts(TeamRebalancePlan plan)
+    {
+        var beforeDifference = Math.Abs(plan.FirstBeforeScore - plan.SecondBeforeScore);
+        var afterDifference = Math.Abs(plan.FirstAfterScore - plan.SecondAfterScore);
+        var lines = new List<string>
+        {
+            $"Điểm trước: {plan.FirstTeamName} {FormatDraftScore(plan.FirstBeforeScore)} — {plan.SecondTeamName} {FormatDraftScore(plan.SecondBeforeScore)} (lệch {FormatDraftScore(beforeDifference)}).",
+            $"Điểm dự kiến: {plan.FirstTeamName} {FormatDraftScore(plan.FirstAfterScore)} — {plan.SecondTeamName} {FormatDraftScore(plan.SecondAfterScore)} (lệch {FormatDraftScore(afterDifference)})."
+        };
+        if (plan.Moves.Count == 0)
+        {
+            lines.Add("Không cần chuyển slot nào.");
+        }
+        else
+        {
+            lines.Add("Các slot sẽ chuyển (người share vẫn đi cùng nhau):");
+            lines.AddRange(plan.Moves.Select(move =>
+                $"- {move.SlotDisplayName}: {move.FromTeamName} → {move.ToTeamName} ({FormatDraftScore(move.AverageScore)} điểm)"));
+        }
+        return string.Join("\n", lines);
+    }
+
+    private static string FormatDraftScore(double score) =>
+        score.ToString("0.##", CultureInfo.InvariantCulture);
 
     private static List<string> FindMentionedPlayerNames(
         string question,
@@ -3321,6 +3529,19 @@ public sealed class ZaloBotService(
             await SaveActionConfirmationAsync(connectionId, groupId, incoming.SenderId, redraftSession.Id, ZaloBotIntent.RedraftConfirm, cancellationToken);
             return new BotAnswer($"⚠️ Draft lại sẽ xoá kết quả đội hình {redraftSession.Name}. Gõ @bot xác nhận draft lại để chạy hoặc @bot huỷ.", null, decision.Intent, true);
         }
+        if (decision.Intent == ZaloBotIntent.RebalanceTeams)
+        {
+            return await RebalanceTeamsAsync(
+                decision,
+                sessions,
+                selector,
+                ExtractQuestion(incoming),
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                true);
+        }
         if (decision.Intent == ZaloBotIntent.SwapTeamPlayers)
         {
             return await SwapTeamPlayersAsync(
@@ -3968,7 +4189,8 @@ public sealed class ZaloBotService(
         ZaloBotIntent Intent = ZaloBotIntent.Unknown,
         bool AiCalled = false,
         bool TextGeneratedByAi = false,
-        IReadOnlyList<BridgeOutgoingMention>? Mentions = null);
+        IReadOnlyList<BridgeOutgoingMention>? Mentions = null,
+        IReadOnlyList<string>? ProtectedTerms = null);
     private sealed record SessionSelection(SessionSnapshot? Session, string? Clarification);
     private sealed record PendingResolution(
         bool Cancelled,
@@ -3979,7 +4201,8 @@ public sealed class ZaloBotService(
         IReadOnlyList<SessionSnapshot>? TargetSessions = null,
         string? ActionHistoryId = null,
         ZaloRepairShareSlotCommand? RepairCommand = null,
-        ZaloSlotTransferCommand? TransferCommand = null)
+        ZaloSlotTransferCommand? TransferCommand = null,
+        TeamRebalancePlan? RebalancePlan = null)
     {
         public static PendingResolution None { get; } = new(false, null, null, null);
     }
@@ -3999,6 +4222,9 @@ public sealed class ZaloBotService(
     private sealed record SlotTransferConfirmationPayload(
         string SessionId,
         ZaloSlotTransferCommand Command);
+    private sealed record TeamRebalanceConfirmationPayload(
+        string SessionId,
+        TeamRebalancePlan Plan);
     private sealed record PlayerProfileValues(PlayerGender? Gender, PlayerRole? Role, PlayerLevel? Level);
     private sealed record SessionSnapshot(
         string Id,

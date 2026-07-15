@@ -183,6 +183,9 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("gửi card 3 team cho tui", ZaloBotIntent.TeamImage)]
     [InlineData("chụp danh sách team", ZaloBotIntent.TeamImage)]
     [InlineData("draft lại trận hôm nay từ đầu", ZaloBotIntent.Redraft)]
+    [InlineData("cân bằng lại đội hình team 2 và team 3", ZaloBotIntent.RebalanceTeams)]
+    [InlineData("balance team A-C giúp tui", ZaloBotIntent.RebalanceTeams)]
+    [InlineData("chỉnh đều lại đội hai với đội ba", ZaloBotIntent.RebalanceTeams)]
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", ZaloBotIntent.SwapTeamPlayers)]
     [InlineData("+1 số lượng vote cho bạn của Nick Tran", ZaloBotIntent.AddGuestPlayer)]
     [InlineData("Nick Tran muốn share slot với Thanh Tuyền", ZaloBotIntent.ShareSlot)]
@@ -196,6 +199,19 @@ public sealed class ZaloBotIntelligenceTests
     public void New_features_understand_natural_vietnamese(string question, ZaloBotIntent expected)
     {
         Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
+    }
+
+    [Theory]
+    [InlineData("cân bằng team 2 và team 3", 2, 3)]
+    [InlineData("cân bằng team 1-3", 1, 3)]
+    [InlineData("cân bằng lại đội hình 1-3", 1, 3)]
+    [InlineData("balance đội A với đội C", 1, 3)]
+    [InlineData("chỉnh đều đội hai và đội ba", 2, 3)]
+    public void Rebalance_command_extracts_exact_team_pair(string question, int first, int second)
+    {
+        Assert.True(ZaloBotIntelligence.TryParseTeamPair(question, out var actualFirst, out var actualSecond));
+        Assert.Equal(first, actualFirst);
+        Assert.Equal(second, actualSecond);
     }
 
     [Fact]
@@ -334,6 +350,7 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData(ZaloBotIntent.Roster)]
     [InlineData(ZaloBotIntent.TeamLineup)]
     [InlineData(ZaloBotIntent.RedraftConfirm)]
+    [InlineData(ZaloBotIntent.RebalanceTeamsConfirm)]
     [InlineData(ZaloBotIntent.UpdatePlayerProfile)]
     [InlineData(ZaloBotIntent.ShareSlot)]
     [InlineData(ZaloBotIntent.SlotTransferConfirm)]

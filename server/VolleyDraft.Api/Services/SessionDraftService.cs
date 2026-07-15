@@ -1333,6 +1333,268 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
     }
 
+    public async Task<ServiceResult<TeamRebalancePlan>> PreviewTeamRebalanceAsync(
+        string adminUserId,
+        string sessionId,
+        int firstTeamOrdinal,
+        int secondTeamOrdinal,
+        CancellationToken cancellationToken = default)
+    {
+        var session = await db.MatchSessions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == sessionId && item.AdminUserId == adminUserId, cancellationToken);
+        if (session is null) return NotFound<TeamRebalancePlan>("Không tìm thấy session.");
+        if (session.Status != SessionStatus.Finished)
+            return BadRequest<TeamRebalancePlan>("Chỉ cân bằng lại team sau khi draft đã hoàn tất.");
+
+        var teams = await db.Teams.AsNoTracking()
+            .Where(team => team.SessionId == sessionId)
+            .OrderBy(team => team.Name)
+            .ToListAsync(cancellationToken);
+        if (firstTeamOrdinal < 1 || secondTeamOrdinal < 1 ||
+            firstTeamOrdinal > teams.Count || secondTeamOrdinal > teams.Count ||
+            firstTeamOrdinal == secondTeamOrdinal)
+        {
+            return BadRequest<TeamRebalancePlan>($"Buổi này có {teams.Count} team; hãy chọn hai team khác nhau trong phạm vi đó.");
+        }
+
+        var firstTeam = teams[firstTeamOrdinal - 1];
+        var secondTeam = teams[secondTeamOrdinal - 1];
+        var selectedTeamIds = new[] { firstTeam.Id, secondTeam.Id };
+        var slots = await db.DraftSlots.AsNoTracking()
+            .Include(slot => slot.Players)
+            .Where(slot => slot.SessionId == sessionId &&
+                           slot.AssignedTeamId != null &&
+                           selectedTeamIds.Contains(slot.AssignedTeamId))
+            .OrderBy(slot => slot.Id)
+            .ToListAsync(cancellationToken);
+        var firstSlots = slots.Where(slot => slot.AssignedTeamId == firstTeam.Id).ToList();
+        var secondSlots = slots.Where(slot => slot.AssignedTeamId == secondTeam.Id).ToList();
+        if (firstSlots.Count == 0 || secondSlots.Count == 0)
+            return BadRequest<TeamRebalancePlan>("Một trong hai team chưa có đội hình để cân bằng.");
+
+        var preferenceLinks = await db.TeamPreferenceGroupPlayers.AsNoTracking()
+            .Where(link => db.TeamPreferenceGroups
+                .Where(group => group.SessionId == sessionId)
+                .Select(group => group.Id)
+                .Contains(link.TeamPreferenceGroupId))
+            .Select(link => new { link.TeamPreferenceGroupId, link.SessionPlayerId })
+            .ToListAsync(cancellationToken);
+        var preferenceByPlayer = preferenceLinks
+            .GroupBy(link => link.SessionPlayerId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Select(link => link.TeamPreferenceGroupId).First(), StringComparer.Ordinal);
+        var preferenceKeyBySlot = slots.ToDictionary(
+            slot => slot.Id,
+            slot => slot.Players
+                .Select(link => preferenceByPlayer.GetValueOrDefault(link.SessionPlayerId))
+                .FirstOrDefault(groupId => !string.IsNullOrWhiteSpace(groupId)),
+            StringComparer.Ordinal);
+        var lockedPreferenceGroups = slots
+            .Where(slot => preferenceKeyBySlot[slot.Id] is not null)
+            .GroupBy(slot => preferenceKeyBySlot[slot.Id]!, StringComparer.Ordinal)
+            .Where(group => group.Any(slot => slot.IsCaptainSlot) ||
+                            group.Select(slot => slot.AssignedTeamId).Distinct(StringComparer.Ordinal).Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var fixedSlots = slots.Where(slot =>
+        {
+            var groupId = preferenceKeyBySlot[slot.Id];
+            return slot.IsCaptainSlot || groupId is not null && lockedPreferenceGroups.Contains(groupId);
+        }).ToList();
+        var movableSlots = slots.Except(fixedSlots).ToList();
+        var units = movableSlots
+            .GroupBy(slot => preferenceKeyBySlot[slot.Id] is { } groupId ? $"preference:{groupId}" : $"slot:{slot.Id}", StringComparer.Ordinal)
+            .Select(group => new TeamRebalanceUnit(
+                group.Key,
+                group.ToList(),
+                group.Count(),
+                group.Sum(slot => slot.AverageScore)))
+            .OrderBy(unit => unit.Key, StringComparer.Ordinal)
+            .ToList();
+
+        var targetFirstMovableCount = firstSlots.Count - fixedSlots.Count(slot => slot.AssignedTeamId == firstTeam.Id);
+        var fixedFirstScore = fixedSlots.Where(slot => slot.AssignedTeamId == firstTeam.Id).Sum(slot => slot.AverageScore);
+        var fixedSecondScore = fixedSlots.Where(slot => slot.AssignedTeamId == secondTeam.Id).Sum(slot => slot.AverageScore);
+        HashSet<string>? bestFirstUnitKeys = null;
+        var bestDifference = double.MaxValue;
+        var bestMovedSlots = int.MaxValue;
+        var selectedUnitKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        void Search(int index, int selectedSlotCount, double selectedScore)
+        {
+            if (selectedSlotCount > targetFirstMovableCount) return;
+            if (index == units.Count)
+            {
+                if (selectedSlotCount != targetFirstMovableCount) return;
+                var firstScore = fixedFirstScore + selectedScore;
+                var secondScore = fixedSecondScore + units.Sum(unit => unit.TotalScore) - selectedScore;
+                var difference = Math.Abs(firstScore - secondScore);
+                var movedSlots = units.Sum(unit => unit.Slots.Count(slot =>
+                    selectedUnitKeys.Contains(unit.Key)
+                        ? slot.AssignedTeamId != firstTeam.Id
+                        : slot.AssignedTeamId != secondTeam.Id));
+                if (difference < bestDifference - .000001 ||
+                    Math.Abs(difference - bestDifference) <= .000001 && movedSlots < bestMovedSlots)
+                {
+                    bestDifference = difference;
+                    bestMovedSlots = movedSlots;
+                    bestFirstUnitKeys = new HashSet<string>(selectedUnitKeys, StringComparer.Ordinal);
+                }
+                return;
+            }
+
+            Search(index + 1, selectedSlotCount, selectedScore);
+            var unit = units[index];
+            selectedUnitKeys.Add(unit.Key);
+            Search(index + 1, selectedSlotCount + unit.SlotCount, selectedScore + unit.TotalScore);
+            selectedUnitKeys.Remove(unit.Key);
+        }
+
+        Search(0, 0, 0);
+        if (bestFirstUnitKeys is null)
+            return Conflict<TeamRebalancePlan>("Không tìm được phương án vừa giữ số slot mỗi team vừa giữ các nhóm muốn chơi chung.");
+
+        var moves = units
+            .SelectMany(unit => unit.Slots.Select(slot => new
+            {
+                Slot = slot,
+                TargetTeam = bestFirstUnitKeys.Contains(unit.Key) ? firstTeam : secondTeam
+            }))
+            .Where(item => item.Slot.AssignedTeamId != item.TargetTeam.Id)
+            .Select(item => new TeamRebalanceMove(
+                item.Slot.Id,
+                item.Slot.DisplayName,
+                item.Slot.AssignedTeamId!,
+                item.Slot.AssignedTeamId == firstTeam.Id ? firstTeam.Name : secondTeam.Name,
+                item.TargetTeam.Id,
+                item.TargetTeam.Name,
+                item.Slot.AverageScore))
+            .OrderBy(move => move.FromTeamName, StringComparer.Ordinal)
+            .ThenBy(move => move.SlotDisplayName, StringComparer.Ordinal)
+            .ToList();
+        var firstAfterScore = fixedFirstScore + units
+            .Where(unit => bestFirstUnitKeys.Contains(unit.Key))
+            .Sum(unit => unit.TotalScore);
+        var secondAfterScore = fixedSecondScore + units
+            .Where(unit => !bestFirstUnitKeys.Contains(unit.Key))
+            .Sum(unit => unit.TotalScore);
+        var expectations = slots
+            .Select(slot => new TeamRebalanceExpectation(
+                slot.Id,
+                slot.AssignedTeamId!,
+                slot.DisplayName,
+                slot.AverageScore,
+                slot.IsCaptainSlot))
+            .ToList();
+
+        return ServiceResult<TeamRebalancePlan>.Success(new TeamRebalancePlan(
+            sessionId,
+            firstTeamOrdinal,
+            firstTeam.Id,
+            firstTeam.Name,
+            firstSlots.Sum(slot => slot.AverageScore),
+            firstAfterScore,
+            secondTeamOrdinal,
+            secondTeam.Id,
+            secondTeam.Name,
+            secondSlots.Sum(slot => slot.AverageScore),
+            secondAfterScore,
+            moves,
+            expectations));
+    }
+
+    public async Task<ServiceResult<TeamRebalanceResult>> ApplyTeamRebalanceAsync(
+        string adminUserId,
+        TeamRebalancePlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        var currentLease = await db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == plan.SessionId && session.AdminUserId == adminUserId)
+            .Select(session => new { session.BotActionLeaseToken, session.BotActionLeaseUntil })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (currentLease is null) return NotFound<TeamRebalanceResult>("Không tìm thấy session.");
+        if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+            return Conflict<TeamRebalanceResult>("Đang có thao tác khác cập nhật đội hình này.");
+        var claimed = await db.MatchSessions
+            .Where(session => session.Id == plan.SessionId &&
+                              session.AdminUserId == adminUserId &&
+                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(session => session.BotActionLeaseToken, leaseToken)
+                .SetProperty(session => session.BotActionLeaseName, "RebalanceTeams")
+                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(2)), cancellationToken);
+        if (claimed == 0) return Conflict<TeamRebalanceResult>("Đang có thao tác khác cập nhật đội hình này.");
+
+        try
+        {
+            var sessionStatus = await db.MatchSessions.AsNoTracking()
+                .Where(session => session.Id == plan.SessionId)
+                .Select(session => session.Status)
+                .SingleAsync(cancellationToken);
+            if (sessionStatus != SessionStatus.Finished)
+                return BadRequest<TeamRebalanceResult>("Đội hình không còn ở trạng thái đã draft xong.");
+
+            var teamIds = await db.Teams.AsNoTracking()
+                .Where(team => team.SessionId == plan.SessionId)
+                .Select(team => team.Id)
+                .ToListAsync(cancellationToken);
+            if (!teamIds.Contains(plan.FirstTeamId, StringComparer.Ordinal) ||
+                !teamIds.Contains(plan.SecondTeamId, StringComparer.Ordinal))
+                return BadRequest<TeamRebalanceResult>("Hai team trong phương án không còn tồn tại.");
+
+            var expectedBySlot = plan.ExpectedAssignments
+                .ToDictionary(item => item.SlotId, StringComparer.Ordinal);
+            var selectedTeamIds = new[] { plan.FirstTeamId, plan.SecondTeamId };
+            var slots = await db.DraftSlots
+                .Where(slot => slot.SessionId == plan.SessionId &&
+                               (expectedBySlot.Keys.Contains(slot.Id) ||
+                                slot.AssignedTeamId != null && selectedTeamIds.Contains(slot.AssignedTeamId)))
+                .ToListAsync(cancellationToken);
+            if (slots.Count != expectedBySlot.Count || slots.Any(slot =>
+                    !expectedBySlot.ContainsKey(slot.Id) ||
+                    slot.AssignedTeamId is null ||
+                    !string.Equals(slot.AssignedTeamId, expectedBySlot[slot.Id].TeamId, StringComparison.Ordinal) ||
+                    !string.Equals(slot.DisplayName, expectedBySlot[slot.Id].SlotDisplayName, StringComparison.Ordinal) ||
+                    Math.Abs(slot.AverageScore - expectedBySlot[slot.Id].AverageScore) > .000001 ||
+                    slot.IsCaptainSlot != expectedBySlot[slot.Id].IsCaptainSlot))
+            {
+                return Conflict<TeamRebalanceResult>("Đội hình đã thay đổi sau lúc xem trước. Hãy yêu cầu bot cân bằng lại để tính phương án mới.");
+            }
+
+            var movesBySlot = plan.Moves.ToDictionary(move => move.SlotId, StringComparer.Ordinal);
+            if (plan.Moves.Any(move =>
+                    !expectedBySlot.ContainsKey(move.SlotId) ||
+                    move.ToTeamId != plan.FirstTeamId && move.ToTeamId != plan.SecondTeamId))
+                return BadRequest<TeamRebalanceResult>("Phương án cân bằng không hợp lệ.");
+            if (slots.Where(slot => movesBySlot.ContainsKey(slot.Id)).Any(slot => slot.IsCaptainSlot))
+                return BadRequest<TeamRebalanceResult>("Phương án có thay đổi đội trưởng nên đã bị từ chối.");
+
+            foreach (var slot in slots.Where(slot => movesBySlot.ContainsKey(slot.Id)))
+            {
+                slot.AssignedTeamId = movesBySlot[slot.Id].ToTeamId;
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            await RecalculateTeamScore(plan.FirstTeamId);
+            await RecalculateTeamScore(plan.SecondTeamId);
+
+            var state = await GetDraftStateAsync(adminUserId, plan.SessionId);
+            if (!state.IsSuccess || state.Value is null)
+                return ServiceResult<TeamRebalanceResult>.Failure(state.StatusCode, state.Error!);
+            return ServiceResult<TeamRebalanceResult>.Success(new TeamRebalanceResult(plan, state.Value));
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(session => session.Id == plan.SessionId && session.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                    .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null), cancellationToken);
+        }
+    }
+
     public Task<ServiceResult<PostDraftSharedSlotResult>> SharePostDraftSlotAsync(
         string adminUserId,
         string sessionId,
@@ -3645,6 +3907,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         string? Error,
         bool CanCreateNew);
 
+    private sealed record TeamRebalanceUnit(
+        string Key,
+        IReadOnlyList<DraftSlot> Slots,
+        int SlotCount,
+        double TotalScore);
+
     private static ServiceResult<T> BadRequest<T>(string message)
     {
         return ServiceResult<T>.Failure(StatusCodes.Status400BadRequest, message);
@@ -3666,6 +3934,41 @@ public sealed record SwapDraftPlayersResult(
     string FirstPreviousTeamName,
     string SecondPlayerName,
     string SecondPreviousTeamName,
+    DraftStateResponse State);
+
+public sealed record TeamRebalanceExpectation(
+    string SlotId,
+    string TeamId,
+    string SlotDisplayName,
+    double AverageScore,
+    bool IsCaptainSlot);
+
+public sealed record TeamRebalanceMove(
+    string SlotId,
+    string SlotDisplayName,
+    string FromTeamId,
+    string FromTeamName,
+    string ToTeamId,
+    string ToTeamName,
+    double AverageScore);
+
+public sealed record TeamRebalancePlan(
+    string SessionId,
+    int FirstTeamOrdinal,
+    string FirstTeamId,
+    string FirstTeamName,
+    double FirstBeforeScore,
+    double FirstAfterScore,
+    int SecondTeamOrdinal,
+    string SecondTeamId,
+    string SecondTeamName,
+    double SecondBeforeScore,
+    double SecondAfterScore,
+    IReadOnlyList<TeamRebalanceMove> Moves,
+    IReadOnlyList<TeamRebalanceExpectation> ExpectedAssignments);
+
+public sealed record TeamRebalanceResult(
+    TeamRebalancePlan Plan,
     DraftStateResponse State);
 
 public sealed record IncompletePlayerProfile(
