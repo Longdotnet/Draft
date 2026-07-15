@@ -14,6 +14,12 @@ internal sealed record AudienceMessage(
     string Message,
     IReadOnlyList<BridgeOutgoingMention> Mentions);
 
+internal sealed record ReminderPollRefreshResult(
+    bool Success,
+    bool Terminal,
+    int SlotCount,
+    string? Error);
+
 public sealed class ZaloReminderService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
@@ -91,8 +97,7 @@ public sealed class ZaloReminderService(
         foreach (var group in groups)
         {
             var target = group
-                .Where(session => counts.GetValueOrDefault(session.Id) < session.TeamCount * session.TeamSize &&
-                                  session.NextReminderAt is not null &&
+                .Where(session => session.NextReminderAt is not null &&
                                   session.NextReminderAt <= now)
                 .OrderBy(session => session.StartTime)
                 .FirstOrDefault();
@@ -119,8 +124,65 @@ public sealed class ZaloReminderService(
                 continue;
             }
 
+            var pollRefresh = await RefreshPollBeforeReminderAsync(target, cancellationToken);
+            if (!pollRefresh.Success)
+            {
+                if (pollRefresh.Terminal)
+                {
+                    await db.MatchSessions
+                        .Where(session => session.Id == target.Id && session.ReminderLeaseToken == leaseToken)
+                        .ExecuteUpdateAsync(updates => updates
+                            .SetProperty(session => session.ReminderEnabled, false)
+                            .SetProperty(session => session.NextReminderAt, (DateTimeOffset?)null)
+                            .SetProperty(session => session.ReminderLeaseToken, (string?)null)
+                            .SetProperty(session => session.ReminderLeaseUntil, (DateTimeOffset?)null)
+                            .SetProperty(session => session.LastReminderError, (string?)null), cancellationToken);
+                    skippedCount += 1;
+                }
+                else
+                {
+                    failedCount += 1;
+                    var retryMinutes = Math.Clamp(configuration.GetValue("Scheduler:RetryMinutes", 10), 5, 60);
+                    await db.MatchSessions
+                        .Where(session => session.Id == target.Id && session.ReminderLeaseToken == leaseToken)
+                        .ExecuteUpdateAsync(updates => updates
+                            .SetProperty(session => session.NextReminderAt, now.AddMinutes(retryMinutes))
+                            .SetProperty(session => session.ReminderLeaseToken, (string?)null)
+                            .SetProperty(session => session.ReminderLeaseUntil, (DateTimeOffset?)null)
+                            .SetProperty(session => session.ReminderFailureCount, session => session.ReminderFailureCount + 1)
+                            .SetProperty(session => session.LastReminderError,
+                                Truncate(pollRefresh.Error ?? "Không đồng bộ được poll trước reminder.", 1000)), cancellationToken);
+                    logger.LogWarning(
+                        "Legacy reminder postponed because poll synchronization failed Session={SessionId}: {Reason}",
+                        target.Id,
+                        pollRefresh.Error);
+                }
+                continue;
+            }
+
             var capacity = target.TeamCount * target.TeamSize;
-            var playerCount = counts.GetValueOrDefault(target.Id);
+            var playerCount = pollRefresh.SlotCount;
+            counts[target.Id] = playerCount;
+            if (playerCount >= capacity)
+            {
+                var intervalMinutes = EffectiveIntervalMinutes(target);
+                var fullCheckMinutes = Math.Min(
+                    intervalMinutes,
+                    Math.Clamp(configuration.GetValue("Scheduler:PollRefreshMinutes", 20), 10, 180));
+                await db.MatchSessions
+                    .Where(session => session.Id == target.Id && session.ReminderLeaseToken == leaseToken)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(session => session.ReminderLastKnownPlayerCount, playerCount)
+                        .SetProperty(session => session.NextReminderAt,
+                            target.ReminderRepeats ? now.AddMinutes(fullCheckMinutes) : (DateTimeOffset?)null)
+                        .SetProperty(session => session.ReminderEnabled, target.ReminderRepeats)
+                        .SetProperty(session => session.ReminderLeaseToken, (string?)null)
+                        .SetProperty(session => session.ReminderLeaseUntil, (DateTimeOffset?)null)
+                        .SetProperty(session => session.ReminderFailureCount, 0)
+                        .SetProperty(session => session.LastReminderError, (string?)null), cancellationToken);
+                skippedCount += 1;
+                continue;
+            }
             var missing = capacity - playerCount;
             var mentionLabel = "@all";
             var location = string.IsNullOrWhiteSpace(target.Location) ? string.Empty : $" tại {target.Location}";
@@ -159,6 +221,7 @@ public sealed class ZaloReminderService(
                         .SetProperty(session => session.NextReminderAt,
                             target.ReminderRepeats ? now.AddMinutes(intervalMinutes) : (DateTimeOffset?)null)
                         .SetProperty(session => session.ReminderEnabled, target.ReminderRepeats)
+                        .SetProperty(session => session.ReminderLastKnownPlayerCount, playerCount)
                         .SetProperty(session => session.ReminderLeaseToken, (string?)null)
                         .SetProperty(session => session.ReminderLeaseUntil, (DateTimeOffset?)null)
                         .SetProperty(session => session.ReminderFailureCount, 0)
@@ -271,6 +334,37 @@ public sealed class ZaloReminderService(
             var session = schedule.Session;
             var capacity = session.TeamCount * session.TeamSize;
             var slotCount = counts.GetValueOrDefault(session.Id);
+            if (IsVoteReminder(schedule) && session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+            {
+                await DisableNaturalScheduleAsync(schedule.Id, leaseToken, now, cancellationToken);
+                skipped += 1;
+                continue;
+            }
+            if (RequiresFreshPoll(schedule))
+            {
+                var refresh = await RefreshPollBeforeReminderAsync(session, cancellationToken);
+                if (!refresh.Success)
+                {
+                    if (refresh.Terminal)
+                    {
+                        await DisableNaturalScheduleAsync(schedule.Id, leaseToken, now, cancellationToken);
+                        skipped += 1;
+                    }
+                    else
+                    {
+                        await RetryNaturalScheduleAfterPollFailureAsync(
+                            schedule.Id,
+                            leaseToken,
+                            now,
+                            refresh.Error ?? "Không đồng bộ được poll trước khi gửi reminder.",
+                            cancellationToken);
+                        failed += 1;
+                    }
+                    continue;
+                }
+                slotCount = refresh.SlotCount;
+                counts[session.Id] = slotCount;
+            }
             if (schedule.OnlyIfMissingSlots && slotCount >= capacity)
             {
                 if (schedule.StopWhenFull || ZaloNaturalCommandParser.RequestsStopWhenFull(schedule.Message))
@@ -406,6 +500,82 @@ public sealed class ZaloReminderService(
                 .SetProperty(item => item.FailureCount, 0)
                 .SetProperty(item => item.LastError, (string?)null)
                 .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+    }
+
+    private async Task RetryNaturalScheduleAfterPollFailureAsync(
+        string scheduleId,
+        string leaseToken,
+        DateTimeOffset now,
+        string error,
+        CancellationToken cancellationToken)
+    {
+        var retryMinutes = Math.Clamp(configuration.GetValue("Scheduler:RetryMinutes", 10), 5, 60);
+        await db.ZaloReminderSchedules
+            .Where(item => item.Id == scheduleId && item.LeaseToken == leaseToken)
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(item => item.NextRunAt, now.AddMinutes(retryMinutes))
+                .SetProperty(item => item.LeaseToken, (string?)null)
+                .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(item => item.FailureCount, item => item.FailureCount + 1)
+                .SetProperty(item => item.LastError, Truncate(error, 1000))
+                .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+        logger.LogWarning(
+            "Reminder {ScheduleId} postponed because the latest Zalo poll could not be synchronized: {Reason}",
+            scheduleId,
+            error);
+    }
+
+    private async Task<ReminderPollRefreshResult> RefreshPollBeforeReminderAsync(
+        MatchSession session,
+        CancellationToken cancellationToken)
+    {
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+        {
+            return new ReminderPollRefreshResult(
+                false,
+                true,
+                0,
+                "Buổi đã bắt đầu draft nên lịch nhắc vote được dừng.");
+        }
+
+        var synced = await zaloIntegration.SyncLatestPollAsync(
+            session.AdminUserId,
+            session.Id,
+            session.Name);
+        if (!synced.IsSuccess)
+        {
+            return new ReminderPollRefreshResult(
+                false,
+                false,
+                0,
+                synced.Error ?? "Không đọc được poll Zalo mới nhất.");
+        }
+
+        await waitlists.ProcessVacanciesAsync(session.Id, cancellationToken);
+        var counts = await GetEffectiveSlotCountsAsync([session.Id], cancellationToken);
+        var slotCount = counts.GetValueOrDefault(session.Id);
+        logger.LogInformation(
+            "Refreshed Zalo poll before reminder Session={SessionId} PlayerCount={PlayerCount}",
+            session.Id,
+            slotCount);
+        return new ReminderPollRefreshResult(true, false, slotCount, null);
+    }
+
+    private static bool RequiresFreshPoll(ZaloReminderSchedule schedule) =>
+        !schedule.AllowAfterSessionStart &&
+        !schedule.IncludePaymentQr &&
+        schedule.Session.Status is not (SessionStatus.Drafting or SessionStatus.Finished) &&
+        (IsVoteReminder(schedule) || schedule.Audience == ZaloReminderAudience.Roster);
+
+    private static bool IsVoteReminder(ZaloReminderSchedule schedule)
+    {
+        if (schedule.OnlyIfMissingSlots) return true;
+        var message = ZaloBotIntelligence.Normalize(schedule.Message ?? string.Empty);
+        return message.Contains("vote", StringComparison.Ordinal) ||
+               message.Contains("binh chon", StringComparison.Ordinal) ||
+               message.Contains("dang ky", StringComparison.Ordinal) ||
+               message.Contains("thieu slot", StringComparison.Ordinal) ||
+               message.Contains("thieu nguoi", StringComparison.Ordinal);
     }
 
     private async Task<AudienceMessage> BuildAudienceMessageAsync(
