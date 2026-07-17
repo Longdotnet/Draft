@@ -618,6 +618,7 @@ public sealed class ZaloIntegrationService(
                 if (player.IsPresent) removedCount += 1;
                 player.IsPresent = false;
             }
+            await CleanupTeamPreferenceGroupsAsync(sessionId);
             await db.SaveChangesAsync();
             var presentCount = await db.SessionPlayers.CountAsync(player => player.SessionId == sessionId && player.IsPresent);
             return ServiceResult<ZaloPollImportResultResponse>.Success(importResult.Value with
@@ -638,6 +639,34 @@ public sealed class ZaloIntegrationService(
                     .SetProperty(session => session.BotActionLeaseToken, (string?)null)
                     .SetProperty(session => session.BotActionLeaseName, (string?)null)
                     .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null));
+        }
+    }
+
+    private async Task CleanupTeamPreferenceGroupsAsync(string sessionId)
+    {
+        var groups = await db.TeamPreferenceGroups
+            .Include(group => group.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(group => group.SessionId == sessionId)
+            .ToListAsync();
+        foreach (var group in groups)
+        {
+            var inactiveLinks = group.Players
+                .Where(link => !link.SessionPlayer.IsPresent)
+                .ToList();
+            var activeLinks = group.Players
+                .Where(link => link.SessionPlayer.IsPresent)
+                .OrderBy(link => link.RotationOrder)
+                .ToList();
+            if (activeLinks.Count < 2)
+            {
+                db.TeamPreferenceGroupPlayers.RemoveRange(group.Players);
+                db.TeamPreferenceGroups.Remove(group);
+                continue;
+            }
+            db.TeamPreferenceGroupPlayers.RemoveRange(inactiveLinks);
+            for (var index = 0; index < activeLinks.Count; index += 1)
+                activeLinks[index].RotationOrder = index + 1;
         }
     }
 

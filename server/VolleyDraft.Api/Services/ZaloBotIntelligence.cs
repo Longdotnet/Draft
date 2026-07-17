@@ -32,7 +32,9 @@ public enum ZaloBotIntent
     UpdatePlayerProfile,
     AddGuestPlayer,
     TeamPreference,
+    TeamPreferenceConfirm,
     ShareSlot,
+    ShareSlotConfirm,
     RepairShareSlot,
     RepairShareSlotConfirm,
     TeamImage,
@@ -456,7 +458,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.TeamPreferenceConfirm or ZaloBotIntent.ShareSlotConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;

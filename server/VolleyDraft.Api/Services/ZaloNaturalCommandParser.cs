@@ -221,16 +221,22 @@ public static class ZaloNaturalCommandParser
         }
         if (!match.Success) return false;
 
-        var first = CleanPerson(match.Groups["first"].Value);
-        var second = RemoveTrailingSessionReference(match.Groups["second"].Value, out var sessionReference);
-        second = CleanPerson(second);
-        if (first.Length < 2 || second.Length < 2 ||
-            string.Equals(ZaloBotIntelligence.Normalize(first), ZaloBotIntelligence.Normalize(second), StringComparison.Ordinal))
+        var firstPlayers = SplitPeople(match.Groups["first"].Value);
+        var secondValue = RemoveTrailingSessionReference(match.Groups["second"].Value, out var sessionReference);
+        var playerReferences = firstPlayers
+            .Concat(SplitPeople(secondValue))
+            .Where(player => player.Length >= 2)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(12)
+            .ToList();
+        if (playerReferences.Count < 2)
         {
             return false;
         }
 
-        command = new ZaloTeamPreferenceCommand([first, second], SessionReference: sessionReference ?? ExtractSessionReference(value));
+        command = new ZaloTeamPreferenceCommand(
+            playerReferences,
+            SessionReference: sessionReference ?? ExtractSessionReference(value));
         return true;
     }
 
@@ -238,7 +244,7 @@ public static class ZaloNaturalCommandParser
         IReadOnlyList<ZaloMentionedUser> mentionedUsers,
         ZaloTeamPreferenceCommand? currentCommand)
     {
-        if (mentionedUsers.Count != 2) return currentCommand;
+        if (mentionedUsers.Count is < 2 or > 12) return currentCommand;
         return new ZaloTeamPreferenceCommand(
             mentionedUsers.Select(user => user.DisplayName.Trim().TrimStart('@')).ToList(),
             mentionedUsers.Select(user => user.ZaloUserId).ToList(),
@@ -262,14 +268,16 @@ public static class ZaloNaturalCommandParser
         }
         if (!match.Success) return false;
 
-        var partners = SplitPeople(match.Groups["partners"].Value);
+        var partnerValue = RemoveTrailingSessionReference(match.Groups["partners"].Value, out var sessionReference);
+        var partners = SplitPeople(partnerValue);
         var requestedCount = int.TryParse(match.Groups["count"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var count)
             ? count
             : partners.Count;
         command = new ZaloShareSlotCommand(
             CleanPerson(match.Groups["anchor"].Value),
             partners,
-            requestedCount);
+            requestedCount,
+            sessionReference ?? ExtractSessionReference(value));
         return command.Anchor.Length > 0 && requestedCount is >= 1 and <= 2;
     }
 
@@ -385,7 +393,7 @@ public static class ZaloNaturalCommandParser
             .Select(CleanPerson)
             .Where(item => item.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(3)
+            .Take(12)
             .ToList();
     }
 

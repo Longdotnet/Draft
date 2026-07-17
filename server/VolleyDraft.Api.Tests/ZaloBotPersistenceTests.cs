@@ -369,6 +369,135 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Share_slot_preview_is_read_only_and_calculates_effective_slot_and_score()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("share-preview", 6,
+            ("a", "Thanh Long", 3d),
+            ("b", "To An", 1d));
+        session.StartTime = DateTimeOffset.UtcNow.AddDays(1);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewShareSlotAsync(
+            "admin",
+            session.Id,
+            "Thanh Long",
+            [new ShareSlotParticipantInput("To An")]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.Equal("Thanh Long / To An", preview.Value!.ProposedSlotDisplayName);
+        Assert.Equal(1, preview.Value.EffectiveSlotCount);
+        Assert.Equal(2, preview.Value.ProposedSlotAverageScore);
+        Assert.True(preview.Value.AnchorIsPrimary);
+        Assert.Empty(await fixture.Db.DraftSlots.Where(slot => slot.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Post_draft_share_preview_flags_moving_an_existing_player_without_mutation()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        session.StartTime = DateTimeOffset.UtcNow.AddHours(2);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewShareSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            [new ShareSlotParticipantInput("Thanh Tuyền")]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.True(preview.Value!.MovesExistingDraftSlot);
+        Assert.Equal("Team B", preview.Value.TeamName);
+        Assert.Equal(2, preview.Value.ProposedSlotAverageScore);
+        Assert.NotNull(preview.Value.ProjectedTeamScore);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("team-a", await fixture.Db.DraftSlots
+            .Where(slot => slot.Id == "thanh-tuyen-slot")
+            .Select(slot => slot.AssignedTeamId)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Secondary_shared_player_is_not_treated_as_slot_owner_in_preview()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        session.StartTime = DateTimeOffset.UtcNow.AddHours(2);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        Assert.True((await service.SharePostDraftSlotAsync(
+            "admin", session.Id, "Nick Tran", new ShareSlotParticipantInput("Vivian"))).IsSuccess);
+
+        var preview = await service.PreviewShareSlotAsync(
+            "admin",
+            session.Id,
+            "Vivian",
+            [new ShareSlotParticipantInput("Bạn share cùng Vivian")]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.False(preview.Value!.AnchorIsPrimary);
+        Assert.Contains(preview.Value.Warnings, warning => warning.Contains("không phải người giữ slot chính"));
+    }
+
+    [Fact]
+    public async Task Share_slot_preview_rejects_more_than_three_people_and_past_sessions()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("share-limit", 6,
+            ("a", "A", 2d), ("b", "B", 2d), ("c", "C", 2d), ("d", "D", 2d));
+        session.StartTime = DateTimeOffset.UtcNow.AddHours(2);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        Assert.True((await service.SharePreDraftSlotAsync(
+            "admin", session.Id, "A", [new ShareSlotParticipantInput("B"), new ShareSlotParticipantInput("C")])).IsSuccess);
+
+        var overLimit = await service.PreviewShareSlotAsync(
+            "admin", session.Id, "A", [new ShareSlotParticipantInput("D")]);
+        Assert.False(overLimit.IsSuccess);
+        Assert.Contains("tối đa 2", overLimit.Error);
+
+        session.StartTime = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+        var past = await service.PreviewShareSlotAsync(
+            "admin", session.Id, "A", [new ShareSlotParticipantInput("B")]);
+        Assert.False(past.IsSuccess);
+        Assert.Contains("đã bắt đầu", past.Error);
+    }
+
+    [Fact]
+    public async Task Share_slot_preview_only_carries_new_partner_when_one_is_already_shared()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("share-incremental", 6,
+            ("a", "A", 2d), ("b", "B", 2d), ("c", "C", 2d));
+        session.StartTime = DateTimeOffset.UtcNow.AddHours(2);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        Assert.True((await service.SharePreDraftSlotAsync(
+            "admin", session.Id, "A", [new ShareSlotParticipantInput("B")])).IsSuccess);
+
+        var preview = await service.PreviewShareSlotAsync(
+            "admin",
+            session.Id,
+            "A",
+            [new ShareSlotParticipantInput("B"), new ShareSlotParticipantInput("C")]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.Single(preview.Value!.PartnerInputs);
+        Assert.Equal("C", preview.Value.PartnerInputs[0].DisplayName);
+        var applied = await service.SharePreDraftSlotAsync(
+            "admin", session.Id, preview.Value.AnchorPlayerName, preview.Value.PartnerInputs);
+        Assert.True(applied.IsSuccess, applied.Error);
+        Assert.Equal("A / B / C", applied.Value!.SlotDisplayName);
+    }
+
+    [Fact]
     public async Task Redraft_uses_shared_slot_membership_and_never_duplicates_anchor_or_drops_player()
     {
         await using var fixture = await DbFixture.CreateAsync();
@@ -846,6 +975,191 @@ public sealed class ZaloBotPersistenceTests
         Assert.Equal(["To An", "Anh Duy"], result.Value!.PlayerNames);
         Assert.Single(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
         Assert.Empty(await fixture.Db.DraftSlots.Where(slot => slot.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Same_team_preference_merges_overlapping_groups_transitively()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("preference-merge", 6,
+            ("a", "A", 2d), ("b", "B", 2d), ("c", "C", 2d), ("d", "D", 2d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        Assert.True((await service.CreateTeamPreferenceGroupAsync("admin", session.Id, new(["a", "b"]))).IsSuccess);
+        Assert.True((await service.CreateTeamPreferenceGroupAsync("admin", session.Id, new(["c", "d"]))).IsSuccess);
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var beforeMerge = await history.CaptureAsync(session.Id);
+        var merged = await service.CreateTeamPreferenceGroupAsync("admin", session.Id, new(["b", "c"]));
+
+        Assert.True(merged.IsSuccess, merged.Error);
+        Assert.Equal(["A", "B", "C", "D"], merged.Value!.PlayerNames.OrderBy(name => name).ToList());
+        Assert.Single(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+        Assert.Equal(4, await fixture.Db.TeamPreferenceGroupPlayers.CountAsync());
+
+        var action = await history.RecordAsync(
+            session.Id, "operator", "Operator", "MergeTeamPreference", "Gộp hai nhóm", beforeMerge);
+        Assert.NotNull(action);
+        var undone = await history.UndoAsync("admin", session.Id, action!.Id, "operator");
+        Assert.True(undone.IsSuccess, undone.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(2, await fixture.Db.TeamPreferenceGroups.CountAsync(group => group.SessionId == session.Id));
+        var restoredLinks = await fixture.Db.TeamPreferenceGroupPlayers
+            .Where(link => link.TeamPreferenceGroup.SessionId == session.Id)
+            .Select(link => new { link.TeamPreferenceGroupId, link.SessionPlayerId })
+            .ToListAsync();
+        var restoredGroups = restoredLinks
+            .GroupBy(link => link.TeamPreferenceGroupId)
+            .Select(group => group.Select(link => link.SessionPlayerId).OrderBy(id => id).ToList())
+            .ToList();
+        Assert.Contains(restoredGroups, players => players.SequenceEqual(["a", "b"]));
+        Assert.Contains(restoredGroups, players => players.SequenceEqual(["c", "d"]));
+    }
+
+    [Fact]
+    public async Task High_score_three_player_cluster_requires_preview_confirmation()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("preference-high", 6,
+            ("a", "A", 3.5d), ("b", "B", 3.5d), ("c", "C", 3.5d),
+            ("d", "D", 1d), ("e", "E", 1d), ("f", "F", 1d),
+            ("g", "G", 1d), ("h", "H", 1d), ("i", "I", 1d),
+            ("j", "J", 1d), ("k", "K", 1d), ("l", "L", 1d),
+            ("m", "M", 1d), ("n", "N", 1d), ("o", "O", 1d),
+            ("p", "P", 1d), ("q", "Q", 1d), ("r", "R", 1d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamPreferenceGroupFromBotAsync("admin", session.Id,
+        [
+            new ShareSlotParticipantInput("A"),
+            new ShareSlotParticipantInput("B"),
+            new ShareSlotParticipantInput("C")
+        ]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.True(preview.Value!.IsFeasible);
+        Assert.True(preview.Value.RequiresConfirmation);
+        Assert.Equal(3, preview.Value.EffectiveSlotCount);
+        Assert.Equal(3.5, preview.Value.GroupAverageScore);
+        Assert.Contains(preview.Value.Warnings, warning => warning.Contains("slot mạnh"));
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Shared_players_count_as_one_effective_preference_slot()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("preference-shared", 2,
+            ("a", "A", 3d), ("a2", "A2", 1d), ("b", "B", 2d),
+            ("c", "C", 2d), ("d", "D", 2d), ("e", "E", 2d), ("f", "F", 2d));
+        var shared = new DraftSlot
+        {
+            Id = "shared-a",
+            SessionId = session.Id,
+            Type = DraftSlotType.Shared,
+            DisplayName = "A / A2",
+            AverageScore = 2
+        };
+        shared.Players.AddRange([
+            new DraftSlotPlayer { DraftSlotId = shared.Id, SessionPlayerId = "a", RotationOrder = 1 },
+            new DraftSlotPlayer { DraftSlotId = shared.Id, SessionPlayerId = "a2", RotationOrder = 2 }
+        ]);
+        session.DraftSlots.Add(shared);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamPreferenceGroupFromBotAsync("admin", session.Id,
+            [new ShareSlotParticipantInput("A"), new ShareSlotParticipantInput("B")]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.True(preview.Value!.IsFeasible);
+        Assert.Equal(2, preview.Value.EffectiveSlotCount);
+        Assert.Equal(["A", "A2", "B"], preview.Value.PlayerNames.OrderBy(name => name).ToList());
+    }
+
+    [Fact]
+    public async Task Preference_over_team_capacity_is_rejected_without_mutation()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("preference-capacity", 2,
+            ("a", "A", 2d), ("b", "B", 2d), ("c", "C", 2d),
+            ("d", "D", 2d), ("e", "E", 2d), ("f", "F", 2d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamPreferenceGroupFromBotAsync("admin", session.Id,
+        [
+            new ShareSlotParticipantInput("A"),
+            new ShareSlotParticipantInput("B"),
+            new ShareSlotParticipantInput("C")
+        ]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.False(preview.Value!.IsFeasible);
+        Assert.Contains("3 slot", preview.Value.BlockingReason);
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Withdrawing_player_shrinks_or_removes_preference_group()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("preference-withdraw", 6,
+            ("a", "A", 2d), ("b", "B", 2d), ("c", "C", 2d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        Assert.True((await service.CreateTeamPreferenceGroupAsync("admin", session.Id, new(["a", "b", "c"]))).IsSuccess);
+
+        var player = session.Players.Single(item => item.Id == "c");
+        var updated = await service.UpdatePlayerAsync("admin", session.Id, player.Id,
+            new UpdatePlayerRequest(player.DisplayName, player.Role, player.Level, player.Gender, false, player.IsCaptainEligible));
+
+        Assert.True(updated.IsSuccess, updated.Error);
+        var remaining = await fixture.Db.TeamPreferenceGroupPlayers
+            .Where(link => link.TeamPreferenceGroup.SessionId == session.Id)
+            .Select(link => link.SessionPlayerId)
+            .OrderBy(id => id)
+            .ToListAsync();
+        Assert.Equal(["a", "b"], remaining);
+    }
+
+    private static MatchSession PreferenceSession(
+        string id,
+        int teamSize,
+        params (string Id, string Name, double Score)[] players)
+    {
+        var session = new MatchSession
+        {
+            Id = id,
+            AdminUserId = "admin",
+            Name = id,
+            TeamCount = 3,
+            TeamSize = teamSize
+        };
+        foreach (var player in players)
+        {
+            session.Players.Add(new SessionPlayer
+            {
+                Id = player.Id,
+                SessionId = id,
+                DisplayName = player.Name,
+                Score = player.Score,
+                Gender = PlayerGender.Male,
+                Role = player.Score >= 3.5 ? PlayerRole.FullStack : PlayerRole.Attack,
+                Level = player.Score >= 3 ? PlayerLevel.Good : player.Score >= 2 ? PlayerLevel.Average : PlayerLevel.New,
+                IsPresent = true,
+                IsCaptainEligible = true
+            });
+        }
+        return session;
     }
 
     private static ZaloBotConversationState State(string connection, string group, string sender) => new()

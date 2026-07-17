@@ -292,6 +292,64 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         }
     }
 
+    public async Task<ZaloTeamPreferenceCommand?> ParseTeamPreferenceCommandAsync(
+        ZaloNaturalTeamPreferenceContext context,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured) return null;
+        var prompt = """
+            Bạn trích xuất yêu cầu nhiều người muốn được xếp CÙNG TEAM bóng chuyền. Chỉ trả về một JSON object, không markdown.
+            Schema: {"players":["To An","Anh Duy","Nick Tran"],"sessionReference":"T6"}
+
+            Chỉ trích xuất khi câu nói muốn chơi/đánh/ở chung team hoặc chung đội. Nếu câu nói share/chung một slot, thay phiên, +1 hay +2 thì trả JSON null.
+            Nếu MentionedUsers có từ hai người trở lên, giữ đúng toàn bộ tên và thứ tự mention; không thay bằng SenderName và không tự bịa thêm người.
+            Có thể có 2 đến 12 người. Giữ nguyên tên hiển thị từ Question hoặc MentionedUsers.
+            sessionReference chỉ lấy thứ/ngày/tên trận thực sự có trong câu; không tự đoán.
+            Đây chỉ là trích xuất dữ liệu; backend mới quyết định quyền, sức chứa, điểm và xác nhận.
+            """;
+        var payload = new
+        {
+            model = configuration["Ai:Model"],
+            temperature = 0,
+            max_tokens = 260,
+            messages = new object[]
+            {
+                new { role = "system", content = prompt },
+                new { role = "user", content = JsonSerializer.Serialize(context, JsonOptions) }
+            }
+        };
+        var content = await SendForContentAsync(
+            configuration["Ai:Endpoint"]!,
+            configuration["Ai:ApiKey"]!,
+            payload,
+            "team_preference_extraction",
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(content)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(StripCodeFence(content));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var players = root.TryGetProperty("players", out var playerElement) && playerElement.ValueKind == JsonValueKind.Array
+                ? playerElement.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+                    .Select(item => item.GetString()!.Trim().TrimStart('@'))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(12)
+                    .ToList()
+                : [];
+            if (players.Count < 2) return null;
+            return new ZaloTeamPreferenceCommand(
+                players,
+                SessionReference: ReadJsonString(root, "sessionReference")?.Trim());
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            logger.LogWarning(exception, "AI team-preference extraction returned invalid JSON: {Output}", Truncate(content, 500));
+            return null;
+        }
+    }
+
     private static string? ReadJsonString(JsonElement root, string propertyName)
     {
         return root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.String
@@ -581,6 +639,11 @@ public sealed record ZaloNaturalReminderContext(
     DateTimeOffset CurrentVietnamTime,
     IReadOnlyList<ZaloAiMessage>? RecentMessages = null);
 public sealed record ZaloNaturalShareContext(
+    string Question,
+    string SenderName,
+    IReadOnlyList<ZaloMentionedUser> MentionedUsers,
+    IReadOnlyList<ZaloAiSessionReference> AvailableSessions);
+public sealed record ZaloNaturalTeamPreferenceContext(
     string Question,
     string SenderName,
     IReadOnlyList<ZaloMentionedUser> MentionedUsers,

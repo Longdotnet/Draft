@@ -231,6 +231,27 @@ public sealed class ZaloNaturalCommandTests
         Assert.False(ZaloNaturalCommandParser.TryParseShareSlot(question, out _));
     }
 
+    [Fact]
+    public void Same_team_preference_keeps_self_alias_for_uid_binding()
+    {
+        const string question = "tui muốn chơi chung team với @To An hôm nay";
+
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(["tui", "To An"], command.PlayerReferences);
+        Assert.Equal("hôm nay", command.SessionReference, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Share_slot_parser_keeps_self_alias_and_session_separate()
+    {
+        const string question = "tui muốn share slot với @To An hôm nay";
+
+        Assert.True(ZaloNaturalCommandParser.TryParseShareSlot(question, out var command));
+        Assert.Equal("tui", command.Anchor);
+        Assert.Equal(["To An"], command.Partners);
+        Assert.Equal("hôm nay", command.SessionReference, ignoreCase: true);
+    }
+
     [Theory]
     [InlineData("To An muốn cùng team với Anh Duy thứ 6")]
     [InlineData("To An và Anh Duy chơi chung đội thứ 6")]
@@ -255,6 +276,31 @@ public sealed class ZaloNaturalCommandTests
         Assert.NotNull(command);
         Assert.Equal(["to-an-id", "anh-duy-id"], command!.PlayerZaloUserIds);
         Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+    }
+
+    [Theory]
+    [InlineData("To An, Anh Duy và Nick Tran muốn chơi chung team thứ 6")]
+    [InlineData("xếp To An, Anh Duy với Nick Tran chung đội thứ 6")]
+    public void Same_team_preference_parses_three_or_more_people(string question)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(["To An", "Anh Duy", "Nick Tran"], command.PlayerReferences);
+        Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Explicit_same_team_mentions_bind_all_uids_in_order()
+    {
+        var command = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(
+            [
+                new ZaloMentionedUser("a-id", "A"),
+                new ZaloMentionedUser("b-id", "B"),
+                new ZaloMentionedUser("c-id", "C")
+            ],
+            new ZaloTeamPreferenceCommand(["A", "B", "C"], SessionReference: "thứ 6"));
+
+        Assert.NotNull(command);
+        Assert.Equal(["a-id", "b-id", "c-id"], command!.PlayerZaloUserIds);
     }
 
     [Theory]
