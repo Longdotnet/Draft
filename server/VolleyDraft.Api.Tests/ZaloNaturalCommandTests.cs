@@ -190,6 +190,74 @@ public sealed class ZaloNaturalCommandTests
     }
 
     [Theory]
+    [InlineData("Ngọc Huyền thêm +1 bạn hôm nay", "Ngọc Huyền", "hôm nay")]
+    [InlineData("+1 số lượng vote cho bạn @Ngọc Huyền thứ 6", "Ngọc Huyền", "thứ 6")]
+    public void Add_guest_parser_separates_sponsor_from_session(
+        string question,
+        string sponsor,
+        string sessionReference)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseAddGuest(question, out var command));
+        Assert.Equal(sponsor, command.SponsorReference);
+        Assert.Equal(sessionReference, command.SessionReference, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Explicit_add_guest_mention_is_authoritative()
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseAddGuest(
+            "+1 số lượng vote cho bạn @Ngọc Huyền thứ 6",
+            out var parsed));
+
+        var command = ZaloNaturalCommandParser.BindExplicitAddGuestMention(
+            "+1 số lượng vote cho bạn @Ngọc Huyền thứ 6",
+            [new ZaloMentionedUser("huyen-id", "Ngọc Huyền")],
+            parsed);
+
+        Assert.NotNull(command);
+        Assert.Equal("huyen-id", command!.SponsorZaloUserId);
+        Assert.Equal("Ngọc Huyền", command.SponsorReference);
+        Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Same_team_preference_is_not_share_slot_and_keeps_session_separate()
+    {
+        const string question = "@To An muốn chơi chung với @Anh Duy thứ 6";
+
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(["To An", "Anh Duy"], command.PlayerReferences);
+        Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+        Assert.False(ZaloNaturalCommandParser.TryParseShareSlot(question, out _));
+    }
+
+    [Theory]
+    [InlineData("To An muốn cùng team với Anh Duy thứ 6")]
+    [InlineData("To An và Anh Duy chơi chung đội thứ 6")]
+    [InlineData("xếp To An với Anh Duy chung team thứ 6")]
+    public void Same_team_preference_accepts_common_wording_variants(string question)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(["To An", "Anh Duy"], command.PlayerReferences);
+        Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Explicit_same_team_mentions_bind_both_uids_in_order()
+    {
+        var command = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(
+            [
+                new ZaloMentionedUser("to-an-id", "To An"),
+                new ZaloMentionedUser("anh-duy-id", "Anh Duy")
+            ],
+            new ZaloTeamPreferenceCommand(["To An", "Anh Duy"], SessionReference: "thứ 6"));
+
+        Assert.NotNull(command);
+        Assert.Equal(["to-an-id", "anh-duy-id"], command!.PlayerZaloUserIds);
+        Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+    }
+
+    [Theory]
     [InlineData("@Nguyễn Thanh Tâm muốn rút nhường cho @Sin", "Nguyễn Thanh Tâm", "Sin")]
     [InlineData("@Nguyen Thanh Tam muốn hủy nhường cho @Sin", "Nguyen Thanh Tam", "Sin")]
     [InlineData("Thanh Tâm pass slot cho Sin", "Thanh Tâm", "Sin")]

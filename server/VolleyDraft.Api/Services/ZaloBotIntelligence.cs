@@ -31,6 +31,7 @@ public enum ZaloBotIntent
     IncompleteProfiles,
     UpdatePlayerProfile,
     AddGuestPlayer,
+    TeamPreference,
     ShareSlot,
     RepairShareSlot,
     RepairShareSlotConfirm,
@@ -80,6 +81,17 @@ public sealed record ZaloShareSlotCommand(
     string Anchor,
     IReadOnlyList<string> Partners,
     int RequestedPartnerCount,
+    string? SessionReference = null);
+
+public sealed record ZaloAddGuestCommand(
+    string? SponsorReference,
+    string? SponsorZaloUserId = null,
+    string? GuestDisplayName = null,
+    string? SessionReference = null);
+
+public sealed record ZaloTeamPreferenceCommand(
+    IReadOnlyList<string> PlayerReferences,
+    IReadOnlyList<string>? PlayerZaloUserIds = null,
     string? SessionReference = null);
 
 public sealed record ZaloSlotTransferCommand(
@@ -376,10 +388,13 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
+        if (ZaloNaturalCommandParser.TryParseTeamPreference(value, out _))
+            return new(ZaloBotIntent.TeamPreference, .99, q, false, null, "team_preference_phrase");
         if (ZaloNaturalCommandParser.TryParseShareSlot(value, out _))
             return new(ZaloBotIntent.ShareSlot, .99, q, false, null, "share_slot_natural_phrase");
-        if ((q.StartsWith("+1 ", StringComparison.Ordinal) || Has(q, "them 1 nguoi", "cong 1 nguoi", "+1 so luong vote", "+1 slot")) &&
-            Has(q, "ban", "nguoi", "vote", "slot"))
+        if (ZaloNaturalCommandParser.TryParseAddGuest(value, out _) ||
+            ((q.StartsWith("+1 ", StringComparison.Ordinal) || Has(q, "them 1 nguoi", "cong 1 nguoi", "+1 so luong vote", "+1 slot")) &&
+            Has(q, "ban", "nguoi", "vote", "slot")))
             return new(ZaloBotIntent.AddGuestPlayer, .99, q, false, null, "add_guest_player_phrase");
         if (Has(q, "share slot", "chung slot", "danh chung slot", "choi chung slot", "slot thay phien", "thay phien voi"))
             return new(ZaloBotIntent.ShareSlot, .99, q, false, null, "share_slot_phrase");

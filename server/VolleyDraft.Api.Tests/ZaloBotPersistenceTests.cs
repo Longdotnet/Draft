@@ -245,7 +245,7 @@ public sealed class ZaloBotPersistenceTests
         var beforeUpdate = await service.GetIncompletePlayerProfilesAsync("admin", session.Id);
 
         var updated = await service.UpdatePlayerProfileFromBotAsync(
-            "admin", session.Id, "Bạn của Nick Tran", PlayerGender.Male, null, null);
+            "admin", session.Id, "Bạn của Nick Tran", PlayerGender.Male, null, null, "guest-zalo");
         var incomplete = await service.GetIncompletePlayerProfilesAsync("admin", session.Id);
 
         Assert.True(beforeUpdate.IsSuccess, beforeUpdate.Error);
@@ -357,9 +357,9 @@ public sealed class ZaloBotPersistenceTests
             profile.ZaloUserId == "zalo-an" || profile.ZaloUserId == "zalo-binh"));
 
         Assert.True((await service.UpdatePlayerProfileFromBotAsync(
-            "admin", session.Id, "An", PlayerGender.Male, null, null)).IsSuccess);
+            "admin", session.Id, "An", PlayerGender.Male, null, null, "zalo-an")).IsSuccess);
         Assert.True((await service.UpdatePlayerProfileFromBotAsync(
-            "admin", session.Id, "Bình", PlayerGender.Female, null, null)).IsSuccess);
+            "admin", session.Id, "Bình", PlayerGender.Female, null, null, "zalo-binh")).IsSuccess);
         var drafted = await service.AutoRunDraftAsync("admin", session.Id);
         Assert.True(drafted.IsSuccess, drafted.Error);
         Assert.Equal(SessionStatus.Finished, drafted.Value!.SessionStatus);
@@ -416,7 +416,7 @@ public sealed class ZaloBotPersistenceTests
             new ShareSlotParticipantInput("Vivian", "zalo-vivian", "https://avatars.example/vivian.jpg"));
         Assert.True(shared.IsSuccess, shared.Error);
         Assert.True((await service.UpdatePlayerProfileFromBotAsync(
-            "admin", session.Id, "Vivian", PlayerGender.Female, PlayerRole.Defense, PlayerLevel.New)).IsSuccess);
+            "admin", session.Id, "Vivian", PlayerGender.Female, PlayerRole.Defense, PlayerLevel.New, "zalo-vivian")).IsSuccess);
 
         // Simulate data written by an older deployment where the anchor's denormalized
         // flag was stale although its DraftSlotPlayer relationship was correct.
@@ -681,6 +681,171 @@ public sealed class ZaloBotPersistenceTests
             .Select(slot => slot.AssignedTeamId).SingleAsync());
         Assert.Equal(2, await fixture.Db.ZaloReminderSchedules.CountAsync(schedule => schedule.SessionId == session.Id));
         Assert.Single(await fixture.Db.ZaloBotActionHistory.Where(action => action.ActionType == "DraftSnapshotRestore").ToListAsync());
+    }
+
+    [Fact]
+    public async Task Profile_update_uses_mentioned_uid_even_when_an_external_guest_has_a_similar_name()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession { Id = "profile-uid-session", AdminUserId = "admin", Name = "T6" };
+        var memberProfile = new PlayerProfile
+        {
+            Id = "huyen-profile",
+            ZaloUserId = "huyen-uid",
+            DisplayName = "Ngọc Huyền"
+        };
+        session.Players.Add(new SessionPlayer
+        {
+            Id = "huyen-player",
+            SessionId = session.Id,
+            PlayerProfileId = memberProfile.Id,
+            PlayerProfile = memberProfile,
+            DisplayName = "Ngọc Huyền",
+            Gender = PlayerGender.Unknown,
+            Role = PlayerRole.New,
+            Level = PlayerLevel.New,
+            IsPresent = true
+        });
+        session.Players.Add(new SessionPlayer
+        {
+            Id = "huyen-guest",
+            SessionId = session.Id,
+            DisplayName = "Bạn của Ngọc Huyền",
+            Gender = PlayerGender.Unknown,
+            Role = PlayerRole.New,
+            Level = PlayerLevel.New,
+            IsPresent = true
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var result = await service.UpdatePlayerProfileFromBotAsync(
+            "admin", session.Id, "Ngọc Huyền", PlayerGender.Female, null, null, "huyen-uid");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal("huyen-player", result.Value!.Id);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(PlayerGender.Female, await fixture.Db.SessionPlayers
+            .Where(player => player.Id == "huyen-player").Select(player => player.Gender).SingleAsync());
+        Assert.Equal(PlayerGender.Unknown, await fixture.Db.SessionPlayers
+            .Where(player => player.Id == "huyen-guest").Select(player => player.Gender).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Profile_update_without_uid_asks_instead_of_guessing_between_member_and_guest()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession { Id = "profile-ambiguous-session", AdminUserId = "admin", Name = "T6" };
+        var profile = new PlayerProfile
+        {
+            Id = "member-profile",
+            ZaloUserId = "member-uid",
+            DisplayName = "Ngọc Huyền"
+        };
+        session.Players.Add(new SessionPlayer
+        {
+            Id = "member-player",
+            SessionId = session.Id,
+            PlayerProfileId = profile.Id,
+            PlayerProfile = profile,
+            DisplayName = "Ngọc Huyền",
+            Gender = PlayerGender.Unknown,
+            IsPresent = true
+        });
+        session.Players.Add(new SessionPlayer
+        {
+            Id = "external-player",
+            SessionId = session.Id,
+            DisplayName = "Bạn của Ngọc Huyền",
+            Gender = PlayerGender.Unknown,
+            IsPresent = true
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var result = await service.UpdatePlayerProfileFromBotAsync(
+            "admin", session.Id, "Ngọc Huyền", PlayerGender.Male, null, null);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("Bạn muốn cập nhật ai", result.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.All(await fixture.Db.SessionPlayers.Where(player => player.SessionId == session.Id).ToListAsync(),
+            player => Assert.Equal(PlayerGender.Unknown, player.Gender));
+    }
+
+    [Fact]
+    public async Task Profile_update_can_fuzzy_match_one_external_guest_only()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession { Id = "profile-external-session", AdminUserId = "admin", Name = "T6" };
+        session.Players.Add(new SessionPlayer
+        {
+            Id = "external-huyen",
+            SessionId = session.Id,
+            DisplayName = "Bạn của Ngọc Huyền",
+            Gender = PlayerGender.Unknown,
+            IsPresent = true
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var result = await service.UpdatePlayerProfileFromBotAsync(
+            "admin", session.Id, "bạn Ngọc Huyền", PlayerGender.Male, null, null);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal("external-huyen", result.Value!.Id);
+    }
+
+    [Fact]
+    public async Task Same_team_preference_uses_uids_and_does_not_create_a_shared_slot()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession { Id = "team-preference-session", AdminUserId = "admin", Name = "T6" };
+        foreach (var player in new[]
+                 {
+                     (Id: "to-an", Name: "To An", ProfileId: "to-an-profile", Uid: "to-an-uid"),
+                     (Id: "anh-duy", Name: "Anh Duy", ProfileId: "anh-duy-profile", Uid: "anh-duy-uid")
+                 })
+        {
+            var profile = new PlayerProfile
+            {
+                Id = player.ProfileId,
+                ZaloUserId = player.Uid,
+                DisplayName = player.Name
+            };
+            session.Players.Add(new SessionPlayer
+            {
+                Id = player.Id,
+                SessionId = session.Id,
+                PlayerProfileId = profile.Id,
+                PlayerProfile = profile,
+                DisplayName = player.Name,
+                Gender = PlayerGender.Male,
+                Role = PlayerRole.Attack,
+                Level = PlayerLevel.Average,
+                Score = 2,
+                IsPresent = true
+            });
+        }
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var result = await service.CreateTeamPreferenceGroupFromBotAsync(
+            "admin",
+            session.Id,
+            [
+                new ShareSlotParticipantInput("To An", "to-an-uid"),
+                new ShareSlotParticipantInput("Anh Duy", "anh-duy-uid")
+            ]);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(["To An", "Anh Duy"], result.Value!.PlayerNames);
+        Assert.Single(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+        Assert.Empty(await fixture.Db.DraftSlots.Where(slot => slot.SessionId == session.Id).ToListAsync());
     }
 
     private static ZaloBotConversationState State(string connection, string group, string sender) => new()

@@ -188,6 +188,8 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("chỉnh đều lại đội hai với đội ba", ZaloBotIntent.RebalanceTeams)]
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", ZaloBotIntent.SwapTeamPlayers)]
     [InlineData("+1 số lượng vote cho bạn của Nick Tran", ZaloBotIntent.AddGuestPlayer)]
+    [InlineData("Ngọc Huyền thêm +1 bạn hôm nay", ZaloBotIntent.AddGuestPlayer)]
+    [InlineData("To An muốn chơi chung với Anh Duy thứ 6", ZaloBotIntent.TeamPreference)]
     [InlineData("Nick Tran muốn share slot với Thanh Tuyền", ZaloBotIntent.ShareSlot)]
     [InlineData("cập nhật Nick Tran: nam, công, trung bình", ZaloBotIntent.UpdatePlayerProfile)]
     [InlineData("đưa tui danh sách người chưa cập nhật giới tính, trình độ cho buổi thứ 4", ZaloBotIntent.IncompleteProfiles)]

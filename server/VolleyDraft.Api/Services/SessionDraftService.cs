@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
@@ -382,7 +383,9 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         string playerReference,
         PlayerGender? gender,
         PlayerRole? role,
-        PlayerLevel? level)
+        PlayerLevel? level,
+        string? zaloUserId = null,
+        string? sessionPlayerId = null)
     {
         if (gender is null && role is null && level is null)
             return BadRequest<SessionPlayerResponse>("Cần cung cấp ít nhất giới tính, vị trí hoặc trình độ.");
@@ -395,7 +398,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .Include(player => player.PlayerProfile)
             .Where(player => player.SessionId == sessionId && player.IsPresent)
             .ToListAsync();
-        var resolved = ResolveSessionPlayer(players, playerReference);
+        var resolved = ResolveProfilePlayer(players, playerReference, zaloUserId, sessionPlayerId);
         if (resolved.Player is null) return BadRequest<SessionPlayerResponse>(resolved.Error!);
         var player = resolved.Player;
         if (gender is not null) player.Gender = gender.Value;
@@ -1056,6 +1059,48 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         await db.SaveChangesAsync();
 
         return ServiceResult<TeamPreferenceGroupResponse>.Created(ToTeamPreferenceGroupResponse(group));
+    }
+
+    public async Task<ServiceResult<TeamPreferenceGroupResponse>> CreateTeamPreferenceGroupFromBotAsync(
+        string adminUserId,
+        string sessionId,
+        IReadOnlyList<ShareSlotParticipantInput> participantInputs)
+    {
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null)
+            return NotFound<TeamPreferenceGroupResponse>("Không tìm thấy session.");
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+            return BadRequest<TeamPreferenceGroupResponse>("Đội hình đã bắt đầu draft nên không thể thêm yêu cầu chung team. Bot chưa thay đổi share slot hay đội hình hiện tại.");
+
+        var inputs = participantInputs
+            .Where(input => !string.IsNullOrWhiteSpace(input.DisplayName) || !string.IsNullOrWhiteSpace(input.ZaloUserId))
+            .Take(5)
+            .ToList();
+        if (inputs.Count < 2)
+            return BadRequest<TeamPreferenceGroupResponse>("Cần xác định ít nhất hai người muốn chung team.");
+
+        var players = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId && player.IsPresent)
+            .ToListAsync();
+        var resolvedPlayers = new List<SessionPlayer>();
+        foreach (var input in inputs)
+        {
+            var resolved = !string.IsNullOrWhiteSpace(input.ZaloUserId)
+                ? ResolveProfilePlayer(players, input.DisplayName, input.ZaloUserId, null)
+                : ResolveSessionPlayer(players, input.DisplayName);
+            if (resolved.Player is null)
+                return BadRequest<TeamPreferenceGroupResponse>(resolved.Error!);
+            if (resolvedPlayers.All(player => player.Id != resolved.Player.Id))
+                resolvedPlayers.Add(resolved.Player);
+        }
+        if (resolvedPlayers.Count < 2)
+            return BadRequest<TeamPreferenceGroupResponse>("Hai người muốn chung team phải là hai thành viên khác nhau.");
+
+        return await CreateTeamPreferenceGroupAsync(
+            adminUserId,
+            sessionId,
+            new CreateTeamPreferenceGroupRequest(resolvedPlayers.Select(player => player.Id).ToList()));
     }
 
     public async Task<ServiceResult<DeleteResponse>> DeleteTeamPreferenceGroupAsync(
@@ -3285,6 +3330,110 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return possible.Count > 0
             ? new(null, $"Tên '{playerReference}' chưa đủ rõ. Các tên phù hợp: {string.Join(", ", possible)}.", false)
             : new(null, $"Không tìm thấy '{playerReference}' trong danh sách.", true);
+    }
+
+    private static SessionPlayerResolution ResolveProfilePlayer(
+        IReadOnlyList<SessionPlayer> players,
+        string playerReference,
+        string? zaloUserId,
+        string? sessionPlayerId)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionPlayerId))
+        {
+            var byId = players.Where(player => player.Id == sessionPlayerId).ToList();
+            return byId.Count == 1
+                ? new(byId[0], null, false)
+                : new(null, "Người được chọn không còn trong danh sách của trận này.", false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(zaloUserId))
+        {
+            var normalizedZaloId = NormalizeZaloId(zaloUserId);
+            var byZaloId = players.Where(player =>
+                    NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == normalizedZaloId)
+                .ToList();
+            if (byZaloId.Count == 1) return new(byZaloId[0], null, false);
+            return byZaloId.Count > 1
+                ? new(null, "UID Zalo này đang gắn với nhiều người trong cùng trận. Admin cần kiểm tra dữ liệu trước khi cập nhật.", false)
+                : new(null, "Người được @mention chưa có trong danh sách trận này.", false);
+        }
+
+        var reference = NormalizePlayerLookup(playerReference);
+        // Không dùng tên để cập nhật một thành viên Zalo: tên hiển thị có thể
+        // trùng hoặc gần giống khách +1. Thành viên trong group phải được
+        // @mention để UID trở thành khóa xác thực; fuzzy chỉ dành cho khách.
+        var exactMembers = players.Where(player =>
+                !string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId) &&
+                NormalizePlayerLookup(player.DisplayName) == reference)
+            .ToList();
+        var externalPlayers = players.Where(player =>
+                string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId))
+            .ToList();
+        var exactExternal = externalPlayers
+            .Where(player => NormalizePlayerLookup(player.DisplayName) == reference)
+            .ToList();
+        if (exactExternal.Count == 1 && exactMembers.Count == 0)
+            return new(exactExternal[0], null, false);
+        if (exactExternal.Count > 1 || exactMembers.Count > 0 && exactExternal.Count > 0)
+            return AmbiguousProfileReference(playerReference, exactMembers.Concat(exactExternal).ToList());
+
+        var fuzzyExternal = externalPlayers.Where(player =>
+            {
+                var candidate = NormalizePlayerLookup(player.DisplayName);
+                return candidate.Contains(reference, StringComparison.Ordinal) ||
+                       reference.Contains(candidate, StringComparison.Ordinal) ||
+                       ZaloBotIntelligence.TokenSimilarity(candidate, reference) >= .72;
+            })
+            .ToList();
+        if (fuzzyExternal.Count == 1 && exactMembers.Count == 0) return new(fuzzyExternal[0], null, false);
+        if (exactMembers.Count > 0 && fuzzyExternal.Count > 0)
+            return AmbiguousProfileReference(playerReference, exactMembers.Concat(fuzzyExternal).ToList());
+        if (fuzzyExternal.Count > 1) return AmbiguousProfileReference(playerReference, fuzzyExternal);
+
+        if (exactMembers.Count > 0)
+        {
+            return new(
+                null,
+                $"'{playerReference}' là thành viên Zalo trong danh sách. Hãy @mention đúng người để bot xác thực bằng UID trước khi cập nhật.",
+                false);
+        }
+
+        var similarMembers = players.Where(player =>
+                !string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId) &&
+                ZaloBotIntelligence.TokenSimilarity(
+                    NormalizePlayerLookup(player.DisplayName),
+                    reference) >= .72)
+            .Take(5)
+            .ToList();
+        if (similarMembers.Count > 0)
+        {
+            return new(
+                null,
+                $"Tên '{playerReference}' gần với thành viên Zalo: {string.Join(", ", similarMembers.Select(player => player.DisplayName))}. Hãy @mention đúng người để bot dùng UID trước khi cập nhật.",
+                false);
+        }
+
+        return new(null, $"Không tìm thấy khách ngoài nhóm có tên gần với '{playerReference}'. Hãy gửi lại tên đầy đủ.", false);
+    }
+
+    private static SessionPlayerResolution AmbiguousProfileReference(
+        string playerReference,
+        IReadOnlyList<SessionPlayer> players)
+    {
+        var choices = players
+            .Select((player, index) => $"{index + 1}. {player.DisplayName}")
+            .Take(5);
+        return new(
+            null,
+            $"Tên '{playerReference}' chưa đủ rõ. Bạn muốn cập nhật ai? {string.Join("; ", choices)}. Hãy @mention thành viên Zalo hoặc gõ đúng tên khách ngoài nhóm.",
+            false);
+    }
+
+    private static string NormalizePlayerLookup(string? value)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(value ?? string.Empty);
+        normalized = Regex.Replace(normalized, @"[^a-z0-9\s]", " ", RegexOptions.CultureInvariant);
+        return Regex.Replace(normalized, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
     }
 
     private static PlayerGender CombinedGender(IReadOnlyList<SessionPlayer> players) =>

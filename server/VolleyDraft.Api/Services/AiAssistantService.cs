@@ -29,7 +29,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, TeamPreference, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -43,7 +43,8 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             - Muốn biết ai còn thiếu/chưa cập nhật giới tính, vị trí hoặc trình độ là IncompleteProfiles; KHÔNG phải Roster hay UpdatePlayerProfile.
             - Muốn cập nhật giới tính/vị trí/trình độ người chơi là UpdatePlayerProfile.
             - Muốn +1/thêm khách không thể vote Zalo là AddGuestPlayer.
-            - Muốn hai người đánh chung/share một slot là ShareSlot.
+            - Muốn hai người ở cùng team/cùng đội/chơi chung với nhau là TeamPreference. Câu “A muốn chơi chung với B” mặc định là TeamPreference.
+            - Chỉ dùng ShareSlot khi người dùng nói rõ share/chung một slot, một suất, thay phiên, +1 hoặc +2 vào slot. “Chơi chung/cùng team” không phải ShareSlot.
             - Muốn sửa một share slot đã ghép nhầm sau khi draft là RepairShareSlot. Đây là thao tác thay đổi đội hình và cần bot hỏi xác nhận trước.
             - Muốn hẹn bot tag nhóm sau/mỗi một số giờ hoặc nhắc ngay là ScheduleReminder.
             - Muốn xem lần nhắc kế tiếp hoặc lịch nhắc hiện tại là ReminderStatus.
@@ -185,6 +186,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema: {"anchor":"Nick Tran","partners":["An","Bình"],"requestedPartnerCount":2,"sessionReference":"T4"}
 
             anchor là người đang có slot chính. partners là người vào chơi chung slot đó.
+            Chỉ trích xuất khi Question nói rõ share/chung một slot, một suất, thay phiên, +1 hoặc +2. Nếu chỉ nói “chơi chung”, “cùng team” hoặc “cùng đội” thì trả về JSON null.
             "+1" bắt buộc đúng 1 partner; "+2" bắt buộc đúng 2 partner khác nhau.
             Nếu người nói dùng "tui", "mình", "em" làm anchor thì dùng SenderName.
             Giữ nguyên tên hiển thị từ Question hoặc MentionedUsers. Không tự bịa người hay session.

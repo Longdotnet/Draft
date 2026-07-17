@@ -115,6 +115,136 @@ public static class ZaloNaturalCommandParser
             RegexOptions.CultureInvariant);
     }
 
+    public static bool TryParseAddGuest(string question, out ZaloAddGuestCommand command)
+    {
+        command = new ZaloAddGuestCommand(null);
+        var value = question?.Trim() ?? string.Empty;
+        var normalized = ZaloBotIntelligence.Normalize(value);
+        if (!Regex.IsMatch(normalized, @"(?:^|\s)(?:\+1|them\s+1|cong\s+1)(?:\s|$)", RegexOptions.CultureInvariant) &&
+            !normalized.Contains("them +1", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string? sponsor = null;
+        string? guestName = null;
+        var sponsorBeforePlusOne = Regex.Match(
+            value,
+            @"^(?<sponsor>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:thêm|them|đăng\s+ký|dang\s+ky)?\s*\+1\s+(?:bạn|ban|khách|khach|người|nguoi)(?:\s+.*)?$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (sponsorBeforePlusOne.Success)
+        {
+            sponsor = CleanPerson(sponsorBeforePlusOne.Groups["sponsor"].Value);
+        }
+        else
+        {
+            var sponsorAfterGuestWord = Regex.Match(
+                value,
+                @"(?:\+1|thêm\s+1|them\s+1|cộng\s+1|cong\s+1).*?(?:cho\s+)?(?:bạn|ban|khách|khach)(?:\s+của|\s+cua)?\s+(?<sponsor>.+?)(?=\s+(?:tên|ten)\b|$)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (sponsorAfterGuestWord.Success)
+                sponsor = RemoveTrailingSessionReference(sponsorAfterGuestWord.Groups["sponsor"].Value, out _);
+        }
+
+        var explicitlyNamedGuest = Regex.Match(
+            value,
+            @"(?:\+1|thêm\s+1|them\s+1|cộng\s+1|cong\s+1).*?(?:tên|ten)\s+(?:là|la)?\s*(?<guest>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (explicitlyNamedGuest.Success)
+            guestName = RemoveTrailingSessionReference(explicitlyNamedGuest.Groups["guest"].Value, out _);
+
+        var sessionReference = ExtractSessionReference(value);
+        sponsor = string.IsNullOrWhiteSpace(sponsor) ? null : CleanPerson(sponsor);
+        guestName = string.IsNullOrWhiteSpace(guestName) ? null : CleanPerson(guestName);
+        command = new ZaloAddGuestCommand(sponsor, GuestDisplayName: guestName, SessionReference: sessionReference);
+        return sponsor is not null || guestName is not null;
+    }
+
+    public static ZaloAddGuestCommand? BindExplicitAddGuestMention(
+        string question,
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers,
+        ZaloAddGuestCommand? currentCommand)
+    {
+        if (mentionedUsers.Count != 1) return currentCommand;
+        var normalized = ZaloBotIntelligence.Normalize(question);
+        if (!Regex.IsMatch(normalized, @"(?:^|\s)(?:\+1|them\s+1|cong\s+1)(?:\s|$)", RegexOptions.CultureInvariant) &&
+            !normalized.Contains("them +1", StringComparison.Ordinal))
+        {
+            return currentCommand;
+        }
+
+        var mentioned = mentionedUsers[0];
+        return new ZaloAddGuestCommand(
+            mentioned.DisplayName.Trim().TrimStart('@'),
+            mentioned.ZaloUserId,
+            currentCommand?.GuestDisplayName,
+            currentCommand?.SessionReference ?? ExtractSessionReference(question));
+    }
+
+    public static bool TryParseTeamPreference(string question, out ZaloTeamPreferenceCommand command)
+    {
+        command = new ZaloTeamPreferenceCommand([]);
+        var value = question?.Trim() ?? string.Empty;
+        var normalized = ZaloBotIntelligence.Normalize(value);
+        if (Regex.IsMatch(
+                normalized,
+                @"(?:share|chung|dung\s+chung)\s+(?:mot\s+)?slot|thay\s+phien|(?:^|\s)\+[12](?:\s|$)",
+                RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        Match match = Regex.Match(
+            value,
+            @"^(?<first>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:chơi|choi|đánh|danh|ở|o)\s+(?:chung|cùng|cung)(?:\s+(?:team|đội|doi))?\s+(?:với|voi|cùng|cung)\s+(?<second>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                value,
+                @"^(?<first>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:chung|cùng|cung)\s+(?:team|đội|doi)\s+(?:với|voi)\s+(?<second>.+)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                value,
+                @"^(?:xếp|xep|cho)\s+(?<first>.+?)\s+(?:và|va|với|voi)\s+(?<second>.+?)\s+(?:chung|cùng|cung)\s+(?:team|đội|doi)(?:\s+.*)?$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                value,
+                @"^(?<first>.+?)\s+(?:và|va|với|voi)\s+(?<second>.+?)\s+(?:(?:muốn|muon)\s+)?(?:(?:chơi|choi|đánh|danh)\s+)?(?:chung|cùng|cung)\s+(?:team|đội|doi)(?:\s+.*)?$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!match.Success) return false;
+
+        var first = CleanPerson(match.Groups["first"].Value);
+        var second = RemoveTrailingSessionReference(match.Groups["second"].Value, out var sessionReference);
+        second = CleanPerson(second);
+        if (first.Length < 2 || second.Length < 2 ||
+            string.Equals(ZaloBotIntelligence.Normalize(first), ZaloBotIntelligence.Normalize(second), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        command = new ZaloTeamPreferenceCommand([first, second], SessionReference: sessionReference ?? ExtractSessionReference(value));
+        return true;
+    }
+
+    public static ZaloTeamPreferenceCommand? BindExplicitTeamPreferenceMentions(
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers,
+        ZaloTeamPreferenceCommand? currentCommand)
+    {
+        if (mentionedUsers.Count != 2) return currentCommand;
+        return new ZaloTeamPreferenceCommand(
+            mentionedUsers.Select(user => user.DisplayName.Trim().TrimStart('@')).ToList(),
+            mentionedUsers.Select(user => user.ZaloUserId).ToList(),
+            currentCommand?.SessionReference);
+    }
+
     public static bool TryParseShareSlot(string question, out ZaloShareSlotCommand command)
     {
         command = new ZaloShareSlotCommand(string.Empty, [], 0);
@@ -257,6 +387,33 @@ public static class ZaloNaturalCommandParser
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(3)
             .ToList();
+    }
+
+    public static string RemoveTrailingSessionReference(string value, out string? sessionReference)
+    {
+        var cleaned = value.Trim(' ', ',', '.', ':', ';', '@');
+        var match = Regex.Match(
+            cleaned,
+            @"\s+(?:(?:cho|ở|o|trận|tran|buổi|buoi)\s+)?(?<reference>hôm\s+nay|hom\s+nay|bữa\s+nay|bua\s+nay|ngày\s+mai|ngay\s+mai|t[2-7]|cn|thứ\s+(?:[2-7]|hai|ba|tư|tu|năm|nam|sáu|sau|bảy|bay)|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chủ\s+nhật|chu\s+nhat|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            sessionReference = null;
+            return cleaned;
+        }
+        sessionReference = match.Groups["reference"].Value.Trim();
+        return cleaned[..match.Index].Trim(' ', ',', '.', ':', ';', '@');
+    }
+
+    private static string? ExtractSessionReference(string value)
+    {
+        _ = RemoveTrailingSessionReference(value, out var trailing);
+        if (!string.IsNullOrWhiteSpace(trailing)) return trailing;
+        var match = Regex.Match(
+            value,
+            @"(?<![a-z0-9])(?<reference>hôm\s+nay|hom\s+nay|bữa\s+nay|bua\s+nay|ngày\s+mai|ngay\s+mai|t[2-7]|cn|thứ\s+(?:[2-7]|hai|ba|tư|tu|năm|nam|sáu|sau|bảy|bay)|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chủ\s+nhật|chu\s+nhat|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)(?![a-z0-9])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups["reference"].Value.Trim() : null;
     }
 
     private static TimeOnly? TryReadClock(string normalized)
