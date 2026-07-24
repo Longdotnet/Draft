@@ -49,6 +49,22 @@ public sealed class ZaloPollEventWorker(
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
                 var integration = scope.ServiceProvider.GetRequiredService<ZaloIntegrationService>();
                 var waitlist = scope.ServiceProvider.GetRequiredService<SessionWaitlistService>();
+                var activityBackfill = scope.ServiceProvider.GetRequiredService<ZaloActivityBackfillCoordinator>();
+                var linkedConnectionId = await db.MatchSessions
+                    .AsNoTracking()
+                    .Where(session =>
+                        session.BotEnabled &&
+                        session.ZaloGroupId == groupId &&
+                        session.ZaloConnection != null &&
+                        session.ZaloConnection.AccountZaloId == accountId)
+                    .Select(session => session.ZaloConnectionId)
+                    .FirstOrDefaultAsync(stoppingToken);
+                if (!string.IsNullOrWhiteSpace(linkedConnectionId))
+                    await activityBackfill.QueueGroupAsync(
+                        linkedConnectionId,
+                        groupId,
+                        false,
+                        stoppingToken);
                 var sessions = await db.MatchSessions.AsNoTracking()
                     .Where(session => session.BotEnabled && session.ZaloGroupId == groupId &&
                                       session.ZaloConnection != null && session.ZaloConnection.AccountZaloId == accountId &&

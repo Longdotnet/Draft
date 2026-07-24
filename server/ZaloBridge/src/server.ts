@@ -8,7 +8,10 @@ import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } f
 import {
   createQrLogin,
   getActiveListenerWebhookUrls,
+  getBoardPage,
   getGroups,
+  getGroupMemberDirectory,
+  getGroupMessageHistory,
   getGroupRoles,
   getListenerStatuses,
   getMembers,
@@ -81,6 +84,21 @@ app.post("/v1/groups", async (request, response) => {
 
 app.post("/v1/groups/:groupId/polls", async (request, response) => {
   response.json({ polls: await getPolls(credentialsFrom(request), request.params.groupId) });
+});
+
+app.post("/v1/groups/:groupId/members", async (request, response) => {
+  response.json(await getGroupMemberDirectory(credentialsFrom(request), request.params.groupId));
+});
+
+app.post("/v1/groups/:groupId/board-pages", async (request, response) => {
+  const page = Number(request.body?.page ?? 1);
+  const pageSize = Number(request.body?.pageSize ?? 50);
+  response.json(await getBoardPage(credentialsFrom(request), request.params.groupId, page, pageSize));
+});
+
+app.post("/v1/groups/:groupId/message-history", async (request, response) => {
+  const count = Number(request.body?.count ?? 500);
+  response.json(await getGroupMessageHistory(credentialsFrom(request), request.params.groupId, count));
 });
 
 app.post("/v1/groups/:groupId/roles", async (request, response) => {

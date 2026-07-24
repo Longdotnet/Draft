@@ -16,4 +16,7 @@ public sealed class ZaloConnection
     public User AdminUser { get; set; } = null!;
     public List<MatchSession> MatchSessions { get; set; } = [];
     public List<ZaloGroupMessage> GroupMessages { get; set; } = [];
+    public List<ZaloGroupMember> GroupMembers { get; set; } = [];
+    public List<ZaloPollSnapshot> PollSnapshots { get; set; } = [];
+    public List<ZaloActivityBackfillJob> ActivityBackfillJobs { get; set; } = [];
 }

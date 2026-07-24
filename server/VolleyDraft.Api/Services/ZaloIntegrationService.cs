@@ -11,7 +11,8 @@ public sealed class ZaloIntegrationService(
     ZaloBridgeClient bridge,
     ZaloCredentialProtector credentialProtector,
     ZaloQrLoginRegistry loginRegistry,
-    ZaloListenerCoordinator listenerCoordinator)
+    ZaloListenerCoordinator listenerCoordinator,
+    ZaloActivityBackfillCoordinator activityBackfillCoordinator)
 {
     public async Task<ServiceResult<StartZaloQrLoginResponse>> StartQrLoginAsync(string adminUserId)
     {
@@ -182,6 +183,10 @@ public sealed class ZaloIntegrationService(
             session.ZaloGroupAvatarUrl = group.AvatarUrl;
             session.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync();
+            await activityBackfillCoordinator.QueueGroupAsync(
+                connection.Id,
+                group.Id,
+                full: true);
             await listenerCoordinator.EnsureConnectionAsync(connection.Id);
             return ServiceResult<SessionResponse>.Success(ToSessionResponse(session));
         }

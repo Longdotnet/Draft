@@ -1272,8 +1272,88 @@
   .zalo-login-step { order: 1; }
   .zalo-link-step { order: 2; }
   .zalo-bot-settings { order: 3; }
-  .zalo-poll-step { order: 4; }
-  .zalo-preview-step { order: 5; }
+  .member-intelligence-panel { order: 4; }
+  .zalo-poll-step { order: 5; }
+  .zalo-preview-step { order: 6; }
+
+  .member-intelligence-heading {
+    @apply flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between;
+  }
+
+  .member-intelligence-heading .muted {
+    @apply mt-2 max-w-3xl;
+  }
+
+  .member-sync-progress {
+    @apply grid gap-2 sm:grid-cols-2 xl:grid-cols-4;
+  }
+
+  .member-sync-progress > div {
+    @apply rounded-lg border border-slate-200 bg-slate-50 p-3;
+  }
+
+  .member-sync-progress small,
+  .member-sync-progress strong {
+    @apply block;
+  }
+
+  .member-sync-progress small {
+    @apply mb-1 flex items-center gap-1 text-xs font-bold text-slate-500;
+  }
+
+  .member-sync-progress strong {
+    @apply text-base font-black text-slate-900;
+  }
+
+  .member-coverage-note {
+    @apply grid gap-2 rounded-lg border border-sky-100 bg-sky-50 p-3 text-xs text-slate-600 md:grid-cols-2;
+  }
+
+  .member-intelligence-toolbar {
+    @apply flex flex-col items-stretch gap-3 md:flex-row md:items-end;
+  }
+
+  .member-intelligence-toolbar .field {
+    @apply min-w-64 flex-1;
+  }
+
+  .member-intelligence-table-wrap {
+    @apply overflow-x-auto rounded-lg border border-slate-200;
+  }
+
+  .member-intelligence-table {
+    @apply min-w-[980px];
+  }
+
+  .member-intelligence-table th {
+    @apply whitespace-nowrap bg-slate-50 text-xs;
+  }
+
+  .member-intelligence-table td {
+    @apply align-top text-sm;
+  }
+
+  .member-intelligence-table td small {
+    @apply mt-1 block text-xs font-medium text-slate-500;
+  }
+
+  .member-identity {
+    @apply flex min-w-48 items-center gap-3;
+  }
+
+  .member-identity > img,
+  .member-identity > span {
+    @apply grid h-10 w-10 shrink-0 place-items-center rounded-full border border-slate-200 bg-sky-50 object-cover font-black text-sky-800;
+  }
+
+  .member-identity strong,
+  .member-identity small {
+    @apply block;
+  }
+
+  .member-intelligence-empty {
+    @apply flex min-h-28 items-center justify-center gap-2 p-5 text-sm font-bold text-slate-500;
+  }
 
   .zalo-step-heading {
     @apply flex items-center gap-3 text-slate-950;

@@ -27,6 +27,11 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
     public DbSet<ZaloReminderSchedule> ZaloReminderSchedules => Set<ZaloReminderSchedule>();
     public DbSet<SessionWaitlistEntry> SessionWaitlistEntries => Set<SessionWaitlistEntry>();
     public DbSet<ZaloBotActionHistory> ZaloBotActionHistory => Set<ZaloBotActionHistory>();
+    public DbSet<ZaloGroupMember> ZaloGroupMembers => Set<ZaloGroupMember>();
+    public DbSet<ZaloPollSnapshot> ZaloPollSnapshots => Set<ZaloPollSnapshot>();
+    public DbSet<ZaloPollOptionSnapshot> ZaloPollOptionSnapshots => Set<ZaloPollOptionSnapshot>();
+    public DbSet<ZaloPollVoteActivity> ZaloPollVoteActivities => Set<ZaloPollVoteActivity>();
+    public DbSet<ZaloActivityBackfillJob> ZaloActivityBackfillJobs => Set<ZaloActivityBackfillJob>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -113,6 +118,8 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.Property(message => message.SenderId).HasMaxLength(100);
             entity.Property(message => message.SenderName).HasMaxLength(160);
             entity.Property(message => message.Content).HasMaxLength(4000);
+            entity.Property(message => message.MessageType).HasMaxLength(80);
+            entity.Property(message => message.ObservationSource).HasMaxLength(40);
             entity.Property(message => message.ProcessingToken).HasMaxLength(80);
             entity.Property(message => message.SelectedIntent).HasMaxLength(80);
             entity.Property(message => message.ReplyOutcome).HasMaxLength(80);
@@ -121,6 +128,80 @@ public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> 
             entity.HasOne(message => message.ZaloConnection)
                 .WithMany(connection => connection.GroupMessages)
                 .HasForeignKey(message => message.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloGroupMember>(entity =>
+        {
+            entity.Property(member => member.GroupId).HasMaxLength(100);
+            entity.Property(member => member.ZaloUserId).HasMaxLength(100);
+            entity.Property(member => member.DisplayName).HasMaxLength(160);
+            entity.Property(member => member.AvatarUrl).HasMaxLength(2048);
+            entity.HasIndex(member => new { member.ZaloConnectionId, member.GroupId, member.ZaloUserId }).IsUnique();
+            entity.HasIndex(member => new { member.ZaloConnectionId, member.GroupId, member.IsCurrentMember });
+            entity.HasOne(member => member.ZaloConnection)
+                .WithMany(connection => connection.GroupMembers)
+                .HasForeignKey(member => member.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloPollSnapshot>(entity =>
+        {
+            entity.Property(poll => poll.GroupId).HasMaxLength(100);
+            entity.Property(poll => poll.PollId).HasMaxLength(100);
+            entity.Property(poll => poll.Question).HasMaxLength(1000);
+            entity.Property(poll => poll.CreatorZaloUserId).HasMaxLength(100);
+            entity.Property(poll => poll.ExclusionReason).HasMaxLength(500);
+            entity.HasIndex(poll => new { poll.ZaloConnectionId, poll.GroupId, poll.PollId }).IsUnique();
+            entity.HasIndex(poll => new { poll.ZaloConnectionId, poll.GroupId, poll.CreatedAtFromZalo });
+            entity.HasOne(poll => poll.ZaloConnection)
+                .WithMany(connection => connection.PollSnapshots)
+                .HasForeignKey(poll => poll.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloPollOptionSnapshot>(entity =>
+        {
+            entity.Property(option => option.ZaloOptionId).HasMaxLength(100);
+            entity.Property(option => option.Content).HasMaxLength(1000);
+            entity.HasIndex(option => new { option.PollSnapshotId, option.ZaloOptionId }).IsUnique();
+            entity.HasOne(option => option.PollSnapshot)
+                .WithMany(poll => poll.Options)
+                .HasForeignKey(option => option.PollSnapshotId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloPollVoteActivity>(entity =>
+        {
+            entity.Property(vote => vote.ZaloUserId).HasMaxLength(100);
+            entity.HasIndex(vote => new { vote.PollOptionSnapshotId, vote.ZaloUserId }).IsUnique();
+            entity.HasIndex(vote => new { vote.PollSnapshotId, vote.ZaloUserId, vote.IsCurrentlySelected });
+            entity.HasOne(vote => vote.PollSnapshot)
+                .WithMany()
+                .HasForeignKey(vote => vote.PollSnapshotId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(vote => vote.PollOptionSnapshot)
+                .WithMany(option => option.Votes)
+                .HasForeignKey(vote => vote.PollOptionSnapshotId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloActivityBackfillJob>(entity =>
+        {
+            entity.Property(job => job.GroupId).HasMaxLength(100);
+            entity.Property(job => job.Stage).HasConversion<string>();
+            entity.Property(job => job.Status).HasConversion<string>();
+            entity.Property(job => job.MessageHistoryCapability).HasConversion<string>();
+            entity.Property(job => job.BoardCursor).HasMaxLength(500);
+            entity.Property(job => job.MessageCursor).HasMaxLength(500);
+            entity.Property(job => job.LastBoardPageFingerprint).HasMaxLength(128);
+            entity.Property(job => job.LastErrorSummary).HasMaxLength(2000);
+            entity.Property(job => job.LeaseToken).HasMaxLength(80);
+            entity.HasIndex(job => new { job.ZaloConnectionId, job.GroupId }).IsUnique();
+            entity.HasIndex(job => new { job.Status, job.NextAttemptAt });
+            entity.HasOne(job => job.ZaloConnection)
+                .WithMany(connection => connection.ActivityBackfillJobs)
+                .HasForeignKey(job => job.ZaloConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

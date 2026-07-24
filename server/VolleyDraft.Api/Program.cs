@@ -66,6 +66,9 @@ builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
 builder.Services.AddScoped<SessionWaitlistService>();
 builder.Services.AddScoped<ZaloBotActionHistoryService>();
+builder.Services.AddScoped<ZaloActivityBackfillCoordinator>();
+builder.Services.AddScoped<ZaloMemberActivityService>();
+builder.Services.AddScoped<ZaloMemberIntelligenceBotService>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<ZaloSchedulerTrigger>();
 builder.Services.AddSingleton<ZaloPollEventQueue>();
@@ -75,6 +78,7 @@ builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddHostedService<ZaloSchedulerWorker>();
 builder.Services.AddHostedService<ZaloPollEventWorker>();
+builder.Services.AddHostedService<ZaloActivityBackfillWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
@@ -474,6 +478,81 @@ sessions.MapPost("/{sessionId}/zalo-import", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.ConfirmImportAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/member-intelligence/sync", async (
+    HttpContext httpContext,
+    string sessionId,
+    StartZaloActivitySyncRequest request,
+    ZaloActivityBackfillCoordinator service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.QueueForSessionAsync(
+            userId,
+            sessionId,
+            request.Full,
+            cancellationToken)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/member-intelligence/sync", async (
+    HttpContext httpContext,
+    string sessionId,
+    ZaloActivityBackfillCoordinator service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetStatusForSessionAsync(
+            userId,
+            sessionId,
+            cancellationToken)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/member-intelligence/members", async (
+    HttpContext httpContext,
+    string sessionId,
+    string? filter,
+    string? period,
+    int? page,
+    int? pageSize,
+    ZaloMemberActivityService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    var parsedFilter = filter?.Trim().ToLowerInvariant() switch
+    {
+        "no-vote" or "novote" => ZaloMemberActivityFilter.NoVote,
+        "no-message" or "nomessage" => ZaloMemberActivityFilter.NoMessage,
+        "inactive" => ZaloMemberActivityFilter.Inactive,
+        "at-risk" or "atrisk" => ZaloMemberActivityFilter.AtRisk,
+        _ => ZaloMemberActivityFilter.All
+    };
+    return (await service.QueryForSessionAsync(
+        userId,
+        sessionId,
+        ZaloMemberActivityService.ParsePeriod(period),
+        parsedFilter,
+        page ?? 1,
+        pageSize ?? 10,
+        cancellationToken)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/member-intelligence/engagement", async (
+    HttpContext httpContext,
+    string sessionId,
+    string? period,
+    ZaloMemberActivityService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetGroupEngagementForSessionAsync(
+            userId,
+            sessionId,
+            ZaloMemberActivityService.ParsePeriod(period),
+            cancellationToken)).ToHttpResult();
 });
 sessions.MapGet("/{sessionId}/waitlist", async (
     HttpContext httpContext,

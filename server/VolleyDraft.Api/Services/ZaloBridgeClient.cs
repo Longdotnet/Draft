@@ -31,6 +31,45 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         return (await ReadAsync<BridgePollsResponse>(response)).Polls;
     }
 
+    public async Task<BridgeGroupMemberDirectory> GetGroupMemberDirectoryAsync(
+        JsonElement credentials,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"v1/groups/{Uri.EscapeDataString(groupId)}/members",
+            new { credentials },
+            cancellationToken);
+        return await ReadAsync<BridgeGroupMemberDirectory>(response);
+    }
+
+    public async Task<BridgeBoardPage> GetBoardPageAsync(
+        JsonElement credentials,
+        string groupId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"v1/groups/{Uri.EscapeDataString(groupId)}/board-pages",
+            new { credentials, page, pageSize },
+            cancellationToken);
+        return await ReadAsync<BridgeBoardPage>(response);
+    }
+
+    public async Task<BridgeMessageHistoryProbe> GetGroupMessageHistoryAsync(
+        JsonElement credentials,
+        string groupId,
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"v1/groups/{Uri.EscapeDataString(groupId)}/message-history",
+            new { credentials, count },
+            cancellationToken);
+        return await ReadAsync<BridgeMessageHistoryProbe>(response);
+    }
+
     public async Task<BridgeGroupRoles> GetGroupRolesAsync(JsonElement credentials, string groupId)
     {
         using var response = await httpClient.PostAsJsonAsync(
@@ -148,8 +187,27 @@ public sealed record BridgeQrStatusResponse(
 
 public sealed record BridgeGroupsResponse(IReadOnlyList<BridgeGroup> Groups);
 public sealed record BridgeGroup(string Id, string Name, string? AvatarUrl, int TotalMembers);
+public sealed record BridgeGroupMemberDirectory(
+    string GroupId,
+    string GroupName,
+    long GroupCreatedAtUnixMs,
+    int ExpectedMemberCount,
+    bool IsComplete,
+    IReadOnlyList<BridgeMember> Members);
 public sealed record BridgeGroupRoles(string GroupId, string CreatorId, IReadOnlyList<string> AdminIds);
 public sealed record BridgePollsResponse(IReadOnlyList<BridgePoll> Polls);
+public sealed record BridgeBoardPage(
+    string GroupId,
+    int Page,
+    int PageSize,
+    int TotalCount,
+    IReadOnlyList<BridgeBoardItem> Items);
+public sealed record BridgeBoardItem(
+    string StableId,
+    int BoardType,
+    bool IsPoll,
+    string? PollId,
+    BridgePoll? Poll);
 public sealed record BridgePoll(
     string Id,
     string Question,
@@ -166,6 +224,24 @@ public sealed record BridgePoll(
 public sealed record BridgePollOption(string Id, string Content, int VoteCount, IReadOnlyList<string> VoterIds);
 public sealed record BridgeMembersResponse(IReadOnlyList<BridgeMember> Members);
 public sealed record BridgeMember(string ZaloUserId, string DisplayName, string? ZaloName, string? AvatarUrl);
+public sealed record BridgeMessageHistoryProbe(
+    string GroupId,
+    int RequestedCount,
+    int ReturnedCount,
+    int More,
+    string? LastActionId,
+    string? LastActionIdOther,
+    long? OldestMessageAtUnixMs,
+    long? NewestMessageAtUnixMs,
+    IReadOnlyList<BridgeHistoricalMessage> Messages);
+public sealed record BridgeHistoricalMessage(
+    string MessageId,
+    string SenderId,
+    string SenderName,
+    string Content,
+    string MessageType,
+    bool IsFromBot,
+    long SentAtUnixMs);
 public sealed record BridgeListenerResponse(string AccountId, string BotId, long StartedAt, int GroupCount);
 public sealed record BridgeStopListenerResponse(bool Stopped);
 public sealed record BridgeOutgoingMention(string Uid, int Pos, int Len);

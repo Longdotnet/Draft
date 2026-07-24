@@ -3,9 +3,13 @@ import { createHash, randomUUID } from "node:crypto";
 // Keep all untyped interaction isolated in this adapter while runtime exports remain valid.
 import * as ZaloRuntime from "zca-js";
 import type {
+  BridgeBoardPage,
   BridgeGroup,
+  BridgeGroupMemberDirectory,
   BridgeGroupRoles,
+  BridgeHistoricalMessage,
   BridgeMember,
+  BridgeMessageHistoryProbe,
   BridgeMention,
   BridgePoll,
   IncomingGroupMessageEvent,
@@ -14,8 +18,15 @@ import type {
   StartListenerRequest,
   ZaloCredentials,
 } from "./contracts.js";
-import { mockCredentials, mockGroups, mockMembers, mockPolls } from "./mockData.js";
+import {
+  mockCredentials,
+  mockGroups,
+  mockHistoricalMessages,
+  mockMembers,
+  mockPolls,
+} from "./mockData.js";
 import { normalizeId, normalizeMember, normalizeMemberId, normalizePoll } from "./pollLogic.js";
+import { buildMessageHistoryProbe, normalizeHistoricalMessage, normalizeUnixMs } from "./messageHistoryLogic.js";
 
 type QrLoginStatus = "waiting_qr" | "waiting_scan" | "waiting_confirm" | "completed" | "expired" | "declined" | "failed";
 
@@ -26,9 +37,28 @@ type MinimalZaloApi = {
   getGroupInfo(ids: string[]): Promise<{ gridInfoMap?: Record<string, Record<string, unknown>> }>;
   getListBoard(options: { page: number; count: number }, groupId: string): Promise<{
     items?: Array<{ boardType: number; data: Record<string, unknown> }>;
+    count?: number;
   }>;
   getPollDetail(pollId: string): Promise<Record<string, unknown>>;
   getGroupMembersInfo(ids: string[]): Promise<{ profiles?: Record<string, Record<string, unknown>> }>;
+  getGroupChatHistory(groupId: string, count?: number): Promise<{
+    lastActionId?: string;
+    lastActionIdOther?: string;
+    more?: number;
+    groupMsgs?: Array<{
+      isSelf?: boolean;
+      data?: {
+        actionId?: string;
+        msgId?: string;
+        cliMsgId?: string;
+        msgType?: string;
+        uidFrom?: string;
+        dName?: string;
+        ts?: string | number;
+        content?: unknown;
+      };
+    }>;
+  }>;
   listener: {
     on(event: "message", callback: (message: MinimalMessage) => unknown): void;
     on(event: "group_event", callback: (event: MinimalGroupEvent) => unknown): void;
@@ -519,6 +549,103 @@ export async function getGroups(credentials: ZaloCredentials): Promise<BridgeGro
   return groups.sort((left, right) => left.name.localeCompare(right.name, "vi"));
 }
 
+export async function getGroupMemberDirectory(
+  credentials: ZaloCredentials,
+  groupId: string,
+): Promise<BridgeGroupMemberDirectory> {
+  const normalizedGroupId = normalizeId(groupId);
+  if (mockMode) {
+    const group = mockGroups.find((item) => item.id === normalizedGroupId);
+    if (!group) throw new Error("Group information is unavailable");
+    return {
+      groupId: normalizedGroupId,
+      groupName: group.name,
+      groupCreatedAtUnixMs: Date.now() - 365 * 86_400_000,
+      expectedMemberCount: mockMembers.length,
+      isComplete: true,
+      members: mockMembers,
+    };
+  }
+
+  const api = await getApi(credentials);
+  const response = await api.getGroupInfo([normalizedGroupId]);
+  const info = response.gridInfoMap?.[normalizedGroupId];
+  if (!info) throw new Error("Group information is unavailable");
+
+  const memberIds = Array.isArray(info.memberIds)
+    ? [...new Set(info.memberIds.map(normalizeMemberId).filter(Boolean))]
+    : [];
+  const members = await resolveMembers(api, memberIds);
+  const expectedMemberCount = Number(info.totalMember ?? memberIds.length);
+  const hasMoreMember = Number(info.hasMoreMember ?? 0);
+  return {
+    groupId: normalizedGroupId,
+    groupName: String(info.name ?? ""),
+    groupCreatedAtUnixMs: normalizeUnixMs(info.createdTime),
+    expectedMemberCount,
+    isComplete: hasMoreMember === 0 && members.length >= expectedMemberCount,
+    members,
+  };
+}
+
+export async function getBoardPage(
+  credentials: ZaloCredentials,
+  groupId: string,
+  pageValue: number,
+  pageSizeValue: number,
+): Promise<BridgeBoardPage> {
+  const normalizedGroupId = normalizeId(groupId);
+  const page = Math.max(1, Math.trunc(pageValue || 1));
+  const pageSize = Math.min(100, Math.max(1, Math.trunc(pageSizeValue || 50)));
+  if (mockMode) {
+    const allItems = normalizedGroupId === mockGroups[0]?.id
+      ? mockPolls.map((poll) => ({
+          stableId: `poll:${poll.id}`,
+          boardType: Number(BoardType.Poll),
+          isPoll: true,
+          pollId: poll.id,
+          poll,
+        }))
+      : [];
+    const start = (page - 1) * pageSize;
+    return {
+      groupId: normalizedGroupId,
+      page,
+      pageSize,
+      totalCount: allItems.length,
+      items: allItems.slice(start, start + pageSize),
+    };
+  }
+
+  const api = await getApi(credentials);
+  const response = await api.getListBoard({ page, count: pageSize }, normalizedGroupId);
+  const items = (response.items ?? []).map((item) => {
+    const raw = item.data as Record<string, unknown>;
+    const poll = item.boardType === BoardType.Poll ? normalizePoll(raw) : null;
+    const rawStableId = normalizeId(
+      raw.poll_id ?? raw.note_id ?? raw.pin_id ?? raw.topic_id ?? raw.id ?? "",
+    );
+    const fallback = createHash("sha256")
+      .update(`${item.boardType}:${JSON.stringify(raw)}`)
+      .digest("hex")
+      .slice(0, 24);
+    return {
+      stableId: `${item.boardType}:${rawStableId || fallback}`,
+      boardType: Number(item.boardType),
+      isPoll: item.boardType === BoardType.Poll,
+      pollId: poll?.id || null,
+      poll,
+    };
+  });
+  return {
+    groupId: normalizedGroupId,
+    page,
+    pageSize,
+    totalCount: Number(response.count ?? items.length),
+    items,
+  };
+}
+
 export async function getPolls(credentials: ZaloCredentials, groupId: string): Promise<BridgePoll[]> {
   if (mockMode) return groupId === mockGroups[0]?.id ? mockPolls : [];
   const api = await getApi(credentials);
@@ -553,6 +680,10 @@ export async function getMembers(credentials: ZaloCredentials, memberIds: string
   const uniqueIds = [...new Set(memberIds.map(normalizeMemberId).filter(Boolean))];
   if (mockMode) return mockMembers.filter((member) => uniqueIds.includes(member.zaloUserId));
   const api = await getApi(credentials);
+  return resolveMembers(api, uniqueIds);
+}
+
+async function resolveMembers(api: MinimalZaloApi, uniqueIds: string[]): Promise<BridgeMember[]> {
   const members = new Map<string, BridgeMember>();
 
   for (let offset = 0; offset < uniqueIds.length; offset += 50) {
@@ -571,6 +702,43 @@ export async function getMembers(credentials: ZaloCredentials, memberIds: string
   }
 
   return uniqueIds.map((id) => members.get(id)!);
+}
+
+export async function getGroupMessageHistory(
+  credentials: ZaloCredentials,
+  groupId: string,
+  requestedCountValue: number,
+): Promise<BridgeMessageHistoryProbe> {
+  const normalizedGroupId = normalizeId(groupId);
+  const requestedCount = Math.min(5_000, Math.max(1, Math.trunc(requestedCountValue || 500)));
+  if (mockMode) {
+    const messages = mockHistoricalMessages.slice(-requestedCount);
+    return buildMessageHistoryProbe(
+      normalizedGroupId,
+      requestedCount,
+      messages,
+      0,
+      "mock-last",
+      null,
+    );
+  }
+
+  const api = await getApi(credentials);
+  if (typeof api.getGroupChatHistory !== "function") {
+    throw new Error("Installed Zalo library does not expose group chat history");
+  }
+  const response = await api.getGroupChatHistory(normalizedGroupId, requestedCount);
+  const messages = (response.groupMsgs ?? [])
+    .map(normalizeHistoricalMessage)
+    .filter((message): message is BridgeHistoricalMessage => message !== null);
+  return buildMessageHistoryProbe(
+    normalizedGroupId,
+    requestedCount,
+    messages,
+    Number(response.more ?? 0),
+    response.lastActionId ? String(response.lastActionId) : null,
+    response.lastActionIdOther ? String(response.lastActionIdOther) : null,
+  );
 }
 
 export async function getGroupRoles(credentials: ZaloCredentials, groupId: string): Promise<BridgeGroupRoles> {

@@ -12,6 +12,7 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("8", 8)]
     [InlineData("9", 9)]
     [InlineData("10", 10)]
+    [InlineData("12", 12)]
     public void Exact_numeric_command_is_accepted(string input, int expected)
     {
         Assert.True(ZaloBotIntelligence.TryGetExactCommand(input, out var command));
@@ -26,6 +27,27 @@ public sealed class ZaloBotIntelligenceTests
     public void Numeric_prefix_is_not_an_exact_command(string input)
     {
         Assert.False(ZaloBotIntelligence.TryGetExactCommand(input, out _));
+    }
+
+    [Fact]
+    public void Command_12_opens_member_inactivity_flow()
+    {
+        Assert.Equal(ZaloBotIntent.ListMostInactiveMembers, ZaloBotIntelligence.IntentForCommand(12));
+    }
+
+    [Theory]
+    [InlineData("ai 4 tháng rồi chưa vote?", ZaloBotIntent.ListMembersWithoutRecentVote)]
+    [InlineData("ai 90 ngày chưa nhắn?", ZaloBotIntent.ListMembersWithoutRecentMessage)]
+    [InlineData("Long hoạt động gần nhất khi nào?", ZaloBotIntent.GetMemberLastActivity)]
+    [InlineData("Long vote poll gần nhất nào?", ZaloBotIntent.GetMemberLastVote)]
+    [InlineData("top 10 người ít hoạt động nhất", ZaloBotIntent.ListMostInactiveMembers)]
+    [InlineData("ai đang có dấu hiệu giảm hoạt động?", ZaloBotIntent.ListAtRiskMembers)]
+    [InlineData("tình hình hoạt động của nhóm tháng này thế nào?", ZaloBotIntent.AnalyzeGroupEngagement)]
+    [InlineData("đồng bộ lại dữ liệu cũ", ZaloBotIntent.SyncMemberActivity)]
+    [InlineData("đồng bộ tới đâu rồi?", ZaloBotIntent.GetActivitySyncStatus)]
+    public void Member_intelligence_phrases_have_deterministic_routes(string input, ZaloBotIntent expected)
+    {
+        Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
     }
 
     [Theory]

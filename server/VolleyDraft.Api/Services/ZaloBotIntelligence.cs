@@ -52,6 +52,18 @@ public enum ZaloBotIntent
     ActionHistory,
     UndoAction,
     UndoActionConfirm,
+    ListMembersWithoutRecentVote,
+    ListMembersWithoutRecentMessage,
+    GetMemberLastActivity,
+    GetMemberLastVote,
+    GetMemberLastMessage,
+    AnalyzeMemberVoteActivity,
+    AnalyzeMemberMessageActivity,
+    AnalyzeGroupEngagement,
+    ListMostInactiveMembers,
+    ListAtRiskMembers,
+    SyncMemberActivity,
+    GetActivitySyncStatus,
     GeneralChat
 }
 
@@ -121,7 +133,7 @@ public sealed record ZaloSessionReference(string Id, string Name, DateTimeOffset
 
 public static class ZaloBotIntelligence
 {
-    private static readonly Regex ExactCommandRegex = new("^(?:[1-9]|10)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ExactCommandRegex = new("^(?:[1-9]|10|12)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "ai", "hoi", "hay", "la", "thi", "cho", "minh", "tui", "toi", "em", "anh", "chi",
@@ -177,6 +189,7 @@ public static class ZaloBotIntelligence
         8 => ZaloBotIntent.SyncPoll,
         9 => ZaloBotIntent.AutoDraft,
         10 => ZaloBotIntent.TeamImage,
+        12 => ZaloBotIntent.ListMostInactiveMembers,
         _ => ZaloBotIntent.Unknown
     };
 
@@ -388,6 +401,32 @@ public static class ZaloBotIntelligence
         }
         if (Regex.IsMatch(q, @"^(help|tro giup|huong dan|menu|lenh)$", RegexOptions.CultureInvariant))
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
+        if (Has(q, "dong bo du lieu cu", "dong bo lai du lieu cu", "dong bo hoat dong", "quet lai du lieu zalo", "sync member activity", "sync hoat dong"))
+            return new(ZaloBotIntent.SyncMemberActivity, .99, q, false, null, "member_activity_sync");
+        if (Has(q, "dong bo toi dau", "tien do dong bo", "trang thai dong bo", "quet du lieu toi dau"))
+            return new(ZaloBotIntent.GetActivitySyncStatus, .99, q, false, null, "member_activity_sync_status");
+        if (Has(q, "top") && Has(q, "it hoat dong", "khong hoat dong", "im lang", "inactive"))
+            return new(ZaloBotIntent.ListMostInactiveMembers, .98, q, false, null, "most_inactive_members");
+        if (Has(q, "dau hieu giam hoat dong", "co nguy co roi nhom", "at risk", "giam tuong tac"))
+            return new(ZaloBotIntent.ListAtRiskMembers, .98, q, false, null, "at_risk_members");
+        if (Has(q, "tinh hinh hoat dong cua nhom", "phan tich hoat dong nhom", "group engagement", "tong quan hoat dong"))
+            return new(ZaloBotIntent.AnalyzeGroupEngagement, .98, q, false, null, "group_engagement");
+        if (Has(q, "phan tich vote", "phan tich binh chon", "ti le vote", "ty le vote"))
+            return new(ZaloBotIntent.AnalyzeMemberVoteActivity, .98, q, false, null, "member_vote_analysis");
+        if (Has(q, "phan tich tin nhan", "phan tich nhan tin", "phan tich chat", "hoat dong chat"))
+            return new(ZaloBotIntent.AnalyzeMemberMessageActivity, .98, q, false, null, "member_message_analysis");
+        if (Has(q, "vote gan nhat", "poll gan nhat", "binh chon gan nhat"))
+            return new(ZaloBotIntent.GetMemberLastVote, .98, q, false, null, "member_last_vote");
+        if (Has(q, "nhan tin lan cuoi", "nhan lan cuoi", "tin nhan gan nhat", "chat lan cuoi"))
+            return new(ZaloBotIntent.GetMemberLastMessage, .98, q, false, null, "member_last_message");
+        if (Has(q, "hoat dong gan nhat", "hoat dong lan cuoi", "lan cuoi hoat dong", "dao nay con hoat dong"))
+            return new(ZaloBotIntent.GetMemberLastActivity, .98, q, false, null, "member_last_activity");
+        if ((Has(q, "ai", "nhung ai", "loc nguoi", "danh sach") &&
+             Has(q, "chua vote", "khong vote", "lau roi khong vote", "khong binh chon", "khong tham gia poll")))
+            return new(ZaloBotIntent.ListMembersWithoutRecentVote, .98, q, false, null, "members_without_recent_vote");
+        if ((Has(q, "ai", "nhung ai", "loc nguoi", "danh sach") &&
+             Has(q, "chua nhan", "khong nhan", "chua chat", "khong chat", "im lang")))
+            return new(ZaloBotIntent.ListMembersWithoutRecentMessage, .98, q, false, null, "members_without_recent_message");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
         if (ZaloNaturalCommandParser.TryParseTeamPreference(value, out _))

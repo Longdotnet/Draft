@@ -18,6 +18,7 @@ public sealed class ZaloBotService(
     ZaloTeamCardService teamCards,
     SessionWaitlistService waitlists,
     ZaloBotActionHistoryService actionHistory,
+    ZaloMemberIntelligenceBotService memberIntelligence,
     ZaloListenerCoordinator listenerCoordinator,
     ZaloSchedulerTrigger schedulerTrigger,
     IConfiguration configuration,
@@ -428,6 +429,22 @@ public sealed class ZaloBotService(
             return new BotAnswer("Nhóm này chưa có trận nào đang bật bot. Bạn nhờ admin kiểm tra cấu hình nhé.", null);
         }
 
+        var memberActivityAnswer = await memberIntelligence.TryHandleAsync(
+            activeConnectionId,
+            groupId,
+            incoming,
+            question,
+            cancellationToken);
+        if (memberActivityAnswer is not null)
+        {
+            return new BotAnswer(
+                memberActivityAnswer.Text,
+                null,
+                memberActivityAnswer.Intent,
+                memberActivityAnswer.AiCalled,
+                ProtectedTerms: memberActivityAnswer.ProtectedTerms);
+        }
+
         // Resolve an outstanding confirmation before parsing the new text as a
         // fresh command. This is what makes "xác nhận" execute the exact
         // previewed reminder instead of re-parsing the word "xác nhận".
@@ -655,7 +672,7 @@ public sealed class ZaloBotService(
             decision = ZaloBotIntelligence.ClassifyDeterministically(question);
             if (decision.Intent == ZaloBotIntent.Unknown)
             {
-                var commandWithSelector = Regex.Match(normalizedQuestion, @"^(?<command>10|[1-9])\s+(?<selector>.+)$", RegexOptions.CultureInvariant);
+                var commandWithSelector = Regex.Match(normalizedQuestion, @"^(?<command>10|12|[1-9])\s+(?<selector>.+)$", RegexOptions.CultureInvariant);
                 if (commandWithSelector.Success && HasExplicitSessionSelector(sessions, commandWithSelector.Groups["selector"].Value))
                 {
                     decision = new ZaloIntentDecision(
@@ -713,7 +730,7 @@ public sealed class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n\nBạn cũng có thể nói: “cân bằng team 2 và team 3”, “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Các lệnh thay đổi đội hình sẽ hỏi xác nhận; undo chỉ khôi phục dữ liệu backend, không thu hồi tin Zalo.\n\nNgười có quyền gồm trưởng nhóm, phó nhóm và UID được admin cấp. Nếu có nhiều trận, hãy thêm ngày hoặc tên trận.",
+                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n12. Lọc thành viên ít hoạt động (có quyền)\n\nVới lệnh 12, bot sẽ hỏi số người cần xem rồi đưa bằng chứng gần nhất từ poll/tin nhắn đã đồng bộ. Bạn cũng có thể hỏi tự nhiên như “ai 4 tháng chưa vote?”, “tui vote gần nhất ở poll nào?”, “top 10 người ít hoạt động nhất” hoặc “đồng bộ tới đâu rồi?”.\n\nBạn cũng có thể nói: “cân bằng team 2 và team 3”, “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Các lệnh thay đổi đội hình sẽ hỏi xác nhận; undo chỉ khôi phục dữ liệu backend, không thu hồi tin Zalo.\n\nDanh sách và phân tích toàn nhóm chỉ dành cho trưởng nhóm, phó nhóm và UID được admin cấp. Thành viên thường vẫn xem được hoạt động của chính mình.",
                 null,
                 ZaloBotIntent.Help);
         }

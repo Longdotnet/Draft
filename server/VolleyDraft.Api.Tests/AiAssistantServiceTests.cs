@@ -161,6 +161,54 @@ public sealed class AiAssistantServiceTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task Member_activity_classifier_keeps_four_months_as_calendar_months()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"intent\":\"ListMembersWithoutRecentVote\",\"confidence\":0.97,\"memberReference\":null,\"timeRange\":{\"kind\":\"PreviousCalendarMonths\",\"amount\":4,\"startDate\":null,\"endDate\":null},\"limit\":10,\"needsClarification\":false}"}}]}""");
+
+        var result = await service.ClassifyMemberActivityAsync(new ZaloMemberActivityClassifierContext(
+            "ai 4 tháng rồi chưa vote?",
+            "sender",
+            "Thanh Long",
+            new DateTimeOffset(2026, 7, 24, 10, 0, 0, TimeSpan.FromHours(7))));
+
+        Assert.NotNull(result);
+        Assert.Equal(ZaloBotIntent.ListMembersWithoutRecentVote, result!.Intent);
+        Assert.Equal(ZaloActivityTimeRangeKind.PreviousCalendarMonths, result.TimeRange?.Kind);
+        Assert.Equal(4, result.TimeRange?.Amount);
+    }
+
+    [Fact]
+    public async Task Invalid_member_activity_range_is_rejected()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"intent\":\"AnalyzeMemberVoteActivity\",\"confidence\":0.95,\"memberReference\":\"Long\",\"timeRange\":{\"kind\":\"ExplicitRange\",\"amount\":null,\"startDate\":\"2026-07-20\",\"endDate\":\"2026-03-01\"},\"limit\":null,\"needsClarification\":false}"}}]}""");
+
+        var result = await service.ClassifyMemberActivityAsync(new ZaloMemberActivityClassifierContext(
+            "phân tích vote của Long",
+            "sender",
+            "Thanh Long",
+            DateTimeOffset.UtcNow));
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task Malformed_member_activity_json_falls_back_to_null()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"not-json"}}]}""");
+
+        var result = await service.ClassifyMemberActivityAsync(new ZaloMemberActivityClassifierContext(
+            "ai lâu rồi không vote?",
+            "sender",
+            "Thanh Long",
+            DateTimeOffset.UtcNow));
+
+        Assert.Null(result);
+    }
+
     private static AiAssistantService CreateService(HttpStatusCode statusCode, string responseBody)
     {
         var configuration = new ConfigurationBuilder()

@@ -327,6 +327,91 @@ public sealed record ZaloPollImportResultResponse(
     int SessionPlayerCount,
     string Message);
 
+public sealed record ZaloActivityBackfillStatusResponse(
+    string JobId,
+    ZaloActivityBackfillStage Stage,
+    ZaloActivityBackfillStatus Status,
+    int MembersSynchronized,
+    int TotalBoardItemsScanned,
+    int TotalPollsDiscovered,
+    int TotalPollsWithVoterIdentities,
+    int TotalPollsExcluded,
+    int MessagesImported,
+    int ProcessedCount,
+    int? DiscoveredTotal,
+    ZaloMessageHistoryCapability MessageHistoryCapability,
+    DateTimeOffset? OldestRetrievablePollAt,
+    DateTimeOffset? NewestRetrievablePollAt,
+    DateTimeOffset? OldestRetrievableMessageAt,
+    DateTimeOffset? NewestRetrievableMessageAt,
+    DateTimeOffset? LastIncrementalSyncAt,
+    DateTimeOffset? BackfillStartedAt,
+    DateTimeOffset? BackfillCompletedAt,
+    string? LastErrorSummary);
+
+public sealed record StartZaloActivitySyncRequest(bool Full = true);
+
+public sealed record ZaloActivityCoverageResponse(
+    bool BackfillComplete,
+    ZaloActivityBackfillStatus? BackfillStatus,
+    ZaloMessageHistoryCapability MessageHistoryCapability,
+    DateTimeOffset? OldestPollAt,
+    DateTimeOffset? NewestPollAt,
+    DateTimeOffset? OldestMessageAt,
+    DateTimeOffset? NewestMessageAt,
+    int EligiblePollCount,
+    int ExcludedPollCount,
+    string? Warning);
+
+public sealed record ZaloMemberActivityResponse(
+    string ZaloUserId,
+    string DisplayName,
+    string? AvatarUrl,
+    bool IsCurrentMember,
+    bool IsNewMember,
+    DateTimeOffset FirstSeenAt,
+    DateTimeOffset? LastMessageAt,
+    int MessageCount,
+    int ActiveMessageDays,
+    DateTimeOffset? LastVotedPollCreatedAt,
+    DateTimeOffset? LastVotedPollUpdatedAt,
+    DateTimeOffset? LastVotedPollFirstObservedAt,
+    DateTimeOffset? ExactUserVoteAt,
+    string? LastVotedPollQuestion,
+    int EligiblePollCount,
+    int VotedPollCount,
+    int TotalSelectedOptions,
+    double? VoteParticipationRate,
+    double? PreviousPeriodParticipationRate,
+    double? RecentPeriodParticipationRate,
+    int ConsecutiveEligiblePollsMissed,
+    string Trend,
+    DateTimeOffset? LastActivityAt,
+    string? LastActivitySource,
+    ZaloEngagementStatus EngagementStatus,
+    string DataConfidence);
+
+public sealed record ZaloMemberActivityPageResponse(
+    IReadOnlyList<ZaloMemberActivityResponse> Items,
+    int Page,
+    int PageSize,
+    int TotalItems,
+    int TotalPages,
+    DateTimeOffset PeriodStart,
+    DateTimeOffset PeriodEnd,
+    ZaloActivityCoverageResponse Coverage);
+
+public sealed record ZaloGroupEngagementResponse(
+    int CurrentMemberCount,
+    int ActiveVoters,
+    int ActiveMessageSenders,
+    int NoVoteCount,
+    int NoMessageCount,
+    int InsufficientDataCount,
+    DateTimeOffset PeriodStart,
+    DateTimeOffset PeriodEnd,
+    ZaloActivityCoverageResponse Coverage);
+
 public sealed record SharedSlotResponse(
     string Id,
     string DisplayName,

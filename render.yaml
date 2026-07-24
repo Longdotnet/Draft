@@ -65,6 +65,24 @@ services:
         value: "0.72"
       - key: ZaloBot__LearnedRuleSimilarityThreshold
         value: "0.82"
+      - key: ZaloActivitySync__BoardPageSize
+        value: "50"
+      - key: ZaloActivitySync__MaxBoardPages
+        value: "100"
+      - key: ZaloActivitySync__IncrementalBoardPages
+        value: "5"
+      - key: ZaloActivitySync__MessageHistoryCount
+        value: "2000"
+      - key: ZaloActivitySync__RetryCount
+        value: "4"
+      - key: ZaloActivitySync__RetryDelayMs
+        value: "750"
+      - key: ZaloActivitySync__PauseBetweenRequestsMs
+        value: "150"
+      - key: ZaloActivitySync__IncrementalMinutes
+        value: "60"
+      - key: ZaloActivitySync__LeaseMinutes
+        value: "10"
 
   - type: web
     name: volley-draft-zalo-bridge

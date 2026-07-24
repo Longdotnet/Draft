@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zalo Member Intelligence"
+  short_description: "Build trustworthy Zalo member activity analytics"
+  default_prompt: "Use $zalo-member-intelligence to implement UID-based Zalo member synchronization and factual activity analytics."

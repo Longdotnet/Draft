@@ -41,6 +41,53 @@ export type BridgeMember = {
   avatarUrl: string | null;
 };
 
+export type BridgeGroupMemberDirectory = {
+  groupId: string;
+  groupName: string;
+  groupCreatedAtUnixMs: number;
+  expectedMemberCount: number;
+  isComplete: boolean;
+  members: BridgeMember[];
+};
+
+export type BridgeBoardItem = {
+  stableId: string;
+  boardType: number;
+  isPoll: boolean;
+  pollId: string | null;
+  poll: BridgePoll | null;
+};
+
+export type BridgeBoardPage = {
+  groupId: string;
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  items: BridgeBoardItem[];
+};
+
+export type BridgeHistoricalMessage = {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  content: string;
+  messageType: string;
+  isFromBot: boolean;
+  sentAtUnixMs: number;
+};
+
+export type BridgeMessageHistoryProbe = {
+  groupId: string;
+  requestedCount: number;
+  returnedCount: number;
+  more: number;
+  lastActionId: string | null;
+  lastActionIdOther: string | null;
+  oldestMessageAtUnixMs: number | null;
+  newestMessageAtUnixMs: number | null;
+  messages: BridgeHistoricalMessage[];
+};
+
 export type BridgeGroupRoles = {
   groupId: string;
   creatorId: string;

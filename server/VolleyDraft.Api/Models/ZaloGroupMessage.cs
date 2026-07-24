@@ -9,9 +9,13 @@ public sealed class ZaloGroupMessage
     public string SenderId { get; set; } = string.Empty;
     public string SenderName { get; set; } = string.Empty;
     public string Content { get; set; } = string.Empty;
+    public string MessageType { get; set; } = "chat";
+    public string ObservationSource { get; set; } = "Realtime";
     public bool IsFromBot { get; set; }
     public DateTimeOffset SentAt { get; set; }
     public DateTimeOffset ReceivedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset FirstObservedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset LastObservedAt { get; set; } = DateTimeOffset.UtcNow;
     public int ReplyAttemptCount { get; set; }
     public DateTimeOffset? BotReplySentAt { get; set; }
     public DateTimeOffset? ProcessingStartedAt { get; set; }

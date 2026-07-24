@@ -9,6 +9,21 @@ namespace VolleyDraft.Api.Services;
 public sealed class AiAssistantService(HttpClient httpClient, IConfiguration configuration, ILogger<AiAssistantService> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly HashSet<ZaloBotIntent> MemberActivityIntents =
+    [
+        ZaloBotIntent.ListMembersWithoutRecentVote,
+        ZaloBotIntent.ListMembersWithoutRecentMessage,
+        ZaloBotIntent.GetMemberLastActivity,
+        ZaloBotIntent.GetMemberLastVote,
+        ZaloBotIntent.GetMemberLastMessage,
+        ZaloBotIntent.AnalyzeMemberVoteActivity,
+        ZaloBotIntent.AnalyzeMemberMessageActivity,
+        ZaloBotIntent.AnalyzeGroupEngagement,
+        ZaloBotIntent.ListMostInactiveMembers,
+        ZaloBotIntent.ListAtRiskMembers,
+        ZaloBotIntent.SyncMemberActivity,
+        ZaloBotIntent.GetActivitySyncStatus
+    ];
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
         !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
@@ -29,7 +44,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, TeamPreference, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, TeamPreference, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, ListMembersWithoutRecentVote, ListMembersWithoutRecentMessage, GetMemberLastActivity, GetMemberLastVote, GetMemberLastMessage, AnalyzeMemberVoteActivity, AnalyzeMemberMessageActivity, AnalyzeGroupEngagement, ListMostInactiveMembers, ListAtRiskMembers, SyncMemberActivity, GetActivitySyncStatus, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -73,6 +88,133 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         if (ZaloBotIntelligence.TryParseClassifierJson(content, out var decision)) return decision;
         logger.LogWarning("AI classifier returned invalid structured output: {Output}", Truncate(content, 500));
         return new(ZaloBotIntent.Unknown, 0, null, false, null, "invalid_classifier_output");
+    }
+
+    public async Task<ZaloMemberActivityClassification?> ClassifyMemberActivityAsync(
+        ZaloMemberActivityClassifierContext context,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured) return null;
+        var prompt = """
+            Bạn chỉ phân loại câu hỏi quản lý hoạt động thành viên nhóm Zalo và trích xuất dữ liệu có cấu trúc.
+            Chỉ trả về đúng một JSON object, không markdown, không giải thích, không tạo tên người hoặc ngày không có trong câu hỏi.
+
+            Schema:
+            {
+              "intent": "ListMembersWithoutRecentVote",
+              "confidence": 0.96,
+              "memberReference": null,
+              "timeRange": {
+                "kind": "PreviousCalendarMonths",
+                "amount": 4,
+                "startDate": null,
+                "endDate": null
+              },
+              "limit": 10,
+              "needsClarification": false
+            }
+
+            intent chỉ được là: ListMembersWithoutRecentVote, ListMembersWithoutRecentMessage,
+            GetMemberLastActivity, GetMemberLastVote, GetMemberLastMessage,
+            AnalyzeMemberVoteActivity, AnalyzeMemberMessageActivity, AnalyzeGroupEngagement,
+            ListMostInactiveMembers, ListAtRiskMembers, SyncMemberActivity,
+            GetActivitySyncStatus, Unknown.
+
+            timeRange.kind chỉ được là: PreviousDays, PreviousCalendarMonths, ThisWeek,
+            ThisMonth, ThisYear, SinceMonth, ExplicitRange, Recent.
+            - "4 tháng" là PreviousCalendarMonths amount=4, không đổi thành 120 ngày.
+            - "90 ngày" là PreviousDays amount=90.
+            - ngày cụ thể dùng yyyy-MM-dd và chỉ lấy ngày thật sự có trong câu hỏi.
+            - memberReference giữ nguyên tên/cách gọi trong câu hỏi; "tui/mình/em/tôi" giữ nguyên.
+            - limit từ 1 đến 30. Không có thì null.
+            - Không sinh SQL, method, entity hay lệnh thực thi.
+            """;
+        var payload = new
+        {
+            model = configuration["Ai:Model"],
+            temperature = 0,
+            max_tokens = 260,
+            messages = new object[]
+            {
+                new { role = "system", content = prompt },
+                new { role = "user", content = JsonSerializer.Serialize(context, JsonOptions) }
+            }
+        };
+        var content = await SendForContentAsync(
+            configuration["Ai:Endpoint"]!,
+            configuration["Ai:ApiKey"]!,
+            payload,
+            "member_activity_classifier",
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(content)) return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(StripCodeFence(content));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !Enum.TryParse<ZaloBotIntent>(ReadJsonString(root, "intent"), true, out var intent) ||
+                !MemberActivityIntents.Contains(intent))
+                return null;
+            var confidence = root.TryGetProperty("confidence", out var confidenceNode) &&
+                             confidenceNode.TryGetDouble(out var confidenceValue)
+                ? Math.Clamp(confidenceValue, 0, 1)
+                : 0;
+            var memberReference = ReadJsonString(root, "memberReference");
+            var needsClarification = root.TryGetProperty("needsClarification", out var clarificationNode) &&
+                                     clarificationNode.ValueKind == JsonValueKind.True;
+            int? limit = TryReadInt32(root, "limit", out var parsedLimit)
+                ? Math.Clamp(parsedLimit, 1, 30)
+                : null;
+            ZaloActivityTimeRangeExtraction? timeRange = null;
+            if (root.TryGetProperty("timeRange", out var rangeNode) &&
+                rangeNode.ValueKind == JsonValueKind.Object &&
+                Enum.TryParse<ZaloActivityTimeRangeKind>(
+                    ReadJsonString(rangeNode, "kind"),
+                    true,
+                    out var kind))
+            {
+                int? amount = TryReadInt32(rangeNode, "amount", out var parsedAmount)
+                    ? Math.Clamp(parsedAmount, 1, 3650)
+                    : null;
+                DateOnly? startDate = DateOnly.TryParseExact(
+                    ReadJsonString(rangeNode, "startDate"),
+                    "yyyy-MM-dd",
+                    out var parsedStart)
+                    ? parsedStart
+                    : null;
+                DateOnly? endDate = DateOnly.TryParseExact(
+                    ReadJsonString(rangeNode, "endDate"),
+                    "yyyy-MM-dd",
+                    out var parsedEnd)
+                    ? parsedEnd
+                    : null;
+                if (kind == ZaloActivityTimeRangeKind.ExplicitRange &&
+                    (startDate is null || endDate is null || endDate < startDate))
+                    return null;
+                if (kind is ZaloActivityTimeRangeKind.PreviousDays or
+                    ZaloActivityTimeRangeKind.PreviousCalendarMonths &&
+                    amount is null)
+                    return null;
+                timeRange = new ZaloActivityTimeRangeExtraction(kind, amount, startDate, endDate);
+            }
+
+            return new ZaloMemberActivityClassification(
+                intent,
+                confidence,
+                string.IsNullOrWhiteSpace(memberReference) ? null : memberReference.Trim(),
+                timeRange,
+                limit,
+                needsClarification);
+        }
+        catch (JsonException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "AI member activity classifier returned invalid JSON: {Output}",
+                Truncate(content, 500));
+            return null;
+        }
     }
 
     public async Task<ZaloReminderCommand?> ParseReminderCommandAsync(
@@ -621,6 +763,38 @@ public sealed record ZaloIntentClassifierContext(
     ZaloAiSender Sender,
     IReadOnlyList<ZaloAiMessage> RecentMessages,
     IReadOnlyList<ZaloAiSessionReference> AvailableSessions,
+    DateTimeOffset CurrentVietnamTime);
+
+public enum ZaloActivityTimeRangeKind
+{
+    PreviousDays,
+    PreviousCalendarMonths,
+    ThisWeek,
+    ThisMonth,
+    ThisYear,
+    SinceMonth,
+    ExplicitRange,
+    Recent
+}
+
+public sealed record ZaloActivityTimeRangeExtraction(
+    ZaloActivityTimeRangeKind Kind,
+    int? Amount,
+    DateOnly? StartDate,
+    DateOnly? EndDate);
+
+public sealed record ZaloMemberActivityClassification(
+    ZaloBotIntent Intent,
+    double Confidence,
+    string? MemberReference,
+    ZaloActivityTimeRangeExtraction? TimeRange,
+    int? Limit,
+    bool NeedsClarification);
+
+public sealed record ZaloMemberActivityClassifierContext(
+    string Question,
+    string SenderZaloUserId,
+    string SenderName,
     DateTimeOffset CurrentVietnamTime);
 
 public sealed record ZaloAiRewriteContext(

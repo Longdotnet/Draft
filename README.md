@@ -80,6 +80,26 @@ Người vote nhiều option chỉ xuất hiện một lần. Tên và avatar đ
 
 Poll ẩn danh hoặc poll không trả danh sách voter sẽ bị từ chối. Nếu poll thay đổi sau màn hình preview, API yêu cầu tải preview lại. Sau import, giao diện cảnh báo nếu tổng người chưa đủ hoặc chưa chia hết cho ba.
 
+## Zalo Member Intelligence
+
+Khi liên kết group, hệ thống tự chạy backfill nền cho danh bạ thành viên, toàn bộ board/poll mà tài khoản Zalo truy cập được và phần lịch sử chat mà thư viện hiện tại chứng minh có thể lấy. Dữ liệu được lưu chuẩn hóa theo `ZaloUserId` trong PostgreSQL; coverage không mặc định bắt đầu từ ngày bot/listener được cài.
+
+Bot hỗ trợ:
+
+```text
+@bot ai 4 tháng rồi chưa vote?
+@bot ai 90 ngày chưa nhắn?
+@bot Long hoạt động gần nhất khi nào?
+@bot phân tích vote của Long 4 tháng qua
+@bot top 10 người ít hoạt động nhất
+@bot đồng bộ tới đâu rồi?
+@bot 12
+```
+
+AI chỉ hiểu câu hỏi và diễn đạt kết quả. C# tính mọi tên, ngày, count, percentage và coverage từ database; AI lỗi/quota hết thì báo cáo deterministic vẫn hoạt động. Danh sách toàn nhóm chỉ dành cho admin/operator/trưởng-phó nhóm, còn thành viên thường chỉ xem được chính mình.
+
+Xem flow, schema, timestamp semantics, capability lịch sử message, env, test và checklist deploy tại [`docs/ZALO_MEMBER_INTELLIGENCE.md`](docs/ZALO_MEMBER_INTELLIGENCE.md).
+
 ### Bot reminder khi dùng Render Free
 
 Bot nhận lệnh lịch nhắc tự nhiên từ trưởng nhóm, phó nhóm hoặc operator được admin cấp, ví dụ `@bot cứ 6 tiếng nhắc nếu còn thiếu slot`, `@bot nhắc T6 sau 30 phút một lần`, `@bot nhắc ngay`, `@bot xem lịch nhắc`, `@bot tắt nhắc CN`.

@@ -25,6 +25,7 @@ import {
   type ZaloQrLoginStatusResponse,
 } from "../api/dbClient";
 import { Badge } from "./ui";
+import { ZaloMemberIntelligencePanel } from "./ZaloMemberIntelligencePanel";
 
 type CandidateDraft = Omit<ZaloImportCandidateResponse, "gender"> & {
   gender: DbGender | null;
@@ -782,6 +783,8 @@ export function ZaloPollImportPanel({
           <code>@bot cho tui vào danh sách chờ T6</code>
           <code>@bot xem waitlist T6</code>
           <code>@bot undo thao tác vừa rồi</code>
+          <code>@bot 12</code>
+          <code>@bot ai 4 tháng rồi chưa vote?</code>
         </div>
         <div className="zalo-automation-grid">
           <section className="zalo-rule-review">
@@ -867,6 +870,8 @@ export function ZaloPollImportPanel({
           {botSettings.lastReminderError && <small className="error-text">Lần gửi gần nhất lỗi ({botSettings.reminderFailureCount}): {botSettings.lastReminderError}</small>}
         </div>
       </div>
+
+      <ZaloMemberIntelligencePanel token={token} session={session} />
 
       <div className="zalo-step zalo-link-step">
         <div className="zalo-step-heading"><span>2</span><strong>Liên kết nhóm</strong></div>

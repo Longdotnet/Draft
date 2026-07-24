@@ -60,6 +60,8 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloBotImageTables(db);
             await EnsureSqliteZaloReminderScheduleTables(db);
             await EnsureSqliteWaitlistAndActionHistoryTables(db);
+            await EnsureSqliteMemberIntelligenceTables(db);
+            await EnsureSqliteColumn(db, "ZaloActivityBackfillJobs", "IsFullBackfill", "\"IsFullBackfill\" INTEGER NOT NULL DEFAULT 1");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "IncludePaymentQr", "\"IncludePaymentQr\" INTEGER NOT NULL DEFAULT 0");
@@ -71,6 +73,22 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "SelectedIntent", "\"SelectedIntent\" TEXT NULL");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "AiCalled", "\"AiCalled\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloGroupMessages", "ReplyOutcome", "\"ReplyOutcome\" TEXT NULL");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "MessageType", "\"MessageType\" TEXT NOT NULL DEFAULT 'chat'");
+            await EnsureSqliteColumn(db, "ZaloGroupMessages", "ObservationSource", "\"ObservationSource\" TEXT NOT NULL DEFAULT 'Realtime'");
+            var sqliteFirstObservedAdded = await EnsureSqliteColumn(
+                db,
+                "ZaloGroupMessages",
+                "FirstObservedAt",
+                "\"FirstObservedAt\" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'");
+            var sqliteLastObservedAdded = await EnsureSqliteColumn(
+                db,
+                "ZaloGroupMessages",
+                "LastObservedAt",
+                "\"LastObservedAt\" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'");
+            if (sqliteFirstObservedAdded)
+                await db.Database.ExecuteSqlRawAsync("""UPDATE "ZaloGroupMessages" SET "FirstObservedAt" = "ReceivedAt";""");
+            if (sqliteLastObservedAdded)
+                await db.Database.ExecuteSqlRawAsync("""UPDATE "ZaloGroupMessages" SET "LastObservedAt" = "ReceivedAt";""");
             await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "Status", "\"Status\" TEXT NOT NULL DEFAULT 'Pending'");
             await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "Scope", "\"Scope\" TEXT NOT NULL DEFAULT 'Group'");
             await EnsureSqliteColumn(db, "ZaloBotLearnedRules", "Priority", "\"Priority\" INTEGER NOT NULL DEFAULT 0");
@@ -132,6 +150,8 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloBotImageTables(db);
             await EnsurePostgresZaloReminderScheduleTables(db);
             await EnsurePostgresWaitlistAndActionHistoryTables(db);
+            await EnsurePostgresMemberIntelligenceTables(db);
+            await EnsurePostgresColumn(db, "ZaloActivityBackfillJobs", "IsFullBackfill", "\"IsFullBackfill\" boolean NOT NULL DEFAULT TRUE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "IncludePaymentQr", "\"IncludePaymentQr\" boolean NOT NULL DEFAULT FALSE");
@@ -143,6 +163,22 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "SelectedIntent", "\"SelectedIntent\" text NULL");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "AiCalled", "\"AiCalled\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloGroupMessages", "ReplyOutcome", "\"ReplyOutcome\" text NULL");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "MessageType", "\"MessageType\" text NOT NULL DEFAULT 'chat'");
+            await EnsurePostgresColumn(db, "ZaloGroupMessages", "ObservationSource", "\"ObservationSource\" text NOT NULL DEFAULT 'Realtime'");
+            var postgresFirstObservedAdded = await EnsurePostgresColumn(
+                db,
+                "ZaloGroupMessages",
+                "FirstObservedAt",
+                "\"FirstObservedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+            var postgresLastObservedAdded = await EnsurePostgresColumn(
+                db,
+                "ZaloGroupMessages",
+                "LastObservedAt",
+                "\"LastObservedAt\" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP");
+            if (postgresFirstObservedAdded)
+                await db.Database.ExecuteSqlRawAsync("""UPDATE "ZaloGroupMessages" SET "FirstObservedAt" = "ReceivedAt";""");
+            if (postgresLastObservedAdded)
+                await db.Database.ExecuteSqlRawAsync("""UPDATE "ZaloGroupMessages" SET "LastObservedAt" = "ReceivedAt";""");
             await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "Status", "\"Status\" text NOT NULL DEFAULT 'Pending'");
             await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "Scope", "\"Scope\" text NOT NULL DEFAULT 'Group'");
             await EnsurePostgresColumn(db, "ZaloBotLearnedRules", "Priority", "\"Priority\" integer NOT NULL DEFAULT 0");
@@ -901,5 +937,269 @@ public static class DatabaseSchemaPatch
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotActionHistory_SessionId_CreatedAt" ON "ZaloBotActionHistory" ("SessionId", "CreatedAt");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotActionHistory_SessionId_IsUndoable_UndoneAt" ON "ZaloBotActionHistory" ("SessionId", "IsUndoable", "UndoneAt");""");
+    }
+
+    private static async Task EnsureSqliteMemberIntelligenceTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloGroupMembers" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloGroupMembers" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "ZaloUserId" TEXT NOT NULL,
+                "DisplayName" TEXT NOT NULL,
+                "AvatarUrl" TEXT NULL,
+                "FirstSeenAt" TEXT NOT NULL,
+                "LastSeenAt" TEXT NOT NULL,
+                "LastSyncedAt" TEXT NOT NULL,
+                "IsCurrentMember" INTEGER NOT NULL DEFAULT 1,
+                "LeftAt" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloGroupMembers_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloPollSnapshots" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloPollSnapshots" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "PollId" TEXT NOT NULL,
+                "Question" TEXT NOT NULL,
+                "CreatorZaloUserId" TEXT NOT NULL,
+                "CreatedAtFromZalo" TEXT NULL,
+                "UpdatedAtFromZalo" TEXT NULL,
+                "FirstObservedAt" TEXT NOT NULL,
+                "LastObservedAt" TEXT NOT NULL,
+                "IsClosed" INTEGER NOT NULL DEFAULT 0,
+                "IsAnonymous" INTEGER NOT NULL DEFAULT 0,
+                "AllowsMultipleChoices" INTEGER NOT NULL DEFAULT 0,
+                "HasVoterIdentities" INTEGER NOT NULL DEFAULT 0,
+                "IsAnalyticsEligible" INTEGER NOT NULL DEFAULT 0,
+                "ExclusionReason" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloPollSnapshots_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloPollOptionSnapshots" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloPollOptionSnapshots" PRIMARY KEY,
+                "PollSnapshotId" TEXT NOT NULL,
+                "ZaloOptionId" TEXT NOT NULL,
+                "Content" TEXT NOT NULL,
+                "FirstObservedAt" TEXT NOT NULL,
+                "LastObservedAt" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloPollOptionSnapshots_ZaloPollSnapshots_PollSnapshotId"
+                    FOREIGN KEY ("PollSnapshotId") REFERENCES "ZaloPollSnapshots" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloPollVoteActivities" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloPollVoteActivities" PRIMARY KEY,
+                "PollSnapshotId" TEXT NOT NULL,
+                "PollOptionSnapshotId" TEXT NOT NULL,
+                "ZaloUserId" TEXT NOT NULL,
+                "FirstObservedAt" TEXT NOT NULL,
+                "LastObservedAt" TEXT NOT NULL,
+                "IsCurrentlySelected" INTEGER NOT NULL DEFAULT 1,
+                "RemovedObservedAt" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloPollVoteActivities_ZaloPollSnapshots_PollSnapshotId"
+                    FOREIGN KEY ("PollSnapshotId") REFERENCES "ZaloPollSnapshots" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_ZaloPollVoteActivities_ZaloPollOptionSnapshots_PollOptionSnapshotId"
+                    FOREIGN KEY ("PollOptionSnapshotId") REFERENCES "ZaloPollOptionSnapshots" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloActivityBackfillJobs" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloActivityBackfillJobs" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "Stage" TEXT NOT NULL DEFAULT 'Queued',
+                "Status" TEXT NOT NULL DEFAULT 'Queued',
+                "IsFullBackfill" INTEGER NOT NULL DEFAULT 1,
+                "BoardPage" INTEGER NOT NULL DEFAULT 1,
+                "BoardCursor" TEXT NULL,
+                "MessageCursor" TEXT NULL,
+                "LastBoardPageFingerprint" TEXT NULL,
+                "ProcessedCount" INTEGER NOT NULL DEFAULT 0,
+                "DiscoveredTotal" INTEGER NULL,
+                "TotalBoardItemsScanned" INTEGER NOT NULL DEFAULT 0,
+                "TotalPollsDiscovered" INTEGER NOT NULL DEFAULT 0,
+                "TotalPollsWithVoterIdentities" INTEGER NOT NULL DEFAULT 0,
+                "TotalPollsExcluded" INTEGER NOT NULL DEFAULT 0,
+                "MembersSynchronized" INTEGER NOT NULL DEFAULT 0,
+                "MessagesImported" INTEGER NOT NULL DEFAULT 0,
+                "MessageHistoryCapability" TEXT NOT NULL DEFAULT 'Unsupported',
+                "GroupCreatedAtFromZalo" TEXT NULL,
+                "OldestRetrievablePollAt" TEXT NULL,
+                "NewestRetrievablePollAt" TEXT NULL,
+                "OldestRetrievableMessageAt" TEXT NULL,
+                "NewestRetrievableMessageAt" TEXT NULL,
+                "LastSuccessfulPollSyncAt" TEXT NULL,
+                "LastIncrementalSyncAt" TEXT NULL,
+                "BackfillStartedAt" TEXT NULL,
+                "BackfillCompletedAt" TEXT NULL,
+                "LastErrorSummary" TEXT NULL,
+                "RetryCount" INTEGER NOT NULL DEFAULT 0,
+                "NextAttemptAt" TEXT NULL,
+                "LeaseToken" TEXT NULL,
+                "LeaseUntil" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloActivityBackfillJobs_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await EnsureMemberIntelligenceIndexes(db);
+    }
+
+    private static async Task EnsurePostgresMemberIntelligenceTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloGroupMembers" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloGroupMembers" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "ZaloUserId" text NOT NULL,
+                "DisplayName" text NOT NULL,
+                "AvatarUrl" text NULL,
+                "FirstSeenAt" timestamp with time zone NOT NULL,
+                "LastSeenAt" timestamp with time zone NOT NULL,
+                "LastSyncedAt" timestamp with time zone NOT NULL,
+                "IsCurrentMember" boolean NOT NULL DEFAULT TRUE,
+                "LeftAt" timestamp with time zone NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloGroupMembers_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloPollSnapshots" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloPollSnapshots" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "PollId" text NOT NULL,
+                "Question" text NOT NULL,
+                "CreatorZaloUserId" text NOT NULL,
+                "CreatedAtFromZalo" timestamp with time zone NULL,
+                "UpdatedAtFromZalo" timestamp with time zone NULL,
+                "FirstObservedAt" timestamp with time zone NOT NULL,
+                "LastObservedAt" timestamp with time zone NOT NULL,
+                "IsClosed" boolean NOT NULL DEFAULT FALSE,
+                "IsAnonymous" boolean NOT NULL DEFAULT FALSE,
+                "AllowsMultipleChoices" boolean NOT NULL DEFAULT FALSE,
+                "HasVoterIdentities" boolean NOT NULL DEFAULT FALSE,
+                "IsAnalyticsEligible" boolean NOT NULL DEFAULT FALSE,
+                "ExclusionReason" text NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloPollSnapshots_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloPollOptionSnapshots" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloPollOptionSnapshots" PRIMARY KEY,
+                "PollSnapshotId" text NOT NULL,
+                "ZaloOptionId" text NOT NULL,
+                "Content" text NOT NULL,
+                "FirstObservedAt" timestamp with time zone NOT NULL,
+                "LastObservedAt" timestamp with time zone NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloPollOptionSnapshots_ZaloPollSnapshots_PollSnapshotId"
+                    FOREIGN KEY ("PollSnapshotId") REFERENCES "ZaloPollSnapshots" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloPollVoteActivities" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloPollVoteActivities" PRIMARY KEY,
+                "PollSnapshotId" text NOT NULL,
+                "PollOptionSnapshotId" text NOT NULL,
+                "ZaloUserId" text NOT NULL,
+                "FirstObservedAt" timestamp with time zone NOT NULL,
+                "LastObservedAt" timestamp with time zone NOT NULL,
+                "IsCurrentlySelected" boolean NOT NULL DEFAULT TRUE,
+                "RemovedObservedAt" timestamp with time zone NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloPollVoteActivities_ZaloPollSnapshots_PollSnapshotId"
+                    FOREIGN KEY ("PollSnapshotId") REFERENCES "ZaloPollSnapshots" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_ZaloPollVoteActivities_ZaloPollOptionSnapshots_PollOptionSnapshotId"
+                    FOREIGN KEY ("PollOptionSnapshotId") REFERENCES "ZaloPollOptionSnapshots" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloActivityBackfillJobs" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloActivityBackfillJobs" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "Stage" text NOT NULL DEFAULT 'Queued',
+                "Status" text NOT NULL DEFAULT 'Queued',
+                "IsFullBackfill" boolean NOT NULL DEFAULT TRUE,
+                "BoardPage" integer NOT NULL DEFAULT 1,
+                "BoardCursor" text NULL,
+                "MessageCursor" text NULL,
+                "LastBoardPageFingerprint" text NULL,
+                "ProcessedCount" integer NOT NULL DEFAULT 0,
+                "DiscoveredTotal" integer NULL,
+                "TotalBoardItemsScanned" integer NOT NULL DEFAULT 0,
+                "TotalPollsDiscovered" integer NOT NULL DEFAULT 0,
+                "TotalPollsWithVoterIdentities" integer NOT NULL DEFAULT 0,
+                "TotalPollsExcluded" integer NOT NULL DEFAULT 0,
+                "MembersSynchronized" integer NOT NULL DEFAULT 0,
+                "MessagesImported" integer NOT NULL DEFAULT 0,
+                "MessageHistoryCapability" text NOT NULL DEFAULT 'Unsupported',
+                "GroupCreatedAtFromZalo" timestamp with time zone NULL,
+                "OldestRetrievablePollAt" timestamp with time zone NULL,
+                "NewestRetrievablePollAt" timestamp with time zone NULL,
+                "OldestRetrievableMessageAt" timestamp with time zone NULL,
+                "NewestRetrievableMessageAt" timestamp with time zone NULL,
+                "LastSuccessfulPollSyncAt" timestamp with time zone NULL,
+                "LastIncrementalSyncAt" timestamp with time zone NULL,
+                "BackfillStartedAt" timestamp with time zone NULL,
+                "BackfillCompletedAt" timestamp with time zone NULL,
+                "LastErrorSummary" text NULL,
+                "RetryCount" integer NOT NULL DEFAULT 0,
+                "NextAttemptAt" timestamp with time zone NULL,
+                "LeaseToken" text NULL,
+                "LeaseUntil" timestamp with time zone NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloActivityBackfillJobs_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await EnsureMemberIntelligenceIndexes(db);
+    }
+
+    private static async Task EnsureMemberIntelligenceIndexes(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloGroupMembers_Connection_Group_User" ON "ZaloGroupMembers" ("ZaloConnectionId", "GroupId", "ZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMembers_Connection_Group_Current" ON "ZaloGroupMembers" ("ZaloConnectionId", "GroupId", "IsCurrentMember");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloPollSnapshots_Connection_Group_Poll" ON "ZaloPollSnapshots" ("ZaloConnectionId", "GroupId", "PollId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloPollSnapshots_Connection_Group_Created" ON "ZaloPollSnapshots" ("ZaloConnectionId", "GroupId", "CreatedAtFromZalo");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloPollOptionSnapshots_Poll_Option" ON "ZaloPollOptionSnapshots" ("PollSnapshotId", "ZaloOptionId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloPollVoteActivities_Option_User" ON "ZaloPollVoteActivities" ("PollOptionSnapshotId", "ZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloPollVoteActivities_Poll_User_Selected" ON "ZaloPollVoteActivities" ("PollSnapshotId", "ZaloUserId", "IsCurrentlySelected");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloActivityBackfillJobs_Connection_Group" ON "ZaloActivityBackfillJobs" ("ZaloConnectionId", "GroupId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloActivityBackfillJobs_Status_NextAttemptAt" ON "ZaloActivityBackfillJobs" ("Status", "NextAttemptAt");""");
     }
 }

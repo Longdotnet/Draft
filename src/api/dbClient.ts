@@ -124,6 +124,116 @@ export type ZaloBotActionHistoryResponse = {
   undoFailure: string | null;
 };
 
+export type ZaloActivityBackfillStage =
+  | "Queued"
+  | "SyncingMembers"
+  | "ScanningBoard"
+  | "SyncingPollDetails"
+  | "ProbingMessageHistory"
+  | "ImportingMessages"
+  | "RebuildingMetrics"
+  | "Completed";
+
+export type ZaloActivityBackfillStatus =
+  | "Queued"
+  | "Running"
+  | "Completed"
+  | "CompletedWithLimitations"
+  | "FailedRetryable"
+  | "FailedPermanent";
+
+export type ZaloMessageHistoryCapability =
+  | "Unsupported"
+  | "RealtimeOnly"
+  | "PartialHistoricalBackfill"
+  | "SearchOnlyBackfill"
+  | "FullHistoricalBackfill";
+
+export type ZaloEngagementStatus =
+  | "New"
+  | "Active"
+  | "Regular"
+  | "Occasional"
+  | "AtRisk"
+  | "Inactive"
+  | "InsufficientData";
+
+export type ZaloActivityBackfillStatusResponse = {
+  jobId: string;
+  stage: ZaloActivityBackfillStage;
+  status: ZaloActivityBackfillStatus;
+  membersSynchronized: number;
+  totalBoardItemsScanned: number;
+  totalPollsDiscovered: number;
+  totalPollsWithVoterIdentities: number;
+  totalPollsExcluded: number;
+  messagesImported: number;
+  processedCount: number;
+  discoveredTotal: number | null;
+  messageHistoryCapability: ZaloMessageHistoryCapability;
+  oldestRetrievablePollAt: string | null;
+  newestRetrievablePollAt: string | null;
+  oldestRetrievableMessageAt: string | null;
+  newestRetrievableMessageAt: string | null;
+  lastIncrementalSyncAt: string | null;
+  backfillStartedAt: string | null;
+  backfillCompletedAt: string | null;
+  lastErrorSummary: string | null;
+};
+
+export type ZaloActivityCoverageResponse = {
+  backfillComplete: boolean;
+  backfillStatus: ZaloActivityBackfillStatus | null;
+  messageHistoryCapability: ZaloMessageHistoryCapability;
+  oldestPollAt: string | null;
+  newestPollAt: string | null;
+  oldestMessageAt: string | null;
+  newestMessageAt: string | null;
+  eligiblePollCount: number;
+  excludedPollCount: number;
+  warning: string | null;
+};
+
+export type ZaloMemberActivityResponse = {
+  zaloUserId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  isCurrentMember: boolean;
+  isNewMember: boolean;
+  firstSeenAt: string;
+  lastMessageAt: string | null;
+  messageCount: number;
+  activeMessageDays: number;
+  lastVotedPollCreatedAt: string | null;
+  lastVotedPollUpdatedAt: string | null;
+  lastVotedPollFirstObservedAt: string | null;
+  exactUserVoteAt: string | null;
+  lastVotedPollQuestion: string | null;
+  eligiblePollCount: number;
+  votedPollCount: number;
+  totalSelectedOptions: number;
+  voteParticipationRate: number | null;
+  previousPeriodParticipationRate: number | null;
+  recentPeriodParticipationRate: number | null;
+  consecutiveEligiblePollsMissed: number;
+  trend: string;
+  lastActivityAt: string | null;
+  lastActivitySource: string | null;
+  engagementStatus: ZaloEngagementStatus;
+  dataConfidence: string;
+};
+
+export type ZaloMemberActivityPageResponse = {
+  items: ZaloMemberActivityResponse[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  periodStart: string;
+  periodEnd: string;
+  coverage: ZaloActivityCoverageResponse;
+};
+
 export type PublicSessionSummaryResponse = {
   id: string;
   name: string;
