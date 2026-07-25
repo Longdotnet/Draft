@@ -351,6 +351,29 @@ public sealed record ZaloActivityBackfillStatusResponse(
 
 public sealed record StartZaloActivitySyncRequest(bool Full = true);
 
+public sealed record ImportZaloDesktopHistoryRequest(
+    string SourceGroupName,
+    IReadOnlyList<ZaloDesktopMessageImportItem> Messages,
+    bool Complete);
+
+public sealed record ZaloDesktopMessageImportItem(
+    string MessageId,
+    string SenderZaloUserId,
+    string SenderName,
+    string MessageType,
+    long SentAtUnixMs);
+
+public sealed record ZaloDesktopHistoryImportResponse(
+    int ReceivedCount,
+    int InsertedCount,
+    int UpdatedCount,
+    int ConflictCount,
+    int TotalImportedMessages,
+    ZaloMessageHistoryCapability MessageHistoryCapability,
+    DateTimeOffset? OldestMessageAt,
+    DateTimeOffset? NewestMessageAt,
+    bool Complete);
+
 public sealed record ZaloActivityCoverageResponse(
     bool BackfillComplete,
     ZaloActivityBackfillStatus? BackfillStatus,

@@ -451,7 +451,23 @@ public sealed partial class ZaloMemberActivityService(
             if (excludedInRange > 0)
                 warnings.Add($"{excludedInRange} poll trong khoảng này bị loại vì ẩn danh hoặc thiếu UID người vote.");
             if (includeMessageCoverage &&
-                job.MessageHistoryCapability != ZaloMessageHistoryCapability.FullHistoricalBackfill)
+                job.MessageHistoryCapability == ZaloMessageHistoryCapability.PartialHistoricalBackfill &&
+                await db.ZaloGroupMessages
+                    .AsNoTracking()
+                    .AnyAsync(message =>
+                        message.ZaloConnectionId == connectionId &&
+                        message.GroupId == groupId &&
+                        message.ObservationSource == "DesktopBackupImport",
+                        cancellationToken))
+            {
+                warnings.Add(
+                    $"Đã nhập lịch sử chat từ bản sao Zalo Desktop" +
+                    $"{(job.OldestRetrievableMessageAt is null ? string.Empty : $" từ {job.OldestRetrievableMessageAt:dd/MM/yyyy}")}" +
+                    $"{(job.NewestRetrievableMessageAt is null ? string.Empty : $" đến {job.NewestRetrievableMessageAt:dd/MM/yyyy}")}; " +
+                    "số liệu trước hoặc sau phạm vi bản sao có thể chưa đầy đủ.");
+            }
+            else if (includeMessageCoverage &&
+                     job.MessageHistoryCapability != ZaloMessageHistoryCapability.FullHistoricalBackfill)
                 warnings.Add("Lịch sử tin nhắn chỉ tính từ dữ liệu bot đã nhận; không dùng số liệu này để kết luận về thời gian trước khi listener hoạt động.");
         }
 

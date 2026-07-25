@@ -24,6 +24,7 @@ public sealed class ZaloActivityBackfillCoordinator(
     private readonly int pauseBetweenRequestsMs = ReadBounded(configuration, "ZaloActivitySync:PauseBetweenRequestsMs", 150, 0, 10_000);
     private readonly int incrementalMinutes = ReadBounded(configuration, "ZaloActivitySync:IncrementalMinutes", 60, 5, 1440);
     private readonly int leaseMinutes = ReadBounded(configuration, "ZaloActivitySync:LeaseMinutes", 10, 1, 60);
+    private const string DesktopBackupObservationSource = "DesktopBackupImport";
 
     public async Task<ServiceResult<ZaloActivityBackfillStatusResponse>> QueueForSessionAsync(
         string adminUserId,
@@ -51,6 +52,231 @@ public sealed class ZaloActivityBackfillCoordinator(
             full,
             cancellationToken);
         return ServiceResult<ZaloActivityBackfillStatusResponse>.Success(ToStatus(job));
+    }
+
+    public async Task<ServiceResult<ZaloDesktopHistoryImportResponse>> ImportDesktopHistoryForSessionAsync(
+        string adminUserId,
+        string sessionId,
+        ImportZaloDesktopHistoryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var linked = await db.MatchSessions
+            .AsNoTracking()
+            .Where(session => session.Id == sessionId && session.AdminUserId == adminUserId)
+            .Select(session => new
+            {
+                session.ZaloConnectionId,
+                session.ZaloGroupId,
+                session.ZaloGroupName
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (linked is null)
+            return ServiceResult<ZaloDesktopHistoryImportResponse>.Failure(
+                StatusCodes.Status404NotFound,
+                "Không tìm thấy buổi đấu.");
+        if (string.IsNullOrWhiteSpace(linked.ZaloConnectionId) ||
+            string.IsNullOrWhiteSpace(linked.ZaloGroupId) ||
+            string.IsNullOrWhiteSpace(linked.ZaloGroupName))
+            return ServiceResult<ZaloDesktopHistoryImportResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Buổi đấu chưa liên kết đầy đủ với nhóm Zalo.");
+        if (!string.Equals(
+                linked.ZaloGroupName.Trim(),
+                request.SourceGroupName?.Trim(),
+                StringComparison.OrdinalIgnoreCase))
+            return ServiceResult<ZaloDesktopHistoryImportResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Tên nhóm trong bản sao Zalo không khớp nhóm đang liên kết.");
+
+        var requestedMessages = request.Messages ?? [];
+        if (requestedMessages.Count > 500)
+            return ServiceResult<ZaloDesktopHistoryImportResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Mỗi lần chỉ được nhập tối đa 500 tin nhắn.");
+
+        var now = DateTimeOffset.UtcNow;
+        var maximumTimestamp = now.AddDays(1).ToUnixTimeMilliseconds();
+        var normalized = new List<(ZaloDesktopMessageImportItem Source, DateTimeOffset SentAt)>();
+        foreach (var source in requestedMessages
+                     .Where(item => item is not null)
+                     .GroupBy(item => item.MessageId?.Trim(), StringComparer.Ordinal)
+                     .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+                     .Select(group => group.First()))
+        {
+            var messageId = source.MessageId.Trim();
+            var senderId = source.SenderZaloUserId?.Trim() ?? string.Empty;
+            if (messageId.Length > 160 ||
+                string.IsNullOrWhiteSpace(senderId) ||
+                senderId.Length > 100 ||
+                source.SentAtUnixMs < 946684800000 ||
+                source.SentAtUnixMs > maximumTimestamp)
+                return ServiceResult<ZaloDesktopHistoryImportResponse>.Failure(
+                    StatusCodes.Status400BadRequest,
+                    "Bản sao chứa message ID, UID hoặc thời gian không hợp lệ.");
+
+            normalized.Add((
+                source with
+                {
+                    MessageId = messageId,
+                    SenderZaloUserId = senderId,
+                    SenderName = Truncate(source.SenderName?.Trim(), 160),
+                    MessageType = Truncate(source.MessageType?.Trim(), 80)
+                },
+                DateTimeOffset.FromUnixTimeMilliseconds(source.SentAtUnixMs)));
+        }
+
+        var connection = await db.ZaloConnections
+            .AsNoTracking()
+            .Where(item => item.Id == linked.ZaloConnectionId && item.AdminUserId == adminUserId)
+            .Select(item => new { item.AccountZaloId })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (connection is null)
+            return ServiceResult<ZaloDesktopHistoryImportResponse>.Failure(
+                StatusCodes.Status404NotFound,
+                "Không tìm thấy kết nối Zalo của buổi đấu.");
+
+        var ids = normalized.Select(item => item.Source.MessageId).ToList();
+        var existing = ids.Count == 0
+            ? new Dictionary<string, ZaloGroupMessage>(StringComparer.Ordinal)
+            : await db.ZaloGroupMessages
+                .Where(message =>
+                    message.ZaloConnectionId == linked.ZaloConnectionId &&
+                    ids.Contains(message.MessageId))
+                .ToDictionaryAsync(message => message.MessageId, StringComparer.Ordinal, cancellationToken);
+
+        var inserted = 0;
+        var updated = 0;
+        var conflicts = 0;
+        foreach (var item in normalized)
+        {
+            if (existing.TryGetValue(item.Source.MessageId, out var message))
+            {
+                if (!string.Equals(message.GroupId, linked.ZaloGroupId, StringComparison.Ordinal))
+                {
+                    conflicts++;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(message.SenderName) &&
+                    !string.IsNullOrWhiteSpace(item.Source.SenderName))
+                    message.SenderName = item.Source.SenderName;
+                if (string.IsNullOrWhiteSpace(message.MessageType))
+                    message.MessageType = DefaultMessageType(item.Source.MessageType);
+                if (message.SentAt == default)
+                    message.SentAt = item.SentAt;
+                message.LastObservedAt = now;
+                updated++;
+                continue;
+            }
+
+            message = new ZaloGroupMessage
+            {
+                ZaloConnectionId = linked.ZaloConnectionId,
+                GroupId = linked.ZaloGroupId,
+                MessageId = item.Source.MessageId,
+                SenderId = item.Source.SenderZaloUserId,
+                SenderName = item.Source.SenderName,
+                Content = string.Empty,
+                MessageType = DefaultMessageType(item.Source.MessageType),
+                ObservationSource = DesktopBackupObservationSource,
+                IsFromBot = string.Equals(
+                    item.Source.SenderZaloUserId,
+                    connection.AccountZaloId,
+                    StringComparison.Ordinal),
+                SentAt = item.SentAt,
+                ReceivedAt = now,
+                FirstObservedAt = now,
+                LastObservedAt = now,
+                ReplyOutcome = "HistoricalOnly"
+            };
+            db.ZaloGroupMessages.Add(message);
+            existing[message.MessageId] = message;
+            inserted++;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var historicalQuery = db.ZaloGroupMessages.Where(message =>
+            message.ZaloConnectionId == linked.ZaloConnectionId &&
+            message.GroupId == linked.ZaloGroupId &&
+            (message.ObservationSource == "HistoricalBackfill" ||
+             message.ObservationSource == DesktopBackupObservationSource));
+        var totalImported = await historicalQuery.CountAsync(cancellationToken);
+        var historicalDates = await historicalQuery
+            .Select(message => message.SentAt)
+            .ToListAsync(cancellationToken);
+        DateTimeOffset? oldest = historicalDates.Count == 0 ? null : historicalDates.Min();
+        DateTimeOffset? newest = historicalDates.Count == 0 ? null : historicalDates.Max();
+        var capability = ZaloMessageHistoryCapability.PartialHistoricalBackfill;
+
+        if (request.Complete)
+        {
+            var job = await db.ZaloActivityBackfillJobs.SingleOrDefaultAsync(
+                item =>
+                    item.ZaloConnectionId == linked.ZaloConnectionId &&
+                    item.GroupId == linked.ZaloGroupId,
+                cancellationToken);
+            if (job is null)
+            {
+                job = new ZaloActivityBackfillJob
+                {
+                    ZaloConnectionId = linked.ZaloConnectionId,
+                    GroupId = linked.ZaloGroupId,
+                    Status = ZaloActivityBackfillStatus.CompletedWithLimitations,
+                    Stage = ZaloActivityBackfillStage.Completed,
+                    BackfillStartedAt = now,
+                    BackfillCompletedAt = now,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+                db.ZaloActivityBackfillJobs.Add(job);
+            }
+            else
+            {
+                if (job.Status is not ZaloActivityBackfillStatus.Running and
+                    not ZaloActivityBackfillStatus.Queued)
+                {
+                    job.Status = ZaloActivityBackfillStatus.CompletedWithLimitations;
+                    job.Stage = ZaloActivityBackfillStage.Completed;
+                }
+                job.UpdatedAt = now;
+                job.BackfillCompletedAt ??= now;
+            }
+
+            if (job.MessageHistoryCapability != ZaloMessageHistoryCapability.FullHistoricalBackfill)
+                job.MessageHistoryCapability = capability;
+            else
+                capability = ZaloMessageHistoryCapability.FullHistoricalBackfill;
+            job.MessagesImported = totalImported;
+            job.OldestRetrievableMessageAt = oldest;
+            job.NewestRetrievableMessageAt = newest;
+            job.LastIncrementalSyncAt = now;
+            job.LastErrorSummary =
+                "Đã nhập lịch sử chat từ bản sao Zalo Desktop; phạm vi được giới hạn bởi dữ liệu có trong bản sao.";
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        logger.LogInformation(
+            "Imported Zalo Desktop history ConnectionId={ConnectionId} GroupId={GroupId} Received={Received} Inserted={Inserted} Updated={Updated} Conflicts={Conflicts} Complete={Complete}",
+            linked.ZaloConnectionId,
+            linked.ZaloGroupId,
+            normalized.Count,
+            inserted,
+            updated,
+            conflicts,
+            request.Complete);
+
+        return ServiceResult<ZaloDesktopHistoryImportResponse>.Success(
+            new ZaloDesktopHistoryImportResponse(
+                normalized.Count,
+                inserted,
+                updated,
+                conflicts,
+                totalImported,
+                capability,
+                oldest,
+                newest,
+                request.Complete));
     }
 
     public async Task<ZaloActivityBackfillJob> QueueGroupAsync(
@@ -847,7 +1073,8 @@ public sealed class ZaloActivityBackfillCoordinator(
             .CountAsync(message =>
                 message.ZaloConnectionId == job.ZaloConnectionId &&
                 message.GroupId == job.GroupId &&
-                message.ObservationSource == "HistoricalBackfill", cancellationToken);
+                (message.ObservationSource == "HistoricalBackfill" ||
+                 message.ObservationSource == DesktopBackupObservationSource), cancellationToken);
     }
 
     private async Task SaveStageAsync(
@@ -982,6 +1209,16 @@ public sealed class ZaloActivityBackfillCoordinator(
             ? Math.Clamp(value, minimum, maximum)
             : fallback;
     }
+
+    private static string Truncate(string? value, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+        return value.Length <= maximumLength ? value : value[..maximumLength];
+    }
+
+    private static string DefaultMessageType(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "desktop-chat" : value;
 
     private static void ResetScanCheckpoint(ZaloActivityBackfillJob job)
     {

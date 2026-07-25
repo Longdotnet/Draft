@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
@@ -42,6 +43,59 @@ public sealed class ZaloActivityBackfillCoordinatorTests
         Assert.Equal(2, await fixture.Db.ZaloPollVoteActivities.CountAsync());
         Assert.Equal(2, await fixture.Db.ZaloGroupMessages.CountAsync());
         Assert.Equal(1, await fixture.Db.ZaloActivityBackfillJobs.CountAsync());
+    }
+
+    [Fact]
+    public async Task Desktop_backup_import_is_group_scoped_and_idempotent()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var timestamp = new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero)
+            .ToUnixTimeMilliseconds();
+        var request = new ImportZaloDesktopHistoryRequest(
+            "CLB Bóng Chuyền Newbie",
+            [
+                new ZaloDesktopMessageImportItem(
+                    "desktop-1",
+                    "u1",
+                    "Nguyễn A",
+                    "desktop-webchat",
+                    timestamp),
+                new ZaloDesktopMessageImportItem(
+                    "desktop-2",
+                    "u2",
+                    "Trần B",
+                    "desktop-photo",
+                    timestamp + 60_000)
+            ],
+            true);
+
+        var first = await fixture.Coordinator.ImportDesktopHistoryForSessionAsync(
+            "admin",
+            "session",
+            request,
+            CancellationToken.None);
+        var second = await fixture.Coordinator.ImportDesktopHistoryForSessionAsync(
+            "admin",
+            "session",
+            request,
+            CancellationToken.None);
+        var wrongGroup = await fixture.Coordinator.ImportDesktopHistoryForSessionAsync(
+            "admin",
+            "session",
+            request with { SourceGroupName = "Nhóm khác" },
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+        Assert.Equal(2, first.Value!.InsertedCount);
+        Assert.True(second.IsSuccess);
+        Assert.Equal(0, second.Value!.InsertedCount);
+        Assert.Equal(2, second.Value.UpdatedCount);
+        Assert.False(wrongGroup.IsSuccess);
+        Assert.Equal(2, await fixture.Db.ZaloGroupMessages.CountAsync(message =>
+            message.ObservationSource == "DesktopBackupImport"));
+        var job = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(ZaloMessageHistoryCapability.PartialHistoricalBackfill, job.MessageHistoryCapability);
+        Assert.Equal(2, job.MessagesImported);
     }
 
     private sealed class BackfillFixture : IAsyncDisposable
@@ -104,6 +158,15 @@ public sealed class ZaloActivityBackfillCoordinatorTests
                 EncryptedCredentials = protector.Protect(
                     "{\"cookie\":[],\"imei\":\"test\",\"userAgent\":\"test\",\"language\":\"vi\"}"),
                 Status = ZaloConnectionStatus.Connected
+            });
+            db.MatchSessions.Add(new MatchSession
+            {
+                Id = "session",
+                AdminUserId = "admin",
+                Name = "Buổi test",
+                ZaloConnectionId = "connection",
+                ZaloGroupId = "group",
+                ZaloGroupName = "CLB Bóng Chuyền Newbie"
             });
             await db.SaveChangesAsync();
 

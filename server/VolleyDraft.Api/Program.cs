@@ -509,6 +509,22 @@ sessions.MapGet("/{sessionId}/member-intelligence/sync", async (
             sessionId,
             cancellationToken)).ToHttpResult();
 });
+sessions.MapPost("/{sessionId}/member-intelligence/desktop-history", async (
+    HttpContext httpContext,
+    string sessionId,
+    ImportZaloDesktopHistoryRequest request,
+    ZaloActivityBackfillCoordinator service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.ImportDesktopHistoryForSessionAsync(
+            userId,
+            sessionId,
+            request,
+            cancellationToken)).ToHttpResult();
+});
 sessions.MapGet("/{sessionId}/member-intelligence/members", async (
     HttpContext httpContext,
     string sessionId,
