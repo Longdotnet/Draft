@@ -323,7 +323,7 @@ public static class ZaloBotIntelligence
         secondPlayer = string.Empty;
         var match = Regex.Match(
             value ?? string.Empty,
-            @"(?:đổi\s+(?:(?:vị\s*trí|chỗ)\s+)?|swap\s+)(?<first>.+?)\s+(?:với|và|cho)\s+(?<second>.+)$",
+            @"(?:đổi\s+(?:(?:vị\s*trí|chỗ|slot)\s+)?|swap\s+)(?<first>.+?)\s+(?:với|và|cho)\s+(?<second>.+)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         if (!match.Success) return false;
         firstPlayer = match.Groups["first"].Value.Trim(' ', ',', '.', ':', ';');
@@ -447,7 +447,7 @@ public static class ZaloBotIntelligence
         if (TryParseTeamPair(value, out _, out _) &&
             Has(q, "can bang", "balance", "can lai", "chia deu lai", "chinh deu lai"))
             return new(ZaloBotIntent.RebalanceTeams, .99, q, false, null, "rebalance_teams_phrase");
-        if (Has(q, "doi vi tri", "doi cho", "swap ") && Has(q, " voi ", " va ", " cho "))
+        if (Has(q, "doi vi tri", "doi cho", "doi slot", "swap ") && Has(q, " voi ", " va ", " cho "))
             return new(ZaloBotIntent.SwapTeamPlayers, .99, q, false, null, "swap_team_players_phrase");
         if (Has(q, "draft lai", "chia lai team", "boc lai team", "khui lai tui", "khui lai", "draft lai tu dau"))
             return new(ZaloBotIntent.Redraft, .99, q, false, null, "redraft_phrase");

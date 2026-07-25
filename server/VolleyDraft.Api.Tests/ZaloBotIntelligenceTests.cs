@@ -209,6 +209,7 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("balance team A-C giúp tui", ZaloBotIntent.RebalanceTeams)]
     [InlineData("chỉnh đều lại đội hai với đội ba", ZaloBotIntent.RebalanceTeams)]
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", ZaloBotIntent.SwapTeamPlayers)]
+    [InlineData("đổi slot Thanh Tuyền với Khánh Chi thứ 6", ZaloBotIntent.SwapTeamPlayers)]
     [InlineData("+1 số lượng vote cho bạn của Nick Tran", ZaloBotIntent.AddGuestPlayer)]
     [InlineData("Ngọc Huyền thêm +1 bạn hôm nay", ZaloBotIntent.AddGuestPlayer)]
     [InlineData("To An muốn chơi chung với Anh Duy thứ 6", ZaloBotIntent.TeamPreference)]
@@ -251,6 +252,7 @@ public sealed class ZaloBotIntelligenceTests
     [InlineData("đổi vị trí Thanh Tuyền với Nick Tran", "Thanh Tuyền", "Nick Tran")]
     [InlineData("swap Thanh Tuyền với Nick Tran", "Thanh Tuyền", "Nick Tran")]
     [InlineData("đổi chỗ Thanh Tuyền và Nick Tran", "Thanh Tuyền", "Nick Tran")]
+    [InlineData("đổi slot Thanh Tuyền với Khánh Chi", "Thanh Tuyền", "Khánh Chi")]
     public void Swap_command_extracts_two_player_names(string question, string first, string second)
     {
         Assert.True(ZaloBotIntelligence.TryExtractSwapPlayerNames(question, out var actualFirst, out var actualSecond));

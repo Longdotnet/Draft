@@ -625,6 +625,7 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             9. Với câu hỏi vui, chủ quan hoặc muốn được khen như “ai đẹp trai nhất?”, hãy trả lời thân thiện, hơi nịnh nhẹ người đang hỏi bằng Sender.Name. Có thể nói người đang hỏi là người đẹp trai nhất theo kiểu đùa vui; không cần dữ liệu hệ thống để trả lời và không được khẳng định đó là sự thật khách quan.
             10. Trong LearnedRules, cụm “người đang hỏi” hoặc “người đang nhắn” nghĩa là Sender.Name hiện tại. Không trả nguyên placeholder đó nếu có thể thay bằng tên người hỏi.
             11. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi. Không nói rằng bạn tự học từ mọi tin nhắn trong group.
+            12. Chỉ xuất câu trả lời cuối cùng dành cho thành viên bằng tiếng Việt. Tuyệt đối không xuất suy luận nội bộ, kế hoạch xử lý, mô tả vai trò hay các câu kiểu “The user is asking…”, “I should…”, “I need to…”, “conversation shows…” hoặc “trong mô phỏng này…”.
             """;
         var contextJson = JsonSerializer.Serialize(context, JsonOptions);
         var payload = new
@@ -662,11 +663,11 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
                 choices[0].TryGetProperty("message", out var message) &&
                 message.TryGetProperty("content", out var content))
             {
-                return content.GetString()?.Trim() ?? "Mình chưa tìm được câu trả lời phù hợp.";
+                return GetSafeGeneralAnswer(content.GetString());
             }
             if (root.TryGetProperty("output_text", out var outputText))
             {
-                return outputText.GetString()?.Trim() ?? "Mình chưa tìm được câu trả lời phù hợp.";
+                return GetSafeGeneralAnswer(outputText.GetString());
             }
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
@@ -675,6 +676,49 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         }
 
         return "Mình đang không kết nối được dịch vụ AI. Bạn thử gõ help hoặc hỏi lại sau nhé.";
+    }
+
+    private string GetSafeGeneralAnswer(string? answer)
+    {
+        var trimmed = answer?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return "Mình chưa tìm được câu trả lời phù hợp.";
+
+        if (!LooksLikeInternalReasoning(trimmed))
+            return trimmed;
+
+        logger.LogWarning("AI general answer was rejected because it exposed internal reasoning");
+        return "Mình chưa hiểu chắc yêu cầu này. Bạn nói lại ngắn gọn hoặc gõ help nhé.";
+    }
+
+    internal static bool LooksLikeInternalReasoning(string answer)
+    {
+        if (string.IsNullOrWhiteSpace(answer)) return false;
+
+        var normalized = Regex.Replace(answer.Trim().ToLowerInvariant(), @"\s+", " ");
+        string[] forbiddenMarkers =
+        [
+            "the user is asking",
+            "the user wants",
+            "the user said",
+            "i should ",
+            "i need to ",
+            "i need ",
+            "i am the assistant",
+            "as the assistant",
+            "in this simulation",
+            "the conversation shows",
+            "conversation history",
+            "the bot previously",
+            "from the last confirmed",
+            "người dùng đang hỏi",
+            "người dùng muốn",
+            "tôi nên ",
+            "tôi cần ",
+            "trong mô phỏng này",
+            "phần suy luận"
+        ];
+        return forbiddenMarkers.Any(normalized.Contains);
     }
 
     private async Task<string?> SendForContentAsync(

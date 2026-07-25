@@ -12,6 +12,26 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloMemberActivityServiceTests
 {
     [Fact]
+    public void Natural_activity_lists_page_all_members_while_explicit_limits_remain_bounded()
+    {
+        Assert.Equal(
+            500,
+            ZaloMemberIntelligenceBotService.ResolveResultLimit(
+                ZaloBotIntent.ListAtRiskMembers,
+                null));
+        Assert.Equal(
+            10,
+            ZaloMemberIntelligenceBotService.ResolveResultLimit(
+                ZaloBotIntent.ListMostInactiveMembers,
+                null));
+        Assert.Equal(
+            20,
+            ZaloMemberIntelligenceBotService.ResolveResultLimit(
+                ZaloBotIntent.ListAtRiskMembers,
+                20));
+    }
+
+    [Fact]
     public void Four_month_period_uses_calendar_subtraction_in_vietnam_timezone()
     {
         var now = new DateTimeOffset(2026, 7, 24, 16, 30, 0, TimeSpan.FromHours(7));

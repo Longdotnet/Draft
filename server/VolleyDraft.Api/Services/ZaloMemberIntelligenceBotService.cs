@@ -392,7 +392,7 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             ZaloBotIntent.ListAtRiskMembers => ZaloMemberActivityFilter.AtRisk,
             _ => ZaloMemberActivityFilter.AtRisk
         };
-        var limit = Math.Clamp(requestedLimit ?? 10, 1, 30);
+        var limit = ResolveResultLimit(intent, requestedLimit);
         pageSize = Math.Clamp(Math.Min(pageSize, limit), 1, 10);
         var result = await activity.QueryGroupAsync(
             connectionId,
@@ -968,6 +968,16 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                limit is >= 1 and <= 30
             ? limit
             : null;
+    }
+
+    internal static int ResolveResultLimit(ZaloBotIntent intent, int? requestedLimit)
+    {
+        if (requestedLimit is not null)
+            return Math.Clamp(requestedLimit.Value, 1, 30);
+
+        // "Top" is intentionally a short ranking. Other list intents are
+        // paged through all current group members, ten at a time.
+        return intent == ZaloBotIntent.ListMostInactiveMembers ? 10 : 500;
     }
 
     private static bool TryResolvePage(

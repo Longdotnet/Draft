@@ -209,6 +209,41 @@ public sealed class AiAssistantServiceTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task General_answer_rejects_internal_reasoning_leak()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"The user is asking to see more. I should continue with members 11-20, but I need the previous context."}}]}""");
+
+        var result = await service.AnswerAsync(CreateGeneralContext("xem thêm"));
+
+        Assert.DoesNotContain("The user", result, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("I should", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Mình chưa hiểu chắc yêu cầu này. Bạn nói lại ngắn gọn hoặc gõ help nhé.", result);
+    }
+
+    [Fact]
+    public async Task General_answer_keeps_normal_vietnamese_response()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"Chào Thanh Long, mình vẫn ở đây nè 😊"}}]}""");
+
+        var result = await service.AnswerAsync(CreateGeneralContext("bot còn đó không?"));
+
+        Assert.Equal("Chào Thanh Long, mình vẫn ở đây nè 😊", result);
+    }
+
+    private static ZaloAiContext CreateGeneralContext(string question) =>
+        new(
+            "group-1",
+            new ZaloAiSender("sender-1", "Thanh Long"),
+            question,
+            [],
+            [],
+            null,
+            [],
+            new DateTimeOffset(2026, 7, 25, 15, 0, 0, TimeSpan.FromHours(7)));
+
     private static AiAssistantService CreateService(HttpStatusCode statusCode, string responseBody)
     {
         var configuration = new ConfigurationBuilder()
