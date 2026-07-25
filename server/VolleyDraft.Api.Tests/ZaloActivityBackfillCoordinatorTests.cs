@@ -77,7 +77,14 @@ public sealed class ZaloActivityBackfillCoordinatorTests
         var second = await fixture.Coordinator.ImportDesktopHistoryForSessionAsync(
             "admin",
             "session",
-            request,
+            request with
+            {
+                Messages =
+                [
+                    request.Messages[0] with { SenderZaloUserId = "u1-current" },
+                    request.Messages[1]
+                ]
+            },
             CancellationToken.None);
         var wrongGroup = await fixture.Coordinator.ImportDesktopHistoryForSessionAsync(
             "admin",
@@ -93,6 +100,10 @@ public sealed class ZaloActivityBackfillCoordinatorTests
         Assert.False(wrongGroup.IsSuccess);
         Assert.Equal(2, await fixture.Db.ZaloGroupMessages.CountAsync(message =>
             message.ObservationSource == "DesktopBackupImport"));
+        Assert.Equal(
+            "u1-current",
+            (await fixture.Db.ZaloGroupMessages.SingleAsync(message =>
+                message.MessageId == "desktop-1")).SenderId);
         var job = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
         Assert.Equal(ZaloMessageHistoryCapability.PartialHistoricalBackfill, job.MessageHistoryCapability);
         Assert.Equal(2, job.MessagesImported);

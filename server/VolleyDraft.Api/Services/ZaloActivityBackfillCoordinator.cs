@@ -157,8 +157,17 @@ public sealed class ZaloActivityBackfillCoordinator(
                     continue;
                 }
 
-                if (string.IsNullOrWhiteSpace(message.SenderName) &&
-                    !string.IsNullOrWhiteSpace(item.Source.SenderName))
+                if (message.ObservationSource == DesktopBackupObservationSource)
+                {
+                    message.SenderId = item.Source.SenderZaloUserId;
+                    message.IsFromBot = string.Equals(
+                        item.Source.SenderZaloUserId,
+                        connection.AccountZaloId,
+                        StringComparison.Ordinal);
+                }
+                if (!string.IsNullOrWhiteSpace(item.Source.SenderName) &&
+                    (message.ObservationSource == DesktopBackupObservationSource ||
+                     string.IsNullOrWhiteSpace(message.SenderName)))
                     message.SenderName = item.Source.SenderName;
                 if (string.IsNullOrWhiteSpace(message.MessageType))
                     message.MessageType = DefaultMessageType(item.Source.MessageType);
