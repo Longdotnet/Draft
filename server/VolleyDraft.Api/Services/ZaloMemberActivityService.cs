@@ -462,8 +462,8 @@ public sealed partial class ZaloMemberActivityService(
             {
                 warnings.Add(
                     $"Đã nhập lịch sử chat từ bản sao Zalo Desktop" +
-                    $"{(job.OldestRetrievableMessageAt is null ? string.Empty : $" từ {job.OldestRetrievableMessageAt:dd/MM/yyyy}")}" +
-                    $"{(job.NewestRetrievableMessageAt is null ? string.Empty : $" đến {job.NewestRetrievableMessageAt:dd/MM/yyyy}")}; " +
+                    $"{(job.OldestRetrievableMessageAt is null ? string.Empty : $" từ {job.OldestRetrievableMessageAt.Value.ToOffset(VietnamOffset):dd/MM/yyyy}")}" +
+                    $"{(job.NewestRetrievableMessageAt is null ? string.Empty : $" đến {job.NewestRetrievableMessageAt.Value.ToOffset(VietnamOffset):dd/MM/yyyy}")}; " +
                     "số liệu trước hoặc sau phạm vi bản sao có thể chưa đầy đủ.");
             }
             else if (includeMessageCoverage &&
