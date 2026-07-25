@@ -67,6 +67,26 @@ function statusTone(status: ZaloEngagementStatus): "neutral" | "orange" | "viole
   return "neutral";
 }
 
+function capabilityLabel(capability: ZaloActivityBackfillStatusResponse["messageHistoryCapability"]) {
+  const labels: Record<ZaloActivityBackfillStatusResponse["messageHistoryCapability"], string> = {
+    FullHistoricalBackfill: "Đầy đủ dữ liệu cũ",
+    SearchOnlyBackfill: "Chỉ dữ liệu tìm kiếm",
+    PartialHistoricalBackfill: "Một phần dữ liệu cũ",
+    RealtimeOnly: "Chỉ từ khi listener hoạt động",
+    Unsupported: "Không hỗ trợ",
+  };
+  return labels[capability];
+}
+
+function confidenceLabel(confidence: string) {
+  const labels: Record<string, string> = {
+    High: "Cao",
+    Medium: "Trung bình",
+    Insufficient: "Chưa đủ",
+  };
+  return labels[confidence] ?? confidence;
+}
+
 export function ZaloMemberIntelligencePanel({
   token,
   session,
@@ -213,16 +233,16 @@ export function ZaloMemberIntelligencePanel({
               <strong>{sync.membersSynchronized}</strong>
             </div>
             <div>
-              <small><Database size={14} aria-hidden="true" /> Poll</small>
+              <small><Database size={14} aria-hidden="true" /> Poll có UID</small>
               <strong>{sync.totalPollsWithVoterIdentities}/{sync.totalPollsDiscovered}</strong>
             </div>
             <div>
-              <small>Tin nhắn cũ</small>
+              <small>Tin cũ nhập được</small>
               <strong>{sync.messagesImported}</strong>
             </div>
           </div>
           <div className="member-coverage-note">
-            <span>Khả năng lịch sử chat: <strong>{sync.messageHistoryCapability}</strong></span>
+            <span>Khả năng lịch sử chat: <strong>{capabilityLabel(sync.messageHistoryCapability)}</strong></span>
             <span>Poll cũ nhất: <strong>{formatDate(sync.oldestRetrievablePollAt)}</strong></span>
             <span>Tin cũ nhất: <strong>{formatDate(sync.oldestRetrievableMessageAt)}</strong></span>
             <span>Đồng bộ gần nhất: <strong>{formatDate(sync.lastIncrementalSyncAt, true)}</strong></span>
@@ -292,7 +312,7 @@ export function ZaloMemberIntelligencePanel({
                 </td>
                 <td>{member.messageCount}<small>{member.activeMessageDays} ngày hoạt động</small></td>
                 <td><Badge tone={statusTone(member.engagementStatus)}>{statusLabel(member.engagementStatus)}</Badge></td>
-                <td>{member.dataConfidence}</td>
+                <td>{confidenceLabel(member.dataConfidence)}</td>
               </tr>
             ))}
           </tbody>

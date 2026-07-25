@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildMessageHistoryProbe,
+  buildUnsupportedMessageHistoryProbe,
+  isHistoryEndpointUnavailable,
   normalizeHistoricalMessage,
   normalizeUnixMs,
 } from "../src/messageHistoryLogic.js";
@@ -56,9 +58,36 @@ test("history probe preserves pagination evidence and timestamp coverage", () =>
   const probe = buildMessageHistoryProbe("group", 100, messages, 1, "last", null);
 
   assert.equal(probe.returnedCount, 2);
+  assert.equal(probe.isSupported, true);
+  assert.equal(probe.limitationCode, null);
   assert.equal(probe.more, 1);
   assert.equal(probe.oldestMessageAtUnixMs, 1_000);
   assert.equal(probe.newestMessageAtUnixMs, 2_000);
+});
+
+test("maps the unavailable Zalo history endpoint to an explicit capability result", () => {
+  assert.equal(
+    isHistoryEndpointUnavailable(new Error("Request failed with status code 404")),
+    true,
+  );
+  assert.equal(
+    isHistoryEndpointUnavailable({ response: { status: 404 } }),
+    true,
+  );
+  assert.equal(
+    isHistoryEndpointUnavailable(new Error("Request failed with status code 502")),
+    false,
+  );
+
+  const probe = buildUnsupportedMessageHistoryProbe(
+    "group",
+    500,
+    "ZaloHistoryEndpointNotFound",
+  );
+  assert.equal(probe.isSupported, false);
+  assert.equal(probe.limitationCode, "ZaloHistoryEndpointNotFound");
+  assert.equal(probe.returnedCount, 0);
+  assert.deepEqual(probe.messages, []);
 });
 
 test("invalid timestamps are not invented", () => {

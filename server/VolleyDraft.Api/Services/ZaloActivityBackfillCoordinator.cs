@@ -387,7 +387,16 @@ public sealed class ZaloActivityBackfillCoordinator(
                 limitations.Add($"{pollFailures} poll lỗi tạm thời và sẽ được thử lại ở lần đồng bộ sau.");
 
             await SaveStageAsync(job, ZaloActivityBackfillStage.ProbingMessageHistory, cancellationToken);
-            await ProbeAndImportMessagesAsync(job, credentials, limitations, cancellationToken);
+            if (!job.IsFullBackfill &&
+                job.MessageHistoryCapability == ZaloMessageHistoryCapability.RealtimeOnly)
+            {
+                limitations.Add(
+                    "Zalo không cung cấp lịch sử chat cũ cho tài khoản này; thống kê tin nhắn dùng dữ liệu listener từ lúc bot hoạt động.");
+            }
+            else
+            {
+                await ProbeAndImportMessagesAsync(job, credentials, limitations, cancellationToken);
+            }
 
             await SaveStageAsync(job, ZaloActivityBackfillStage.RebuildingMetrics, cancellationToken);
             await RefreshCoverageAsync(job, cancellationToken);
@@ -699,6 +708,28 @@ public sealed class ZaloActivityBackfillCoordinator(
                 job.Id,
                 job.ZaloConnectionId,
                 job.GroupId);
+            return;
+        }
+
+        if (!history.IsSupported)
+        {
+            job.MessageHistoryCapability = ZaloMessageHistoryCapability.RealtimeOnly;
+            job.MessageCursor = JsonSerializer.Serialize(new
+            {
+                Supported = false,
+                history.LimitationCode,
+                ProbedAt = DateTimeOffset.UtcNow
+            });
+            job.OldestRetrievableMessageAt = null;
+            job.NewestRetrievableMessageAt = null;
+            limitations.Add(
+                "Zalo không cung cấp lịch sử chat cũ cho tài khoản này; thống kê tin nhắn dùng dữ liệu listener từ lúc bot hoạt động.");
+            logger.LogInformation(
+                "Zalo message history is unavailable JobId={JobId} ConnectionId={ConnectionId} GroupId={GroupId} LimitationCode={LimitationCode}",
+                job.Id,
+                job.ZaloConnectionId,
+                job.GroupId,
+                history.LimitationCode);
             return;
         }
 

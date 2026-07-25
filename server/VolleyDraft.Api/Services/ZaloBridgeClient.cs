@@ -233,7 +233,9 @@ public sealed record BridgeMessageHistoryProbe(
     string? LastActionIdOther,
     long? OldestMessageAtUnixMs,
     long? NewestMessageAtUnixMs,
-    IReadOnlyList<BridgeHistoricalMessage> Messages);
+    IReadOnlyList<BridgeHistoricalMessage> Messages,
+    bool IsSupported = true,
+    string? LimitationCode = null);
 public sealed record BridgeHistoricalMessage(
     string MessageId,
     string SenderId,

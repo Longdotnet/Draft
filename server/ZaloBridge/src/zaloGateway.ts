@@ -25,8 +25,20 @@ import {
   mockMembers,
   mockPolls,
 } from "./mockData.js";
-import { normalizeId, normalizeMember, normalizeMemberId, normalizePoll } from "./pollLogic.js";
-import { buildMessageHistoryProbe, normalizeHistoricalMessage, normalizeUnixMs } from "./messageHistoryLogic.js";
+import {
+  normalizeId,
+  normalizeMember,
+  normalizeMemberId,
+  normalizePoll,
+  shouldIncludeOwnAccount,
+} from "./pollLogic.js";
+import {
+  buildMessageHistoryProbe,
+  buildUnsupportedMessageHistoryProbe,
+  isHistoryEndpointUnavailable,
+  normalizeHistoricalMessage,
+  normalizeUnixMs,
+} from "./messageHistoryLogic.js";
 
 type QrLoginStatus = "waiting_qr" | "waiting_scan" | "waiting_confirm" | "completed" | "expired" | "declined" | "failed";
 
@@ -660,6 +672,33 @@ export async function getGroupMemberDirectory(
     }
   }
 
+  // Zalo's group member payload commonly excludes the connected account
+  // while totalMember includes it. Only fill that exact one-member gap with
+  // the authenticated account itself; never invent any other directory entry.
+  const ownId = normalizeMemberId(api.getOwnId());
+  if (shouldIncludeOwnAccount(
+    expectedMemberCount,
+    memberIds.size,
+    ownId,
+    memberIds.has(ownId),
+  )) {
+    try {
+      const account = await api.fetchAccountInfo();
+      const ownMember = normalizeMember(ownId, {
+        id: ownId,
+        displayName: account.displayName,
+        zaloName: account.zaloName,
+        avatar: account.avatar,
+      });
+      memberIds.add(ownId);
+      directMembers.push(ownMember);
+    } catch (error) {
+      logZaloOperationFailure("fetchAccountInfo.members", error, {
+        groupId: normalizedGroupId,
+      });
+    }
+  }
+
   const uniqueIds = [...memberIds];
   const members = await resolveMembers(api, uniqueIds, directMembers);
   const hasMoreMember = Number(info?.hasMoreMember ?? 0);
@@ -901,9 +940,23 @@ export async function getGroupMessageHistory(
 
   const api = await getApi(credentials);
   if (typeof api.getGroupChatHistory !== "function") {
-    throw new Error("Installed Zalo library does not expose group chat history");
+    return buildUnsupportedMessageHistoryProbe(
+      normalizedGroupId,
+      requestedCount,
+      "LibraryMethodUnavailable",
+    );
   }
-  const response = await api.getGroupChatHistory(normalizedGroupId, requestedCount);
+  let response: Awaited<ReturnType<MinimalZaloApi["getGroupChatHistory"]>>;
+  try {
+    response = await api.getGroupChatHistory(normalizedGroupId, requestedCount);
+  } catch (error) {
+    if (!isHistoryEndpointUnavailable(error)) throw error;
+    return buildUnsupportedMessageHistoryProbe(
+      normalizedGroupId,
+      requestedCount,
+      "ZaloHistoryEndpointNotFound",
+    );
+  }
   const messages = (response.groupMsgs ?? [])
     .map(normalizeHistoricalMessage)
     .filter((message): message is BridgeHistoricalMessage => message !== null);

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeMemberId, normalizePoll, uniqueVoterIds } from "../src/pollLogic.js";
+import {
+  normalizeMemberId,
+  normalizePoll,
+  shouldIncludeOwnAccount,
+  uniqueVoterIds,
+} from "../src/pollLogic.js";
 
 test("deduplicates voters across selected multi-choice options", () => {
   const poll = normalizePoll({
@@ -18,4 +23,11 @@ test("deduplicates voters across selected multi-choice options", () => {
 
 test("normalizes member profile version suffix without coercing IDs to numbers", () => {
   assert.equal(normalizeMemberId("12345678901234567890_0"), "12345678901234567890");
+});
+
+test("fills only the exact group total gap with the authenticated account", () => {
+  assert.equal(shouldIncludeOwnAccount(100, 99, "bot-uid", false), true);
+  assert.equal(shouldIncludeOwnAccount(100, 98, "bot-uid", false), false);
+  assert.equal(shouldIncludeOwnAccount(100, 99, "bot-uid", true), false);
+  assert.equal(shouldIncludeOwnAccount(0, 0, "bot-uid", false), false);
 });

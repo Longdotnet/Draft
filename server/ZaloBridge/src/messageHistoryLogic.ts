@@ -40,6 +40,8 @@ export function buildMessageHistoryProbe(
   more: number,
   lastActionId: string | null,
   lastActionIdOther: string | null,
+  isSupported = true,
+  limitationCode: string | null = null,
 ): BridgeMessageHistoryProbe {
   const timestamps = messages
     .map((message) => message.sentAtUnixMs)
@@ -47,6 +49,8 @@ export function buildMessageHistoryProbe(
   return {
     groupId,
     requestedCount,
+    isSupported,
+    limitationCode,
     returnedCount: messages.length,
     more,
     lastActionId,
@@ -55,6 +59,37 @@ export function buildMessageHistoryProbe(
     newestMessageAtUnixMs: timestamps.length > 0 ? Math.max(...timestamps) : null,
     messages,
   };
+}
+
+export function buildUnsupportedMessageHistoryProbe(
+  groupId: string,
+  requestedCount: number,
+  limitationCode: string,
+): BridgeMessageHistoryProbe {
+  return buildMessageHistoryProbe(
+    groupId,
+    requestedCount,
+    [],
+    0,
+    null,
+    null,
+    false,
+    limitationCode,
+  );
+}
+
+export function isHistoryEndpointUnavailable(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    message?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+    response?: { status?: unknown };
+  };
+  const status = Number(candidate.response?.status ?? candidate.statusCode ?? candidate.status ?? 0);
+  if (status === 404) return true;
+  const message = String(candidate.message ?? "");
+  return /(?:status(?:\s+code)?|http)\s*404\b/i.test(message);
 }
 
 export function normalizeUnixMs(value: unknown): number {

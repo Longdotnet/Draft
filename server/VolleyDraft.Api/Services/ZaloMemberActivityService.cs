@@ -27,7 +27,6 @@ public sealed partial class ZaloMemberActivityService(
     ILogger<ZaloMemberActivityService> logger)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
-    private readonly int newMemberDays = ReadBounded(configuration, "ZaloActivityRules:NewMemberDays", 14, 1, 90);
     private readonly int activeDays = ReadBounded(configuration, "ZaloActivityRules:ActiveDays", 14, 1, 90);
     private readonly int regularDays = ReadBounded(configuration, "ZaloActivityRules:RegularDays", 30, 7, 180);
     private readonly int inactiveDays = ReadBounded(configuration, "ZaloActivityRules:InactiveDays", 90, 30, 730);
@@ -216,9 +215,11 @@ public sealed partial class ZaloMemberActivityService(
                 : message?.LastMessageAt == lastActivity
                     ? "Message"
                     : "Poll";
-            var isNew = member.FirstSeenAt >= now.AddDays(-newMemberDays);
+            // FirstSeenAt is when VolleyDraft first synchronized this UID, not
+            // the member's Zalo join time. Treating an initial backfill as a
+            // join event incorrectly labels the whole group as new.
+            const bool isNew = false;
             var status = DetermineStatus(
-                isNew,
                 lastActivity,
                 participation,
                 consecutiveMissed,
@@ -289,6 +290,7 @@ public sealed partial class ZaloMemberActivityService(
             groupId,
             period,
             periodPolls.Count,
+            filter != ZaloMemberActivityFilter.NoVote,
             cancellationToken);
 
         logger.LogInformation(
@@ -413,6 +415,7 @@ public sealed partial class ZaloMemberActivityService(
         string groupId,
         ZaloActivityPeriod period,
         int eligiblePollCount,
+        bool includeMessageCoverage,
         CancellationToken cancellationToken)
     {
         var job = await db.ZaloActivityBackfillJobs
@@ -447,8 +450,9 @@ public sealed partial class ZaloMemberActivityService(
                 warnings.Add($"Dữ liệu poll cũ nhất Zalo trả về là {job.OldestRetrievablePollAt:dd/MM/yyyy}.");
             if (excludedInRange > 0)
                 warnings.Add($"{excludedInRange} poll trong khoảng này bị loại vì ẩn danh hoặc thiếu UID người vote.");
-            if (job.MessageHistoryCapability != ZaloMessageHistoryCapability.FullHistoricalBackfill)
-                warnings.Add("Lịch sử tin nhắn chưa được chứng minh là đầy đủ; số liệu chat có thể chỉ là một phần.");
+            if (includeMessageCoverage &&
+                job.MessageHistoryCapability != ZaloMessageHistoryCapability.FullHistoricalBackfill)
+                warnings.Add("Lịch sử tin nhắn chỉ tính từ dữ liệu bot đã nhận; không dùng số liệu này để kết luận về thời gian trước khi listener hoạt động.");
         }
 
         return new ZaloActivityCoverageResponse(
@@ -483,7 +487,6 @@ public sealed partial class ZaloMemberActivityService(
     }
 
     private ZaloEngagementStatus DetermineStatus(
-        bool isNew,
         DateTimeOffset? lastActivity,
         double? participation,
         int consecutiveMissed,
@@ -492,15 +495,13 @@ public sealed partial class ZaloMemberActivityService(
         int messageCount,
         DateTimeOffset now)
     {
-        if (isNew)
-            return ZaloEngagementStatus.New;
         var days = lastActivity is null
             ? int.MaxValue
             : Math.Max(0, (int)Math.Floor((now - lastActivity.Value).TotalDays));
-        if (days >= inactiveDays)
-            return ZaloEngagementStatus.Inactive;
         if (eligiblePollCount == 0 && messageCount == 0)
             return ZaloEngagementStatus.InsufficientData;
+        if (days >= inactiveDays)
+            return ZaloEngagementStatus.Inactive;
         if (consecutiveMissed >= atRiskMissedPolls ||
             trend == "Decreasing" ||
             days > regularDays)

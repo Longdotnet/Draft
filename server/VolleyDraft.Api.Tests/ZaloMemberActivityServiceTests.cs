@@ -147,6 +147,55 @@ public sealed class ZaloMemberActivityServiceTests
     }
 
     [Fact]
+    public async Task Initial_sync_time_is_not_treated_as_the_zalo_join_time()
+    {
+        await using var fixture = await ActivityFixture.CreateAsync();
+        fixture.AddMember("u1", "Nguyễn A");
+        var member = fixture.Db.ZaloGroupMembers.Local.Single();
+        member.FirstSeenAt = DateTimeOffset.UtcNow;
+        fixture.AddPoll("poll-1", "Đăng ký sân", fixture.Now.AddDays(-5));
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await fixture.Service.QueryGroupAsync(
+            ActivityFixture.ConnectionId,
+            ActivityFixture.GroupId,
+            fixture.Period,
+            ZaloMemberActivityFilter.All,
+            1,
+            10,
+            CancellationToken.None);
+
+        var activity = Assert.Single(result.Items);
+        Assert.False(activity.IsNewMember);
+        Assert.NotEqual(ZaloEngagementStatus.New, activity.EngagementStatus);
+    }
+
+    [Fact]
+    public async Task Vote_only_query_does_not_warn_about_realtime_only_messages()
+    {
+        await using var fixture = await ActivityFixture.CreateAsync();
+        fixture.AddMember("u1", "Nguyễn A");
+        fixture.AddPoll("poll-1", "Đăng ký sân", fixture.Now.AddDays(-5));
+        var job = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        job.MessageHistoryCapability = ZaloMessageHistoryCapability.RealtimeOnly;
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await fixture.Service.QueryGroupAsync(
+            ActivityFixture.ConnectionId,
+            ActivityFixture.GroupId,
+            fixture.Period,
+            ZaloMemberActivityFilter.NoVote,
+            1,
+            10,
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            "Lịch sử tin nhắn",
+            result.Coverage.Warning ?? string.Empty,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Duplicate_member_uid_is_rejected_even_when_display_name_changes()
     {
         await using var fixture = await ActivityFixture.CreateAsync();

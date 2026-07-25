@@ -79,6 +79,8 @@ export type BridgeHistoricalMessage = {
 export type BridgeMessageHistoryProbe = {
   groupId: string;
   requestedCount: number;
+  isSupported: boolean;
+  limitationCode: string | null;
   returnedCount: number;
   more: number;
   lastActionId: string | null;

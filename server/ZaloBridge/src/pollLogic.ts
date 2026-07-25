@@ -10,6 +10,20 @@ export function normalizeMemberId(value: unknown): string {
   return normalizeId(value).replace(/_0$/, "");
 }
 
+export function shouldIncludeOwnAccount(
+  expectedMemberCount: number,
+  currentMemberCount: number,
+  ownId: string,
+  alreadyIncluded: boolean,
+): boolean {
+  return Boolean(
+    ownId &&
+    !alreadyIncluded &&
+    expectedMemberCount > 0 &&
+    expectedMemberCount === currentMemberCount + 1,
+  );
+}
+
 export function uniqueVoterIds(options: BridgePollOption[], selectedOptionIds: string[]): string[] {
   const selected = new Set(selectedOptionIds.map(normalizeId));
   const voterIds = new Set<string>();

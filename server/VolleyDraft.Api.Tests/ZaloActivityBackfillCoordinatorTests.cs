@@ -189,6 +189,8 @@ public sealed class ZaloActivityBackfillCoordinatorTests
                 {
                     groupId = "group",
                     requestedCount = 100,
+                    isSupported = true,
+                    limitationCode = (string?)null,
                     returnedCount = 2,
                     more = 1,
                     lastActionId = "last",
