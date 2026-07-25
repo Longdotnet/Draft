@@ -57,11 +57,15 @@ export function normalizePoll(raw: Record<string, unknown>): BridgePoll {
 
 export function normalizeMember(profileKey: string, raw: Record<string, unknown>): BridgeMember {
   const zaloUserId = normalizeMemberId(raw.id || raw.globalId || profileKey);
-  const displayName = String(raw.displayName || raw.zaloName || `Zalo ${zaloUserId}`);
+  const displayName = String(raw.displayName || raw.dName || raw.zaloName || `Zalo ${zaloUserId}`);
   return {
     zaloUserId,
     displayName,
     zaloName: raw.zaloName ? String(raw.zaloName) : null,
-    avatarUrl: raw.avatar ? String(raw.avatar) : null,
+    avatarUrl: raw.avatar
+      ? String(raw.avatar)
+      : raw.avatar_25
+        ? String(raw.avatar_25)
+        : null,
   };
 }

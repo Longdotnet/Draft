@@ -35,6 +35,8 @@ type MinimalZaloApi = {
   fetchAccountInfo(): Promise<{ displayName?: string; zaloName?: string; avatar?: string }>;
   getAllGroups(): Promise<{ gridVerMap?: Record<string, string> }>;
   getGroupInfo(ids: string[]): Promise<{ gridInfoMap?: Record<string, Record<string, unknown>> }>;
+  getGroupLinkDetail(groupId: string): Promise<{ link?: string; enabled?: number }>;
+  getGroupLinkInfo(payload: { link: string; memberPage?: number }): Promise<Record<string, unknown>>;
   getListBoard(options: { page: number; count: number }, groupId: string): Promise<{
     items?: Array<{ boardType: number; data: Record<string, unknown> }>;
     count?: number;
@@ -163,6 +165,18 @@ type ActiveListener = {
 
 function publicError(error: unknown): string {
   return error instanceof Error ? error.message : "Zalo request failed";
+}
+
+function logZaloOperationFailure(
+  operation: string,
+  error: unknown,
+  context: Record<string, string | number | boolean | null> = {},
+): void {
+  console.warn("[Zalo bridge] Zalo operation failed", {
+    operation,
+    ...context,
+    error: publicError(error),
+  });
 }
 
 function fingerprint(credentials: ZaloCredentials): string {
@@ -533,10 +547,35 @@ export async function getGroups(credentials: ZaloCredentials): Promise<BridgeGro
 
   for (let offset = 0; offset < ids.length; offset += 50) {
     const batch = ids.slice(offset, offset + 50);
-    const response = await api.getGroupInfo(batch);
+    let response: { gridInfoMap?: Record<string, Record<string, unknown>> };
+    try {
+      response = await api.getGroupInfo(batch);
+    } catch (error) {
+      logZaloOperationFailure("getGroupInfo.list", error, {
+        groupCount: batch.length,
+        offset,
+      });
+      for (const groupId of batch) {
+        groups.push({
+          id: normalizeId(groupId),
+          name: `Nhóm Zalo ${normalizeId(groupId)}`,
+          avatarUrl: null,
+          totalMembers: 0,
+        });
+      }
+      continue;
+    }
     for (const groupId of batch) {
       const group = response.gridInfoMap?.[groupId];
-      if (!group) continue;
+      if (!group) {
+        groups.push({
+          id: normalizeId(groupId),
+          name: `Nhóm Zalo ${normalizeId(groupId)}`,
+          avatarUrl: null,
+          totalMembers: 0,
+        });
+        continue;
+      }
       groups.push({
         id: normalizeId(group.groupId || groupId),
         name: String(group.name ?? ""),
@@ -568,22 +607,72 @@ export async function getGroupMemberDirectory(
   }
 
   const api = await getApi(credentials);
-  const response = await api.getGroupInfo([normalizedGroupId]);
-  const info = response.gridInfoMap?.[normalizedGroupId];
-  if (!info) throw new Error("Group information is unavailable");
+  let info: Record<string, unknown> | null = null;
+  let primaryError: unknown = null;
+  try {
+    const response = await api.getGroupInfo([normalizedGroupId]);
+    info = response.gridInfoMap?.[normalizedGroupId] ?? null;
+  } catch (error) {
+    primaryError = error;
+    logZaloOperationFailure("getGroupInfo.members", error, {
+      groupId: normalizedGroupId,
+    });
+  }
 
-  const memberIds = Array.isArray(info.memberIds)
-    ? [...new Set(info.memberIds.map(normalizeMemberId).filter(Boolean))]
-    : [];
-  const members = await resolveMembers(api, memberIds);
-  const expectedMemberCount = Number(info.totalMember ?? memberIds.length);
-  const hasMoreMember = Number(info.hasMoreMember ?? 0);
+  const directMembers = membersFromCurrentList(info?.currentMems);
+  const memberIds = new Set<string>([
+    ...readMemberIds(info?.memberIds),
+    ...directMembers.map((member) => member.zaloUserId),
+  ]);
+  let expectedMemberCount = Math.max(
+    Number(info?.totalMember ?? 0),
+    memberIds.size,
+  );
+  let groupName = String(info?.name ?? "");
+  let groupCreatedAtUnixMs = normalizeUnixMs(info?.createdTime);
+  let linkDirectoryComplete = false;
+
+  if (!info || directMembers.length < expectedMemberCount) {
+    try {
+      const linked = await getMembersFromGroupLink(api, normalizedGroupId);
+      for (const member of linked.members) {
+        memberIds.add(member.zaloUserId);
+        const existingIndex = directMembers.findIndex(
+          (candidate) => candidate.zaloUserId === member.zaloUserId,
+        );
+        if (existingIndex >= 0) directMembers[existingIndex] = member;
+        else directMembers.push(member);
+      }
+      expectedMemberCount = Math.max(
+        expectedMemberCount,
+        linked.expectedMemberCount,
+        memberIds.size,
+      );
+      groupName ||= linked.groupName;
+      linkDirectoryComplete = linked.isComplete;
+    } catch (error) {
+      logZaloOperationFailure("getGroupLinkInfo.members", error, {
+        groupId: normalizedGroupId,
+      });
+      if (!info && memberIds.size === 0) {
+        throw primaryError instanceof Error ? primaryError : error;
+      }
+    }
+  }
+
+  const uniqueIds = [...memberIds];
+  const members = await resolveMembers(api, uniqueIds, directMembers);
+  const hasMoreMember = Number(info?.hasMoreMember ?? 0);
+  const isComplete =
+    linkDirectoryComplete ||
+    (expectedMemberCount > 0 && members.length >= expectedMemberCount) ||
+    (expectedMemberCount === 0 && hasMoreMember === 0);
   return {
     groupId: normalizedGroupId,
-    groupName: String(info.name ?? ""),
-    groupCreatedAtUnixMs: normalizeUnixMs(info.createdTime),
+    groupName,
+    groupCreatedAtUnixMs,
     expectedMemberCount,
-    isComplete: hasMoreMember === 0 && members.length >= expectedMemberCount,
+    isComplete,
     members,
   };
 }
@@ -683,12 +772,99 @@ export async function getMembers(credentials: ZaloCredentials, memberIds: string
   return resolveMembers(api, uniqueIds);
 }
 
-async function resolveMembers(api: MinimalZaloApi, uniqueIds: string[]): Promise<BridgeMember[]> {
-  const members = new Map<string, BridgeMember>();
+function readMemberIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.map(normalizeMemberId).filter(Boolean))]
+    : [];
+}
 
-  for (let offset = 0; offset < uniqueIds.length; offset += 50) {
-    const batch = uniqueIds.slice(offset, offset + 50);
-    const response = await api.getGroupMembersInfo(batch);
+function membersFromCurrentList(value: unknown): BridgeMember[] {
+  if (!Array.isArray(value)) return [];
+  const members = new Map<string, BridgeMember>();
+  for (const current of value) {
+    if (!current || typeof current !== "object") continue;
+    const raw = current as Record<string, unknown>;
+    const member = normalizeMember(String(raw.id ?? ""), raw);
+    if (member.zaloUserId) members.set(member.zaloUserId, member);
+  }
+  return [...members.values()];
+}
+
+async function getMembersFromGroupLink(
+  api: MinimalZaloApi,
+  groupId: string,
+): Promise<{
+  groupName: string;
+  expectedMemberCount: number;
+  isComplete: boolean;
+  members: BridgeMember[];
+}> {
+  const detail = await api.getGroupLinkDetail(groupId);
+  const link = String(detail.link ?? "").trim();
+  if (!link || Number(detail.enabled ?? 1) === 0) {
+    throw new Error("Group invite link is unavailable");
+  }
+
+  const members = new Map<string, BridgeMember>();
+  let expectedMemberCount = 0;
+  let groupName = "";
+  let isComplete = false;
+
+  for (let memberPage = 1; memberPage <= 100; memberPage += 1) {
+    const page = await api.getGroupLinkInfo({ link, memberPage });
+    const pageMembers = membersFromCurrentList(page.currentMems);
+    const sizeBefore = members.size;
+    for (const member of pageMembers) members.set(member.zaloUserId, member);
+
+    groupName ||= String(page.name ?? "");
+    expectedMemberCount = Math.max(
+      expectedMemberCount,
+      Number(page.totalMember ?? 0),
+      members.size,
+    );
+    const hasMoreMember = Number(page.hasMoreMember ?? 0);
+    if (
+      hasMoreMember === 0 ||
+      (expectedMemberCount > 0 && members.size >= expectedMemberCount)
+    ) {
+      isComplete = true;
+      break;
+    }
+    if (pageMembers.length === 0 || members.size === sizeBefore) break;
+  }
+
+  return {
+    groupName,
+    expectedMemberCount,
+    isComplete,
+    members: [...members.values()],
+  };
+}
+
+async function resolveMembers(
+  api: MinimalZaloApi,
+  uniqueIds: string[],
+  seedMembers: BridgeMember[] = [],
+): Promise<BridgeMember[]> {
+  const members = new Map<string, BridgeMember>(
+    seedMembers
+      .filter((member) => member.zaloUserId)
+      .map((member) => [member.zaloUserId, member]),
+  );
+  const unresolvedIds = uniqueIds.filter((id) => !members.has(id));
+
+  for (let offset = 0; offset < unresolvedIds.length; offset += 50) {
+    const batch = unresolvedIds.slice(offset, offset + 50);
+    let response: { profiles?: Record<string, Record<string, unknown>> };
+    try {
+      response = await api.getGroupMembersInfo(batch);
+    } catch (error) {
+      logZaloOperationFailure("getGroupMembersInfo", error, {
+        memberCount: batch.length,
+        offset,
+      });
+      continue;
+    }
     for (const [profileKey, value] of Object.entries(response.profiles ?? {})) {
       const member = normalizeMember(profileKey, value as unknown as Record<string, unknown>);
       if (member.zaloUserId) members.set(member.zaloUserId, member);

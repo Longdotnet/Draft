@@ -139,8 +139,6 @@ public sealed class ZaloIntegrationService(
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {
-            connection.Status = ZaloConnectionStatus.Invalid;
-            await db.SaveChangesAsync();
             return BridgeFailure<IReadOnlyList<ZaloGroupResponse>>(exception);
         }
     }
