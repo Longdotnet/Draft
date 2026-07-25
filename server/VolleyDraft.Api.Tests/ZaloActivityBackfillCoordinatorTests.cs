@@ -59,7 +59,8 @@ public sealed class ZaloActivityBackfillCoordinatorTests
                     "u1",
                     "Nguyễn A",
                     "desktop-webchat",
-                    timestamp),
+                    timestamp,
+                    "Mình tham gia nha"),
                 new ZaloDesktopMessageImportItem(
                     "desktop-2",
                     "u2",
@@ -104,6 +105,10 @@ public sealed class ZaloActivityBackfillCoordinatorTests
             "u1-current",
             (await fixture.Db.ZaloGroupMessages.SingleAsync(message =>
                 message.MessageId == "desktop-1")).SenderId);
+        Assert.Equal(
+            "Mình tham gia nha",
+            (await fixture.Db.ZaloGroupMessages.SingleAsync(message =>
+                message.MessageId == "desktop-1")).Content);
         var job = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
         Assert.Equal(ZaloMessageHistoryCapability.PartialHistoricalBackfill, job.MessageHistoryCapability);
         Assert.Equal(2, job.MessagesImported);

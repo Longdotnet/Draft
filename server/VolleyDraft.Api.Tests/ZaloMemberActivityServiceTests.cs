@@ -120,8 +120,10 @@ public sealed class ZaloMemberActivityServiceTests
     {
         await using var fixture = await ActivityFixture.CreateAsync();
         fixture.AddMember("u1", "Nguyễn A");
+        var memberMessage = fixture.Message("member-message", "u1", fixture.Now.AddDays(-3), false);
+        memberMessage.Content = "Tui tham gia nha sk-or-v1-1234567890abcdef";
         fixture.Db.ZaloGroupMessages.AddRange(
-            fixture.Message("member-message", "u1", fixture.Now.AddDays(-3), false),
+            memberMessage,
             fixture.Message("bot-message", "u1", fixture.Now.AddDays(-1), true));
         await fixture.Db.SaveChangesAsync();
 
@@ -137,6 +139,34 @@ public sealed class ZaloMemberActivityServiceTests
         var member = Assert.Single(result.Items);
         Assert.Equal(1, member.MessageCount);
         Assert.Equal(fixture.Now.AddDays(-3), member.LastMessageAt);
+        Assert.Equal("Tui tham gia nha [đã ẩn API key]", member.LastMessagePreview);
+    }
+
+    [Fact]
+    public async Task Current_bot_question_can_be_excluded_from_last_message_evidence()
+    {
+        await using var fixture = await ActivityFixture.CreateAsync();
+        fixture.AddMember("u1", "Nguyễn A");
+        var previous = fixture.Message("previous-message", "u1", fixture.Now.AddDays(-2), false);
+        previous.Content = "Tin nhắn trước đó";
+        var currentQuestion = fixture.Message("current-question", "u1", fixture.Now, false);
+        currentQuestion.Content = "@Npc tui nhắn lần cuối khi nào?";
+        fixture.Db.ZaloGroupMessages.AddRange(previous, currentQuestion);
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await fixture.Service.QueryGroupAsync(
+            ActivityFixture.ConnectionId,
+            ActivityFixture.GroupId,
+            fixture.Period,
+            ZaloMemberActivityFilter.All,
+            1,
+            10,
+            CancellationToken.None,
+            "current-question");
+
+        var member = Assert.Single(result.Items);
+        Assert.Equal(previous.SentAt, member.LastMessageAt);
+        Assert.Equal("Tin nhắn trước đó", member.LastMessagePreview);
     }
 
     [Fact]

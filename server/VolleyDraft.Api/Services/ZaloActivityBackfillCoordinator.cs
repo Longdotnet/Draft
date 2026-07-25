@@ -120,7 +120,8 @@ public sealed class ZaloActivityBackfillCoordinator(
                     MessageId = messageId,
                     SenderZaloUserId = senderId,
                     SenderName = Truncate(source.SenderName?.Trim(), 160),
-                    MessageType = Truncate(source.MessageType?.Trim(), 80)
+                    MessageType = Truncate(source.MessageType?.Trim(), 80),
+                    Content = Truncate(source.Content?.Trim(), 4000)
                 },
                 DateTimeOffset.FromUnixTimeMilliseconds(source.SentAtUnixMs)));
         }
@@ -171,6 +172,9 @@ public sealed class ZaloActivityBackfillCoordinator(
                     message.SenderName = item.Source.SenderName;
                 if (string.IsNullOrWhiteSpace(message.MessageType))
                     message.MessageType = DefaultMessageType(item.Source.MessageType);
+                if (string.IsNullOrWhiteSpace(message.Content) &&
+                    !string.IsNullOrWhiteSpace(item.Source.Content))
+                    message.Content = item.Source.Content;
                 if (message.SentAt == default)
                     message.SentAt = item.SentAt;
                 message.LastObservedAt = now;
@@ -185,7 +189,7 @@ public sealed class ZaloActivityBackfillCoordinator(
                 MessageId = item.Source.MessageId,
                 SenderId = item.Source.SenderZaloUserId,
                 SenderName = item.Source.SenderName,
-                Content = string.Empty,
+                Content = item.Source.Content ?? string.Empty,
                 MessageType = DefaultMessageType(item.Source.MessageType),
                 ObservationSource = DesktopBackupObservationSource,
                 IsFromBot = string.Equals(

@@ -298,7 +298,10 @@ export function ZaloMemberIntelligencePanel({
                     </div>
                   </div>
                 </td>
-                <td>{formatDate(member.lastMessageAt, true)}</td>
+                <td>
+                  {formatDate(member.lastMessageAt, true)}
+                  {member.lastMessagePreview && <small>“{member.lastMessagePreview}”</small>}
+                </td>
                 <td>
                   {member.lastVotedPollQuestion
                     ? <><strong>{member.lastVotedPollQuestion}</strong><small>{formatDate(member.lastVotedPollCreatedAt)}</small></>

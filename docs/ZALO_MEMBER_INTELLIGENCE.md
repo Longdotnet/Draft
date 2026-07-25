@@ -117,7 +117,9 @@ ZaloBridge normalize message ID, sender UID, sent timestamp, message type và `i
 
 Nút search trong Zalo Web không tự động trở thành API. Không dùng browser automation hay đoán internal endpoint trong production. Nếu nâng `zca-js`, phải chạy capability probe và parsing test trước khi nâng capability.
 
-Member Intelligence không trả nội dung chat; nó chỉ đọc sender UID, timestamp, count, active days và `IsFromBot`.
+Member Intelligence mặc định dùng UID, timestamp, count, active days và
+`IsFromBot`. Với tính năng dẫn chứng đã được bật, backend có thể trả đoạn trích
+tin gần nhất theo đúng quy tắc phân quyền ở phần Authorization và privacy.
 
 ## Chỉ số hoạt động
 
@@ -257,3 +259,15 @@ Render Free vẫn có thể ngủ. GitHub Actions scheduler hiện tại đánh 
 - `zca-js` 2.1.2 chưa cho truyền cursor vào `getGroupChatHistory`, nên group dài thường chỉ đạt `PartialHistoricalBackfill`.
 - Nếu `getGroupInfo` báo còn member nhưng không có API phân trang member tương ứng, hệ thống giữ directory partial và không đánh dấu nhầm người đã rời nhóm.
 - Zalo là API không chính thức, contract/rate limit có thể đổi; deploy bridge + API cùng version và theo dõi structured logs.
+## Dẫn chứng nội dung tin nhắn
+
+Member Intelligence lưu và trả một đoạn trích ngắn của tin nhắn gần nhất khi
+nội dung đó thật sự có trong `ZaloGroupMessages`. Danh sách toàn nhóm và nội
+dung của người khác vẫn đi qua kiểm tra quyền operator/admin/trưởng/phó nhóm;
+thành viên thường chỉ được xem nội dung của chính mình.
+
+Đoạn trích là dữ liệu backend, không do AI tạo hoặc sửa. API key, token và mật
+khẩu theo các mẫu phổ biến được che trước khi hiển thị. Tin cũ chỉ được import
+metadata hoặc loại media không có caption sẽ chỉ có timestamp/loại tin, không
+được bịa nội dung. Desktop-history import có thể truyền trường `content` để lưu
+dẫn chứng khi nguồn backup thực sự cung cấp được nội dung.

@@ -202,6 +202,7 @@ export type ZaloMemberActivityResponse = {
   isNewMember: boolean;
   firstSeenAt: string;
   lastMessageAt: string | null;
+  lastMessagePreview: string | null;
   messageCount: number;
   activeMessageDays: number;
   lastVotedPollCreatedAt: string | null;

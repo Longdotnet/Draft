@@ -97,7 +97,8 @@ public sealed partial class ZaloMemberActivityService(
         ZaloMemberActivityFilter filter,
         int page,
         int pageSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? excludedMessageId = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 5000);
@@ -157,19 +158,61 @@ public sealed partial class ZaloMemberActivityService(
             .Where(message =>
                 message.ZaloConnectionId == connectionId &&
                 message.GroupId == groupId &&
+                (excludedMessageId == null || message.MessageId != excludedMessageId) &&
                 !message.IsFromBot)
-            .Select(message => new { message.SenderId, message.SentAt })
+            .Select(message => new
+            {
+                message.SenderId,
+                message.SentAt,
+                message.MessageId
+            })
             .ToListAsync(cancellationToken);
-        var messages = messageFacts
+        var messageGroups = messageFacts
             .GroupBy(message => message.SenderId, StringComparer.Ordinal)
-            .Select(group => new MessageAggregate(
-                group.Key,
-                group.Max(message => (DateTimeOffset?)message.SentAt),
-                group.Count(message => message.SentAt >= period.Start && message.SentAt < period.End),
-                group.Where(message => message.SentAt >= period.Start && message.SentAt < period.End)
-                    .Select(message => message.SentAt.ToOffset(VietnamOffset).Date)
-                    .Distinct()
-                    .Count()))
+            .ToList();
+        var latestMessages = messageGroups
+            .Select(group => group
+                .OrderByDescending(message => message.SentAt)
+                .ThenByDescending(message => message.MessageId, StringComparer.Ordinal)
+                .First())
+            .ToList();
+        var latestMessageIds = latestMessages
+            .Select(message => message.MessageId)
+            .ToList();
+        var latestContent = latestMessageIds.Count == 0
+            ? []
+            : await db.ZaloGroupMessages
+                .AsNoTracking()
+                .Where(message =>
+                    message.ZaloConnectionId == connectionId &&
+                    latestMessageIds.Contains(message.MessageId))
+                .Select(message => new
+                {
+                    message.MessageId,
+                    message.Content,
+                    message.MessageType
+                })
+                .ToListAsync(cancellationToken);
+        var latestContentById = latestContent
+            .ToDictionary(message => message.MessageId, StringComparer.Ordinal);
+        var messages = messageGroups
+            .Select(group =>
+            {
+                var latest = group
+                    .OrderByDescending(message => message.SentAt)
+                    .ThenByDescending(message => message.MessageId, StringComparer.Ordinal)
+                    .First();
+                latestContentById.TryGetValue(latest.MessageId, out var evidence);
+                return new MessageAggregate(
+                    group.Key,
+                    latest.SentAt,
+                    BuildMessagePreview(evidence?.Content, evidence?.MessageType),
+                    group.Count(message => message.SentAt >= period.Start && message.SentAt < period.End),
+                    group.Where(message => message.SentAt >= period.Start && message.SentAt < period.End)
+                        .Select(message => message.SentAt.ToOffset(VietnamOffset).Date)
+                        .Distinct()
+                        .Count());
+            })
             .ToList();
         var messagesByMember = messages.ToDictionary(message => message.UserId, StringComparer.Ordinal);
 
@@ -241,6 +284,7 @@ public sealed partial class ZaloMemberActivityService(
                 isNew,
                 member.FirstSeenAt,
                 message?.LastMessageAt,
+                message?.LastMessagePreview,
                 message?.PeriodMessageCount ?? 0,
                 message?.ActiveDays ?? 0,
                 lastPoll?.CreatedAt,
@@ -319,7 +363,8 @@ public sealed partial class ZaloMemberActivityService(
         string groupId,
         string zaloUserId,
         ZaloActivityPeriod period,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? excludedMessageId = null)
     {
         var page = await QueryGroupAsync(
             connectionId,
@@ -328,7 +373,8 @@ public sealed partial class ZaloMemberActivityService(
             ZaloMemberActivityFilter.All,
             1,
             5000,
-            cancellationToken);
+            cancellationToken,
+            excludedMessageId);
         return page.Items.SingleOrDefault(item =>
             string.Equals(item.ZaloUserId, zaloUserId, StringComparison.Ordinal));
     }
@@ -639,6 +685,39 @@ public sealed partial class ZaloMemberActivityService(
             ? Math.Clamp(value, minimum, maximum)
             : fallback;
 
+    internal static string? BuildMessagePreview(string? content, string? messageType)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            var normalizedType = messageType?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (normalizedType.Contains("photo", StringComparison.Ordinal) ||
+                normalizedType.Contains("image", StringComparison.Ordinal))
+                return "[đã gửi hình ảnh]";
+            if (normalizedType.Contains("video", StringComparison.Ordinal))
+                return "[đã gửi video]";
+            if (normalizedType.Contains("sticker", StringComparison.Ordinal))
+                return "[đã gửi sticker]";
+            if (normalizedType.Contains("file", StringComparison.Ordinal))
+                return "[đã gửi tệp]";
+            return null;
+        }
+
+        var preview = Regex.Replace(content, @"\s+", " ").Trim();
+        preview = Regex.Replace(
+            preview,
+            @"(?i)\bsk-(?:or-v1-)?[a-z0-9_-]{12,}\b",
+            "[đã ẩn API key]");
+        preview = Regex.Replace(
+            preview,
+            @"(?i)\b(zpw_(?:sek|enk)|api[_ -]?key|token|password|mật khẩu|mat khau)\s*[:=]\s*\S+",
+            "$1: [đã ẩn]");
+
+        const int maximumLength = 180;
+        return preview.Length <= maximumLength
+            ? preview
+            : $"{preview[..maximumLength].TrimEnd()}…";
+    }
+
     [GeneratedRegex(@"tu\s+(\d{1,2}/\d{1,2}(?:/\d{4})?)\s+den\s+(\d{1,2}/\d{1,2}(?:/\d{4})?)", RegexOptions.IgnoreCase)]
     private static partial Regex ExplicitRangeRegex();
 
@@ -664,6 +743,7 @@ public sealed partial class ZaloMemberActivityService(
     private sealed record MessageAggregate(
         string UserId,
         DateTimeOffset? LastMessageAt,
+        string? LastMessagePreview,
         int PeriodMessageCount,
         int ActiveDays);
 

@@ -361,7 +361,8 @@ public sealed record ZaloDesktopMessageImportItem(
     string SenderZaloUserId,
     string SenderName,
     string MessageType,
-    long SentAtUnixMs);
+    long SentAtUnixMs,
+    string? Content = null);
 
 public sealed record ZaloDesktopHistoryImportResponse(
     int ReceivedCount,
@@ -394,6 +395,7 @@ public sealed record ZaloMemberActivityResponse(
     bool IsNewMember,
     DateTimeOffset FirstSeenAt,
     DateTimeOffset? LastMessageAt,
+    string? LastMessagePreview,
     int MessageCount,
     int ActiveMessageDays,
     DateTimeOffset? LastVotedPollCreatedAt,

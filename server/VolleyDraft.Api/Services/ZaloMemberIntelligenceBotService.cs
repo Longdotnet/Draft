@@ -327,7 +327,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 ZaloMemberActivityFilter.All,
                 1,
                 5000,
-                cancellationToken);
+                cancellationToken,
+                NormalizeId(incoming.MessageId));
             var response =
                 $"Tổng quan hoạt động {period.Description}:\n" +
                 $"- Thành viên hiện tại: {all.TotalItems}\n" +
@@ -401,7 +402,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             filter,
             page,
             pageSize,
-            cancellationToken);
+            cancellationToken,
+            NormalizeId(incoming.MessageId));
         var cappedTotal = Math.Min(result.TotalItems, limit);
         var totalPages = Math.Max(1, (int)Math.Ceiling(cappedTotal / (double)pageSize));
         page = Math.Min(page, totalPages);
@@ -490,7 +492,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             groupId,
             memberUserId,
             period,
-            cancellationToken);
+            cancellationToken,
+            NormalizeId(incoming.MessageId));
         if (item is null)
             return new ZaloMemberBotAnswer(
                 "Mình không tìm thấy UID thành viên hiện tại trong dữ liệu nhóm đã đồng bộ.",
@@ -509,7 +512,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             case ZaloBotIntent.GetMemberLastMessage:
                 text = item.LastMessageAt is null
                     ? $"Chưa tìm thấy tin nhắn nào của {item.DisplayName} trong dữ liệu nhóm đã lưu."
-                    : $"Tin nhắn gần nhất hệ thống ghi nhận của {item.DisplayName}: {FormatDateTime(item.LastMessageAt)}.";
+                    : $"Tin nhắn gần nhất hệ thống ghi nhận của {item.DisplayName}: {FormatDateTime(item.LastMessageAt)}." +
+                      FormatMessageEvidence(item.LastMessagePreview);
                 break;
             case ZaloBotIntent.AnalyzeMemberVoteActivity:
                 text =
@@ -528,12 +532,14 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                     $"- Số tin nhắn: {item.MessageCount}\n" +
                     $"- Số ngày có nhắn: {item.ActiveMessageDays}\n" +
                     $"- Tin gần nhất: {(item.LastMessageAt is null ? "chưa tìm thấy" : FormatDateTime(item.LastMessageAt))}\n" +
+                    $"{FormatMessageEvidenceLine(item.LastMessagePreview)}" +
                     $"- Trạng thái dữ liệu: {item.DataConfidence}.";
                 break;
             default:
                 text =
                     $"Hoạt động gần nhất ghi nhận của {item.DisplayName}:\n\n" +
                     $"- Tin nhắn gần nhất: {(item.LastMessageAt is null ? "chưa tìm thấy" : FormatDateTime(item.LastMessageAt))}\n" +
+                    $"{FormatMessageEvidenceLine(item.LastMessagePreview)}" +
                     $"- Poll gần nhất có tham gia: {(item.LastVotedPollCreatedAt is null ? "chưa tìm thấy" : $"“{item.LastVotedPollQuestion}”, tạo ngày {FormatDate(item.LastVotedPollCreatedAt.Value)}")}\n" +
                     $"- Hoạt động mới nhất: {(item.LastActivityAt is null ? "chưa ghi nhận" : $"{FormatActivitySource(item.LastActivitySource)} lúc {FormatDateTime(item.LastActivityAt)}")}.";
                 break;
@@ -546,7 +552,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             ZaloMemberActivityFilter.All,
             1,
             1,
-            cancellationToken);
+            cancellationToken,
+            NormalizeId(incoming.MessageId));
         if ((intent is ZaloBotIntent.GetMemberLastMessage or
              ZaloBotIntent.AnalyzeMemberMessageActivity or
              ZaloBotIntent.GetMemberLastActivity) &&
@@ -911,11 +918,31 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         if (item.LastVotedPollCreatedAt is not null)
             evidence.Add($"poll gần nhất “{item.LastVotedPollQuestion}” tạo {FormatDate(item.LastVotedPollCreatedAt.Value)}");
         if (item.LastMessageAt is not null)
-            evidence.Add($"nhắn gần nhất {FormatDateTime(item.LastMessageAt)}");
+        {
+            var messageEvidence = $"nhắn gần nhất {FormatDateTime(item.LastMessageAt)}";
+            if (!string.IsNullOrWhiteSpace(item.LastMessagePreview))
+                messageEvidence += $": “{TruncateMessagePreview(item.LastMessagePreview, 90)}”";
+            evidence.Add(messageEvidence);
+        }
         return evidence.Count == 0
             ? "chưa tìm thấy vote hoặc tin nhắn trong dữ liệu đã quét"
             : string.Join("; ", evidence);
     }
+
+    private static string FormatMessageEvidence(string? preview) =>
+        string.IsNullOrWhiteSpace(preview)
+            ? "\nDẫn chứng nội dung: hệ thống không lưu được nội dung của tin này."
+            : $"\nDẫn chứng: “{preview}”";
+
+    private static string FormatMessageEvidenceLine(string? preview) =>
+        string.IsNullOrWhiteSpace(preview)
+            ? "- Dẫn chứng nội dung: hệ thống không lưu được nội dung của tin này.\n"
+            : $"- Dẫn chứng: “{preview}”\n";
+
+    private static string TruncateMessagePreview(string preview, int maximumLength) =>
+        preview.Length <= maximumLength
+            ? preview
+            : $"{preview[..maximumLength].TrimEnd()}…";
 
     private static IReadOnlyList<string> BuildProtectedTerms(
         IReadOnlyList<ZaloMemberActivityResponse> items,
@@ -926,6 +953,13 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         terms.AddRange(items
             .Where(item => !string.IsNullOrWhiteSpace(item.LastVotedPollQuestion))
             .Select(item => item.LastVotedPollQuestion!));
+        terms.AddRange(items
+            .Where(item => !string.IsNullOrWhiteSpace(item.LastMessagePreview))
+            .SelectMany(item => new[]
+            {
+                item.LastMessagePreview!,
+                TruncateMessagePreview(item.LastMessagePreview!, 90)
+            }));
         terms.Add(items.Count.ToString(CultureInfo.InvariantCulture));
         terms.Add(coverage.EligiblePollCount.ToString(CultureInfo.InvariantCulture));
         return terms.Distinct(StringComparer.Ordinal).ToList();
