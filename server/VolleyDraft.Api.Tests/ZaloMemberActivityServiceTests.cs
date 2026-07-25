@@ -12,7 +12,7 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloMemberActivityServiceTests
 {
     [Fact]
-    public void Natural_activity_lists_page_all_members_while_explicit_limits_remain_bounded()
+    public void Natural_activity_list_number_is_page_size_while_top_ranking_is_bounded()
     {
         Assert.Equal(
             500,
@@ -25,9 +25,14 @@ public sealed class ZaloMemberActivityServiceTests
                 ZaloBotIntent.ListMostInactiveMembers,
                 null));
         Assert.Equal(
-            20,
+            500,
             ZaloMemberIntelligenceBotService.ResolveResultLimit(
                 ZaloBotIntent.ListAtRiskMembers,
+                20));
+        Assert.Equal(
+            20,
+            ZaloMemberIntelligenceBotService.ResolveResultLimit(
+                ZaloBotIntent.ListMostInactiveMembers,
                 20));
     }
 

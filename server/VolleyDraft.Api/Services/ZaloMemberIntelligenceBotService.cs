@@ -972,12 +972,16 @@ public sealed partial class ZaloMemberIntelligenceBotService(
 
     internal static int ResolveResultLimit(ZaloBotIntent intent, int? requestedLimit)
     {
-        if (requestedLimit is not null)
-            return Math.Clamp(requestedLimit.Value, 1, 30);
+        // A number in a normal list request means "show this many per page",
+        // not "discard everything after this many results". For example,
+        // "ai 30 ngày chưa vote, 5 người" must still allow "@bot xem thêm".
+        // Only an explicit top/ranking request uses the number as a hard cap.
+        if (intent == ZaloBotIntent.ListMostInactiveMembers)
+            return requestedLimit is null
+                ? 10
+                : Math.Clamp(requestedLimit.Value, 1, 30);
 
-        // "Top" is intentionally a short ranking. Other list intents are
-        // paged through all current group members, ten at a time.
-        return intent == ZaloBotIntent.ListMostInactiveMembers ? 10 : 500;
+        return 500;
     }
 
     private static bool TryResolvePage(
