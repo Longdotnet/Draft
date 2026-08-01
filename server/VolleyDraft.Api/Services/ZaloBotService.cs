@@ -2430,8 +2430,18 @@ public sealed class ZaloBotService(
                 cancellationToken);
             aiCalled |= aiCommand is not null;
         }
-        var command = aiCommand ?? (fallbackCommand.RequestedPartnerCount > 0 ? fallbackCommand : null);
-        var explicitMentionCommand = ZaloNaturalCommandParser.BindExplicitShareMentions(mentionedUsers, command);
+        var hasDeterministicCommand = fallbackCommand.RequestedPartnerCount > 0 &&
+                                      fallbackCommand.Partners.Count == fallbackCommand.RequestedPartnerCount;
+        var command = hasDeterministicCommand
+            ? fallbackCommand with
+            {
+                SessionReference = fallbackCommand.SessionReference ?? aiCommand?.SessionReference
+            }
+            : aiCommand;
+        var explicitMentionCommand = ZaloNaturalCommandParser.BindExplicitShareMentions(
+            mentionedUsers,
+            command,
+            hasDeterministicCommand ? fallbackCommand : null);
         if (explicitMentionCommand is not null)
         {
             logger.LogInformation(
@@ -2446,9 +2456,10 @@ public sealed class ZaloBotService(
 
         var senderAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than" };
         var anchorMention = FindMentionedUser(command.Anchor, mentionedUsers);
+        var anchorZaloUserId = NormalizeId(command.AnchorZaloUserId ?? anchorMention?.ZaloUserId ?? string.Empty);
         var requestedOwnSlot = senderAliases.Contains(NormalizeText(command.Anchor), StringComparer.Ordinal) ||
                                NormalizeText(command.Anchor) == NormalizeText(incoming.SenderName) ||
-                               NormalizeId(anchorMention?.ZaloUserId ?? string.Empty) == NormalizeId(incoming.SenderId);
+                               anchorZaloUserId == NormalizeId(incoming.SenderId);
         var rawAnchor = requestedOwnSlot
             ? incoming.SenderName
             : command.Anchor;
@@ -2475,7 +2486,9 @@ public sealed class ZaloBotService(
             decision.SessionReference
         }.Where(value => !string.IsNullOrWhiteSpace(value))));
         var matchingSessions = sessions
-            .Where(session => ResolvePlayerReference(rawAnchor, session.PlayerNames) is not null ||
+            .Where(session => (anchorZaloUserId.Length > 0 &&
+                               session.PlayerNamesByZaloUserId.ContainsKey(anchorZaloUserId)) ||
+                              ResolvePlayerReference(rawAnchor, session.PlayerNames) is not null ||
                               (requestedOwnSlot && session.SenderIsListed))
             .ToList();
         var finishedMatchingSessions = matchingSessions.Where(session => session.Status == SessionStatus.Finished).ToList();
@@ -2493,7 +2506,9 @@ public sealed class ZaloBotService(
             cancellationToken);
         var resolvedAnchor = requestedOwnSlot && session.SenderIsListed && !string.IsNullOrWhiteSpace(session.SenderPlayerName)
             ? session.SenderPlayerName
-            : ResolvePlayerReference(rawAnchor, session.PlayerNames);
+            : anchorZaloUserId.Length > 0 && session.PlayerNamesByZaloUserId.TryGetValue(anchorZaloUserId, out var mentionedAnchorName)
+                ? mentionedAnchorName
+                : ResolvePlayerReference(rawAnchor, session.PlayerNames);
         var selfService = session.SenderIsListed &&
                           !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
                           resolvedAnchor is not null &&
@@ -2506,11 +2521,17 @@ public sealed class ZaloBotService(
         var anchor = resolvedAnchor;
         if (anchor is null)
             return new BotAnswer($"Không tìm thấy '{rawAnchor}' trong đội hình.", null, decision.Intent, aiCalled);
-        var participantInputs = partners.Select(partnerName =>
+        var participantInputs = partners.Select((partnerName, index) =>
         {
-            var existing = ResolvePlayerReference(partnerName, session.PlayerNames);
+            var commandPartnerId = command.PartnerZaloUserIds is { Count: > 0 } && index < command.PartnerZaloUserIds.Count
+                ? command.PartnerZaloUserIds[index]
+                : null;
             var mention = FindMentionedUser(partnerName, mentionedUsers);
-            var mentionId = mention?.ZaloUserId;
+            var mentionId = commandPartnerId ?? mention?.ZaloUserId;
+            var normalizedMentionId = NormalizeId(mentionId ?? string.Empty);
+            var existing = normalizedMentionId.Length > 0 && session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
+                ? mentionedPartnerName
+                : ResolvePlayerReference(partnerName, session.PlayerNames);
             mentionedMembers.TryGetValue(NormalizeId(mentionId ?? string.Empty), out var member);
             var displayName = existing ?? (NormalizeText(partnerName) == "ban"
                 ? NextExternalShareName(anchor, session.PlayerNames)
@@ -4468,7 +4489,13 @@ public sealed class ZaloBotService(
                 .Where(name => !string.IsNullOrWhiteSpace(name))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
-                .ToList() ?? [])).ToList();
+                .ToList() ?? [],
+            playersBySession.GetValueOrDefault(session.Id)?
+                .Where(player => !string.IsNullOrWhiteSpace(player.ZaloUserId) &&
+                                 !string.IsNullOrWhiteSpace(player.DisplayName))
+                .GroupBy(player => NormalizeId(player.ZaloUserId!), StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First().DisplayName, StringComparer.Ordinal)
+                ?? new Dictionary<string, string>(StringComparer.Ordinal))).ToList();
     }
 
     private static SessionSelection SelectSession(IReadOnlyList<SessionSnapshot> sessions, string normalizedQuestion)
@@ -4709,9 +4736,10 @@ public sealed class ZaloBotService(
     private static bool ContainsToken(string value, string token) =>
         Regex.IsMatch(value, $@"(?<![a-z0-9]){Regex.Escape(token)}(?![a-z0-9])", RegexOptions.CultureInvariant);
 
-    private static string ExtractQuestion(ZaloIncomingMessageEvent incoming)
+    internal static string ExtractQuestion(ZaloIncomingMessageEvent incoming)
     {
         var value = incoming.Content ?? string.Empty;
+        var removedStructuredBotMention = false;
         foreach (var mention in incoming.Mentions
                      .Where(mention => NormalizeId(mention.Uid) == NormalizeId(incoming.BotId))
                      .OrderByDescending(mention => mention.Pos))
@@ -4719,9 +4747,13 @@ public sealed class ZaloBotService(
             if (mention.Pos >= 0 && mention.Len > 0 && mention.Pos + mention.Len <= value.Length)
             {
                 value = value.Remove(mention.Pos, mention.Len);
+                removedStructuredBotMention = true;
             }
         }
-        value = Regex.Replace(value, @"^\s*@\S+\s*", string.Empty, RegexOptions.CultureInvariant);
+        if (!removedStructuredBotMention)
+        {
+            value = Regex.Replace(value, @"^\s*@\S+\s*", string.Empty, RegexOptions.CultureInvariant);
+        }
         return value.Trim();
     }
 
@@ -5084,5 +5116,6 @@ public sealed class ZaloBotService(
         bool SenderIsListed,
         string? SenderPlayerName,
         string? LatestPoll,
-        IReadOnlyList<string> PlayerNames);
+        IReadOnlyList<string> PlayerNames,
+        IReadOnlyDictionary<string, string> PlayerNamesByZaloUserId);
 }

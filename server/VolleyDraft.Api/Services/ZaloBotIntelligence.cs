@@ -95,7 +95,9 @@ public sealed record ZaloShareSlotCommand(
     string Anchor,
     IReadOnlyList<string> Partners,
     int RequestedPartnerCount,
-    string? SessionReference = null);
+    string? SessionReference = null,
+    string? AnchorZaloUserId = null,
+    IReadOnlyList<string?>? PartnerZaloUserIds = null);
 
 public sealed record ZaloAddGuestCommand(
     string? SponsorReference,

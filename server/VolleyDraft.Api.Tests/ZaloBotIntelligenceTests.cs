@@ -1,3 +1,4 @@
+using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -304,6 +305,70 @@ public sealed class ZaloBotIntelligenceTests
         Assert.Equal("Vinh", command!.Anchor);
         Assert.Equal(["An", "Bình"], command.Partners);
         Assert.Equal(2, command.RequestedPartnerCount);
+    }
+
+    [Theory]
+    [InlineData("@Duy Nam share slot với Trần Chí Cường", "Duy Nam", "duy-id", "Trần Chí Cường")]
+    [InlineData("@Sin share slot với Lê Hữu Lý", "Sin", "sin-id", "Lê Hữu Lý")]
+    public void One_anchor_mention_overrides_ai_fuzzy_match(
+        string question,
+        string expectedAnchor,
+        string anchorId,
+        string expectedPartner)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseShareSlot(question, out var parsed));
+        var aiCommand = new ZaloShareSlotCommand("Minh Nam", [expectedPartner], 1);
+
+        var command = ZaloNaturalCommandParser.BindExplicitShareMentions(
+            [new ZaloMentionedUser(anchorId, expectedAnchor)],
+            aiCommand,
+            parsed);
+
+        Assert.NotNull(command);
+        Assert.Equal(expectedAnchor, command!.Anchor);
+        Assert.Equal(anchorId, command.AnchorZaloUserId);
+        Assert.Equal([expectedPartner], command.Partners);
+    }
+
+    [Fact]
+    public void One_partner_mention_keeps_plain_anchor_and_binds_partner_uid()
+    {
+        const string question = "Trần Chí Cường share slot với @Sin";
+        Assert.True(ZaloNaturalCommandParser.TryParseShareSlot(question, out var parsed));
+
+        var command = ZaloNaturalCommandParser.BindExplicitShareMentions(
+            [new ZaloMentionedUser("sin-id", "Sin")],
+            parsed,
+            parsed);
+
+        Assert.NotNull(command);
+        Assert.Equal("Trần Chí Cường", command!.Anchor);
+        Assert.Equal(["Sin"], command.Partners);
+        Assert.Equal(["sin-id"], command.PartnerZaloUserIds);
+    }
+
+    [Fact]
+    public void Extract_question_removes_only_bot_mention_and_keeps_first_player_mention()
+    {
+        const string content = "@Npc @Duy Nam share slot với Trần Chí Cường";
+        var incoming = new ZaloIncomingMessageEvent(
+            "account-id",
+            "bot-id",
+            "group-id",
+            "message-id",
+            "sender-id",
+            "Thanh Long",
+            content,
+            [
+                new ZaloBridgeMention("bot-id", 0, "@Npc".Length),
+                new ZaloBridgeMention("duy-id", "@Npc ".Length, "@Duy Nam".Length)
+            ],
+            true,
+            0);
+
+        var question = ZaloBotService.ExtractQuestion(incoming);
+
+        Assert.Equal("@Duy Nam share slot với Trần Chí Cường", question);
     }
 
     [Theory]

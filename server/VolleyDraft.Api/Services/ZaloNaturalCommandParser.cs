@@ -285,16 +285,62 @@ public static class ZaloNaturalCommandParser
     /// Binds explicit Zalo mentions to the share-slot command.
     ///
     /// A natural-language model may reasonably interpret the sender as "tui"
-    /// when the text also contains an explicit @player.  That is unsafe for a
-    /// data-changing command.  When the message contains exactly two or three
-    /// non-bot player mentions, their order is authoritative:
+    /// or fuzzy-match a similar player when the text contains an explicit
+    /// @player. That is unsafe for a data-changing command. Explicit mentions
+    /// are therefore authoritative and retain their Zalo UID. With one mention,
+    /// the deterministic parser decides whether it is the anchor or a partner.
+    /// With two or three mentions their order is authoritative:
     /// mention[0] = existing slot owner, remaining mentions = shared players.
     /// </summary>
     public static ZaloShareSlotCommand? BindExplicitShareMentions(
         IReadOnlyList<ZaloMentionedUser> mentionedUsers,
-        ZaloShareSlotCommand? currentCommand)
+        ZaloShareSlotCommand? currentCommand,
+        ZaloShareSlotCommand? deterministicCommand = null)
     {
-        if (mentionedUsers.Count is < 2 or > 3) return null;
+        if (mentionedUsers.Count is < 1 or > 3) return currentCommand;
+
+        if (mentionedUsers.Count == 1)
+        {
+            var basis = IsCompleteShareSlotCommand(deterministicCommand)
+                ? deterministicCommand!
+                : currentCommand;
+            if (!IsCompleteShareSlotCommand(basis)) return currentCommand;
+
+            var mention = mentionedUsers[0];
+            var mentionName = mention.DisplayName.Trim().TrimStart('@');
+            if (mentionName.Length == 0) return currentCommand;
+
+            if (SamePersonReference(basis!.Anchor, mentionName))
+            {
+                return basis with
+                {
+                    Anchor = mentionName,
+                    AnchorZaloUserId = mention.ZaloUserId,
+                    SessionReference = basis.SessionReference ?? currentCommand?.SessionReference
+                };
+            }
+
+            var partnerIndex = basis.Partners
+                .Select((name, index) => new { Name = name, Index = index })
+                .FirstOrDefault(item => SamePersonReference(item.Name, mentionName))?.Index;
+            if (partnerIndex is null) return currentCommand;
+
+            var boundPartners = basis.Partners.ToList();
+            boundPartners[partnerIndex.Value] = mentionName;
+            var partnerIds = Enumerable.Repeat<string?>(null, boundPartners.Count).ToList();
+            if (basis.PartnerZaloUserIds is { Count: > 0 })
+            {
+                for (var index = 0; index < Math.Min(partnerIds.Count, basis.PartnerZaloUserIds.Count); index += 1)
+                    partnerIds[index] = basis.PartnerZaloUserIds[index];
+            }
+            partnerIds[partnerIndex.Value] = mention.ZaloUserId;
+            return basis with
+            {
+                Partners = boundPartners,
+                PartnerZaloUserIds = partnerIds,
+                SessionReference = basis.SessionReference ?? currentCommand?.SessionReference
+            };
+        }
 
         var anchor = mentionedUsers[0].DisplayName.Trim().TrimStart('@');
         var partners = mentionedUsers
@@ -308,8 +354,22 @@ public static class ZaloNaturalCommandParser
             anchor,
             partners,
             partners.Count,
-            currentCommand?.SessionReference);
+            deterministicCommand?.SessionReference ?? currentCommand?.SessionReference,
+            mentionedUsers[0].ZaloUserId,
+            mentionedUsers.Skip(1).Select(user => (string?)user.ZaloUserId).ToList());
     }
+
+    private static bool IsCompleteShareSlotCommand(ZaloShareSlotCommand? command) =>
+        command is not null &&
+        command.Anchor.Trim().Length > 0 &&
+        command.RequestedPartnerCount is >= 1 and <= 2 &&
+        command.Partners.Count == command.RequestedPartnerCount;
+
+    private static bool SamePersonReference(string first, string second) =>
+        string.Equals(
+            ZaloBotIntelligence.Normalize(first.Trim().TrimStart('@')),
+            ZaloBotIntelligence.Normalize(second.Trim().TrimStart('@')),
+            StringComparison.Ordinal);
 
     public static bool TryParseSlotTransfer(string question, out ZaloSlotTransferCommand command)
     {
