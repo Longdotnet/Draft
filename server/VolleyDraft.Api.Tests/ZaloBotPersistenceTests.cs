@@ -395,6 +395,64 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Mentioned_group_member_without_poll_vote_can_preview_and_join_with_zalo_avatar()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("share-mentioned-member", 6,
+            ("sin", "Sin", 3.5d));
+        session.StartTime = DateTimeOffset.UtcNow.AddDays(1);
+        fixture.Db.MatchSessions.Add(session);
+        fixture.Db.PlayerProfiles.Add(new PlayerProfile
+        {
+            ZaloUserId = "zalo-le-huu-ly",
+            DisplayName = "Lê Hữu Lý",
+            AvatarUrl = "https://avatars.example/old-le-huu-ly.jpg"
+        });
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        var mentionedPartner = new ShareSlotParticipantInput(
+            "Lê Hữu Lý",
+            "zalo-le-huu-ly",
+            "https://avatars.example/le-huu-ly.jpg");
+
+        var preview = await service.PreviewShareSlotAsync(
+            "admin",
+            session.Id,
+            "Sin",
+            [mentionedPartner]);
+
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.Equal("Sin / Lê Hữu Lý", preview.Value!.ProposedSlotDisplayName);
+        Assert.Equal(2, preview.Value.PresentPlayerCount);
+        Assert.Equal(1, preview.Value.EffectiveSlotCount);
+        Assert.Equal("zalo-le-huu-ly", preview.Value.PartnerInputs.Single().ZaloUserId);
+        Assert.Equal("https://avatars.example/le-huu-ly.jpg", preview.Value.PartnerInputs.Single().AvatarUrl);
+        Assert.Contains(preview.Value.Warnings, warning => warning.Contains("chưa có hồ sơ"));
+        Assert.Single(await fixture.Db.SessionPlayers.Where(player => player.SessionId == session.Id).ToListAsync());
+
+        var applied = await service.SharePreDraftSlotAsync(
+            "admin",
+            session.Id,
+            preview.Value.AnchorPlayerName,
+            preview.Value.PartnerInputs);
+
+        Assert.True(applied.IsSuccess, applied.Error);
+        Assert.Equal(["Lê Hữu Lý"], applied.Value!.NewlyAddedPlayerNames);
+        fixture.Db.ChangeTracker.Clear();
+        var added = await fixture.Db.SessionPlayers
+            .AsNoTracking()
+            .Include(player => player.PlayerProfile)
+            .SingleAsync(player => player.SessionId == session.Id && player.DisplayName == "Lê Hữu Lý");
+        Assert.Equal("zalo-le-huu-ly", added.PlayerProfile!.ZaloUserId);
+        Assert.Equal("https://avatars.example/le-huu-ly.jpg", added.AvatarUrl);
+        Assert.Equal("https://avatars.example/le-huu-ly.jpg", added.PlayerProfile.AvatarUrl);
+        Assert.Equal(1, await fixture.Db.PlayerProfiles.CountAsync(profile => profile.ZaloUserId == "zalo-le-huu-ly"));
+        Assert.Equal(PlayerGender.Unknown, added.Gender);
+        Assert.Equal(PlayerRole.New, added.Role);
+        Assert.Equal(PlayerLevel.New, added.Level);
+    }
+
+    [Fact]
     public async Task Post_draft_share_preview_flags_moving_an_existing_player_without_mutation()
     {
         await using var fixture = await DbFixture.CreateAsync();

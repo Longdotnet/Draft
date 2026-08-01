@@ -550,7 +550,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var isExternalGuestLabel = normalizedInputName.StartsWith("ban cua ", StringComparison.Ordinal) ||
                                        normalizedInputName.StartsWith("ban share cung ", StringComparison.Ordinal);
             var resolution = input.ZaloUserId is not null
-                ? ResolveProfilePlayer(players, input.DisplayName, input.ZaloUserId, null)
+                ? ResolveProfilePlayer(
+                    players,
+                    input.DisplayName,
+                    input.ZaloUserId,
+                    null,
+                    allowCreateFromZaloMention: true)
                 : isExternalGuestLabel
                     ? new SessionPlayerResolution(null, $"Không tìm thấy '{input.DisplayName}' trong danh sách.", true)
                 : ResolveSessionPlayer(players, input.DisplayName);
@@ -664,9 +669,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 .ToHashSet(StringComparer.Ordinal);
             foreach (var item in newPartners.Where(item => item.Player is not null)) sharedPlayerIds.Add(item.Player!.Id);
             sharedPlayerIds.Add(anchorPlayer.Id);
+            var pendingSharedPlayerCount = newPartners.Count(item => item.Player is null);
             var existingSharedCount = sharedSlotsAfter.Count(slot =>
                 slot.Id != anchorSlot?.Id && slot.Players.Any(link => presentIdsAfter.Contains(link.SessionPlayerId)));
-            effectiveAfter = presentAfter - sharedPlayerIds.Count + existingSharedCount + 1;
+            effectiveAfter = presentAfter - sharedPlayerIds.Count - pendingSharedPlayerCount + existingSharedCount + 1;
 
             var proposedExistingIds = newPartners
                 .Where(item => item.Player is not null)
@@ -808,7 +814,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     else
                     {
                         profile.DisplayName = input.DisplayName;
-                        profile.AvatarUrl ??= input.AvatarUrl;
+                        if (!string.IsNullOrWhiteSpace(input.AvatarUrl))
+                            profile.AvatarUrl = input.AvatarUrl;
                         profile.DefaultRole ??= PlayerRole.New;
                         profile.DefaultLevel ??= PlayerLevel.New;
                         profile.LastSyncedAt = DateTimeOffset.UtcNow;
@@ -2014,7 +2021,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     else
                     {
                         profile.DisplayName = partnerReference;
-                        profile.AvatarUrl ??= partnerInput.AvatarUrl;
+                        if (!string.IsNullOrWhiteSpace(partnerInput.AvatarUrl))
+                            profile.AvatarUrl = partnerInput.AvatarUrl;
                         profile.DefaultRole ??= PlayerRole.New;
                         profile.DefaultLevel ??= PlayerLevel.New;
                         profile.UpdatedAt = now;
@@ -2066,13 +2074,17 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     }
                     else
                     {
-                        profile.AvatarUrl ??= partnerInput.AvatarUrl;
+                        if (!string.IsNullOrWhiteSpace(partnerInput.AvatarUrl))
+                            profile.AvatarUrl = partnerInput.AvatarUrl;
                         profile.UpdatedAt = now;
                         profile.LastSyncedAt = now;
                     }
                     partner.PlayerProfile = profile;
                     partner.PlayerProfileId = profile.Id;
-                    partner.AvatarUrl ??= partnerInput.AvatarUrl ?? profile.AvatarUrl;
+                    if (!string.IsNullOrWhiteSpace(partnerInput.AvatarUrl))
+                        partner.AvatarUrl = partnerInput.AvatarUrl;
+                    else
+                        partner.AvatarUrl ??= profile.AvatarUrl;
                 }
                 partner.AvatarUrl ??= partner.PlayerProfile?.AvatarUrl;
                 if (partner.Id == anchor.Match.PlayerId)
@@ -3875,7 +3887,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         IReadOnlyList<SessionPlayer> players,
         string playerReference,
         string? zaloUserId,
-        string? sessionPlayerId)
+        string? sessionPlayerId,
+        bool allowCreateFromZaloMention = false)
     {
         if (!string.IsNullOrWhiteSpace(sessionPlayerId))
         {
@@ -3894,7 +3907,9 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             if (byZaloId.Count == 1) return new(byZaloId[0], null, false);
             return byZaloId.Count > 1
                 ? new(null, "UID Zalo này đang gắn với nhiều người trong cùng trận. Admin cần kiểm tra dữ liệu trước khi cập nhật.", false)
-                : new(null, "Người được @mention chưa có trong danh sách trận này.", false);
+                : allowCreateFromZaloMention
+                    ? new(null, "Người được @mention chưa có trong danh sách trận này và sẽ được thêm sau khi xác nhận.", true)
+                    : new(null, "Người được @mention chưa có trong danh sách trận này.", false);
         }
 
         var reference = NormalizePlayerLookup(playerReference);
