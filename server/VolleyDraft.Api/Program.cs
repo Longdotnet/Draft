@@ -64,6 +64,7 @@ builder.Services.AddScoped<ZaloBotImageService>();
 builder.Services.AddScoped<ZaloTeamCardService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
+builder.Services.AddScoped<ZaloOverbookService>();
 builder.Services.AddScoped<SessionWaitlistService>();
 builder.Services.AddScoped<ZaloBotActionHistoryService>();
 builder.Services.AddScoped<ZaloActivityBackfillCoordinator>();
@@ -78,6 +79,7 @@ builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddHostedService<ZaloSchedulerWorker>();
 builder.Services.AddHostedService<ZaloPollEventWorker>();
+builder.Services.AddHostedService<ZaloOverbookWorker>();
 builder.Services.AddHostedService<ZaloActivityBackfillWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
@@ -177,6 +179,7 @@ app.MapPost("/api/internal/zalo/events", async (
     HttpContext httpContext,
     ZaloIncomingMessageEvent incoming,
     ZaloBotService service,
+    ZaloOverbookService overbookService,
     IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
@@ -187,6 +190,8 @@ app.MapPost("/api/internal/zalo/events", async (
     {
         return Results.Unauthorized();
     }
+    if (await overbookService.TryHandleZaloConfirmationAsync(incoming, cancellationToken))
+        return Results.Ok(new { accepted = true, handledBy = "overbook-confirmation" });
     await service.HandleIncomingAsync(incoming, cancellationToken);
     return Results.Ok(new { accepted = true });
 });
@@ -412,6 +417,41 @@ sessions.MapPut("/{sessionId}/zalo-bot-settings", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.UpdateSettingsAsync(userId, sessionId, request)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/zalo-overbook", async (
+    HttpContext httpContext,
+    string sessionId,
+    ZaloOverbookService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetStatusAsync(userId, sessionId, cancellationToken)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/zalo-overbook", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateZaloOverbookSettingsRequest request,
+    ZaloOverbookService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateSettingsAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/zalo-overbook/confirm", async (
+    HttpContext httpContext,
+    string sessionId,
+    ConfirmZaloOverbookTargetsRequest request,
+    ZaloOverbookService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.ConfirmTargetsAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
 });
 sessions.MapGet("/{sessionId}/zalo-bot-rules", async (
     HttpContext httpContext,

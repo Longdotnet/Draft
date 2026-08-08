@@ -48,6 +48,7 @@ public sealed class ZaloPollEventWorker(
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
                 var integration = scope.ServiceProvider.GetRequiredService<ZaloIntegrationService>();
+                var overbook = scope.ServiceProvider.GetRequiredService<ZaloOverbookService>();
                 var waitlist = scope.ServiceProvider.GetRequiredService<SessionWaitlistService>();
                 var activityBackfill = scope.ServiceProvider.GetRequiredService<ZaloActivityBackfillCoordinator>();
                 var linkedConnectionId = await db.MatchSessions
@@ -80,6 +81,14 @@ public sealed class ZaloPollEventWorker(
                     {
                         logger.LogDebug("Poll event sync skipped Session={SessionId}: {Reason}", session.Id, result.Error);
                         continue;
+                    }
+                    try
+                    {
+                        await overbook.ObserveAsync(session.Id, incoming.ActorId, stoppingToken);
+                    }
+                    catch (Exception exception)
+                    {
+                        logger.LogDebug(exception, "Overbook observation skipped Session={SessionId}", session.Id);
                     }
                     await waitlist.ProcessVacanciesAsync(session.Id, stoppingToken);
                 }
