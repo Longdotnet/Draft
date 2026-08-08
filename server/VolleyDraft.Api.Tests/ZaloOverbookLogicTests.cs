@@ -15,7 +15,7 @@ public sealed class ZaloOverbookLogicTests
         var result = ZaloOverbookLogic.EvaluateCapacity(current, 18, 0, new Dictionary<string, string>());
         Assert.Equal(20, result.EffectiveSlotCount);
         Assert.Equal(2, result.ExcessSlotCount);
-        Assert.Equal(["u19", "u20"], result.SuggestedTargetVoterIds);
+        Assert.Equal(["u19", "u20"], result.SuggestedTargetIds);
     }
 
     [Fact]
@@ -59,7 +59,7 @@ public sealed class ZaloOverbookLogicTests
 
         Assert.Equal(18, result.EffectiveSlotCount);
         Assert.Equal(0, result.ExcessSlotCount);
-        Assert.Empty(result.SuggestedTargetVoterIds);
+        Assert.Empty(result.SuggestedTargetIds);
     }
 
     [Fact]
@@ -71,6 +71,6 @@ public sealed class ZaloOverbookLogicTests
 
         Assert.Equal(19, result.EffectiveSlotCount);
         Assert.Equal(1, result.ExcessSlotCount);
-        Assert.Equal(["u18"], result.SuggestedTargetVoterIds);
+        Assert.Equal(["u18"], result.SuggestedTargetIds);
     }
 }
