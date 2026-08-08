@@ -10,212 +10,254 @@ permissions:
 
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/share-slot-self-service-current-voter
-      - name: Apply source patch
-        shell: python
+
+      - name: Apply source patch and tests
         run: |
+          python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('server/VolleyDraft.Api/Services/ZaloBotService.cs')
-          source = path.read_text(encoding='utf-8')
+          path = Path("server/VolleyDraft.Api/Services/ZaloBotService.cs")
+          source = path.read_text(encoding="utf-8")
 
-          old_sync = '''                synced = await zaloIntegration.SyncLatestPollAsync(
-                      session.AdminUserId,
-                      session.Id,
-                      session.Name);'''
-          new_sync = '''                synced = await zaloIntegration.SyncLatestPollAsync(
-                      session.AdminUserId,
-                      session.Id);'''
-          assert old_sync in source, 'share poll sync call not found'
+          old_sync = """                synced = await zaloIntegration.SyncLatestPollAsync(
+                              session.AdminUserId,
+                              session.Id,
+                              session.Name);"""
+          new_sync = """                synced = await zaloIntegration.SyncLatestPollAsync(
+                              session.AdminUserId,
+                              session.Id);"""
+          if old_sync not in source:
+              raise SystemExit("share poll sync call not found")
           source = source.replace(old_sync, new_sync, 1)
 
-          refresh_anchor = '''        return refreshed is null
-              ? new ShareSessionRefreshResult(null, "Không tải lại được dữ liệu buổi sau khi kiểm tra poll. Bạn thử lại giúp mình nhé.")
+          marker = """        return refreshed is null
+              ? new ShareSessionRefreshResult(null, \"Không tải lại được dữ liệu buổi sau khi kiểm tra poll. Bạn thử lại giúp mình nhé.\")
               : new ShareSessionRefreshResult(refreshed, null);
-      }
+    }
 
-      private async Task<BotAnswer> UpdatePlayerProfileAsync('''
-          refresh_replacement = '''        return refreshed is null
-              ? new ShareSessionRefreshResult(null, "Không tải lại được dữ liệu buổi sau khi kiểm tra poll. Bạn thử lại giúp mình nhé.")
+    private async Task<BotAnswer> UpdatePlayerProfileAsync("""
+          helper = """        return refreshed is null
+              ? new ShareSessionRefreshResult(null, \"Không tải lại được dữ liệu buổi sau khi kiểm tra poll. Bạn thử lại giúp mình nhé.\")
               : new ShareSessionRefreshResult(refreshed, null);
-      }
+    }
 
-      private async Task<bool> IsSenderCurrentPollVoterAsync(
-          SessionSnapshot session,
-          string senderId,
-          CancellationToken cancellationToken)
-      {
-          // Self-service must be proven against a freshly synced poll. Once draft has
-          // started, SyncLatestPollAsync intentionally refuses mutations, so ordinary
-          // members fall back to operator approval instead of trusting stale vote data.
-          if (session.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection))
-              return false;
+    private async Task<bool> IsSenderCurrentPollVoterAsync(
+        SessionSnapshot session,
+        string senderId,
+        CancellationToken cancellationToken)
+    {
+        // Self-service is only safe when the sender can be proven to be in the
+        // freshly synced linked poll option. Post-draft poll sync is intentionally
+        // unavailable, so ordinary members then fall back to operator approval.
+        if (session.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection))
+            return false;
 
-          var latestImport = await db.PollImports
-              .AsNoTracking()
-              .Where(import => import.SessionId == session.Id)
-              .OrderByDescending(import => import.ImportedAt)
-              .Select(import => new
-              {
-                  import.PollId,
-                  import.SelectedOptionIdsJson
-              })
-              .FirstOrDefaultAsync(cancellationToken);
-          if (latestImport is null) return false;
+        var latestImport = await db.PollImports
+            .AsNoTracking()
+            .Where(import => import.SessionId == session.Id)
+            .OrderByDescending(import => import.ImportedAt)
+            .Select(import => new { import.PollId, import.SelectedOptionIdsJson })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (latestImport is null) return false;
 
-          var normalizedSenderId = NormalizeId(senderId);
-          var senderRows = await db.SessionPlayers
-              .AsNoTracking()
-              .Where(player => player.SessionId == session.Id &&
-                               player.IsPresent &&
-                               player.PlayerProfile != null)
-              .Select(player => new
-              {
-                  ZaloUserId = player.PlayerProfile!.ZaloUserId,
-                  player.SourcePollId,
-                  player.SourceOptionIdsJson
-              })
-              .ToListAsync(cancellationToken);
-          var sender = senderRows.FirstOrDefault(row =>
-              NormalizeId(row.ZaloUserId) == normalizedSenderId);
-          return sender is not null &&
-                 HasCurrentPollVote(
-                     sender.SourcePollId,
-                     sender.SourceOptionIdsJson,
-                     latestImport.PollId,
-                     latestImport.SelectedOptionIdsJson);
-      }
+        var normalizedSenderId = NormalizeId(senderId);
+        var senderRows = await db.SessionPlayers
+            .AsNoTracking()
+            .Where(player => player.SessionId == session.Id &&
+                             player.IsPresent &&
+                             player.PlayerProfile != null)
+            .Select(player => new
+            {
+                ZaloUserId = player.PlayerProfile!.ZaloUserId,
+                player.SourcePollId,
+                player.SourceOptionIdsJson
+            })
+            .ToListAsync(cancellationToken);
+        var sender = senderRows.FirstOrDefault(row =>
+            NormalizeId(row.ZaloUserId) == normalizedSenderId);
 
-      internal static bool HasCurrentPollVote(
-          string? sourcePollId,
-          string? sourceOptionIdsJson,
-          string? currentPollId,
-          string? selectedOptionIdsJson)
-      {
-          if (string.IsNullOrWhiteSpace(sourcePollId) ||
-              string.IsNullOrWhiteSpace(currentPollId) ||
-              !string.Equals(sourcePollId, currentPollId, StringComparison.Ordinal))
-              return false;
-          try
+        return sender is not null && HasCurrentPollVote(
+            sender.SourcePollId,
+            sender.SourceOptionIdsJson,
+            latestImport.PollId,
+            latestImport.SelectedOptionIdsJson);
+    }
+
+    internal static bool HasCurrentPollVote(
+        string? sourcePollId,
+        string? sourceOptionIdsJson,
+        string? currentPollId,
+        string? selectedOptionIdsJson)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePollId) ||
+            string.IsNullOrWhiteSpace(currentPollId) ||
+            !string.Equals(sourcePollId, currentPollId, StringComparison.Ordinal))
+            return false;
+        try
+        {
+            var sourceIds = (JsonSerializer.Deserialize<List<string>>(sourceOptionIdsJson ?? \"[]\") ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToHashSet(StringComparer.Ordinal);
+            if (sourceIds.Count == 0) return false;
+            var selectedIds = (JsonSerializer.Deserialize<List<string>>(selectedOptionIdsJson ?? \"[]\") ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToHashSet(StringComparer.Ordinal);
+            return sourceIds.Overlaps(selectedIds);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<BotAnswer> UpdatePlayerProfileAsync("""
+          if marker not in source:
+              raise SystemExit("refresh insertion point not found")
+          source = source.replace(marker, helper, 1)
+
+          marker = """        var session = refresh.Session;
+        var mentionedMembers = await ResolveZaloMembersAsync(
+            session,
+            mentionedUsers.Select(user => user.ZaloUserId),
+            cancellationToken);"""
+          replacement = """        var session = refresh.Session;
+        var senderIsCurrentPollVoter = requestedOwnSlot &&
+                                       await IsSenderCurrentPollVoterAsync(
+                                           session,
+                                           incoming.SenderId,
+                                           cancellationToken);
+        if (requestedOwnSlot && !senderIsCurrentPollVoter)
+        {
+            var operatorDenial = await GetOperatorDenialAsync(
+                session,
+                incoming.SenderId,
+                decision.Intent,
+                aiCalled);
+            if (operatorDenial is not null)
+            {
+                var message = session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection
+                    ? string.IsNullOrWhiteSpace(session.LatestPoll)
+                        ? $\"Mình chưa có poll/option đã liên kết để xác minh vote hiện tại của {session.Name}. Thành viên thường chỉ tự share slot khi chính UID của mình đang vote option của trận này.\"
+                        : $\"Mình đã đồng bộ vote hiện tại của {session.Name} nhưng UID của bạn không nằm trong option đang liên kết. Thành viên thường chỉ tự share slot khi chính mình đang vote option của trận này. Hãy vote đúng option rồi thử lại.\"
+                    : $\"{session.Name} đã bắt đầu draft hoặc draft xong nên mình không thể xác minh vote hiện tại an toàn cho self-service. Hãy nhờ trưởng nhóm, phó nhóm hoặc operator thực hiện.\";
+                return new BotAnswer(
+                    message,
+                    null,
+                    decision.Intent,
+                    aiCalled,
+                    ProtectedTerms: [session.Name]);
+            }
+        }
+        var mentionedMembers = await ResolveZaloMembersAsync(
+            session,
+            mentionedUsers.Select(user => user.ZaloUserId),
+            cancellationToken);"""
+          if marker not in source:
+              raise SystemExit("share session insertion point not found")
+          source = source.replace(marker, replacement, 1)
+
+          marker = """        var selfService = session.SenderIsListed &&
+                          !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                          resolvedAnchor is not null &&
+                          NormalizeText(resolvedAnchor) == NormalizeText(session.SenderPlayerName);"""
+          replacement = """        var selfService = senderIsCurrentPollVoter &&
+                          session.SenderIsListed &&
+                          !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                          resolvedAnchor is not null &&
+                          NormalizeText(resolvedAnchor) == NormalizeText(session.SenderPlayerName);"""
+          if marker not in source:
+              raise SystemExit("self-service gate not found")
+          source = source.replace(marker, replacement, 1)
+
+          marker = """        session = refresh.Session;
+
+        var selfStillValid = plan.SelfService &&
+                             session.SenderIsListed &&
+                             !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                             NormalizeText(plan.AnchorPlayerName) == NormalizeText(session.SenderPlayerName);"""
+          replacement = """        session = refresh.Session;
+
+        var senderIsCurrentPollVoter = plan.SelfService &&
+                                       await IsSenderCurrentPollVoterAsync(
+                                           session,
+                                           incoming.SenderId,
+                                           cancellationToken);
+        if (plan.SelfService && !senderIsCurrentPollVoter)
+        {
+            var operatorDenial = await GetOperatorDenialAsync(
+                session,
+                incoming.SenderId,
+                ZaloBotIntent.ShareSlotConfirm,
+                aiCalled);
+            if (operatorDenial is not null)
+            {
+                return new BotAnswer(
+                    $\"Bạn không còn nằm trong vote hiện tại của option đang liên kết cho {session.Name}, nên mình không áp dụng share slot self-service. Hãy vote lại đúng option rồi gửi lại yêu cầu; trưởng/phó nhóm hoặc operator vẫn có thể xử lý thay.\",
+                    null,
+                    ZaloBotIntent.ShareSlotConfirm,
+                    aiCalled,
+                    ProtectedTerms: [session.Name]);
+            }
+        }
+        var selfStillValid = plan.SelfService &&
+                             senderIsCurrentPollVoter &&
+                             session.SenderIsListed &&
+                             !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                             NormalizeText(plan.AnchorPlayerName) == NormalizeText(session.SenderPlayerName);"""
+          if marker not in source:
+              raise SystemExit("confirmation self-service gate not found")
+          source = source.replace(marker, replacement, 1)
+          path.write_text(source, encoding="utf-8")
+
+          Path("server/VolleyDraft.Api.Tests/ZaloBotShareSelfServiceTests.cs").write_text(r'''using VolleyDraft.Api.Services;
+          using Xunit;
+
+          namespace VolleyDraft.Api.Tests;
+
+          public sealed class ZaloBotShareSelfServiceTests
           {
-              var sourceIds = (JsonSerializer.Deserialize<List<string>>(sourceOptionIdsJson ?? "[]") ?? [])
-                  .Where(id => !string.IsNullOrWhiteSpace(id))
-                  .ToHashSet(StringComparer.Ordinal);
-              if (sourceIds.Count == 0) return false;
-              var selectedIds = (JsonSerializer.Deserialize<List<string>>(selectedOptionIdsJson ?? "[]") ?? [])
-                  .Where(id => !string.IsNullOrWhiteSpace(id))
-                  .ToHashSet(StringComparer.Ordinal);
-              return sourceIds.Overlaps(selectedIds);
-          }
-          catch (JsonException)
-          {
-              return false;
-          }
-      }
-
-      private async Task<BotAnswer> UpdatePlayerProfileAsync('''
-          assert refresh_anchor in source, 'refresh insertion point not found'
-          source = source.replace(refresh_anchor, refresh_replacement, 1)
-
-          session_anchor = '''        var session = refresh.Session;
-          var mentionedMembers = await ResolveZaloMembersAsync(
-              session,
-              mentionedUsers.Select(user => user.ZaloUserId),
-              cancellationToken);'''
-          session_replacement = '''        var session = refresh.Session;
-          var senderIsCurrentPollVoter = requestedOwnSlot &&
-                                         await IsSenderCurrentPollVoterAsync(
-                                             session,
-                                             incoming.SenderId,
-                                             cancellationToken);
-          if (requestedOwnSlot && !senderIsCurrentPollVoter)
-          {
-              var operatorDenial = await GetOperatorDenialAsync(
-                  session,
-                  incoming.SenderId,
-                  decision.Intent,
-                  aiCalled);
-              if (operatorDenial is not null)
+              [Fact]
+              public void Current_vote_in_selected_option_is_accepted()
               {
-                  var message = session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection
-                      ? string.IsNullOrWhiteSpace(session.LatestPoll)
-                          ? $"Mình chưa có poll/option đã liên kết để xác minh vote hiện tại của {session.Name}. Thành viên thường chỉ tự share slot khi chính UID của mình đang vote option của trận này."
-                          : $"Mình đã đồng bộ vote hiện tại của {session.Name} nhưng UID của bạn không nằm trong option đang liên kết. Thành viên thường chỉ tự share slot khi chính mình đang vote option của trận này. Hãy vote đúng option rồi thử lại."
-                      : $"{session.Name} đã bắt đầu draft hoặc draft xong nên mình không thể xác minh vote hiện tại an toàn cho self-service. Hãy nhờ trưởng nhóm, phó nhóm hoặc operator thực hiện.";
-                  return new BotAnswer(
-                      message,
-                      null,
-                      decision.Intent,
-                      aiCalled,
-                      ProtectedTerms: [session.Name]);
+                  Assert.True(ZaloBotService.HasCurrentPollVote("poll-1", "[\\\"option-cn\\\"]", "poll-1", "[\\\"option-cn\\\"]"));
+              }
+
+              [Fact]
+              public void Vote_from_different_poll_is_rejected()
+              {
+                  Assert.False(ZaloBotService.HasCurrentPollVote("poll-old", "[\\\"option-cn\\\"]", "poll-current", "[\\\"option-cn\\\"]"));
+              }
+
+              [Fact]
+              public void Vote_from_unlinked_option_is_rejected()
+              {
+                  Assert.False(ZaloBotService.HasCurrentPollVote("poll-1", "[\\\"option-t6\\\"]", "poll-1", "[\\\"option-cn\\\"]"));
+              }
+
+              [Fact]
+              public void Multiple_selected_options_accept_any_intersection()
+              {
+                  Assert.True(ZaloBotService.HasCurrentPollVote("poll-1", "[\\\"option-cn\\\"]", "poll-1", "[\\\"option-t6\\\",\\\"option-cn\\\"]"));
+              }
+
+              [Fact]
+              public void Malformed_option_json_is_rejected_safely()
+              {
+                  Assert.False(ZaloBotService.HasCurrentPollVote("poll-1", "not-json", "poll-1", "[\\\"option-cn\\\"]"));
               }
           }
-          var mentionedMembers = await ResolveZaloMembersAsync(
-              session,
-              mentionedUsers.Select(user => user.ZaloUserId),
-              cancellationToken);'''
-          assert session_anchor in source, 'share session insertion point not found'
-          source = source.replace(session_anchor, session_replacement, 1)
+          '''.replace("          ", ""), encoding="utf-8")
+          PY
 
-          old_self_service = '''        var selfService = session.SenderIsListed &&
-                            !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
-                            resolvedAnchor is not null &&
-                            NormalizeText(resolvedAnchor) == NormalizeText(session.SenderPlayerName);'''
-          new_self_service = '''        var selfService = senderIsCurrentPollVoter &&
-                            session.SenderIsListed &&
-                            !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
-                            resolvedAnchor is not null &&
-                            NormalizeText(resolvedAnchor) == NormalizeText(session.SenderPlayerName);'''
-          assert old_self_service in source, 'self-service gate not found'
-          source = source.replace(old_self_service, new_self_service, 1)
+      - name: Run focused backend tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release --no-restore
 
-          confirmation_anchor = '''        session = refresh.Session;
-
-          var selfStillValid = plan.SelfService &&
-                               session.SenderIsListed &&
-                               !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
-                               NormalizeText(plan.AnchorPlayerName) == NormalizeText(session.SenderPlayerName);'''
-          confirmation_replacement = '''        session = refresh.Session;
-
-          var senderIsCurrentPollVoter = plan.SelfService &&
-                                         await IsSenderCurrentPollVoterAsync(
-                                             session,
-                                             incoming.SenderId,
-                                             cancellationToken);
-          if (plan.SelfService && !senderIsCurrentPollVoter)
-          {
-              var operatorDenial = await GetOperatorDenialAsync(
-                  session,
-                  incoming.SenderId,
-                  ZaloBotIntent.ShareSlotConfirm,
-                  aiCalled);
-              if (operatorDenial is not null)
-              {
-                  return new BotAnswer(
-                      $"Bạn không còn nằm trong vote hiện tại của option đang liên kết cho {session.Name}, nên mình không áp dụng share slot self-service. Hãy vote lại đúng option rồi gửi lại yêu cầu; trưởng/phó nhóm hoặc operator vẫn có thể xử lý thay.",
-                      null,
-                      ZaloBotIntent.ShareSlotConfirm,
-                      aiCalled,
-                      ProtectedTerms: [session.Name]);
-              }
-          }
-          var selfStillValid = plan.SelfService &&
-                               senderIsCurrentPollVoter &&
-                               session.SenderIsListed &&
-                               !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
-                               NormalizeText(plan.AnchorPlayerName) == NormalizeText(session.SenderPlayerName);'''
-          assert confirmation_anchor in source, 'confirmation self-service gate not found'
-          source = source.replace(confirmation_anchor, confirmation_replacement, 1)
-
-          path.write_text(source, encoding='utf-8')
-
-          test_path = Path('server/VolleyDraft.Api.Tests/ZaloBotShareSelfServiceTests.cs')
-          test_path.write_text('''using VolleyDraft.Api.Services;\nusing Xunit;\n\nnamespace VolleyDraft.Api.Tests;\n\npublic sealed class ZaloBotShareSelfServiceTests\n{\n    [Fact]\n    public void Current_vote_in_selected_option_is_accepted()\n    {\n        Assert.True(ZaloBotService.HasCurrentPollVote(\n            "poll-1",\n            "[\\\"option-cn\\\"]",\n            "poll-1",\n            "[\\\"option-cn\\\"]"));\n    }\n\n    [Fact]\n    public void Vote_from_different_poll_is_rejected()\n    {\n        Assert.False(ZaloBotService.HasCurrentPollVote(\n            "poll-old",\n            "[\\\"option-cn\\\"]",\n            "poll-current",\n            "[\\\"option-cn\\\"]"));\n    }\n\n    [Fact]\n    public void Vote_from_unlinked_option_is_rejected()\n    {\n        Assert.False(ZaloBotService.HasCurrentPollVote(\n            "poll-1",\n            "[\\\"option-t6\\\"]",\n            "poll-1",\n            "[\\\"option-cn\\\"]"));\n    }\n\n    [Fact]\n    public void Multiple_selected_options_accept_any_intersection()\n    {\n        Assert.True(ZaloBotService.HasCurrentPollVote(\n            "poll-1",\n            "[\\\"option-cn\\\"]",\n            "poll-1",\n            "[\\\"option-t6\\\",\\\"option-cn\\\"]"));\n    }\n\n    [Fact]\n    public void Malformed_option_json_is_rejected_safely()\n    {\n        Assert.False(ZaloBotService.HasCurrentPollVote(\n            "poll-1",\n            "not-json",\n            "poll-1",\n            "[\\\"option-cn\\\"]"));\n    }\n}\n''', encoding='utf-8')
       - name: Commit patch
         run: |
           git config user.name "github-actions[bot]"
