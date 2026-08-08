@@ -418,6 +418,48 @@ public sealed class ZaloBotIntelligenceTests
     }
 
     [Fact]
+    public void Follow_up_calendar_date_resolves_the_original_upcoming_session()
+    {
+        var now = new DateTimeOffset(2026, 8, 7, 23, 0, 0, TimeSpan.FromHours(7));
+        var sessions = new[]
+        {
+            new ZaloSessionReference("jul-26", "CN 26/7", new DateTimeOffset(2026, 7, 26, 17, 30, 0, TimeSpan.FromHours(7))),
+            new ZaloSessionReference("aug-2", "CN 2/8", new DateTimeOffset(2026, 8, 2, 17, 30, 0, TimeSpan.FromHours(7))),
+            new ZaloSessionReference("aug-9", "CN 9/8", new DateTimeOffset(2026, 8, 9, 17, 30, 0, TimeSpan.FromHours(7)))
+        };
+
+        Assert.Equal(new[] { "aug-9" }, ZaloBotIntelligence.ResolveSessionReference("9/8", sessions, now));
+    }
+
+    [Fact]
+    public void Operational_weekday_reference_excludes_old_sessions()
+    {
+        var now = new DateTimeOffset(2026, 8, 7, 23, 0, 0, TimeSpan.FromHours(7));
+        var sessions = new[]
+        {
+            new ZaloSessionReference("jul-26", "CN 26/7", new DateTimeOffset(2026, 7, 26, 17, 30, 0, TimeSpan.FromHours(7))),
+            new ZaloSessionReference("aug-2", "CN 2/8", new DateTimeOffset(2026, 8, 2, 17, 30, 0, TimeSpan.FromHours(7))),
+            new ZaloSessionReference("aug-9", "CN 9/8", new DateTimeOffset(2026, 8, 9, 17, 30, 0, TimeSpan.FromHours(7)))
+        };
+
+        Assert.Equal(
+            ["aug-9"],
+            ZaloBotIntelligence.SelectOperationalSessionCandidateIds("cho tui vào danh sách chờ CN", sessions, now));
+        Assert.Equal(
+            ["jul-26", "aug-2", "aug-9"],
+            ZaloBotIntelligence.SelectOperationalSessionCandidateIds("xem CN 2/8", sessions, now));
+    }
+
+    [Theory]
+    [InlineData("lần sau ai muốn share slot thì nói với @Npc nha")]
+    [InlineData("nếu ai cần share slot thì tag bot giúp mình")]
+    public void Share_slot_guidance_is_not_routed_as_a_mutation(string question)
+    {
+        Assert.True(ZaloBotIntelligence.IsShareSlotAnnouncement(question));
+        Assert.Equal(ZaloBotIntent.GeneralChat, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
+    }
+
+    [Fact]
     public void Ambiguous_day_alias_returns_all_matching_candidates_for_clarification()
     {
         var sessions = new[]

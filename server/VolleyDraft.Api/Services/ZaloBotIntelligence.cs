@@ -157,6 +157,56 @@ public static class ZaloBotIntelligence
         ZaloBotIntent.UpcomingSessions or
         ZaloBotIntent.WeeklySessionCount;
 
+    /// <summary>
+    /// A weekday by itself (for example "CN") is an operational reference to an
+    /// upcoming session. Old sessions are only eligible when the user supplies an
+    /// exact/relative date or the complete non-generic session name.
+    /// </summary>
+    public static IReadOnlyList<string> SelectOperationalSessionCandidateIds(
+        string value,
+        IReadOnlyList<ZaloSessionReference> candidates,
+        DateTimeOffset? now = null)
+    {
+        var q = Normalize(value);
+        var hasCalendarDate = Regex.IsMatch(
+            q,
+            @"(?<!\d)\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?(?!\d)",
+            RegexOptions.CultureInvariant);
+        var hasRelativeDate = Regex.IsMatch(
+            q,
+            @"(?<![a-z0-9])(?:hom nay|bua nay|ngay mai|mai nay)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        var hasCompleteSessionName = candidates.Any(candidate =>
+        {
+            var normalizedName = Normalize(candidate.Name);
+            if (normalizedName.Length < 3 || !q.Contains(normalizedName, StringComparison.Ordinal)) return false;
+            return !Regex.IsMatch(
+                normalizedName,
+                @"^(?:t[2-7]|thu (?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu nhat)$",
+                RegexOptions.CultureInvariant);
+        });
+
+        if (hasCalendarDate || hasRelativeDate || hasCompleteSessionName)
+            return candidates.Select(candidate => candidate.Id).ToList();
+
+        var cutoff = (now ?? DateTimeOffset.UtcNow).AddHours(-4);
+        return candidates
+            .Where(candidate => candidate.StartTime is null || candidate.StartTime >= cutoff)
+            .Select(candidate => candidate.Id)
+            .ToList();
+    }
+
+    public static bool IsShareSlotAnnouncement(string value)
+    {
+        var q = Normalize(value).Replace("@", string.Empty, StringComparison.Ordinal);
+        if (!Has(q, "share slot", "chung slot", "slot thay phien")) return false;
+        var describesFutureGuidance = Has(q,
+            "lan sau", "ai muon", "neu ai", "nguoi nao muon", "muon share thi", "can share thi");
+        var directsPeopleToBot = Has(q,
+            "noi voi npc", "noi voi bot", "nhan npc", "nhan bot", "tag npc", "tag bot", "bao npc", "bao bot");
+        return describesFutureGuidance && directsPeopleToBot;
+    }
+
     public static string Normalize(string value)
     {
         var decomposed = (value ?? string.Empty).ToLowerInvariant().Normalize(NormalizationForm.FormD);
@@ -431,6 +481,8 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.ListMembersWithoutRecentMessage, .98, q, false, null, "members_without_recent_message");
         if (Has(q, "mot tuan danh may", "tuan nay danh may tran", "tuan co bao nhieu tran", "1 tuan danh may", "bao nhieu bua trong tuan"))
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
+        if (IsShareSlotAnnouncement(value))
+            return new(ZaloBotIntent.GeneralChat, .99, q, false, null, "share_slot_announcement");
         if (ZaloNaturalCommandParser.TryParseTeamPreference(value, out _))
             return new(ZaloBotIntent.TeamPreference, .99, q, false, null, "team_preference_phrase");
         if (ZaloNaturalCommandParser.TryParseShareSlot(value, out _))

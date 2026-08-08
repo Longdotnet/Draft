@@ -428,6 +428,7 @@ public sealed class ZaloBotPersistenceTests
         Assert.Equal("zalo-le-huu-ly", preview.Value.PartnerInputs.Single().ZaloUserId);
         Assert.Equal("https://avatars.example/le-huu-ly.jpg", preview.Value.PartnerInputs.Single().AvatarUrl);
         Assert.Contains(preview.Value.Warnings, warning => warning.Contains("chưa có hồ sơ"));
+        Assert.Equal(["Lê Hữu Lý"], preview.Value.NeedsProfileUpdateNames);
         Assert.Single(await fixture.Db.SessionPlayers.Where(player => player.SessionId == session.Id).ToListAsync());
 
         var applied = await service.SharePreDraftSlotAsync(

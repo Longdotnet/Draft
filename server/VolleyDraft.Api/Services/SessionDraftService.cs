@@ -710,8 +710,18 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 return BadRequest<ShareSlotPreview>("Share slot này sẽ nối nhiều đội trưởng vào cùng một cụm chung team nên không thể thực hiện.");
         }
 
-        if (newPartners.Any(item => item.Player is null))
-            warnings.Add("Có người chưa có hồ sơ trong buổi; sau khi xác nhận cần bổ sung ít nhất giới tính trước khi draft lại.");
+        var needsProfileUpdateNames = newPartners
+            .Where(item => item.Player is null ||
+                           item.Player.Gender == PlayerGender.Unknown ||
+                           item.Player.PlayerProfile is not null &&
+                           (item.Player.PlayerProfile.Gender is null or PlayerGender.Unknown ||
+                            item.Player.PlayerProfile.DefaultRole is null ||
+                            item.Player.PlayerProfile.DefaultLevel is null))
+            .Select(item => item.Input.DisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (needsProfileUpdateNames.Count > 0)
+            warnings.Add("Có người chưa có hồ sơ đầy đủ; sau khi xác nhận hãy bổ sung giới tính, vai trò và trình độ trước khi draft lại.");
         return ServiceResult<ShareSlotPreview>.Success(new(
             sessionId,
             anchorPlayer.DisplayName,
@@ -728,7 +738,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             Math.Max(0, effectiveAfter),
             movesExistingDraftSlot,
             newPartners.Count == 0,
-            warnings));
+            warnings,
+            needsProfileUpdateNames));
     }
 
     public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync(
@@ -4772,7 +4783,8 @@ public sealed record ShareSlotPreview(
     int EffectiveSlotCount,
     bool MovesExistingDraftSlot,
     bool AlreadyApplied,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string> NeedsProfileUpdateNames);
 
 public sealed record TeamPreferencePreview(
     string SessionId,
