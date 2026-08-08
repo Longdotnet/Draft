@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Volleyball } from "lucide-react";
 import { DbDraftFlow } from "../components/DbDraftFlow";
 import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
+import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
 function getIsMobileViewport() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches;
@@ -36,7 +37,14 @@ export function AppHome() {
         </div>
       </header>
 
-      {isMobileViewport ? <MobilePublicDraftFlow /> : <DbDraftFlow />}
+      {isMobileViewport ? (
+        <MobilePublicDraftFlow />
+      ) : (
+        <>
+          <DbDraftFlow />
+          <ZaloOverbookAdminPanel />
+        </>
+      )}
     </main>
   );
 }
