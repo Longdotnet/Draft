@@ -255,6 +255,36 @@ export function DbDraftFlow() {
   }, [token, session, draftState?.sessionStatus]);
 
   useEffect(() => {
+    if (!token || !session || draftState?.sessionStatus === "Drafting") {
+      return;
+    }
+
+    let refreshing = false;
+    const refreshExternalChanges = async () => {
+      if (refreshing || document.visibilityState !== "visible") return;
+      refreshing = true;
+      try {
+        await Promise.all([
+          refreshSessionData(),
+          refreshDraftState(),
+        ]);
+      } finally {
+        refreshing = false;
+      }
+    };
+    const timer = window.setInterval(() => void refreshExternalChanges(), 10_000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshExternalChanges();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [token, session?.id, draftState?.sessionStatus]);
+
+  useEffect(() => {
     if (draftState?.sessionStatus !== "Finished") {
       setBoardAssignments({});
       setSelectedBoardSlotId(null);

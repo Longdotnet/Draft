@@ -114,6 +114,91 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         return new BotSessionStateCapture(json, Hash(json));
     }
 
+    public async Task<string> CaptureShareStateHashAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        var session = await db.MatchSessions.AsNoTracking()
+            .Where(item => item.Id == sessionId)
+            .Select(item => new ShareMatchState(
+                item.Status,
+                item.StartTime,
+                item.TeamCount,
+                item.TeamSize))
+            .SingleAsync(cancellationToken);
+        var players = await db.SessionPlayers.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .Select(item => new SharePlayerState(
+                item.Id,
+                item.PlayerProfile == null ? null : item.PlayerProfile.ZaloUserId,
+                item.DisplayName,
+                item.Role,
+                item.Level,
+                item.Gender,
+                item.Score,
+                item.IsPresent,
+                item.IsCaptainEligible,
+                item.IsInsideSharedSlot))
+            .ToListAsync(cancellationToken);
+        var teams = await db.Teams.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .Select(item => new ShareTeamState(
+                item.Id,
+                item.Name,
+                item.CaptainSessionPlayerId,
+                item.TotalAverageScore))
+            .ToListAsync(cancellationToken);
+        var slots = await db.DraftSlots.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .Select(item => new ShareSlotState(
+                item.Id,
+                item.Type,
+                item.DisplayName,
+                item.Role,
+                item.Gender,
+                item.AverageScore,
+                item.AssignedTeamId,
+                item.IsCaptainSlot))
+            .ToListAsync(cancellationToken);
+        var slotIds = slots.Select(item => item.Id).ToList();
+        var slotPlayers = await db.DraftSlotPlayers.AsNoTracking()
+            .Where(item => slotIds.Contains(item.DraftSlotId))
+            .OrderBy(item => item.DraftSlotId)
+            .ThenBy(item => item.RotationOrder)
+            .Select(item => new ShareSlotPlayerState(
+                item.DraftSlotId,
+                item.SessionPlayerId,
+                item.RotationOrder))
+            .ToListAsync(cancellationToken);
+        var preferenceGroups = await db.TeamPreferenceGroups.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .Select(item => item.Id)
+            .ToListAsync(cancellationToken);
+        var preferencePlayers = await db.TeamPreferenceGroupPlayers.AsNoTracking()
+            .Where(item => preferenceGroups.Contains(item.TeamPreferenceGroupId))
+            .OrderBy(item => item.TeamPreferenceGroupId)
+            .ThenBy(item => item.RotationOrder)
+            .Select(item => new SharePreferencePlayerState(
+                item.TeamPreferenceGroupId,
+                item.SessionPlayerId,
+                item.RotationOrder))
+            .ToListAsync(cancellationToken);
+
+        var state = new ShareState(
+            session,
+            players,
+            teams,
+            slots,
+            slotPlayers,
+            preferenceGroups,
+            preferencePlayers);
+        return Hash(JsonSerializer.Serialize(state, JsonOptions));
+    }
+
     public async Task<ZaloBotActionHistory?> RecordAsync(
         string sessionId,
         string? actorZaloUserId,
@@ -807,6 +892,52 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         IReadOnlyList<RoundState> Rounds, IReadOnlyList<BagState> Bags, IReadOnlyList<TurnState> Turns,
         IReadOnlyList<ReminderState> Reminders, IReadOnlyList<WaitlistState> Waitlist,
         IReadOnlyList<PollImportState> PollImports);
+    private sealed record ShareState(
+        ShareMatchState Match,
+        IReadOnlyList<SharePlayerState> Players,
+        IReadOnlyList<ShareTeamState> Teams,
+        IReadOnlyList<ShareSlotState> Slots,
+        IReadOnlyList<ShareSlotPlayerState> SlotPlayers,
+        IReadOnlyList<string> PreferenceGroups,
+        IReadOnlyList<SharePreferencePlayerState> PreferencePlayers);
+    private sealed record ShareMatchState(
+        SessionStatus Status,
+        DateTimeOffset? StartTime,
+        int TeamCount,
+        int TeamSize);
+    private sealed record SharePlayerState(
+        string Id,
+        string? ZaloUserId,
+        string DisplayName,
+        PlayerRole Role,
+        PlayerLevel Level,
+        PlayerGender Gender,
+        double Score,
+        bool IsPresent,
+        bool IsCaptainEligible,
+        bool IsInsideSharedSlot);
+    private sealed record ShareTeamState(
+        string Id,
+        string Name,
+        string? CaptainSessionPlayerId,
+        double TotalAverageScore);
+    private sealed record ShareSlotState(
+        string Id,
+        DraftSlotType Type,
+        string DisplayName,
+        PlayerRole Role,
+        PlayerGender Gender,
+        double AverageScore,
+        string? AssignedTeamId,
+        bool IsCaptainSlot);
+    private sealed record ShareSlotPlayerState(
+        string DraftSlotId,
+        string SessionPlayerId,
+        int RotationOrder);
+    private sealed record SharePreferencePlayerState(
+        string TeamPreferenceGroupId,
+        string SessionPlayerId,
+        int RotationOrder);
     private sealed record MatchState(
         string Name, DateTimeOffset? StartTime, string? Location, string? ParkingInstructions,
         string? LocationImageUrl, string? PaymentInstructions, string? PaymentQrImageUrl,

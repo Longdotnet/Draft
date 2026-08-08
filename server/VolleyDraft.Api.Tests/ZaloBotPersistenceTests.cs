@@ -1,5 +1,9 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
@@ -11,6 +15,326 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloBotPersistenceTests
 {
+    [Theory]
+    [InlineData(SessionStatus.Setup, "Poll T6", true)]
+    [InlineData(SessionStatus.CaptainSelection, "Poll T6", true)]
+    [InlineData(SessionStatus.Setup, null, false)]
+    [InlineData(SessionStatus.Drafting, "Poll T6", false)]
+    [InlineData(SessionStatus.Finished, "Poll T6", false)]
+    public void Share_slot_refreshes_linked_poll_only_before_draft(
+        SessionStatus status,
+        string? latestPoll,
+        bool expected)
+    {
+        Assert.Equal(expected, ZaloBotService.ShouldRefreshPollBeforeShare(status, latestPoll));
+    }
+
+    [Fact]
+    public async Task Share_state_hash_ignores_poll_sync_audit_rows_but_detects_roster_changes()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = new MatchSession
+        {
+            Id = "share-hash-session",
+            AdminUserId = "admin",
+            Name = "T6",
+            Status = SessionStatus.Setup
+        };
+        session.Players.Add(PlayerForSession("share-anchor", "Thanh Long", 2, session.Id));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var before = await history.CaptureShareStateHashAsync(session.Id);
+
+        fixture.Db.PollImports.Add(new PollImport
+        {
+            Id = "poll-audit-only",
+            SessionId = session.Id,
+            ImportedByUserId = "admin",
+            ZaloGroupId = "group",
+            PollId = "poll",
+            PollQuestion = "T6",
+            SelectedOptionIdsJson = "[\"option\"]",
+            ImportedPlayerCount = 0
+        });
+        session.UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(1);
+        await fixture.Db.SaveChangesAsync();
+
+        var afterAudit = await history.CaptureShareStateHashAsync(session.Id);
+        Assert.Equal(before, afterAudit);
+
+        fixture.Db.SessionPlayers.Add(PlayerForSession("new-voter", "Người vừa vote", 1, session.Id));
+        await fixture.Db.SaveChangesAsync();
+
+        var afterRosterChange = await history.CaptureShareStateHashAsync(session.Id);
+        Assert.NotEqual(before, afterRosterChange);
+    }
+
+    [Fact]
+    public async Task Poll_refresh_removes_withdrawn_voter_and_dissolves_invalid_shared_slot()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Zalo:CredentialEncryptionKey"] = "poll-refresh-test-key"
+            })
+            .Build();
+        var protector = new ZaloCredentialProtector(configuration);
+        var connection = await fixture.Db.ZaloConnections.SingleAsync(item => item.Id == "connection");
+        connection.EncryptedCredentials = protector.Protect("{\"cookie\":\"test\"}");
+
+        var session = new MatchSession
+        {
+            Id = "poll-share-session",
+            AdminUserId = "admin",
+            ZaloConnectionId = connection.Id,
+            ZaloGroupId = "group",
+            Name = "T6",
+            Status = SessionStatus.Setup,
+            BotEnabled = true,
+            StartTime = DateTimeOffset.UtcNow.AddDays(1)
+        };
+        var anchorProfile = new PlayerProfile
+        {
+            Id = "anchor-profile",
+            ZaloUserId = "anchor-uid",
+            DisplayName = "Anchor",
+            Gender = PlayerGender.Male,
+            DefaultRole = PlayerRole.Attack,
+            DefaultLevel = PlayerLevel.Average
+        };
+        var partnerProfile = new PlayerProfile
+        {
+            Id = "partner-profile",
+            ZaloUserId = "partner-uid",
+            DisplayName = "Partner",
+            Gender = PlayerGender.Female,
+            DefaultRole = PlayerRole.Defense,
+            DefaultLevel = PlayerLevel.Average
+        };
+        var anchor = new SessionPlayer
+        {
+            Id = "anchor-player",
+            SessionId = session.Id,
+            PlayerProfileId = anchorProfile.Id,
+            PlayerProfile = anchorProfile,
+            DisplayName = anchorProfile.DisplayName,
+            Gender = PlayerGender.Male,
+            Role = PlayerRole.Attack,
+            Level = PlayerLevel.Average,
+            Score = 2,
+            IsPresent = true,
+            IsCaptainEligible = true,
+            IsInsideSharedSlot = true,
+            SourcePollId = "poll"
+        };
+        var partner = new SessionPlayer
+        {
+            Id = "partner-player",
+            SessionId = session.Id,
+            PlayerProfileId = partnerProfile.Id,
+            PlayerProfile = partnerProfile,
+            DisplayName = partnerProfile.DisplayName,
+            Gender = PlayerGender.Female,
+            Role = PlayerRole.Defense,
+            Level = PlayerLevel.Average,
+            Score = 2,
+            IsPresent = true,
+            IsCaptainEligible = true,
+            IsInsideSharedSlot = true,
+            SourcePollId = "poll"
+        };
+        var sharedSlot = new DraftSlot
+        {
+            Id = "shared-slot",
+            SessionId = session.Id,
+            Type = DraftSlotType.Shared,
+            DisplayName = "Anchor / Partner",
+            AverageScore = 2,
+            Role = PlayerRole.Attack,
+            Gender = PlayerGender.Unknown
+        };
+        sharedSlot.Players.AddRange([
+            new DraftSlotPlayer
+            {
+                Id = "anchor-link",
+                DraftSlotId = sharedSlot.Id,
+                SessionPlayerId = anchor.Id,
+                SessionPlayer = anchor,
+                RotationOrder = 1
+            },
+            new DraftSlotPlayer
+            {
+                Id = "partner-link",
+                DraftSlotId = sharedSlot.Id,
+                SessionPlayerId = partner.Id,
+                SessionPlayer = partner,
+                RotationOrder = 2
+            }
+        ]);
+        session.Players.AddRange([anchor, partner]);
+        session.DraftSlots.Add(sharedSlot);
+        session.PollImports.Add(new PollImport
+        {
+            Id = "previous-import",
+            SessionId = session.Id,
+            ImportedByUserId = "admin",
+            ZaloGroupId = "group",
+            PollId = "poll",
+            PollQuestion = "T6",
+            SelectedOptionIdsJson = "[\"option\"]",
+            ImportedPlayerCount = 2
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var poll = new BridgePoll(
+            "poll",
+            "T6",
+            "creator",
+            [new BridgePollOption("option", "T6", 1, ["anchor-uid"])],
+            false,
+            false,
+            false,
+            false,
+            1,
+            DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeMilliseconds(),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            0);
+        using var httpClient = new HttpClient(new PollBridgeHandler(poll))
+        {
+            BaseAddress = new Uri("https://bridge.test/")
+        };
+        var integration = new ZaloIntegrationService(
+            fixture.Db,
+            new ZaloBridgeClient(httpClient),
+            protector,
+            null!,
+            null!,
+            null!);
+
+        var result = await integration.SyncLatestPollAsync("admin", session.Id);
+
+        Assert.True(result.IsSuccess, result.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.False(await fixture.Db.DraftSlots.AnyAsync(item => item.Id == sharedSlot.Id));
+        var storedAnchor = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == anchor.Id);
+        var storedPartner = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == partner.Id);
+        Assert.True(storedAnchor.IsPresent);
+        Assert.False(storedAnchor.IsInsideSharedSlot);
+        Assert.False(storedPartner.IsPresent);
+        Assert.False(storedPartner.IsInsideSharedSlot);
+    }
+
+    [Fact]
+    public async Task Poll_refresh_imports_voter_who_just_selected_the_linked_option()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Zalo:CredentialEncryptionKey"] = "new-voter-refresh-test-key"
+            })
+            .Build();
+        var protector = new ZaloCredentialProtector(configuration);
+        var connection = await fixture.Db.ZaloConnections.SingleAsync(item => item.Id == "connection");
+        connection.EncryptedCredentials = protector.Protect("{\"cookie\":\"test\"}");
+        var session = new MatchSession
+        {
+            Id = "new-voter-session",
+            AdminUserId = "admin",
+            ZaloConnectionId = connection.Id,
+            ZaloGroupId = "group",
+            Name = "T6",
+            Status = SessionStatus.Setup,
+            BotEnabled = true,
+            StartTime = DateTimeOffset.UtcNow.AddDays(1)
+        };
+        var anchorProfile = new PlayerProfile
+        {
+            Id = "existing-profile",
+            ZaloUserId = "existing-uid",
+            DisplayName = "Người đã vote",
+            Gender = PlayerGender.Male,
+            DefaultRole = PlayerRole.Attack,
+            DefaultLevel = PlayerLevel.Average
+        };
+        session.Players.Add(new SessionPlayer
+        {
+            Id = "existing-player",
+            SessionId = session.Id,
+            PlayerProfileId = anchorProfile.Id,
+            PlayerProfile = anchorProfile,
+            DisplayName = anchorProfile.DisplayName,
+            Gender = PlayerGender.Male,
+            Role = PlayerRole.Attack,
+            Level = PlayerLevel.Average,
+            Score = 2,
+            IsPresent = true,
+            IsCaptainEligible = true,
+            SourcePollId = "poll"
+        });
+        session.PollImports.Add(new PollImport
+        {
+            Id = "existing-poll-import",
+            SessionId = session.Id,
+            ImportedByUserId = "admin",
+            ZaloGroupId = "group",
+            PollId = "poll",
+            PollQuestion = "T6",
+            SelectedOptionIdsJson = "[\"option\"]",
+            ImportedPlayerCount = 1
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var poll = new BridgePoll(
+            "poll",
+            "T6",
+            "creator",
+            [new BridgePollOption("option", "T6", 2, ["existing-uid", "new-uid"])],
+            false,
+            false,
+            false,
+            false,
+            2,
+            DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeMilliseconds(),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            0);
+        var members = new BridgeMember[]
+        {
+            new("existing-uid", "Người đã vote", "Người đã vote", null),
+            new("new-uid", "Người vừa vote", "Người vừa vote", "https://example.test/avatar.jpg")
+        };
+        using var httpClient = new HttpClient(new PollBridgeHandler(poll, members))
+        {
+            BaseAddress = new Uri("https://bridge.test/")
+        };
+        var integration = new ZaloIntegrationService(
+            fixture.Db,
+            new ZaloBridgeClient(httpClient),
+            protector,
+            null!,
+            null!,
+            null!);
+
+        var result = await integration.SyncLatestPollAsync("admin", session.Id);
+
+        Assert.True(result.IsSuccess, result.Error);
+        fixture.Db.ChangeTracker.Clear();
+        var imported = await fixture.Db.SessionPlayers
+            .Include(item => item.PlayerProfile)
+            .SingleAsync(item => item.PlayerProfile != null && item.PlayerProfile.ZaloUserId == "new-uid");
+        Assert.True(imported.IsPresent);
+        Assert.Equal("Người vừa vote", imported.DisplayName);
+        Assert.Equal("poll", imported.SourcePollId);
+        Assert.Equal("https://example.test/avatar.jpg", imported.AvatarUrl);
+    }
+
     [Fact]
     public async Task Conversation_state_is_isolated_by_connection_group_and_sender()
     {
@@ -1348,6 +1672,39 @@ public sealed class ZaloBotPersistenceTests
             SessionPlayer = player
         });
         return slot;
+    }
+
+    private sealed class PollBridgeHandler(
+        BridgePoll poll,
+        IReadOnlyList<BridgeMember>? members = null) : HttpMessageHandler
+    {
+        private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            object response = path switch
+            {
+                "/v1/groups/group/polls" => new BridgePollsResponse([poll]),
+                "/v1/polls/poll" => poll,
+                "/v1/group-members" => new BridgeMembersResponse(members ?? [
+                    new BridgeMember("anchor-uid", "Anchor", "Anchor", null)
+                ]),
+                _ => new { error = $"Unexpected path {path}" }
+            };
+            var statusCode = path is "/v1/groups/group/polls" or "/v1/polls/poll" or "/v1/group-members"
+                ? HttpStatusCode.OK
+                : HttpStatusCode.NotFound;
+            return Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(response, JsonOptions),
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        }
     }
 
     private sealed class DbFixture : IAsyncDisposable

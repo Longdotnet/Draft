@@ -566,6 +566,8 @@ public sealed class ZaloBotService(
                 pending.Session,
                 pending.ShareSlotPlan,
                 incoming,
+                activeConnectionId,
+                groupId,
                 false,
                 cancellationToken);
         }
@@ -2090,6 +2092,62 @@ public sealed class ZaloBotService(
             : $"Chưa thể draft vì không đồng bộ lại được poll: {synced.Error}";
     }
 
+    internal static bool ShouldRefreshPollBeforeShare(SessionStatus status, string? latestPoll) =>
+        status is SessionStatus.Setup or SessionStatus.CaptainSelection &&
+        !string.IsNullOrWhiteSpace(latestPoll);
+
+    private async Task<ShareSessionRefreshResult> RefreshShareSessionAsync(
+        SessionSnapshot session,
+        string groupId,
+        string senderId,
+        CancellationToken cancellationToken)
+    {
+        if (ShouldRefreshPollBeforeShare(session.Status, session.LatestPoll))
+        {
+            ServiceResult<ZaloPollImportResultResponse>? synced = null;
+            for (var attempt = 1; attempt <= 4; attempt += 1)
+            {
+                synced = await zaloIntegration.SyncLatestPollAsync(
+                    session.AdminUserId,
+                    session.Id,
+                    session.Name);
+                if (synced.IsSuccess) break;
+                var anotherActionOwnsLease = synced.StatusCode == StatusCodes.Status409Conflict &&
+                                             synced.Error?.Contains("thao tác khác", StringComparison.OrdinalIgnoreCase) == true;
+                var pollChangedDuringSync = synced.StatusCode == StatusCodes.Status409Conflict &&
+                                            synced.Error?.Contains("Poll đã thay đổi", StringComparison.OrdinalIgnoreCase) == true;
+                if ((!anotherActionOwnsLease && !pollChangedDuringSync) || attempt == 4) break;
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(400 * Math.Pow(2, attempt - 1)),
+                    cancellationToken);
+            }
+
+            if (synced is not { IsSuccess: true })
+            {
+                logger.LogWarning(
+                    "Could not refresh poll before share slot Session={SessionId} Status={StatusCode} Error={Error}",
+                    session.Id,
+                    synced?.StatusCode,
+                    synced?.Error);
+                return new ShareSessionRefreshResult(
+                    null,
+                    $"Mình chưa kiểm tra được danh sách vote mới nhất của {session.Name}, nên chưa tạo share slot để tránh dùng dữ liệu cũ. " +
+                    $"Bạn thử lại sau ít phút hoặc nhờ admin kiểm tra kết nối Zalo. Chi tiết: {synced?.Error ?? "không nhận được phản hồi từ Zalo"}");
+            }
+        }
+
+        var refreshed = (await LoadSessionSnapshotsAsync(
+                [session.ZaloConnectionId],
+                groupId,
+                senderId,
+                cancellationToken,
+                session.Id))
+            .SingleOrDefault();
+        return refreshed is null
+            ? new ShareSessionRefreshResult(null, "Không tải lại được dữ liệu buổi sau khi kiểm tra poll. Bạn thử lại giúp mình nhé.")
+            : new ShareSessionRefreshResult(refreshed, null);
+    }
+
     private async Task<BotAnswer> UpdatePlayerProfileAsync(
         ZaloIntentDecision decision,
         IReadOnlyList<SessionSnapshot> sessions,
@@ -2634,7 +2692,22 @@ public sealed class ZaloBotService(
                 decision.Intent,
                 aiCalled);
         }
-        var session = selected.Session!;
+        var initialSession = selected.Session!;
+        var refresh = await RefreshShareSessionAsync(
+            initialSession,
+            groupId,
+            incoming.SenderId,
+            cancellationToken);
+        if (refresh.Session is null)
+        {
+            return new BotAnswer(
+                refresh.Error ?? "Chưa tải được danh sách vote mới nhất để kiểm tra share slot.",
+                null,
+                decision.Intent,
+                aiCalled,
+                ProtectedTerms: [initialSession.Name]);
+        }
+        var session = refresh.Session;
         var mentionedMembers = await ResolveZaloMembersAsync(
             session,
             mentionedUsers.Select(user => user.ZaloUserId),
@@ -2644,6 +2717,21 @@ public sealed class ZaloBotService(
             : anchorZaloUserId.Length > 0 && session.PlayerNamesByZaloUserId.TryGetValue(anchorZaloUserId, out var mentionedAnchorName)
                 ? mentionedAnchorName
                 : ResolvePlayerReference(rawAnchor, session.PlayerNames);
+        if (requestedOwnSlot && resolvedAnchor is null)
+        {
+            var message = session.Status == SessionStatus.Finished
+                ? $"{session.Name} đã draft xong và mình chưa thấy bạn trong đội hình. Vote thêm sau khi draft không tự tạo một slot/team mới. " +
+                  "Nếu bạn sẽ chơi chung slot với một người đã có team, hãy nhờ người giữ slot đó, trưởng/phó nhóm hoặc admin gửi yêu cầu và xác nhận."
+                : string.IsNullOrWhiteSpace(session.LatestPoll)
+                    ? $"Mình chưa thấy bạn trong danh sách của {session.Name}, và buổi này chưa liên kết poll để kiểm tra vote mới. Hãy nhờ admin import đúng poll/option rồi thử lại."
+                    : $"Mình đã đồng bộ poll nhưng chưa thấy bạn trong danh sách của {session.Name}. Hãy kiểm tra bạn đã chọn đúng option của buổi này rồi thử lại.";
+            return new BotAnswer(
+                message,
+                null,
+                decision.Intent,
+                aiCalled,
+                ProtectedTerms: [session.Name]);
+        }
         var selfService = session.SenderIsListed &&
                           !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
                           resolvedAnchor is not null &&
@@ -2655,7 +2743,14 @@ public sealed class ZaloBotService(
         }
         var anchor = resolvedAnchor;
         if (anchor is null)
-            return new BotAnswer($"Không tìm thấy '{rawAnchor}' trong đội hình.", null, decision.Intent, aiCalled);
+        {
+            return new BotAnswer(
+                $"Mình đã kiểm tra danh sách mới nhất nhưng chưa tìm thấy '{rawAnchor}' trong {session.Name}.",
+                null,
+                decision.Intent,
+                aiCalled,
+                ProtectedTerms: [rawAnchor, session.Name]);
+        }
         var participantInputs = partners.Select((partnerName, index) =>
         {
             var commandPartnerId = command.PartnerZaloUserIds is { Count: > 0 } && index < command.PartnerZaloUserIds.Count
@@ -2709,13 +2804,13 @@ public sealed class ZaloBotService(
                 ProtectedTerms: [preview.Value.AnchorPlayerName, preview.Value.ProposedSlotDisplayName]);
         }
 
-        var state = await actionHistory.CaptureAsync(session.Id, cancellationToken);
+        var stateHash = await actionHistory.CaptureShareStateHashAsync(session.Id, cancellationToken);
         var plan = new ShareSlotConfirmationPlan(
             session.Id,
             preview.Value.AnchorPlayerName,
             preview.Value.PartnerInputs,
             preview.Value.IsPostDraft,
-            state.Hash,
+            stateHash,
             selfService);
         await SaveShareSlotConfirmationAsync(
             connectionId,
@@ -2740,9 +2835,34 @@ public sealed class ZaloBotService(
         SessionSnapshot session,
         ShareSlotConfirmationPlan plan,
         ZaloIncomingMessageEvent incoming,
+        string connectionId,
+        string groupId,
         bool aiCalled,
         CancellationToken cancellationToken)
     {
+        var refresh = await RefreshShareSessionAsync(
+            session,
+            groupId,
+            incoming.SenderId,
+            cancellationToken);
+        if (refresh.Session is null)
+        {
+            await SaveShareSlotConfirmationAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                plan,
+                cancellationToken);
+            return new BotAnswer(
+                (refresh.Error ?? "Chưa kiểm tra lại được danh sách vote mới nhất.") +
+                " Yêu cầu xác nhận vẫn được giữ; bạn có thể gõ @bot xác nhận để thử lại hoặc @bot huỷ.",
+                null,
+                ZaloBotIntent.ShareSlotConfirm,
+                aiCalled,
+                ProtectedTerms: [session.Name, "@bot xác nhận", "@bot huỷ"]);
+        }
+        session = refresh.Session;
+
         var selfStillValid = plan.SelfService &&
                              session.SenderIsListed &&
                              !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
@@ -2753,15 +2873,8 @@ public sealed class ZaloBotService(
             if (denial is not null) return denial;
         }
 
-        var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
-        if (!string.Equals(before.Hash, plan.StateHash, StringComparison.Ordinal))
-        {
-            return new BotAnswer(
-                "Danh sách, đội hình hoặc share slot đã thay đổi sau bản xem trước. Mình chưa cập nhật gì; hãy gửi lại yêu cầu để kiểm tra phương án mới.",
-                null,
-                ZaloBotIntent.ShareSlotConfirm,
-                aiCalled);
-        }
+        var currentStateHash = await actionHistory.CaptureShareStateHashAsync(session.Id, cancellationToken);
+        var stateChanged = !string.Equals(currentStateHash, plan.StateHash, StringComparison.Ordinal);
         var preview = await draftService.PreviewShareSlotAsync(
             session.AdminUserId,
             session.Id,
@@ -2778,6 +2891,36 @@ public sealed class ZaloBotService(
             return new BotAnswer("Bạn không còn là người giữ chính của share slot này. Hãy nhờ người giữ slot, trưởng nhóm, phó nhóm hoặc admin thực hiện.", null, ZaloBotIntent.ShareSlotConfirm, aiCalled);
         if (preview.Value.IsPostDraft != plan.IsPostDraft)
             return new BotAnswer("Trạng thái buổi đã đổi sau bản xem trước. Hãy gửi lại yêu cầu share slot để mình kiểm tra lại.", null, ZaloBotIntent.ShareSlotConfirm, aiCalled);
+
+        if (stateChanged)
+        {
+            var refreshedPlan = new ShareSlotConfirmationPlan(
+                session.Id,
+                preview.Value.AnchorPlayerName,
+                preview.Value.PartnerInputs,
+                preview.Value.IsPostDraft,
+                currentStateHash,
+                selfStillValid);
+            await SaveShareSlotConfirmationAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                refreshedPlan,
+                cancellationToken);
+            return new BotAnswer(
+                $"Danh sách vote hoặc đội hình vừa thay đổi nên mình đã kiểm tra lại phương án mới:\n{FormatShareSlotPreview(session.Name, preview.Value)}",
+                null,
+                ZaloBotIntent.ShareSlotConfirm,
+                aiCalled,
+                ProtectedTerms: preview.Value.PartnerPlayerNames
+                    .Append(preview.Value.AnchorPlayerName)
+                    .Append(preview.Value.ProposedSlotDisplayName)
+                    .Append(session.Name)
+                    .Concat(["@bot xác nhận", "@bot huỷ"])
+                    .ToList());
+        }
+
+        var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
 
         if (!plan.IsPostDraft)
         {
@@ -4567,7 +4710,8 @@ public sealed class ZaloBotService(
         IReadOnlyList<string> connectionIds,
         string groupId,
         string senderId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? onlySessionId = null)
     {
         var loadedSessions = await db.MatchSessions
             .AsNoTracking()
@@ -4575,7 +4719,8 @@ public sealed class ZaloBotService(
                               connectionIds.Contains(session.ZaloConnectionId) &&
                               session.ZaloGroupId == groupId &&
                               session.BotEnabled &&
-                              session.Status != SessionStatus.Cancelled)
+                              session.Status != SessionStatus.Cancelled &&
+                              (onlySessionId == null || session.Id == onlySessionId))
             .ToListAsync(cancellationToken);
         var upcomingCutoff = DateTimeOffset.UtcNow.AddHours(-4);
         var sessions = loadedSessions
@@ -4610,6 +4755,7 @@ public sealed class ZaloBotService(
             session.Id,
             session.Name,
             session.AdminUserId,
+            session.ZaloConnectionId!,
             session.Status,
             ParseOperatorIds(session.BotOperatorZaloUserIdsJson),
             session.StartTime,
@@ -5251,11 +5397,15 @@ public sealed class ZaloBotService(
     private sealed record ShareSlotConfirmationPayload(
         string SessionId,
         ShareSlotConfirmationPlan Plan);
+    private sealed record ShareSessionRefreshResult(
+        SessionSnapshot? Session,
+        string? Error);
     private sealed record PlayerProfileValues(PlayerGender? Gender, PlayerRole? Role, PlayerLevel? Level);
     private sealed record SessionSnapshot(
         string Id,
         string Name,
         string AdminUserId,
+        string ZaloConnectionId,
         SessionStatus Status,
         IReadOnlySet<string> OperatorZaloUserIds,
         DateTimeOffset? StartTime,

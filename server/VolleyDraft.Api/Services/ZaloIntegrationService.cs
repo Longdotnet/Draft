@@ -563,10 +563,12 @@ public sealed class ZaloIntegrationService(
             if (polls.Count == 0)
                 return BadRequest<ZaloPollImportResultResponse>("Nhóm chưa có poll không ẩn danh để đồng bộ.");
 
-            var previousImport = await db.PollImports.AsNoTracking()
+            var previousImports = await db.PollImports.AsNoTracking()
                 .Where(item => item.SessionId == sessionId)
+                .ToListAsync();
+            var previousImport = previousImports
                 .OrderByDescending(item => item.ImportedAt)
-                .FirstOrDefaultAsync();
+                .FirstOrDefault();
             var poll = previousImport is null
                 ? polls[0]
                 : polls.FirstOrDefault(item => item.Id == previousImport.PollId) ?? polls[0];
@@ -614,13 +616,17 @@ public sealed class ZaloIntegrationService(
                 .Where(player => player.SessionId == sessionId && player.SourcePollId == poll.Id)
                 .ToListAsync();
             var removedCount = 0;
+            var removedPlayerIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var player in previouslyImportedPlayers)
             {
                 var zaloId = player.PlayerProfile?.ZaloUserId;
                 if (string.IsNullOrWhiteSpace(zaloId) || activeZaloIds.Contains(NormalizeId(zaloId))) continue;
                 if (player.IsPresent) removedCount += 1;
                 player.IsPresent = false;
+                player.IsCaptainEligible = false;
+                removedPlayerIds.Add(player.Id);
             }
+            await ReconcileSharedSlotsAfterPollRemovalAsync(sessionId, removedPlayerIds);
             await CleanupTeamPreferenceGroupsAsync(sessionId);
             await db.SaveChangesAsync();
             var presentCount = await db.SessionPlayers.CountAsync(player => player.SessionId == sessionId && player.IsPresent);
@@ -670,6 +676,63 @@ public sealed class ZaloIntegrationService(
             db.TeamPreferenceGroupPlayers.RemoveRange(inactiveLinks);
             for (var index = 0; index < activeLinks.Count; index += 1)
                 activeLinks[index].RotationOrder = index + 1;
+        }
+    }
+
+    private async Task ReconcileSharedSlotsAfterPollRemovalAsync(
+        string sessionId,
+        IReadOnlySet<string> removedPlayerIds)
+    {
+        if (removedPlayerIds.Count == 0) return;
+
+        var slots = await db.DraftSlots
+            .Include(slot => slot.Players.OrderBy(link => link.RotationOrder))
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                slot.Players.Any(link => removedPlayerIds.Contains(link.SessionPlayerId)))
+            .ToListAsync();
+        foreach (var slot in slots)
+        {
+            var removedLinks = slot.Players
+                .Where(link => removedPlayerIds.Contains(link.SessionPlayerId))
+                .ToList();
+            foreach (var link in removedLinks)
+            {
+                link.SessionPlayer.IsInsideSharedSlot = false;
+                link.SessionPlayer.IsCaptainEligible = false;
+            }
+
+            var remainingLinks = slot.Players
+                .Except(removedLinks)
+                .OrderBy(link => link.RotationOrder)
+                .ToList();
+            db.DraftSlotPlayers.RemoveRange(removedLinks);
+            if (remainingLinks.Count < 2)
+            {
+                foreach (var link in remainingLinks)
+                {
+                    link.SessionPlayer.IsInsideSharedSlot = false;
+                    link.SessionPlayer.IsCaptainEligible = true;
+                }
+                db.DraftSlotPlayers.RemoveRange(remainingLinks);
+                db.DraftSlots.Remove(slot);
+                continue;
+            }
+
+            for (var index = 0; index < remainingLinks.Count; index += 1)
+            {
+                remainingLinks[index].RotationOrder = index + 1;
+                remainingLinks[index].SessionPlayer.IsInsideSharedSlot = true;
+            }
+            var remainingPlayers = remainingLinks.Select(link => link.SessionPlayer).ToList();
+            slot.DisplayName = string.Join(" / ", remainingPlayers.Select(player => player.DisplayName));
+            slot.Role = remainingPlayers[0].Role;
+            slot.AverageScore = remainingPlayers.Average(player => player.Score);
+            slot.Gender = remainingPlayers.All(player => player.Gender == remainingPlayers[0].Gender)
+                ? remainingPlayers[0].Gender
+                : PlayerGender.Unknown;
         }
     }
 
