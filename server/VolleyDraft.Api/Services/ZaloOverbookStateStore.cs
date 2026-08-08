@@ -72,7 +72,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
                 "OrderConfidence" TEXT NOT NULL DEFAULT 'Unknown',
                 "CurrentPollId" TEXT NULL,
                 "CurrentSelectedOptionIdsJson" TEXT NOT NULL DEFAULT '[]',
-                "LastPollUpdatedAtUnixMs" INTEGER NOT NULL DEFAULT 0,
+                "LastPollUpdatedAtUnixMs" BIGINT NOT NULL DEFAULT 0,
                 "EffectiveSlotCount" INTEGER NOT NULL DEFAULT 0,
                 "RawVoterCount" INTEGER NOT NULL DEFAULT 0,
                 "ExcessSlotCount" INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +89,17 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
             );
             """;
         await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+
+        if (db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            const string upgradePostgresUnixMs = """
+                ALTER TABLE "ZaloOverbookStates"
+                ALTER COLUMN "LastPollUpdatedAtUnixMs" TYPE BIGINT
+                USING "LastPollUpdatedAtUnixMs"::BIGINT;
+                """;
+            await db.Database.ExecuteSqlRawAsync(upgradePostgresUnixMs, cancellationToken);
+        }
+
         ensured = true;
     }
 
