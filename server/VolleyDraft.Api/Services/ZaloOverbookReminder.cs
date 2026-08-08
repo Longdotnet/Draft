@@ -39,7 +39,7 @@ public sealed partial class ZaloOverbookService
             {
                 try
                 {
-                    var synced = await integration.SyncLatestPollAsync(session.AdminUserId, session.Id, session.Name);
+                    var synced = await integration.SyncLatestPollAsync(session.AdminUserId, session.Id);
                     if (!synced.IsSuccess)
                     {
                         snapshot.LastError = synced.Error ?? "Không đồng bộ được poll trước cảnh báo vượt slot.";
@@ -145,20 +145,8 @@ public sealed partial class ZaloOverbookService
                 pending.Add((session, state));
         }
         if (pending.Count == 0) return false;
-
-        (MatchSession Session, ZaloOverbookStateData State) candidate;
-        if (pending.Count == 1)
-        {
-            candidate = pending[0];
-        }
-        else
-        {
-            var matchedIds = ZaloBotIntelligence.ResolveSessionReference(
-                incoming.Content,
-                pending.Select(item => new ZaloSessionReference(item.Session.Id, item.Session.Name, item.Session.StartTime)).ToList());
-            if (matchedIds.Count != 1) return false;
-            candidate = pending.Single(item => item.Session.Id == matchedIds[0]);
-        }
+        if (pending.Count != 1) return false;
+        var candidate = pending[0];
         var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
         var configuredOperators = ParseStringList(candidate.Session.BotOperatorZaloUserIdsJson);
         var canOperate = configuredOperators.Contains(senderId, StringComparer.Ordinal);
