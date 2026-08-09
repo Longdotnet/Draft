@@ -90,7 +90,10 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
                 "UpdatedAt" TEXT NOT NULL
             );
             """;
-        await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+        // Do not pass JSON object literals such as '{}' through ExecuteSqlRawAsync.
+        // EF Core treats braces as composite-format placeholders and throws FormatException.
+        await using (var createCommand = await CreateCommandAsync(sql, cancellationToken))
+            await createCommand.ExecuteNonQueryAsync(cancellationToken);
         await EnsureReminderBanksColumnAsync(cancellationToken);
 
         if (db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
@@ -285,7 +288,12 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
         var hasColumn = Enumerable.Range(0, reader.FieldCount).Any(i => string.Equals(reader.GetName(i), "ReminderMessageBanksJson", StringComparison.OrdinalIgnoreCase));
         await reader.DisposeAsync();
         if (!hasColumn)
-            await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ZaloOverbookStates\" ADD COLUMN \"ReminderMessageBanksJson\" TEXT NOT NULL DEFAULT '{}';", cancellationToken);
+        {
+            await using var alterCommand = await CreateCommandAsync(
+                "ALTER TABLE \"ZaloOverbookStates\" ADD COLUMN \"ReminderMessageBanksJson\" TEXT NOT NULL DEFAULT '{}';",
+                cancellationToken);
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private static Dictionary<int, List<string>> DeserializeBanks(string? json)
