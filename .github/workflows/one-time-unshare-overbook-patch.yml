@@ -27,7 +27,9 @@ jobs:
           cache: npm
 
       - name: Apply patch
-        run: python3 .github/scripts/patch_unshare_overbook.py
+        run: |
+          python3 .github/scripts/patch_unshare_overbook.py
+          python3 .github/scripts/fix_unshare_overbook_patch.py
 
       - name: Backend tests
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release
