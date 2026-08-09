@@ -16,6 +16,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python .github/scripts/patch_overbook_banks.py
+      - run: python .github/scripts/fix_overbook_banks.py
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
