@@ -3,6 +3,7 @@ import { AlertTriangle, Bot, Copy, RefreshCw, Save, ShieldCheck } from "lucide-r
 import { ApiRequestError, apiFetch, type AdminSessionSummaryResponse, type PagedResponse } from "../api/dbClient";
 
 type MessageSource = "AdminPool" | "Ai";
+type StageKey = "light" | "callout" | "sarcastic" | "stubborn";
 
 type OverbookVoter = {
   zaloUserId: string;
@@ -31,6 +32,8 @@ type OverbookStatus = {
   seriousMessages: string[];
   strictMessages: string[];
   reminderMessageBanks: Record<string, string[]>;
+  stageMessageBanks: Record<StageKey, string[]>;
+  defaultStageMessageBanks: Record<StageKey, string[]>;
   orderConfidence: string;
   needsConfirmation: boolean;
   reminderCount: number;
@@ -49,10 +52,32 @@ type FormState = {
   reminderIntervalMinutes: number;
   maxReminders: number;
   messageSource: MessageSource;
-  friendlyMessages: string;
-  seriousMessages: string;
-  strictMessages: string;
+  stageMessageBanks: Record<StageKey, string>;
   reminderMessageBanks: Record<number, string>;
+};
+
+const stageOrder: StageKey[] = ["light", "callout", "sarcastic", "stubborn"];
+const stageMeta: Record<StageKey, { label: string; range: string; description: string }> = {
+  light: {
+    label: "Nhắc nhẹ",
+    range: "Lần #1–2",
+    description: "Nhẹ nhàng, vui vẻ, nhắc người vote dư tự kiểm tra và gỡ vote.",
+  },
+  callout: {
+    label: "Réo tên",
+    range: "Lần #3–5",
+    description: "Réo rõ hơn vì đã nhắc vài lần nhưng vẫn giữ chất Gen Z.",
+  },
+  sarcastic: {
+    label: "Cà khịa",
+    range: "Lần #6–15",
+    description: "Meme/cà khịa vui để nội dung không bị máy móc và lặp lại.",
+  },
+  stubborn: {
+    label: "Tai trâu",
+    range: "Từ lần #16",
+    description: "Cà khịa mạnh hơn cho trường hợp rất lì nhưng không đe doạ hay xúc phạm nặng.",
+  },
 };
 
 const emptyForm: FormState = {
@@ -61,9 +86,7 @@ const emptyForm: FormState = {
   reminderIntervalMinutes: 60,
   maxReminders: 5,
   messageSource: "AdminPool",
-  friendlyMessages: "",
-  seriousMessages: "",
-  strictMessages: "",
+  stageMessageBanks: { light: "", callout: "", sarcastic: "", stubborn: "" },
   reminderMessageBanks: {},
 };
 
@@ -108,6 +131,7 @@ export function ZaloOverbookAdminPanel() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [confirmIds, setConfirmIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [stageEditor, setStageEditor] = useState<StageKey>("light");
   const [reminderEditor, setReminderEditor] = useState(1);
   const [copyTargets, setCopyTargets] = useState<string[]>([]);
   const [copyTiming, setCopyTiming] = useState(false);
@@ -193,10 +217,15 @@ export function ZaloOverbookAdminPanel() {
       reminderIntervalMinutes: next.reminderIntervalMinutes,
       maxReminders: next.maxReminders,
       messageSource: next.messageSource,
-      friendlyMessages: next.friendlyMessages.join("\n"),
-      seriousMessages: next.seriousMessages.join("\n"),
-      strictMessages: next.strictMessages.join("\n"),
-      reminderMessageBanks: Object.fromEntries(Object.entries(next.reminderMessageBanks ?? {}).map(([key, lines]) => [Number(key), lines.join("\n")])),
+      stageMessageBanks: {
+        light: (next.stageMessageBanks?.light ?? []).join("\n"),
+        callout: (next.stageMessageBanks?.callout ?? []).join("\n"),
+        sarcastic: (next.stageMessageBanks?.sarcastic ?? []).join("\n"),
+        stubborn: (next.stageMessageBanks?.stubborn ?? []).join("\n"),
+      },
+      reminderMessageBanks: Object.fromEntries(
+        Object.entries(next.reminderMessageBanks ?? {}).map(([key, lines]) => [Number(key), lines.join("\n")]),
+      ),
     });
     setConfirmIds(next.voters.filter((voter) => voter.suggestedExcess).map((voter) => voter.zaloUserId));
   }
@@ -214,10 +243,15 @@ export function ZaloOverbookAdminPanel() {
           reminderIntervalMinutes: Number(form.reminderIntervalMinutes),
           maxReminders: Number(form.maxReminders),
           messageSource: form.messageSource,
-          friendlyMessages: splitLines(form.friendlyMessages),
-          seriousMessages: splitLines(form.seriousMessages),
-          strictMessages: splitLines(form.strictMessages),
-          reminderMessageBanks: Object.fromEntries(Object.entries(form.reminderMessageBanks).map(([key, value]) => [key, splitLines(value)])),
+          friendlyMessages: [],
+          seriousMessages: [],
+          strictMessages: [],
+          stageMessageBanks: Object.fromEntries(
+            stageOrder.map((stage) => [stage, splitLines(form.stageMessageBanks[stage])]),
+          ),
+          reminderMessageBanks: Object.fromEntries(
+            Object.entries(form.reminderMessageBanks).map(([key, value]) => [key, splitLines(value)]),
+          ),
         },
       });
       applyStatus(next);
@@ -277,14 +311,39 @@ export function ZaloOverbookAdminPanel() {
     if (!token || !sessionId || copyTargets.length === 0) return;
     setBusy(true);
     try {
-      const copied = await apiFetch<number>(`/sessions/${sessionId}/zalo-overbook/copy`, { method: "POST", token, body: { sourceSessionId: sessionId, targetSessionIds: copyTargets, copyMessages: true, copyTiming, copyMaxReminders: copyMax, copyMessageSource: copySource } });
-      setMessage(`Đã copy cấu hình cho ${copied} trận. Runtime state không bị copy.`);
-    } catch (error) { setMessage(error instanceof ApiRequestError ? error.message : "Không copy được cấu hình."); }
-    finally { setBusy(false); }
+      const copied = await apiFetch<number>(`/sessions/${sessionId}/zalo-overbook/copy`, {
+        method: "POST",
+        token,
+        body: {
+          sourceSessionId: sessionId,
+          targetSessionIds: copyTargets,
+          copyMessages: true,
+          copyTiming,
+          copyMaxReminders: copyMax,
+          copyMessageSource: copySource,
+        },
+      });
+      setMessage(`Đã copy 4 kho câu cho ${copied} trận. Runtime state không bị copy.`);
+    } catch (error) {
+      setMessage(error instanceof ApiRequestError ? error.message : "Không copy được cấu hình.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function toggleConfirm(id: string) {
     setConfirmIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+  }
+
+  function restoreStageDefault(stage: StageKey) {
+    if (!status) return;
+    setForm((current) => ({
+      ...current,
+      stageMessageBanks: {
+        ...current.stageMessageBanks,
+        [stage]: (status.defaultStageMessageBanks?.[stage] ?? []).join("\n"),
+      },
+    }));
   }
 
   const cardStyle = {
@@ -319,6 +378,8 @@ export function ZaloOverbookAdminPanel() {
     cursor: busy ? "wait" : "pointer",
     fontWeight: 700,
   } as const;
+
+  const currentStageCount = splitLines(form.stageMessageBanks[stageEditor]).length;
 
   return (
     <section style={cardStyle} aria-label="Cảnh báo vượt slot Zalo">
@@ -401,28 +462,114 @@ export function ZaloOverbookAdminPanel() {
           <div style={{ marginTop: 18, padding: 14, borderRadius: 12, background: "rgba(30, 41, 59, 0.55)" }}>
             <strong style={{ display: "flex", alignItems: "center", gap: 8 }}><Bot size={18} /> Nguồn câu nhắc</strong>
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 10 }}>
-              <label><input type="radio" checked={form.messageSource === "AdminPool"} onChange={() => setForm((current) => ({ ...current, messageSource: "AdminPool" }))} /> Kho câu của admin</label>
+              <label><input type="radio" checked={form.messageSource === "AdminPool"} onChange={() => setForm((current) => ({ ...current, messageSource: "AdminPool" }))} /> Kho câu Gen Z / admin</label>
               <label><input type="radio" checked={form.messageSource === "Ai"} onChange={() => setForm((current) => ({ ...current, messageSource: "Ai" }))} /> AI tự viết ngẫu nhiên</label>
             </div>
             {form.messageSource === "Ai" ? (
-              <p style={{ color: "#94a3b8", marginBottom: 0 }}>AI: lần 1–2 nhẹ, 3–4 nghiêm túc, từ lần 5 cứng rắn. Nếu AI lỗi/hết quota, bot dùng câu dự phòng hệ thống.</p>
-            ) : (
-              <div style={{ ...gridStyle, marginTop: 14 }}>
-                <label style={{ display: "grid", gap: 6 }}>
-                  <span>Lần 1–2 · nhẹ</span>
-                  <textarea rows={6} value={form.friendlyMessages} onChange={(event) => setForm((current) => ({ ...current, friendlyMessages: event.target.value }))} placeholder="Mỗi dòng là một câu. Bot dùng hết kho rồi mới lặp." style={inputStyle} />
-                </label>
-                <label style={{ display: "grid", gap: 6 }}>
-                  <span>Lần 3–4 · nghiêm túc</span>
-                  <textarea rows={6} value={form.seriousMessages} onChange={(event) => setForm((current) => ({ ...current, seriousMessages: event.target.value }))} placeholder="Có thể dùng {sessionName}, {effectiveSlotCount}, {capacity}, {excessCount}, {reminderNumber}, {names}." style={inputStyle} />
-                </label>
-                <label style={{ display: "grid", gap: 6 }}>
-                  <span>Từ lần 5 · cứng/cà khịa theo văn phong nhóm</span>
-                  <textarea rows={6} value={form.strictMessages} onChange={(event) => setForm((current) => ({ ...current, strictMessages: event.target.value }))} placeholder="Admin tự kiểm soát văn phong. Backend vẫn giữ đúng số slot và người được tag." style={inputStyle} />
-                </label>
-              </div>
-            )}
+              <p style={{ color: "#94a3b8", marginBottom: 0 }}>
+                AI cũng tự tăng tone theo số lần nhắc. Nếu AI lỗi/hết quota, bot dùng câu dự phòng hệ thống.
+              </p>
+            ) : null}
           </div>
+
+          {form.messageSource === "AdminPool" ? (
+            <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: "rgba(15, 23, 42, 0.72)" }}>
+              <strong>🎭 Kho câu cảnh báo</strong>
+              <p style={{ color: "#94a3b8", fontSize: 13, marginBottom: 12 }}>
+                Bạn không cần quản lý từng lần #1, #2, #3 nữa. Bot tự chuyển kho: #1–2 nhắc nhẹ → #3–5 réo tên → #6–15 cà khịa → #16+ tai trâu. Trong mỗi kho bot random theo kiểu shuffle-bag để hạn chế lặp câu.
+              </p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: 8 }}>
+                {stageOrder.map((stage) => {
+                  const count = splitLines(form.stageMessageBanks[stage]).length;
+                  const active = stageEditor === stage;
+                  return (
+                    <button
+                      key={stage}
+                      type="button"
+                      onClick={() => setStageEditor(stage)}
+                      style={{
+                        ...buttonStyle,
+                        display: "grid",
+                        textAlign: "left",
+                        background: active ? "#334155" : "rgba(30, 41, 59, 0.65)",
+                        color: "#fff",
+                        border: active ? "1px solid rgba(96, 165, 250, 0.65)" : "1px solid rgba(148, 163, 184, 0.2)",
+                      }}
+                    >
+                      <span>{stageMeta[stage].label}</span>
+                      <small style={{ color: "#94a3b8" }}>{stageMeta[stage].range} · {count} câu</small>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: "rgba(30, 41, 59, 0.55)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <div>
+                    <strong>{stageMeta[stageEditor].label} · {stageMeta[stageEditor].range}</strong>
+                    <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 3 }}>{stageMeta[stageEditor].description}</div>
+                  </div>
+                  <span style={{ color: "#93c5fd", fontSize: 13 }}>{currentStageCount} câu</span>
+                </div>
+                <textarea
+                  rows={12}
+                  value={form.stageMessageBanks[stageEditor]}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    stageMessageBanks: { ...current.stageMessageBanks, [stageEditor]: event.target.value },
+                  }))}
+                  placeholder="Mỗi dòng là 1 câu. Bot sẽ random và hạn chế lặp."
+                  style={{ ...inputStyle, marginTop: 10, resize: "vertical", minHeight: 220 }}
+                />
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => restoreStageDefault(stageEditor)}
+                    style={{ ...buttonStyle, background: "#334155", color: "#fff" }}
+                  >
+                    Khôi phục kho Gen Z mặc định
+                  </button>
+                  <span style={{ color: "#94a3b8", fontSize: 12 }}>
+                    Mặc định hệ thống: Nhắc nhẹ 50 · Réo tên 50 · Cà khịa 100 · Tai trâu 100 câu.
+                  </span>
+                </div>
+                <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
+                  Placeholder: {'{names}'} {'{capacity}'} {'{firstExcessSlot}'} {'{effectiveSlotCount}'} {'{rawVoterCount}'} {'{excessCount}'} {'{reminderNumber}'} {'{sessionName}'}
+                </div>
+              </div>
+
+              <details style={{ marginTop: 12 }}>
+                <summary style={{ cursor: "pointer", color: "#cbd5e1" }}>Nâng cao · override riêng một lần nhắc</summary>
+                <p style={{ color: "#94a3b8", fontSize: 13 }}>
+                  Chỉ dùng khi bạn thật sự muốn một lần cụ thể, ví dụ #10, có kho riêng. Nếu để trống thì bot dùng 4 kho lớn phía trên.
+                </p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <label>
+                    Lần #{" "}
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={reminderEditor}
+                      onChange={(event) => setReminderEditor(Math.max(1, Math.min(100, Number(event.target.value) || 1)))}
+                      style={{ ...inputStyle, width: 90, display: "inline-block" }}
+                    />
+                  </label>
+                </div>
+                <textarea
+                  rows={5}
+                  value={form.reminderMessageBanks[reminderEditor] ?? ""}
+                  onChange={(event) => setForm((current) => ({
+                    ...current,
+                    reminderMessageBanks: { ...current.reminderMessageBanks, [reminderEditor]: event.target.value },
+                  }))}
+                  placeholder="Để trống để dùng kho theo giai đoạn. Mỗi dòng là một câu override."
+                  style={{ ...inputStyle, marginTop: 10, resize: "vertical" }}
+                />
+              </details>
+            </div>
+          ) : null}
 
           {status.needsConfirmation && status.excessSlotCount > 0 ? (
             <div style={{ marginTop: 18, padding: 14, borderRadius: 12, border: "1px solid rgba(245, 158, 11, 0.45)", background: "rgba(245, 158, 11, 0.08)" }}>
@@ -470,35 +617,35 @@ export function ZaloOverbookAdminPanel() {
             </div>
           ) : null}
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
-            {form.messageSource === "AdminPool" ? (
-            <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: "rgba(15, 23, 42, 0.72)" }}>
-              <strong>Kho câu theo từng lần nhắc</strong>
-              <p style={{ color: "#94a3b8", fontSize: 13 }}>Mỗi dòng là 1 câu, tối đa 20 câu/lần. #1–#7 có sẵn 20 câu Gen Z; #8–#100 dùng fallback tăng dần độ cà khịa nếu bạn chưa override.</p>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <label>Lần # <input type="number" min={1} max={100} value={reminderEditor} onChange={(e) => setReminderEditor(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} style={{ ...inputStyle, width: 90 }} /></label>
-                <button type="button" style={{ ...buttonStyle, background: "#334155", color: "#fff" }} onClick={() => setForm(current => ({ ...current, reminderMessageBanks: { ...current.reminderMessageBanks, [reminderEditor]: current.reminderMessageBanks[Math.max(1, reminderEditor - 1)] ?? "" } }))}>Copy từ lần trước</button>
-              </div>
-              <textarea rows={8} value={form.reminderMessageBanks[reminderEditor] ?? ""} onChange={(e) => setForm(current => ({ ...current, reminderMessageBanks: { ...current.reminderMessageBanks, [reminderEditor]: e.target.value } }))} placeholder="Để trống để dùng kho mặc định/fallback của hệ thống" style={{ ...inputStyle, marginTop: 10, resize: "vertical" }} />
-              <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 6 }}>Placeholder: {'{names}'} {'{capacity}'} {'{firstExcessSlot}'} {'{effectiveSlotCount}'} {'{rawVoterCount}'} {'{excessCount}'} {'{reminderNumber}'} {'{sessionName}'}</div>
-            </div>
-          ) : null}
-
           <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: "rgba(15, 23, 42, 0.72)" }}>
             <strong><Copy size={15} /> Sao chép cấu hình sang trận khác</strong>
-            <p style={{ color: "#94a3b8", fontSize: 13 }}>Mặc định chỉ copy nội dung. Không bao giờ copy target voter, reminder count, poll/option, incident hay lịch runtime.</p>
+            <p style={{ color: "#94a3b8", fontSize: 13 }}>
+              Mặc định copy toàn bộ 4 kho câu và các override nâng cao. Không bao giờ copy target voter, reminder count, poll/option, incident hay lịch runtime.
+            </p>
             <div style={{ display: "grid", gap: 6, maxHeight: 150, overflow: "auto" }}>
-              {sessions.filter(item => item.id !== sessionId).map(item => <label key={item.id}><input type="checkbox" checked={copyTargets.includes(item.id)} onChange={() => setCopyTargets(cur => cur.includes(item.id) ? cur.filter(id => id !== item.id) : [...cur, item.id])} /> {item.name}</label>)}
+              {sessions.filter((item) => item.id !== sessionId).map((item) => (
+                <label key={item.id}>
+                  <input
+                    type="checkbox"
+                    checked={copyTargets.includes(item.id)}
+                    onChange={() => setCopyTargets((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])}
+                  />{" "}
+                  {item.name}
+                </label>
+              ))}
             </div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10 }}>
-              <label><input type="checkbox" checked={copyTiming} onChange={e => setCopyTiming(e.target.checked)} /> Grace + interval</label>
-              <label><input type="checkbox" checked={copyMax} onChange={e => setCopyMax(e.target.checked)} /> Max reminders</label>
-              <label><input type="checkbox" checked={copySource} onChange={e => setCopySource(e.target.checked)} /> Nguồn Admin/AI</label>
+              <label><input type="checkbox" checked={copyTiming} onChange={(event) => setCopyTiming(event.target.checked)} /> Grace + interval</label>
+              <label><input type="checkbox" checked={copyMax} onChange={(event) => setCopyMax(event.target.checked)} /> Max reminders</label>
+              <label><input type="checkbox" checked={copySource} onChange={(event) => setCopySource(event.target.checked)} /> Nguồn Admin/AI</label>
             </div>
-            <button type="button" disabled={busy || copyTargets.length === 0} onClick={() => void copySettings()} style={{ ...buttonStyle, marginTop: 10, background: "#475569", color: "#fff" }}><Copy size={16} /> Áp dụng cho {copyTargets.length} trận</button>
+            <button type="button" disabled={busy || copyTargets.length === 0} onClick={() => void copySettings()} style={{ ...buttonStyle, marginTop: 10, background: "#475569", color: "#fff" }}>
+              <Copy size={16} /> Áp dụng cho {copyTargets.length} trận
+            </button>
           </div>
 
-          <button type="button" onClick={() => void saveSettings()} disabled={busy || !sessionId} style={{ ...buttonStyle, background: "#22c55e", color: "#052e16" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
+            <button type="button" onClick={() => void saveSettings()} disabled={busy || !sessionId} style={{ ...buttonStyle, background: "#22c55e", color: "#052e16" }}>
               <Save size={16} /> Lưu cấu hình
             </button>
             <span style={{ color: "#94a3b8", fontSize: 13 }}>Scheduler chạy theo nhịp backend; lúc Render ngủ có thể trễ thêm theo lần đánh thức kế tiếp.</span>
