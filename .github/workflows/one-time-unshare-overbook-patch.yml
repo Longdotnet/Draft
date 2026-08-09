@@ -1,0 +1,57 @@
+name: One-time unshare and overbook patch
+
+on:
+  push:
+    branches:
+      - "feat/unshare-and-overbook-remind-now"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/unshare-and-overbook-remind-now
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Apply patch
+        run: python3 .github/scripts/patch_unshare_overbook.py
+
+      - name: Backend tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release
+
+      - name: Frontend build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Zalo Bridge build and test
+        working-directory: zalo-bridge
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Commit source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server src
+          if git diff --cached --quiet; then
+            echo "No source changes"
+            exit 0
+          fi
+          git commit -m "feat: add self-service unshare and immediate overbook reminders"
+          git push origin HEAD:feat/unshare-and-overbook-remind-now
