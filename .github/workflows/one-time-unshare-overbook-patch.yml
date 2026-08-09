@@ -19,11 +19,11 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "9.0.x"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Apply patch
@@ -40,7 +40,7 @@ jobs:
           npm run build
 
       - name: Zalo Bridge build and test
-        working-directory: zalo-bridge
+        working-directory: server/ZaloBridge
         run: |
           npm ci
           npm run build
