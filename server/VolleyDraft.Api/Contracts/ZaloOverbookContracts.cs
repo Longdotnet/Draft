@@ -14,7 +14,8 @@ public sealed record UpdateZaloOverbookSettingsRequest(
     ZaloOverbookMessageSource MessageSource,
     IReadOnlyList<string>? FriendlyMessages,
     IReadOnlyList<string>? SeriousMessages,
-    IReadOnlyList<string>? StrictMessages);
+    IReadOnlyList<string>? StrictMessages,
+    IReadOnlyDictionary<int, IReadOnlyList<string>>? ReminderMessageBanks = null);
 
 public sealed record ConfirmZaloOverbookTargetsRequest(
     IReadOnlyList<string> ZaloUserIds,
@@ -46,6 +47,7 @@ public sealed record ZaloOverbookStatusResponse(
     IReadOnlyList<string> FriendlyMessages,
     IReadOnlyList<string> SeriousMessages,
     IReadOnlyList<string> StrictMessages,
+    IReadOnlyDictionary<int, IReadOnlyList<string>> ReminderMessageBanks,
     string OrderConfidence,
     bool NeedsConfirmation,
     int ReminderCount,
@@ -56,3 +58,11 @@ public sealed record ZaloOverbookStatusResponse(
     IReadOnlyList<ZaloOverbookVoterResponse> Voters,
     IReadOnlyList<string> CurrentTargetZaloUserIds,
     string? LastError);
+
+public sealed record CopyZaloOverbookSettingsRequest(
+    string SourceSessionId,
+    IReadOnlyList<string> TargetSessionIds,
+    bool CopyMessages = true,
+    bool CopyTiming = false,
+    bool CopyMaxReminders = false,
+    bool CopyMessageSource = false);

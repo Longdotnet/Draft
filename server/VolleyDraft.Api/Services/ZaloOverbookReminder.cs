@@ -207,16 +207,28 @@ public sealed partial class ZaloOverbookService
         }
 
         var useAdminPool = state.MessageSource == ZaloOverbookMessageSource.AdminPool;
-        var pool = tone switch
+        IReadOnlyList<string> pool;
+        string tierPrefix;
+        if (useAdminPool && state.ReminderMessageBanks.TryGetValue(reminderNumber, out var exactBank) && exactBank.Count > 0)
         {
-            "strict" when useAdminPool && state.StrictMessages.Count > 0 => state.StrictMessages,
-            "serious" when useAdminPool && state.SeriousMessages.Count > 0 => state.SeriousMessages,
-            "friendly" when useAdminPool && state.FriendlyMessages.Count > 0 => state.FriendlyMessages,
-            "strict" => DefaultStrictMessages,
-            "serious" => DefaultSeriousMessages,
-            _ => DefaultFriendlyMessages
-        };
-        var tierPrefix = tone + ":";
+            pool = exactBank;
+            tierPrefix = $"reminder-{reminderNumber}:";
+        }
+        else if (useAdminPool)
+        {
+            pool = ZaloOverbookMessageCatalog.GetBank(reminderNumber);
+            tierPrefix = $"catalog-{reminderNumber}:";
+        }
+        else
+        {
+            pool = tone switch
+            {
+                "strict" => DefaultStrictMessages,
+                "serious" => DefaultSeriousMessages,
+                _ => DefaultFriendlyMessages
+            };
+            tierPrefix = tone + ":";
+        }
         var used = state.UsedMessageKeys.Where(key => key.StartsWith(tierPrefix, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
         var available = Enumerable.Range(0, pool.Count)
             .Where(index => !used.Contains($"{tierPrefix}{index}"))
@@ -254,6 +266,7 @@ public sealed partial class ZaloOverbookService
             .Replace("{effectiveSlotCount}", state.EffectiveSlotCount.ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{rawVoterCount}", state.RawVoterCount.ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{capacity}", capacity.ToString(), StringComparison.OrdinalIgnoreCase)
+            .Replace("{firstExcessSlot}", (capacity + 1).ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{excessCount}", state.ExcessSlotCount.ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{reminderNumber}", reminderNumber.ToString(), StringComparison.OrdinalIgnoreCase)
             .Replace("{names}", string.Join(", ", targetNames), StringComparison.OrdinalIgnoreCase)

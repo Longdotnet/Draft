@@ -19,6 +19,7 @@ internal sealed class ZaloOverbookStateData
     public List<string> FriendlyMessages { get; set; } = [];
     public List<string> SeriousMessages { get; set; } = [];
     public List<string> StrictMessages { get; set; } = [];
+    public Dictionary<int, List<string>> ReminderMessageBanks { get; set; } = [];
     public List<string> FirstObservedVoterIds { get; set; } = [];
     public List<string> LastObservedVoterIds { get; set; } = [];
     public List<string> SuggestedTargetVoterIds { get; set; } = [];
@@ -63,6 +64,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
                 "FriendlyMessagesJson" TEXT NOT NULL DEFAULT '[]',
                 "SeriousMessagesJson" TEXT NOT NULL DEFAULT '[]',
                 "StrictMessagesJson" TEXT NOT NULL DEFAULT '[]',
+                "ReminderMessageBanksJson" TEXT NOT NULL DEFAULT '{}',
                 "FirstObservedVoterIdsJson" TEXT NOT NULL DEFAULT '[]',
                 "LastObservedVoterIdsJson" TEXT NOT NULL DEFAULT '[]',
                 "SuggestedTargetVoterIdsJson" TEXT NOT NULL DEFAULT '[]',
@@ -89,6 +91,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
             );
             """;
         await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+        await EnsureReminderBanksColumnAsync(cancellationToken);
 
         if (db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
         {
@@ -133,7 +136,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
         const string sql = """
             INSERT INTO "ZaloOverbookStates" (
                 "SessionId", "Enabled", "GraceMinutes", "ReminderIntervalMinutes", "MaxReminders",
-                "MessageSource", "FriendlyMessagesJson", "SeriousMessagesJson", "StrictMessagesJson",
+                "MessageSource", "FriendlyMessagesJson", "SeriousMessagesJson", "StrictMessagesJson", "ReminderMessageBanksJson",
                 "FirstObservedVoterIdsJson", "LastObservedVoterIdsJson", "SuggestedTargetVoterIdsJson",
                 "CurrentTargetVoterIdsJson", "ConfirmedTargetVoterIdsJson", "NeedsConfirmation", "OrderConfidence",
                 "CurrentPollId", "CurrentSelectedOptionIdsJson", "LastPollUpdatedAtUnixMs", "EffectiveSlotCount",
@@ -141,7 +144,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
                 "IncidentKey", "UsedMessageKeysJson", "LastMessageKey", "LastActorId", "LastObservedAt", "LastError", "UpdatedAt")
             VALUES (
                 @SessionId, @Enabled, @GraceMinutes, @ReminderIntervalMinutes, @MaxReminders,
-                @MessageSource, @FriendlyMessagesJson, @SeriousMessagesJson, @StrictMessagesJson,
+                @MessageSource, @FriendlyMessagesJson, @SeriousMessagesJson, @StrictMessagesJson, @ReminderMessageBanksJson,
                 @FirstObservedVoterIdsJson, @LastObservedVoterIdsJson, @SuggestedTargetVoterIdsJson,
                 @CurrentTargetVoterIdsJson, @ConfirmedTargetVoterIdsJson, @NeedsConfirmation, @OrderConfidence,
                 @CurrentPollId, @CurrentSelectedOptionIdsJson, @LastPollUpdatedAtUnixMs, @EffectiveSlotCount,
@@ -156,6 +159,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
                 "FriendlyMessagesJson" = excluded."FriendlyMessagesJson",
                 "SeriousMessagesJson" = excluded."SeriousMessagesJson",
                 "StrictMessagesJson" = excluded."StrictMessagesJson",
+                "ReminderMessageBanksJson" = excluded."ReminderMessageBanksJson",
                 "FirstObservedVoterIdsJson" = excluded."FirstObservedVoterIdsJson",
                 "LastObservedVoterIdsJson" = excluded."LastObservedVoterIdsJson",
                 "SuggestedTargetVoterIdsJson" = excluded."SuggestedTargetVoterIdsJson",
@@ -190,6 +194,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
         AddParameter(command, "@FriendlyMessagesJson", Serialize(state.FriendlyMessages));
         AddParameter(command, "@SeriousMessagesJson", Serialize(state.SeriousMessages));
         AddParameter(command, "@StrictMessagesJson", Serialize(state.StrictMessages));
+        AddParameter(command, "@ReminderMessageBanksJson", JsonSerializer.Serialize(state.ReminderMessageBanks, JsonOptions));
         AddParameter(command, "@FirstObservedVoterIdsJson", Serialize(state.FirstObservedVoterIds));
         AddParameter(command, "@LastObservedVoterIdsJson", Serialize(state.LastObservedVoterIds));
         AddParameter(command, "@SuggestedTargetVoterIdsJson", Serialize(state.SuggestedTargetVoterIds));
@@ -246,6 +251,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
         FriendlyMessages = Deserialize(ReadString(reader, "FriendlyMessagesJson")),
         SeriousMessages = Deserialize(ReadString(reader, "SeriousMessagesJson")),
         StrictMessages = Deserialize(ReadString(reader, "StrictMessagesJson")),
+        ReminderMessageBanks = DeserializeBanks(ReadString(reader, "ReminderMessageBanksJson")),
         FirstObservedVoterIds = Deserialize(ReadString(reader, "FirstObservedVoterIdsJson")),
         LastObservedVoterIds = Deserialize(ReadString(reader, "LastObservedVoterIdsJson")),
         SuggestedTargetVoterIds = Deserialize(ReadString(reader, "SuggestedTargetVoterIdsJson")),
@@ -270,6 +276,23 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
         LastError = ReadString(reader, "LastError"),
         UpdatedAt = ReadDate(reader, "UpdatedAt") ?? DateTimeOffset.UtcNow
     };
+
+
+    private async Task EnsureReminderBanksColumnAsync(CancellationToken cancellationToken)
+    {
+        await using var command = await CreateCommandAsync("SELECT * FROM \"ZaloOverbookStates\" LIMIT 0;", cancellationToken);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var hasColumn = Enumerable.Range(0, reader.FieldCount).Any(i => string.Equals(reader.GetName(i), "ReminderMessageBanksJson", StringComparison.OrdinalIgnoreCase));
+        await reader.DisposeAsync();
+        if (!hasColumn)
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ZaloOverbookStates\" ADD COLUMN \"ReminderMessageBanksJson\" TEXT NOT NULL DEFAULT '{}';", cancellationToken);
+    }
+
+    private static Dictionary<int, List<string>> DeserializeBanks(string? json)
+    {
+        try { return JsonSerializer.Deserialize<Dictionary<int, List<string>>>(json ?? "{}", JsonOptions) ?? []; }
+        catch (JsonException) { return []; }
+    }
 
     private static string Serialize(IReadOnlyList<string> values) => JsonSerializer.Serialize(values, JsonOptions);
 
