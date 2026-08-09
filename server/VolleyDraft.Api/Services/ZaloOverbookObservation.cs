@@ -200,6 +200,8 @@ public sealed partial class ZaloOverbookService
         state.SeriousMessages,
         state.StrictMessages,
         ZaloOverbookMessageCatalog.GetUiBanks(state.ReminderMessageBanks),
+        ZaloOverbookMessageCatalog.GetUiStageBanks(state.ReminderMessageBanks),
+        ZaloOverbookMessageCatalog.GetDefaultStageBanks(),
         state.OrderConfidence,
         state.NeedsConfirmation,
         state.ReminderCount,
