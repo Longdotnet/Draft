@@ -118,7 +118,9 @@ public sealed partial class ZaloOverbookService
         state.SeriousMessages = NormalizeMessages(request.SeriousMessages);
         state.StrictMessages = NormalizeMessages(request.StrictMessages);
         if (request.ReminderMessageBanks is not null)
-            state.ReminderMessageBanks = NormalizeBanks(request.ReminderMessageBanks);
+            state.ReminderMessageBanks = MergeExactReminderBanks(state.ReminderMessageBanks, request.ReminderMessageBanks);
+        if (request.StageMessageBanks is not null)
+            state.ReminderMessageBanks = MergeStageBanks(state.ReminderMessageBanks, request.StageMessageBanks);
         if (!state.Enabled) state.NextReminderAt = null;
         await store.SaveAsync(state, cancellationToken);
 
@@ -297,8 +299,34 @@ public sealed partial class ZaloOverbookService
         return ServiceResult<int>.Success(copied);
     }
 
-    private static Dictionary<int, List<string>> NormalizeBanks(IReadOnlyDictionary<int, IReadOnlyList<string>> banks) =>
-        banks.Where(pair => pair.Key is >= 1 and <= 100)
-            .ToDictionary(pair => pair.Key, pair => NormalizeMessages(pair.Value).Take(20).ToList());
+    private static Dictionary<int, List<string>> MergeExactReminderBanks(
+        IReadOnlyDictionary<int, List<string>> existing,
+        IReadOnlyDictionary<int, IReadOnlyList<string>> banks)
+    {
+        var result = existing
+            .Where(pair => pair.Key > 100)
+            .ToDictionary(pair => pair.Key, pair => pair.Value.ToList());
+        foreach (var pair in banks.Where(pair => pair.Key is >= 1 and <= 100))
+        {
+            var normalized = NormalizeMessages(pair.Value, 20);
+            if (normalized.Count > 0) result[pair.Key] = normalized;
+        }
+        return result;
+    }
+
+    private static Dictionary<int, List<string>> MergeStageBanks(
+        IReadOnlyDictionary<int, List<string>> existing,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> banks)
+    {
+        var result = existing.ToDictionary(pair => pair.Key, pair => pair.Value.ToList());
+        foreach (var pair in banks)
+        {
+            if (!ZaloOverbookMessageCatalog.TryGetStageStorageKey(pair.Key, out var storageKey)) continue;
+            var normalized = NormalizeMessages(pair.Value, 200);
+            if (normalized.Count > 0) result[storageKey] = normalized;
+            else result.Remove(storageKey);
+        }
+        return result;
+    }
 
 }
