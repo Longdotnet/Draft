@@ -9,7 +9,7 @@ using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed class ZaloBotService(
+public sealed partial class ZaloBotService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     AiAssistantService ai,
@@ -571,6 +571,27 @@ public sealed class ZaloBotService(
                 false,
                 cancellationToken);
         }
+        if (!string.IsNullOrWhiteSpace(pending.UnshareSlotId) && pending.Session is not null)
+        {
+            return await HandleUnshareSlotAsync(
+                new ZaloIntentDecision(
+                    ZaloBotIntent.UnshareSlotConfirm,
+                    1,
+                    pending.Session.Name,
+                    false,
+                    null,
+                    "unshare_slot_confirmation"),
+                [pending.Session],
+                NormalizeText(pending.Session.Name),
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false,
+                confirmed: true,
+                expectedSlotId: pending.UnshareSlotId,
+                forcedSession: pending.Session);
+        }
         if (pending.RebalancePlan is not null && pending.Session is not null)
         {
             var denial = await GetOperatorDenialAsync(
@@ -644,6 +665,11 @@ public sealed class ZaloBotService(
             ZaloBotIntent.WaitlistStatus or ZaloBotIntent.WaitlistAccept or ZaloBotIntent.WaitlistDecline)
         {
             return await HandleWaitlistIntentAsync(
+                earlyDecision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
+        }
+        if (earlyDecision.Intent == ZaloBotIntent.UnshareSlot)
+        {
+            return await HandleUnshareSlotAsync(
                 earlyDecision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
         }
         if (earlyDecision.Intent == ZaloBotIntent.RepairShareSlot)
@@ -835,6 +861,9 @@ public sealed class ZaloBotService(
 
         if (decision.Intent == ZaloBotIntent.ShareSlot)
             return await ShareSlotAsync(decision, sessions, normalizedQuestion, question, activeConnectionId, groupId, incoming, cancellationToken, false);
+
+        if (decision.Intent == ZaloBotIntent.UnshareSlot)
+            return await HandleUnshareSlotAsync(decision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
 
         if (decision.Intent == ZaloBotIntent.RepairShareSlot)
             return await HandleRepairShareSlotAsync(decision, sessions, normalizedQuestion, activeConnectionId, groupId, incoming, cancellationToken, false);
@@ -1260,6 +1289,33 @@ public sealed class ZaloBotService(
                 null,
                 null,
                 "Mình đang chờ xác nhận share slot. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ; dữ liệu vẫn chưa đổi.");
+        }
+        if (state.PendingIntent == ZaloBotIntent.UnshareSlotConfirm.ToString())
+        {
+            UnshareSlotConfirmationPayload? payload;
+            try { payload = JsonSerializer.Deserialize<UnshareSlotConfirmationPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var actionSession = payload is null ? null : sessions.SingleOrDefault(session => session.Id == payload.SessionId);
+            if (payload is not null && actionSession is not null && ZaloBotIntelligence.IsConfirmation(normalizedQuestion))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.UnshareSlotConfirm,
+                    actionSession,
+                    null,
+                    UnshareSlotId: payload.SlotId);
+            }
+            var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+            if (newIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+            return new PendingResolution(false, null, null,
+                "Mình đang chờ xác nhận tách shared slot. Gõ @bot xác nhận để tách thành các slot riêng hoặc @bot huỷ.");
         }
         if (state.PendingIntent is not null &&
             (state.PendingIntent == ZaloBotIntent.AutoDraftConfirm.ToString() ||
@@ -4712,6 +4768,8 @@ public sealed class ZaloBotService(
                 true);
         if (decision.Intent == ZaloBotIntent.ShareSlot)
             return await ShareSlotAsync(decision, sessions, selector, ExtractQuestion(incoming), connectionId, groupId, incoming, cancellationToken, true);
+        if (decision.Intent == ZaloBotIntent.UnshareSlot)
+            return await HandleUnshareSlotAsync(decision, sessions, selector, connectionId, groupId, incoming, cancellationToken, true);
         if (decision.Intent == ZaloBotIntent.IncompleteProfiles)
             return await ListIncompleteProfilesAsync(
                 decision,
@@ -5476,7 +5534,8 @@ public sealed class ZaloBotService(
         TeamPreferencePreview? TeamPreferencePlan = null,
         bool TeamPreferenceSelfService = false,
         ShareSlotConfirmationPlan? ShareSlotPlan = null,
-        ZaloShareSlotCommand? ShareCommand = null)
+        ZaloShareSlotCommand? ShareCommand = null,
+        string? UnshareSlotId = null)
     {
         public static PendingResolution None { get; } = new(false, null, null, null);
     }
@@ -5519,6 +5578,7 @@ public sealed class ZaloBotService(
     private sealed record ShareSlotConfirmationPayload(
         string SessionId,
         ShareSlotConfirmationPlan Plan);
+    private sealed record UnshareSlotConfirmationPayload(string SessionId, string SlotId);
     private sealed record ShareSessionRefreshResult(
         SessionSnapshot? Session,
         string? Error);

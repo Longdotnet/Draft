@@ -451,7 +451,19 @@ sessions.MapPost("/{sessionId}/zalo-overbook/confirm", async (
     var userId = httpContext.User.GetUserId();
     return userId is null
         ? Results.Unauthorized()
-        : (await service.ConfirmTargetsAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+        : (await service.ConfirmTargetsScopedAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/zalo-overbook/confirm-and-remind", async (
+    HttpContext httpContext,
+    string sessionId,
+    ConfirmZaloOverbookTargetsRequest request,
+    ZaloOverbookService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.ConfirmTargetsAndRemindNowAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
 });
 sessions.MapGet("/{sessionId}/zalo-bot-rules", async (
     HttpContext httpContext,

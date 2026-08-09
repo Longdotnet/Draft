@@ -35,6 +35,8 @@ type OverbookStatus = {
   reminderCount: number;
   lastReminderAt: string | null;
   nextReminderAt: string | null;
+  currentPollId: string | null;
+  currentSelectedOptionIds: string[];
   voters: OverbookVoter[];
   currentTargetZaloUserIds: string[];
   lastError: string | null;
@@ -224,12 +226,38 @@ export function ZaloOverbookAdminPanel() {
       const next = await apiFetch<OverbookStatus>(`/sessions/${sessionId}/zalo-overbook/confirm`, {
         method: "POST",
         token,
-        body: { zaloUserIds: confirmIds },
+        body: {
+          zaloUserIds: confirmIds,
+          expectedPollId: status?.currentPollId ?? null,
+          expectedSelectedOptionIds: status?.currentSelectedOptionIds ?? [],
+        },
       });
       applyStatus(next);
       setMessage("Đã xác nhận người vote dư. Bot chỉ tag nhắc, không chuyển waitlist.");
     } catch (error) {
       setMessage(error instanceof ApiRequestError ? error.message : "Không xác nhận được lượt vote dư.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmAndRemindNow() {
+    if (!token || !sessionId || confirmIds.length === 0 || !status) return;
+    setBusy(true);
+    try {
+      const next = await apiFetch<OverbookStatus>(`/sessions/${sessionId}/zalo-overbook/confirm-and-remind`, {
+        method: "POST",
+        token,
+        body: {
+          zaloUserIds: confirmIds,
+          expectedPollId: status.currentPollId,
+          expectedSelectedOptionIds: status.currentSelectedOptionIds,
+        },
+      });
+      applyStatus(next);
+      setMessage("Đã xác nhận và mention nhắc ngay trên Zalo. Lần gửi này được tính là reminder #1.");
+    } catch (error) {
+      setMessage(error instanceof ApiRequestError ? error.message : "Không gửi được cảnh báo Zalo ngay lúc này.");
     } finally {
       setBusy(false);
     }
@@ -392,9 +420,22 @@ export function ZaloOverbookAdminPanel() {
                   </label>
                 ))}
               </div>
-              <button type="button" onClick={() => void confirmTargets()} disabled={busy || confirmIds.length === 0} style={{ ...buttonStyle, marginTop: 12, background: "#f59e0b", color: "#111827" }}>
-                <ShieldCheck size={16} /> Xác nhận người vote dư
-              </button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+                <button type="button" onClick={() => void confirmTargets()} disabled={busy || confirmIds.length === 0} style={{ ...buttonStyle, background: "#f59e0b", color: "#111827" }}>
+                  <ShieldCheck size={16} /> Xác nhận người vote dư
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void confirmAndRemindNow()}
+                  disabled={busy || confirmIds.length === 0 || !status.botEnabled || !status.enabled}
+                  style={{ ...buttonStyle, background: "#ef4444", color: "#fff", opacity: !status.botEnabled || !status.enabled ? 0.55 : 1 }}
+                >
+                  <Bot size={16} /> Xác nhận & nhắc ngay
+                </button>
+              </div>
+              {!status.enabled || !status.botEnabled ? (
+                <p style={{ marginBottom: 0, color: "#fbbf24", fontSize: 13 }}>Muốn nhắc ngay, hãy bật bot Zalo và bật + lưu cảnh báo vượt slot trước. Sau lần gửi ngay, bot tiếp tục dùng khoảng cách nhắc đã cấu hình.</p>
+              ) : null}
               <p style={{ marginBottom: 0, color: "#94a3b8", fontSize: 13 }}>Ngoài website, admin/operator có thể mention bot và gõ “xác nhận vote dư” khi group chỉ có một trận đang chờ xác nhận.</p>
             </div>
           ) : null}
