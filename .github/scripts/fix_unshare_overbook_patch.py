@@ -11,6 +11,26 @@ if "using VolleyDraft.Api.Contracts;" not in text:
     )
 p.write_text(text, encoding="utf-8")
 
+# A positive phrase like "muốn share nữa" must stay ShareSlot. The negative
+# phrases already match "không share" / "không chung slot" / "không thay phiên".
+p = Path("server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs")
+text = p.read_text(encoding="utf-8")
+text = text.replace(
+    '            "huy share", "bo share", "tach share", "tach slot",\n            "share nua", "chung slot nua", "thay phien nua");',
+    '            "huy share", "bo share", "tach share", "tach slot");',
+)
+p.write_text(text, encoding="utf-8")
+
+p = Path("server/VolleyDraft.Api.Tests/ZaloUnshareIntentTests.cs")
+text = p.read_text(encoding="utf-8")
+anchor = '''    [Fact]\n    public void Normal_share_is_still_share_slot()\n    {\n        Assert.Equal(\n            ZaloBotIntent.ShareSlot,\n            ZaloBotIntelligence.ClassifyDeterministically("tui muốn share slot với To An").Intent);\n    }\n'''
+replacement = '''    [Theory]\n    [InlineData("tui muốn share slot với To An")]\n    [InlineData("tui muốn share nữa với To An")]\n    public void Positive_share_phrases_are_still_share_slot(string text)\n    {\n        Assert.Equal(\n            ZaloBotIntent.ShareSlot,\n            ZaloBotIntelligence.ClassifyDeterministically(text).Intent);\n    }\n'''
+if replacement not in text:
+    if anchor not in text:
+        raise SystemExit("unshare test anchor not found")
+    text = text.replace(anchor, replacement, 1)
+p.write_text(text, encoding="utf-8")
+
 # Harden the manual immediate-reminder path against double-click/retry on the
 # exact same poll snapshot + option scope + targets. The same incident must not
 # reset ReminderCount and emit reminder #1 twice.
