@@ -16,7 +16,10 @@ public sealed record UpdateZaloOverbookSettingsRequest(
     IReadOnlyList<string>? SeriousMessages,
     IReadOnlyList<string>? StrictMessages);
 
-public sealed record ConfirmZaloOverbookTargetsRequest(IReadOnlyList<string> ZaloUserIds);
+public sealed record ConfirmZaloOverbookTargetsRequest(
+    IReadOnlyList<string> ZaloUserIds,
+    string? ExpectedPollId = null,
+    IReadOnlyList<string>? ExpectedSelectedOptionIds = null);
 
 public sealed record ZaloOverbookVoterResponse(
     string ZaloUserId,
@@ -48,6 +51,8 @@ public sealed record ZaloOverbookStatusResponse(
     int ReminderCount,
     DateTimeOffset? LastReminderAt,
     DateTimeOffset? NextReminderAt,
+    string? CurrentPollId,
+    IReadOnlyList<string> CurrentSelectedOptionIds,
     IReadOnlyList<ZaloOverbookVoterResponse> Voters,
     IReadOnlyList<string> CurrentTargetZaloUserIds,
     string? LastError);

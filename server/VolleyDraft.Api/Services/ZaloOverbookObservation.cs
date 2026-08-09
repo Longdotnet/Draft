@@ -204,6 +204,8 @@ public sealed partial class ZaloOverbookService
         state.ReminderCount,
         state.LastReminderAt,
         state.NextReminderAt,
+        state.CurrentPollId,
+        state.CurrentSelectedOptionIds,
         voters,
         state.CurrentTargetVoterIds,
         state.LastError);

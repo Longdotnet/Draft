@@ -35,6 +35,8 @@ public enum ZaloBotIntent
     TeamPreferenceConfirm,
     ShareSlot,
     ShareSlotConfirm,
+    UnshareSlot,
+    UnshareSlotConfirm,
     RepairShareSlot,
     RepairShareSlotConfirm,
     TeamImage,
@@ -205,6 +207,21 @@ public static class ZaloBotIntelligence
         var directsPeopleToBot = Has(q,
             "noi voi npc", "noi voi bot", "nhan npc", "nhan bot", "tag npc", "tag bot", "bao npc", "bao bot");
         return describesFutureGuidance && directsPeopleToBot;
+    }
+
+    public static bool IsUnshareSlotRequest(string value)
+    {
+        var q = Normalize(value).Replace("@", string.Empty, StringComparison.Ordinal);
+        var mentionsShare = Has(q,
+            "share slot", "share", "chung slot", "danh chung slot", "choi chung slot",
+            "slot thay phien", "thay phien");
+        if (!mentionsShare) return false;
+        var stopsSharing = Has(q,
+            "khong share", "ko share", "khong chung slot", "ko chung slot",
+            "khong danh chung slot", "khong choi chung slot", "khong thay phien",
+            "huy share", "bo share", "tach share", "tach slot",
+            "share nua", "chung slot nua", "thay phien nua");
+        return stopsSharing;
     }
 
     public static string Normalize(string value)
@@ -435,6 +452,8 @@ public static class ZaloBotIntelligence
                 null,
                 explanation ? "waitlist_explanation_phrase" : "waitlist_status_phrase");
         }
+        if (IsUnshareSlotRequest(value))
+            return new(ZaloBotIntent.UnshareSlot, .995, q, false, null, "unshare_slot_phrase");
         if (ZaloNaturalCommandParser.TryParseRepairShareSlot(value, out _))
             return new(ZaloBotIntent.RepairShareSlot, .99, q, false, null, "repair_share_slot_phrase");
         if (Has(q, "lich su thao tac", "xem thao tac", "vua thay doi gi", "nhung thay doi gan day"))
@@ -551,7 +570,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.TeamPreferenceConfirm or ZaloBotIntent.ShareSlotConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.TeamPreferenceConfirm or ZaloBotIntent.ShareSlotConfirm or ZaloBotIntent.UnshareSlotConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;
