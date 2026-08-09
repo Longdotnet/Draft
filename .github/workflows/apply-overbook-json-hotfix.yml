@@ -1,0 +1,32 @@
+name: Apply overbook JSON default hotfix
+
+on:
+  push:
+    branches: [fix/overbook-json-default-format]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/overbook-json-default-format
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python .github/scripts/fix_overbook_json_default.py
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release
+      - name: Commit hotfix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/ZaloOverbookStateStore.cs server/VolleyDraft.Api.Tests/ZaloOverbookStateStoreSchemaTests.cs
+          git commit -m "fix: avoid EF format parsing for overbook JSON defaults"
+          git push origin HEAD:fix/overbook-json-default-format
