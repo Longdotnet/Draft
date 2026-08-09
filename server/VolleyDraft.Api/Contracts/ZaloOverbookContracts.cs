@@ -15,7 +15,8 @@ public sealed record UpdateZaloOverbookSettingsRequest(
     IReadOnlyList<string>? FriendlyMessages,
     IReadOnlyList<string>? SeriousMessages,
     IReadOnlyList<string>? StrictMessages,
-    IReadOnlyDictionary<int, IReadOnlyList<string>>? ReminderMessageBanks = null);
+    IReadOnlyDictionary<int, IReadOnlyList<string>>? ReminderMessageBanks = null,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? StageMessageBanks = null);
 
 public sealed record ConfirmZaloOverbookTargetsRequest(
     IReadOnlyList<string> ZaloUserIds,
@@ -48,6 +49,8 @@ public sealed record ZaloOverbookStatusResponse(
     IReadOnlyList<string> SeriousMessages,
     IReadOnlyList<string> StrictMessages,
     IReadOnlyDictionary<int, IReadOnlyList<string>> ReminderMessageBanks,
+    IReadOnlyDictionary<string, IReadOnlyList<string>> StageMessageBanks,
+    IReadOnlyDictionary<string, IReadOnlyList<string>> DefaultStageMessageBanks,
     string OrderConfidence,
     bool NeedsConfirmation,
     int ReminderCount,
