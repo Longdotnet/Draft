@@ -11,6 +11,7 @@ internal static class ZaloOverbookMessageCatalog
     internal const int CalloutStorageKey = 1002;
     internal const int SarcasticStorageKey = 1003;
     internal const int StubbornStorageKey = 1004;
+    internal const int AdvancedExactStorageOffset = 2000;
 
     private static readonly string[] LightFrames =
     [
@@ -166,8 +167,34 @@ internal static class ZaloOverbookMessageCatalog
 
     internal static Dictionary<int, IReadOnlyList<string>> GetUiBanks(IReadOnlyDictionary<int, List<string>> overrides) =>
         overrides
-            .Where(pair => pair.Key is >= 1 and <= 100 && pair.Value.Count > 0)
-            .ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value);
+            .Where(pair => pair.Key > AdvancedExactStorageOffset &&
+                           pair.Key <= AdvancedExactStorageOffset + 100 &&
+                           pair.Value.Count > 0)
+            .ToDictionary(
+                pair => pair.Key - AdvancedExactStorageOffset,
+                pair => (IReadOnlyList<string>)pair.Value);
+
+    internal static int GetAdvancedExactStorageKey(int reminderNumber)
+    {
+        if (reminderNumber is < 1 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(reminderNumber));
+        return AdvancedExactStorageOffset + reminderNumber;
+    }
+
+    internal static bool TryGetAdvancedExactBank(
+        IReadOnlyDictionary<int, List<string>> overrides,
+        int reminderNumber,
+        out IReadOnlyList<string> bank)
+    {
+        var storageKey = GetAdvancedExactStorageKey(reminderNumber);
+        if (overrides.TryGetValue(storageKey, out var custom) && custom.Count > 0)
+        {
+            bank = custom;
+            return true;
+        }
+        bank = [];
+        return false;
+    }
 
     internal static bool TryGetCustomStageBank(
         IReadOnlyDictionary<int, List<string>> overrides,

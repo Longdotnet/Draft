@@ -304,12 +304,14 @@ public sealed partial class ZaloOverbookService
         IReadOnlyDictionary<int, IReadOnlyList<string>> banks)
     {
         var result = existing
-            .Where(pair => pair.Key > 100)
+            .Where(pair => pair.Key <= ZaloOverbookMessageCatalog.AdvancedExactStorageOffset ||
+                           pair.Key > ZaloOverbookMessageCatalog.AdvancedExactStorageOffset + 100)
             .ToDictionary(pair => pair.Key, pair => pair.Value.ToList());
         foreach (var pair in banks.Where(pair => pair.Key is >= 1 and <= 100))
         {
             var normalized = NormalizeMessages(pair.Value, 20);
-            if (normalized.Count > 0) result[pair.Key] = normalized;
+            if (normalized.Count > 0)
+                result[ZaloOverbookMessageCatalog.GetAdvancedExactStorageKey(pair.Key)] = normalized;
         }
         return result;
     }

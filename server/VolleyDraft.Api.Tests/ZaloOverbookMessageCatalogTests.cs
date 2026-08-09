@@ -68,7 +68,8 @@ public sealed class ZaloOverbookMessageCatalogTests
     {
         var overrides = new Dictionary<int, List<string>>
         {
-            [10] = ["special #10 {names}"],
+            [10] = ["legacy #10 {names}"],
+            [ZaloOverbookMessageCatalog.GetAdvancedExactStorageKey(10)] = ["special #10 {names}"],
             [ZaloOverbookMessageCatalog.LightStorageKey] = ["stage {names}"],
         };
 

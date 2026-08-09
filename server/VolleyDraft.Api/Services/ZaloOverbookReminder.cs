@@ -210,16 +210,25 @@ public sealed partial class ZaloOverbookService
         var useAdminPool = state.MessageSource == ZaloOverbookMessageSource.AdminPool;
         IReadOnlyList<string> pool;
         string tierPrefix;
-        if (useAdminPool && state.ReminderMessageBanks.TryGetValue(reminderNumber, out var exactBank) && exactBank.Count > 0)
+        if (useAdminPool && ZaloOverbookMessageCatalog.TryGetAdvancedExactBank(state.ReminderMessageBanks, reminderNumber, out var exactBank))
         {
-            // Backwards-compatible advanced override: an exact reminder number still wins.
+            // New advanced override uses a separate storage range so legacy #1-#100
+            // data from the previous UI cannot silently override the staged system.
             pool = exactBank;
-            tierPrefix = $"reminder-{reminderNumber}:";
+            tierPrefix = $"advanced-reminder-{reminderNumber}:";
         }
         else if (useAdminPool && ZaloOverbookMessageCatalog.TryGetCustomStageBank(state.ReminderMessageBanks, stage, out var stageBank))
         {
             pool = stageBank;
             tierPrefix = $"stage-custom-{stage}:";
+        }
+        else if (useAdminPool && state.ReminderMessageBanks.TryGetValue(reminderNumber, out var legacyBank) && legacyBank.Count > 0)
+        {
+            // Before an old session is saved in the new UI, keep its previous
+            // per-reminder content working. Once all four stage banks are saved,
+            // stage banks take priority and these legacy rows become inert.
+            pool = legacyBank;
+            tierPrefix = $"legacy-reminder-{reminderNumber}:";
         }
         else if (useAdminPool)
         {
