@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Bot, RefreshCw, Save, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Bot, Copy, RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { ApiRequestError, apiFetch, type AdminSessionSummaryResponse, type PagedResponse } from "../api/dbClient";
 
 type MessageSource = "AdminPool" | "Ai";
@@ -30,6 +30,7 @@ type OverbookStatus = {
   friendlyMessages: string[];
   seriousMessages: string[];
   strictMessages: string[];
+  reminderMessageBanks: Record<string, string[]>;
   orderConfidence: string;
   needsConfirmation: boolean;
   reminderCount: number;
@@ -51,6 +52,7 @@ type FormState = {
   friendlyMessages: string;
   seriousMessages: string;
   strictMessages: string;
+  reminderMessageBanks: Record<number, string>;
 };
 
 const emptyForm: FormState = {
@@ -62,6 +64,7 @@ const emptyForm: FormState = {
   friendlyMessages: "",
   seriousMessages: "",
   strictMessages: "",
+  reminderMessageBanks: {},
 };
 
 function splitLines(value: string) {
@@ -105,6 +108,11 @@ export function ZaloOverbookAdminPanel() {
   const [form, setForm] = useState<FormState>(emptyForm);
   const [confirmIds, setConfirmIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [reminderEditor, setReminderEditor] = useState(1);
+  const [copyTargets, setCopyTargets] = useState<string[]>([]);
+  const [copyTiming, setCopyTiming] = useState(false);
+  const [copyMax, setCopyMax] = useState(false);
+  const [copySource, setCopySource] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -188,6 +196,7 @@ export function ZaloOverbookAdminPanel() {
       friendlyMessages: next.friendlyMessages.join("\n"),
       seriousMessages: next.seriousMessages.join("\n"),
       strictMessages: next.strictMessages.join("\n"),
+      reminderMessageBanks: Object.fromEntries(Object.entries(next.reminderMessageBanks ?? {}).map(([key, lines]) => [Number(key), lines.join("\n")])),
     });
     setConfirmIds(next.voters.filter((voter) => voter.suggestedExcess).map((voter) => voter.zaloUserId));
   }
@@ -208,6 +217,7 @@ export function ZaloOverbookAdminPanel() {
           friendlyMessages: splitLines(form.friendlyMessages),
           seriousMessages: splitLines(form.seriousMessages),
           strictMessages: splitLines(form.strictMessages),
+          reminderMessageBanks: Object.fromEntries(Object.entries(form.reminderMessageBanks).map(([key, value]) => [key, splitLines(value)])),
         },
       });
       applyStatus(next);
@@ -261,6 +271,16 @@ export function ZaloOverbookAdminPanel() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function copySettings() {
+    if (!token || !sessionId || copyTargets.length === 0) return;
+    setBusy(true);
+    try {
+      const copied = await apiFetch<number>(`/sessions/${sessionId}/zalo-overbook/copy`, { method: "POST", token, body: { sourceSessionId: sessionId, targetSessionIds: copyTargets, copyMessages: true, copyTiming, copyMaxReminders: copyMax, copyMessageSource: copySource } });
+      setMessage(`Đã copy cấu hình cho ${copied} trận. Runtime state không bị copy.`);
+    } catch (error) { setMessage(error instanceof ApiRequestError ? error.message : "Không copy được cấu hình."); }
+    finally { setBusy(false); }
   }
 
   function toggleConfirm(id: string) {
@@ -374,7 +394,7 @@ export function ZaloOverbookAdminPanel() {
             </label>
             <label style={{ display: "grid", gap: 6 }}>
               <span>Số lần nhắc tối đa</span>
-              <input type="number" min={1} max={20} value={form.maxReminders} onChange={(event) => setForm((current) => ({ ...current, maxReminders: Number(event.target.value) }))} style={inputStyle} />
+              <input type="number" min={1} max={100} value={form.maxReminders} onChange={(event) => setForm((current) => ({ ...current, maxReminders: Number(event.target.value) }))} style={inputStyle} />
             </label>
           </div>
 
@@ -451,7 +471,34 @@ export function ZaloOverbookAdminPanel() {
           ) : null}
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
-            <button type="button" onClick={() => void saveSettings()} disabled={busy || !sessionId} style={{ ...buttonStyle, background: "#22c55e", color: "#052e16" }}>
+            {form.messageSource === "AdminPool" ? (
+            <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: "rgba(15, 23, 42, 0.72)" }}>
+              <strong>Kho câu theo từng lần nhắc</strong>
+              <p style={{ color: "#94a3b8", fontSize: 13 }}>Mỗi dòng là 1 câu, tối đa 20 câu/lần. #1–#7 có sẵn 20 câu Gen Z; #8–#100 dùng fallback tăng dần độ cà khịa nếu bạn chưa override.</p>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <label>Lần # <input type="number" min={1} max={100} value={reminderEditor} onChange={(e) => setReminderEditor(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} style={{ ...inputStyle, width: 90 }} /></label>
+                <button type="button" style={{ ...buttonStyle, background: "#334155", color: "#fff" }} onClick={() => setForm(current => ({ ...current, reminderMessageBanks: { ...current.reminderMessageBanks, [reminderEditor]: current.reminderMessageBanks[Math.max(1, reminderEditor - 1)] ?? "" } }))}>Copy từ lần trước</button>
+              </div>
+              <textarea rows={8} value={form.reminderMessageBanks[reminderEditor] ?? ""} onChange={(e) => setForm(current => ({ ...current, reminderMessageBanks: { ...current.reminderMessageBanks, [reminderEditor]: e.target.value } }))} placeholder="Để trống để dùng kho mặc định/fallback của hệ thống" style={{ ...inputStyle, marginTop: 10, resize: "vertical" }} />
+              <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 6 }}>Placeholder: {'{names}'} {'{capacity}'} {'{firstExcessSlot}'} {'{effectiveSlotCount}'} {'{rawVoterCount}'} {'{excessCount}'} {'{reminderNumber}'} {'{sessionName}'}</div>
+            </div>
+          ) : null}
+
+          <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: "rgba(15, 23, 42, 0.72)" }}>
+            <strong><Copy size={15} /> Sao chép cấu hình sang trận khác</strong>
+            <p style={{ color: "#94a3b8", fontSize: 13 }}>Mặc định chỉ copy nội dung. Không bao giờ copy target voter, reminder count, poll/option, incident hay lịch runtime.</p>
+            <div style={{ display: "grid", gap: 6, maxHeight: 150, overflow: "auto" }}>
+              {sessions.filter(item => item.id !== sessionId).map(item => <label key={item.id}><input type="checkbox" checked={copyTargets.includes(item.id)} onChange={() => setCopyTargets(cur => cur.includes(item.id) ? cur.filter(id => id !== item.id) : [...cur, item.id])} /> {item.name}</label>)}
+            </div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 10 }}>
+              <label><input type="checkbox" checked={copyTiming} onChange={e => setCopyTiming(e.target.checked)} /> Grace + interval</label>
+              <label><input type="checkbox" checked={copyMax} onChange={e => setCopyMax(e.target.checked)} /> Max reminders</label>
+              <label><input type="checkbox" checked={copySource} onChange={e => setCopySource(e.target.checked)} /> Nguồn Admin/AI</label>
+            </div>
+            <button type="button" disabled={busy || copyTargets.length === 0} onClick={() => void copySettings()} style={{ ...buttonStyle, marginTop: 10, background: "#475569", color: "#fff" }}><Copy size={16} /> Áp dụng cho {copyTargets.length} trận</button>
+          </div>
+
+          <button type="button" onClick={() => void saveSettings()} disabled={busy || !sessionId} style={{ ...buttonStyle, background: "#22c55e", color: "#052e16" }}>
               <Save size={16} /> Lưu cấu hình
             </button>
             <span style={{ color: "#94a3b8", fontSize: 13 }}>Scheduler chạy theo nhịp backend; lúc Render ngủ có thể trễ thêm theo lần đánh thức kế tiếp.</span>

@@ -199,6 +199,7 @@ public sealed partial class ZaloOverbookService
         state.FriendlyMessages,
         state.SeriousMessages,
         state.StrictMessages,
+        ZaloOverbookMessageCatalog.GetUiBanks(state.ReminderMessageBanks),
         state.OrderConfidence,
         state.NeedsConfirmation,
         state.ReminderCount,

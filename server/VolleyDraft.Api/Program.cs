@@ -441,6 +441,18 @@ sessions.MapPut("/{sessionId}/zalo-overbook", async (
         ? Results.Unauthorized()
         : (await service.UpdateSettingsAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
 });
+sessions.MapPost("/{sessionId}/zalo-overbook/copy", async (
+    HttpContext httpContext,
+    string sessionId,
+    CopyZaloOverbookSettingsRequest request,
+    ZaloOverbookService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.CopySettingsAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
 sessions.MapPost("/{sessionId}/zalo-overbook/confirm", async (
     HttpContext httpContext,
     string sessionId,

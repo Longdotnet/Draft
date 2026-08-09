@@ -105,8 +105,8 @@ public sealed partial class ZaloOverbookService
             return ServiceResult<ZaloOverbookStatusResponse>.Failure(StatusCodes.Status400BadRequest, "Thời gian chờ lần đầu phải từ 0 đến 1440 phút.");
         if (request.ReminderIntervalMinutes is < 5 or > 10080)
             return ServiceResult<ZaloOverbookStatusResponse>.Failure(StatusCodes.Status400BadRequest, "Khoảng cách nhắc phải từ 5 phút đến 7 ngày.");
-        if (request.MaxReminders is < 1 or > 20)
-            return ServiceResult<ZaloOverbookStatusResponse>.Failure(StatusCodes.Status400BadRequest, "Số lần nhắc tối đa phải từ 1 đến 20.");
+        if (request.MaxReminders is < 1 or > 100)
+            return ServiceResult<ZaloOverbookStatusResponse>.Failure(StatusCodes.Status400BadRequest, "Số lần nhắc tối đa phải từ 1 đến 100.");
 
         var state = await GetOrCreateStateAsync(sessionId, cancellationToken);
         state.Enabled = request.Enabled;
@@ -117,6 +117,8 @@ public sealed partial class ZaloOverbookService
         state.FriendlyMessages = NormalizeMessages(request.FriendlyMessages);
         state.SeriousMessages = NormalizeMessages(request.SeriousMessages);
         state.StrictMessages = NormalizeMessages(request.StrictMessages);
+        if (request.ReminderMessageBanks is not null)
+            state.ReminderMessageBanks = NormalizeBanks(request.ReminderMessageBanks);
         if (!state.Enabled) state.NextReminderAt = null;
         await store.SaveAsync(state, cancellationToken);
 
@@ -264,5 +266,39 @@ public sealed partial class ZaloOverbookService
         await store.SaveAsync(state, cancellationToken);
         return await BuildStatusAsync(observation, state, cancellationToken);
     }
+
+    public async Task<ServiceResult<int>> CopySettingsAsync(string adminUserId, string sessionId, CopyZaloOverbookSettingsRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!string.Equals(sessionId, request.SourceSessionId, StringComparison.Ordinal))
+            return ServiceResult<int>.Failure(StatusCodes.Status400BadRequest, "Source session không khớp route.");
+        var sourceOwned = await GetOwnedSessionAsync(adminUserId, sessionId, cancellationToken);
+        if (sourceOwned is null) return ServiceResult<int>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy trận nguồn.");
+        var source = await GetOrCreateStateAsync(sessionId, cancellationToken);
+        var targets = request.TargetSessionIds.Where(id => !string.Equals(id, sessionId, StringComparison.Ordinal)).Distinct(StringComparer.Ordinal).Take(30).ToList();
+        var copied = 0;
+        foreach (var targetId in targets)
+        {
+            if (await GetOwnedSessionAsync(adminUserId, targetId, cancellationToken) is null) continue;
+            var target = await GetOrCreateStateAsync(targetId, cancellationToken);
+            if (request.CopyMessages)
+            {
+                target.FriendlyMessages = source.FriendlyMessages.ToList();
+                target.SeriousMessages = source.SeriousMessages.ToList();
+                target.StrictMessages = source.StrictMessages.ToList();
+                target.ReminderMessageBanks = source.ReminderMessageBanks.ToDictionary(pair => pair.Key, pair => pair.Value.ToList());
+            }
+            if (request.CopyTiming) { target.GraceMinutes = source.GraceMinutes; target.ReminderIntervalMinutes = source.ReminderIntervalMinutes; }
+            if (request.CopyMaxReminders) target.MaxReminders = source.MaxReminders;
+            if (request.CopyMessageSource) target.MessageSource = source.MessageSource;
+            // Runtime incident state is deliberately untouched.
+            await store.SaveAsync(target, cancellationToken);
+            copied++;
+        }
+        return ServiceResult<int>.Success(copied);
+    }
+
+    private static Dictionary<int, List<string>> NormalizeBanks(IReadOnlyDictionary<int, IReadOnlyList<string>> banks) =>
+        banks.Where(pair => pair.Key is >= 1 and <= 100)
+            .ToDictionary(pair => pair.Key, pair => NormalizeMessages(pair.Value).Take(20).ToList());
 
 }
