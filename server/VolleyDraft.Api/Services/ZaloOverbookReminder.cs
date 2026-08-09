@@ -183,15 +183,16 @@ public sealed partial class ZaloOverbookService
         int reminderNumber,
         CancellationToken cancellationToken)
     {
-        var tone = reminderNumber >= 5 ? "strict" : reminderNumber >= 3 ? "serious" : "friendly";
+        var stage = ZaloOverbookMessageCatalog.GetStageName(reminderNumber);
         if (state.MessageSource == ZaloOverbookMessageSource.Ai && ai.IsConfigured)
         {
             var factual = $"Kèo {session.Name} đang vượt {state.ExcessSlotCount} slot ({state.EffectiveSlotCount}/{session.TeamCount * session.TeamSize}). Đây là lần nhắc {reminderNumber}. Những người được mention là lượt vote vượt slot. Vui lòng kiểm tra và bỏ vote dư để nhóm có thể chốt roster và draft. Không có hành động waitlist và bot không tự xoá vote.";
-            var instruction = tone switch
+            var instruction = stage switch
             {
-                "strict" => "Viết cảnh báo cứng rắn, trực diện nhưng không bịa dữ liệu và không xúc phạm cá nhân.",
-                "serious" => "Viết cảnh báo nghiêm túc, rõ hậu quả là cả nhóm chưa thể chốt draft.",
-                _ => "Viết lời nhắc nhẹ nhàng, thân thiện."
+                ZaloOverbookMessageCatalog.StubbornStage => "Viết kiểu Gen Z cà khịa mạnh, thể hiện bot đã nhắc rất nhiều lần nhưng không xúc phạm cá nhân, không đe doạ.",
+                ZaloOverbookMessageCatalog.SarcasticStage => "Viết kiểu Gen Z cà khịa/meme, vui nhưng rõ là cần bỏ vote dư ngay.",
+                ZaloOverbookMessageCatalog.CalloutStage => "Viết lời réo tên rõ ràng hơn, hơi nghiêm túc nhưng vẫn thân thiện kiểu Gen Z.",
+                _ => "Viết lời nhắc nhẹ nhàng, thân thiện kiểu Gen Z."
             };
             var rewritten = await ai.RewriteFactualAnswerAsync(
                 new ZaloAiRewriteContext(
@@ -211,24 +212,34 @@ public sealed partial class ZaloOverbookService
         string tierPrefix;
         if (useAdminPool && state.ReminderMessageBanks.TryGetValue(reminderNumber, out var exactBank) && exactBank.Count > 0)
         {
+            // Backwards-compatible advanced override: an exact reminder number still wins.
             pool = exactBank;
             tierPrefix = $"reminder-{reminderNumber}:";
         }
+        else if (useAdminPool && ZaloOverbookMessageCatalog.TryGetCustomStageBank(state.ReminderMessageBanks, stage, out var stageBank))
+        {
+            pool = stageBank;
+            tierPrefix = $"stage-custom-{stage}:";
+        }
         else if (useAdminPool)
         {
-            pool = ZaloOverbookMessageCatalog.GetBank(reminderNumber);
-            tierPrefix = $"catalog-{reminderNumber}:";
+            pool = ZaloOverbookMessageCatalog.GetDefaultStageBank(stage);
+            tierPrefix = $"stage-default-{stage}:";
         }
         else
         {
-            pool = tone switch
+            pool = stage switch
             {
-                "strict" => DefaultStrictMessages,
-                "serious" => DefaultSeriousMessages,
-                _ => DefaultFriendlyMessages
+                ZaloOverbookMessageCatalog.LightStage => DefaultFriendlyMessages,
+                ZaloOverbookMessageCatalog.CalloutStage => DefaultSeriousMessages,
+                _ => DefaultStrictMessages
             };
-            tierPrefix = tone + ":";
+            tierPrefix = $"system-{stage}:";
         }
+
+        // Shuffle-bag is stage-scoped, not reminder-number-scoped. That means #1 and #2
+        // share one used-message history, #3-#5 share another, etc., so the bot naturally
+        // rotates through the large pool instead of repeating the same sentence each hour.
         var used = state.UsedMessageKeys.Where(key => key.StartsWith(tierPrefix, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
         var available = Enumerable.Range(0, pool.Count)
             .Where(index => !used.Contains($"{tierPrefix}{index}"))
@@ -322,13 +333,13 @@ public sealed partial class ZaloOverbookService
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static List<string> NormalizeMessages(IReadOnlyList<string>? messages) =>
+    private static List<string> NormalizeMessages(IReadOnlyList<string>? messages, int maxCount = 50) =>
         (messages ?? [])
             .Select(message => message.Trim())
             .Where(message => message.Length > 0)
             .Select(message => message.Length <= 600 ? message : message[..600])
             .Distinct(StringComparer.Ordinal)
-            .Take(50)
+            .Take(Math.Clamp(maxCount, 1, 200))
             .ToList();
 
     private static List<string> ParseStringList(string? json)
