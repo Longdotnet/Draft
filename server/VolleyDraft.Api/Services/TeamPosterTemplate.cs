@@ -30,7 +30,8 @@ public static class TeamPosterTemplateCatalog
     public static bool IsValid(int templateId) => templateId is >= 1 and <= Count;
 
     public static bool IsActive(int templateId) =>
-        templateId is (int)TeamPosterTemplate.CyberStorm or (int)TeamPosterTemplate.MonolithBroadcast;
+        templateId == (int)TeamPosterTemplate.CyberStorm ||
+        templateId == (int)TeamPosterTemplate.MonolithBroadcast;
 
     public static string GetDisplayName(int templateId) => (TeamPosterTemplate)templateId switch
     {
