@@ -137,128 +137,344 @@ internal static class ChampionshipGoldPosterRenderer
 
 internal static class CyberStormPosterRenderer
 {
-    private static readonly SKColor Cyan = new(45, 234, 255);
-    private static readonly SKColor Violet = new(181, 82, 255);
-    private static readonly SKColor Pink = new(255, 65, 155);
-    private static readonly SKColor Ink = new(235, 249, 255);
-    private static readonly SKColor Muted = new(121, 152, 176);
+    private static readonly SKColor Night = new(6, 8, 14);
+    private static readonly SKColor Bone = new(245, 238, 221);
+    private static readonly SKColor Amber = new(244, 163, 72);
+    private static readonly SKColor Crimson = new(210, 48, 58);
+    private static readonly SKColor Ice = new(77, 192, 211);
+    private static readonly SKColor Smoke = new(147, 145, 142);
 
     public static byte[] Render(string sessionName, DateTimeOffset? startTime, string? location, IReadOnlyList<TeamCardTeam> teams)
     {
-        using var surface = PosterDrawing.CreateSurface(new SKColor(3, 5, 20));
+        using var surface = PosterDrawing.CreateSurface(Night);
         var canvas = surface.Canvas;
-        using (var bg = new SKPaint
-               {
-                   Shader = SKShader.CreateLinearGradient(new SKPoint(0, 0), new SKPoint(1440, 1800),
-                       [new SKColor(4, 7, 25), new SKColor(25, 5, 48), new SKColor(2, 16, 35)],
-                       [0f, .54f, 1f], SKShaderTileMode.Clamp)
-               })
-            canvas.DrawRect(new SKRect(0, 0, 1440, 1800), bg);
-        DrawScanlines(canvas);
-        DrawHudCorner(canvas, 38, 34, Cyan);
-        DrawHudCorner(canvas, 1402, 34, Violet, true);
-        PosterDrawing.DrawText(canvas, "VD://TEAM_MATRIX", 58, 72, 18, Cyan, true, 500);
-        PosterDrawing.DrawText(canvas, sessionName.ToUpperInvariant(), 58, 157, 61, Ink, true, 1160, PosterDrawing.BlackTypeface);
-        PosterDrawing.DrawText(canvas, PosterDrawing.BuildMetadata(startTime, location), 61, 207, 21, Muted, false, 1100);
-        PosterDrawing.DrawPill(canvas, "LIVE ROSTER DATA", new SKRect(1110, 171, 1348, 211), new SKColor(5, 18, 34, 230), Cyan, PosterDrawing.WithAlpha(Cyan, 110), 13);
+        DrawCinematicBackdrop(canvas, sessionName);
+
+        PosterDrawing.DrawCenteredText(canvas, "VOLLEY DRAFT PRESENTS", 720, 67, 15, PosterDrawing.WithAlpha(Bone, 165), true, 560);
+        PosterDrawing.DrawCenteredText(canvas, "TRIPLE", 720, 174, 92, Bone, true, 1180, PosterDrawing.BlackTypeface);
+        PosterDrawing.DrawCenteredText(canvas, "THREAT", 720, 276, 112, Amber, true, 1220, PosterDrawing.BlackTypeface);
+        PosterDrawing.DrawCenteredText(canvas, sessionName.ToUpperInvariant(), 720, 329, 24, Bone, true, 1140);
+        PosterDrawing.DrawCenteredText(canvas, PosterDrawing.BuildMetadata(startTime, location), 720, 367, 15, PosterDrawing.WithAlpha(Bone, 140), false, 1120);
 
         var visible = teams.Take(3).ToList();
         if (visible.Count == 0)
         {
-            PosterDrawing.DrawCenteredText(canvas, "NO TEAM DATA // WAITING", 720, 880, 44, Cyan, true, 1000, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, "THE CAST HAS NOT BEEN REVEALED", 720, 875, 38, Bone, true, 1120, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, "Draft xong rồi gọi lại @bot 10", 720, 924, 18, Smoke, false, 820);
             return PosterDrawing.Encode(surface);
         }
 
-        var accents = new[] { Cyan, Pink, Violet };
-        var y = 300f;
-        for (var i = 0; i < visible.Count; i++)
-        {
-            DrawHudLane(canvas, new SKRect(54, y, 1386, y + 430), visible[i], i, accents[i]);
-            y += 468;
-        }
-        PosterDrawing.DrawText(canvas, "SYSTEM / MATCHDAY / GENERATED ROSTER", 58, 1742, 13, Muted, true, 600);
-        PosterDrawing.DrawText(canvas, "VOLLEY DRAFT", 1380, 1742, 13, Cyan, true, 250, null, SKTextAlign.Right);
+        var accents = new[] { Crimson, Ice, Amber };
+        var heroRects = BuildHeroRects(visible.Count);
+
+        // Ghost typography is painted before the portraits so the cast feels embedded into a film one-sheet,
+        // not placed inside UI cards.
+        for (var i = 0; i < visible.Count; i += 1)
+            DrawGhostTeamWord(canvas, visible[i], i, accents[i], visible.Count);
+
+        // Back cast first, center/front cast last for a proper ensemble-poster overlap.
+        for (var i = 0; i < visible.Count; i += 1)
+            DrawFaction(canvas, visible[i], i, accents[i], heroRects[i], visible.Count);
+
+        DrawBillingBlock(canvas, visible);
+        PosterDrawing.DrawCenteredText(canvas, "ONE COURT  •  THREE TEAMS  •  NO RETAKES", 720, 1693, 15, PosterDrawing.WithAlpha(Bone, 155), true, 900);
+        PosterDrawing.DrawCenteredText(canvas, "A VOLLEY DRAFT MATCHDAY PICTURE", 720, 1730, 11, PosterDrawing.WithAlpha(Amber, 170), true, 700);
         return PosterDrawing.Encode(surface);
     }
 
-    private static void DrawHudLane(SKCanvas canvas, SKRect rect, TeamCardTeam team, int index, SKColor accent)
+    private static IReadOnlyList<SKRect> BuildHeroRects(int count)
     {
-        using (var panel = new SKPaint { Color = new SKColor(4, 13, 29, 224), IsAntialias = true })
-            PosterDrawing.DrawCutCornerPanel(canvas, rect, 28, panel);
-        using (var border = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 135), Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true })
-            PosterDrawing.DrawCutCornerPanel(canvas, rect, 28, border);
+        if (count == 1)
+            return [new SKRect(330, 440, 1110, 1250)];
+        if (count == 2)
+            return [new SKRect(-20, 440, 665, 1160), new SKRect(775, 440, 1460, 1160)];
+        return
+        [
+            new SKRect(-35, 425, 620, 1090),
+            new SKRect(820, 425, 1475, 1090),
+            new SKRect(345, 785, 1095, 1510)
+        ];
+    }
 
-        using var glow = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 45), MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 34), IsAntialias = true };
-        canvas.DrawRect(new SKRect(rect.Left, rect.Top, rect.Left + 18, rect.Bottom), glow);
-        using var rail = new SKPaint { Color = accent, IsAntialias = true };
-        canvas.DrawRect(new SKRect(rect.Left, rect.Top + 28, rect.Left + 5, rect.Bottom - 28), rail);
-
-        var left = new SKRect(rect.Left + 28, rect.Top + 28, rect.Left + 300, rect.Bottom - 28);
-        PosterDrawing.DrawText(canvas, $"NODE_0{index + 1}", left.Left, left.Top + 24, 13, accent, true, 180);
-        PosterDrawing.DrawText(canvas, team.Name.ToUpperInvariant(), left.Left, left.Top + 77, 31, Ink, true, left.Width - 10, PosterDrawing.BlackTypeface);
-        PosterDrawing.DrawText(canvas, $"POWER {PosterDrawing.TeamScore(team)}", left.Left, left.Top + 111, 15, Muted, true, 170);
-
+    private static void DrawFaction(SKCanvas canvas, TeamCardTeam team, int index, SKColor accent, SKRect portraitRect, int teamCount)
+    {
         var captain = PosterDrawing.FindCaptain(team) ?? new TeamCardPlayer("CAPTAIN");
-        var capRect = new SKRect(left.Left, left.Top + 142, left.Left + 150, left.Top + 292);
-        PosterDrawing.DrawAvatar(canvas, captain, capRect, accent, PosterAvatarShape.RoundedSquare, true);
-        PosterDrawing.DrawPill(canvas, "CAPTAIN", new SKRect(left.Left, left.Top + 307, left.Left + 112, left.Top + 339), PosterDrawing.WithAlpha(accent, 34), accent, PosterDrawing.WithAlpha(accent, 105), 11);
-        PosterDrawing.DrawText(canvas, captain.Name, left.Left + 122, left.Top + 332, 18, Ink, true, left.Width - 122);
+        DrawCinematicPortrait(canvas, captain, portraitRect, accent, index == 0 ? -1 : index == 1 ? 1 : 0);
 
-        var gridLeft = rect.Left + 330;
-        var gridTop = rect.Top + 38;
-        const float cellWidth = 325;
-        const float cellHeight = 108;
-        const float gapX = 20;
-        const float gapY = 18;
-        var slots = PosterDrawing.VisibleSlots(team, 6);
-        for (var slotIndex = 0; slotIndex < slots.Count; slotIndex++)
+        if (teamCount == 3 && index == 0)
         {
-            var row = slotIndex / 3;
-            var col = slotIndex % 3;
-            var cell = new SKRect(
-                gridLeft + col * (cellWidth + gapX),
-                gridTop + row * (cellHeight + gapY),
-                gridLeft + col * (cellWidth + gapX) + cellWidth,
-                gridTop + row * (cellHeight + gapY) + cellHeight);
-            DrawCyberCell(canvas, cell, slots[slotIndex], accent, slotIndex);
+            PosterDrawing.DrawText(canvas, "01", 54, 497, 68, PosterDrawing.WithAlpha(accent, 115), true, 130, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawText(canvas, team.Name.ToUpperInvariant(), 55, 957, 48, Bone, true, 510, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}", 58, 993, 13, accent, true, 500);
+            PosterDrawing.DrawText(canvas, $"POWER {PosterDrawing.TeamScore(team)}   •   {PosterDrawing.PlayerCount(team)} PLAYERS", 58, 1021, 11, PosterDrawing.WithAlpha(Bone, 145), true, 500);
+            DrawRosterCredits(canvas, team, 58, 1062, 500, accent, SKTextAlign.Left);
         }
-        PosterDrawing.DrawText(canvas, $"PLAYERS/{PosterDrawing.PlayerCount(team):00}   SLOTS/{team.Slots.Count:00}", gridLeft, rect.Bottom - 38, 13, Muted, true, 420);
-        PosterDrawing.DrawText(canvas, $"0{index + 1}", rect.Right - 42, rect.Bottom - 22, 84, PosterDrawing.WithAlpha(accent, 31), true, 120, PosterDrawing.BlackTypeface, SKTextAlign.Right);
-    }
-
-    private static void DrawCyberCell(SKCanvas canvas, SKRect rect, TeamCardSlot slot, SKColor accent, int index)
-    {
-        using (var cell = new SKPaint { Color = new SKColor(12, 24, 46, 222), IsAntialias = true })
-            canvas.DrawRoundRect(rect, 8, 8, cell);
-        using (var line = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 80), StrokeWidth = 1, IsAntialias = true })
+        else if (teamCount == 3 && index == 1)
         {
-            canvas.DrawLine(rect.Left + 8, rect.Top + 8, rect.Right - 8, rect.Top + 8, line);
-            canvas.DrawLine(rect.Left + 8, rect.Bottom - 8, rect.Left + 58, rect.Bottom - 8, line);
+            PosterDrawing.DrawText(canvas, "02", 1386, 497, 68, PosterDrawing.WithAlpha(accent, 115), true, 130, PosterDrawing.BlackTypeface, SKTextAlign.Right);
+            PosterDrawing.DrawText(canvas, team.Name.ToUpperInvariant(), 1385, 957, 48, Bone, true, 510, PosterDrawing.BlackTypeface, SKTextAlign.Right);
+            PosterDrawing.DrawText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}", 1382, 993, 13, accent, true, 500, null, SKTextAlign.Right);
+            PosterDrawing.DrawText(canvas, $"POWER {PosterDrawing.TeamScore(team)}   •   {PosterDrawing.PlayerCount(team)} PLAYERS", 1382, 1021, 11, PosterDrawing.WithAlpha(Bone, 145), true, 500, null, SKTextAlign.Right);
+            DrawRosterCredits(canvas, team, 882, 1062, 500, accent, SKTextAlign.Right);
         }
-        if (slot.Players.Count > 1)
-            PosterDrawing.DrawOverlappingAvatars(canvas, slot.Players, rect.Left + 14, rect.MidY, 62, accent, PosterAvatarShape.RoundedSquare);
+        else if (teamCount == 3)
+        {
+            PosterDrawing.DrawCenteredText(canvas, "03", 720, 861, 70, PosterDrawing.WithAlpha(accent, 120), true, 130, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, team.Name.ToUpperInvariant(), 720, 1409, 51, Bone, true, 690, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}", 720, 1445, 13, accent, true, 650);
+            PosterDrawing.DrawCenteredText(canvas, $"POWER {PosterDrawing.TeamScore(team)}   •   {PosterDrawing.PlayerCount(team)} PLAYERS", 720, 1472, 11, PosterDrawing.WithAlpha(Bone, 145), true, 650);
+            DrawRosterCredits(canvas, team, 395, 1514, 650, accent, SKTextAlign.Center);
+        }
         else
-            PosterDrawing.DrawAvatar(canvas, slot.Players.FirstOrDefault() ?? new TeamCardPlayer(slot.DisplayName), new SKRect(rect.Left + 14, rect.MidY - 31, rect.Left + 76, rect.MidY + 31), accent, PosterAvatarShape.RoundedSquare);
-        var x = rect.Left + (slot.Players.Count > 1 ? 98 : 90);
-        var name = slot.Players.Count > 1 ? string.Join(" / ", slot.Players.Select(p => p.Name)) : slot.Players.FirstOrDefault()?.Name ?? slot.DisplayName;
-        PosterDrawing.DrawText(canvas, name, x, rect.Top + 49, 17, Ink, true, rect.Right - x - 12);
-        PosterDrawing.DrawText(canvas, slot.Players.Count > 1 ? "SHARED_LINK" : $"PLAYER_{index + 1:00}", x, rect.Top + 77, 11, slot.Players.Count > 1 ? accent : Muted, true, rect.Right - x - 12);
+        {
+            PosterDrawing.DrawCenteredText(canvas, $"0{index + 1}", portraitRect.MidX, portraitRect.Top + 65, 68, PosterDrawing.WithAlpha(accent, 105), true, 120, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, team.Name.ToUpperInvariant(), portraitRect.MidX, portraitRect.Bottom - 135, 51, Bone, true, 730, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}   •   POWER {PosterDrawing.TeamScore(team)}", portraitRect.MidX, portraitRect.Bottom - 95, 14, accent, true, 760);
+            DrawRosterCredits(canvas, team, portraitRect.Left + 70, portraitRect.Bottom - 50, portraitRect.Width - 140, accent, SKTextAlign.Center);
+        }
     }
 
-    private static void DrawScanlines(SKCanvas canvas)
+    private static void DrawCinematicPortrait(SKCanvas canvas, TeamCardPlayer player, SKRect rect, SKColor accent, int slant)
     {
-        using var scan = new SKPaint { Color = new SKColor(100, 220, 255, 10), StrokeWidth = 1 };
-        for (var y = 0; y < 1800; y += 9) canvas.DrawLine(0, y, 1440, y, scan);
-        using var grid = new SKPaint { Color = new SKColor(104, 78, 255, 13), StrokeWidth = 1 };
-        for (var x = 0; x < 1440; x += 120) canvas.DrawLine(x, 250, x, 1700, grid);
+        DrawPortraitAura(canvas, rect, accent);
+
+        using var clip = BuildPortraitClip(rect, slant);
+        var save = canvas.Save();
+        canvas.ClipPath(clip, antialias: true);
+
+        var drawn = false;
+        if (player.AvatarData is { Length: > 0 })
+        {
+            try
+            {
+                using var bitmap = SKBitmap.Decode(player.AvatarData);
+                if (bitmap is not null && bitmap.Width > 0 && bitmap.Height > 0)
+                {
+                    var source = CropToAspect(bitmap, rect.Width / rect.Height);
+                    using var imagePaint = new SKPaint
+                    {
+                        IsAntialias = true,
+                        FilterQuality = SKFilterQuality.High,
+                        ColorFilter = SKColorFilter.CreateColorMatrix(new float[]
+                        {
+                            .299f, .587f, .114f, 0, 0,
+                            .299f, .587f, .114f, 0, 0,
+                            .299f, .587f, .114f, 0, 0,
+                            0, 0, 0, 1, 0
+                        })
+                    };
+                    canvas.DrawBitmap(bitmap, source, rect, imagePaint);
+                    drawn = true;
+                }
+            }
+            catch
+            {
+                drawn = false;
+            }
+        }
+
+        if (!drawn)
+        {
+            using var fallback = new SKPaint
+            {
+                Shader = SKShader.CreateLinearGradient(new SKPoint(rect.Left, rect.Top), new SKPoint(rect.Right, rect.Bottom),
+                    [PosterDrawing.WithAlpha(accent, 210), new SKColor(18, 19, 24)], [0f, 1f], SKShaderTileMode.Clamp)
+            };
+            canvas.DrawRect(rect, fallback);
+            var initial = string.IsNullOrWhiteSpace(player.Name) ? "?" : player.Name.Trim()[0].ToString().ToUpperInvariant();
+            PosterDrawing.DrawCenteredText(canvas, initial, rect.MidX, rect.MidY + 70, 210, new SKColor(255, 255, 255, 110), true, rect.Width * .7f, PosterDrawing.BlackTypeface);
+        }
+
+        DrawPortraitEdgeFades(canvas, rect);
+        DrawFilmScratch(canvas, rect, slant + 2);
+        canvas.RestoreToCount(save);
     }
 
-    private static void DrawHudCorner(SKCanvas canvas, float x, float y, SKColor color, bool mirror = false)
+    private static SKPath BuildPortraitClip(SKRect rect, int slant)
     {
-        using var paint = new SKPaint { Color = color, StrokeWidth = 3, IsAntialias = true };
-        var dir = mirror ? -1 : 1;
-        canvas.DrawLine(x, y, x + dir * 74, y, paint);
-        canvas.DrawLine(x, y, x, y + 45, paint);
+        var path = new SKPath();
+        if (slant < 0)
+        {
+            path.MoveTo(rect.Left, rect.Top);
+            path.LineTo(rect.Right - 95, rect.Top);
+            path.LineTo(rect.Right + 12, rect.Bottom);
+            path.LineTo(rect.Left, rect.Bottom);
+        }
+        else if (slant > 0)
+        {
+            path.MoveTo(rect.Left + 95, rect.Top);
+            path.LineTo(rect.Right, rect.Top);
+            path.LineTo(rect.Right, rect.Bottom);
+            path.LineTo(rect.Left - 12, rect.Bottom);
+        }
+        else
+        {
+            path.MoveTo(rect.Left + 82, rect.Top);
+            path.LineTo(rect.Right - 82, rect.Top);
+            path.LineTo(rect.Right + 8, rect.Bottom);
+            path.LineTo(rect.Left - 8, rect.Bottom);
+        }
+        path.Close();
+        return path;
+    }
+
+    private static void DrawPortraitEdgeFades(SKCanvas canvas, SKRect rect)
+    {
+        using (var horizontal = new SKPaint
+               {
+                   Shader = SKShader.CreateLinearGradient(new SKPoint(rect.Left, rect.MidY), new SKPoint(rect.Right, rect.MidY),
+                       [new SKColor(6, 8, 14, 205), new SKColor(6, 8, 14, 0), new SKColor(6, 8, 14, 0), new SKColor(6, 8, 14, 205)],
+                       [0f, .16f, .84f, 1f], SKShaderTileMode.Clamp)
+               })
+            canvas.DrawRect(rect, horizontal);
+
+        using var vertical = new SKPaint
+        {
+            Shader = SKShader.CreateLinearGradient(new SKPoint(rect.MidX, rect.Top), new SKPoint(rect.MidX, rect.Bottom),
+                [new SKColor(6, 8, 14, 70), new SKColor(6, 8, 14, 0), new SKColor(6, 8, 14, 235)],
+                [0f, .55f, 1f], SKShaderTileMode.Clamp)
+        };
+        canvas.DrawRect(rect, vertical);
+    }
+
+    private static SKRectI CropToAspect(SKBitmap bitmap, float targetAspect)
+    {
+        var sourceAspect = bitmap.Width / (float)bitmap.Height;
+        if (sourceAspect > targetAspect)
+        {
+            var width = (int)(bitmap.Height * targetAspect);
+            var left = Math.Max(0, (bitmap.Width - width) / 2);
+            return new SKRectI(left, 0, Math.Min(bitmap.Width, left + width), bitmap.Height);
+        }
+        var height = (int)(bitmap.Width / Math.Max(.01f, targetAspect));
+        var top = Math.Max(0, (bitmap.Height - height) / 2);
+        return new SKRectI(0, top, bitmap.Width, Math.Min(bitmap.Height, top + height));
+    }
+
+    private static void DrawRosterCredits(SKCanvas canvas, TeamCardTeam team, float left, float top, float width, SKColor accent, SKTextAlign align)
+    {
+        var labels = PosterDrawing.VisibleSlots(team, 6)
+            .Select(slot => slot.Players.Count > 1
+                ? string.Join(" + ", slot.Players.Select(player => player.Name.ToUpperInvariant()))
+                : (slot.Players.FirstOrDefault()?.Name ?? slot.DisplayName).ToUpperInvariant())
+            .ToList();
+        var x = align switch { SKTextAlign.Right => left + width, SKTextAlign.Center => left + width / 2, _ => left };
+        using var rule = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 120), StrokeWidth = 1.4f, IsAntialias = true };
+        if (align == SKTextAlign.Center)
+            canvas.DrawLine(left + width * .27f, top - 13, left + width * .73f, top - 13, rule);
+        else if (align == SKTextAlign.Right)
+            canvas.DrawLine(left + width - Math.Min(width, 230), top - 13, left + width, top - 13, rule);
+        else
+            canvas.DrawLine(left, top - 13, left + Math.Min(width, 230), top - 13, rule);
+
+        for (var row = 0; row < 3; row++)
+        {
+            var first = row * 2;
+            if (first >= labels.Count) break;
+            var line = first + 1 < labels.Count ? $"{labels[first]}   •   {labels[first + 1]}" : labels[first];
+            PosterDrawing.DrawText(canvas, line, x, top + row * 27, 12, PosterDrawing.WithAlpha(Bone, 192), true, width, null, align);
+        }
+    }
+
+    private static void DrawGhostTeamWord(SKCanvas canvas, TeamCardTeam team, int index, SKColor accent, int teamCount)
+    {
+        if (teamCount < 3) return;
+        if (index == 0)
+            PosterDrawing.DrawText(canvas, team.Name.ToUpperInvariant(), 10, 560, 76, PosterDrawing.WithAlpha(accent, 22), true, 650, PosterDrawing.BlackTypeface);
+        else if (index == 1)
+            PosterDrawing.DrawText(canvas, team.Name.ToUpperInvariant(), 1430, 560, 76, PosterDrawing.WithAlpha(accent, 22), true, 650, PosterDrawing.BlackTypeface, SKTextAlign.Right);
+        else
+            PosterDrawing.DrawCenteredText(canvas, team.Name.ToUpperInvariant(), 720, 920, 88, PosterDrawing.WithAlpha(accent, 22), true, 920, PosterDrawing.BlackTypeface);
+    }
+
+    private static void DrawPortraitAura(SKCanvas canvas, SKRect rect, SKColor accent)
+    {
+        var glowRect = new SKRect(rect.Left - 100, rect.Top - 100, rect.Right + 100, rect.Bottom + 100);
+        using var aura = new SKPaint
+        {
+            Shader = SKShader.CreateRadialGradient(new SKPoint(rect.MidX, rect.MidY), Math.Max(rect.Width, rect.Height) * .74f,
+                [PosterDrawing.WithAlpha(accent, 82), PosterDrawing.WithAlpha(accent, 0)], [0f, 1f], SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawOval(glowRect, aura);
+    }
+
+    private static void DrawCinematicBackdrop(SKCanvas canvas, string sessionName)
+    {
+        using (var baseGradient = new SKPaint
+               {
+                   Shader = SKShader.CreateLinearGradient(new SKPoint(0, 0), new SKPoint(0, 1800),
+                       [new SKColor(9, 13, 23), new SKColor(21, 12, 17), new SKColor(3, 4, 8)], [0f, .50f, 1f], SKShaderTileMode.Clamp)
+               })
+            canvas.DrawRect(new SKRect(0, 0, 1440, 1800), baseGradient);
+
+        DrawSpotlight(canvas, new SKPoint(150, 650), Crimson, 560);
+        DrawSpotlight(canvas, new SKPoint(1290, 650), Ice, 560);
+        DrawSpotlight(canvas, new SKPoint(720, 1120), Amber, 610);
+        DrawLightBeam(canvas, 210, 0, 400, 1060, Crimson);
+        DrawLightBeam(canvas, 1230, 0, 1040, 1060, Ice);
+        DrawLightBeam(canvas, 720, 250, 720, 1510, Amber);
+        DrawDust(canvas, sessionName);
+        PosterDrawing.DrawCenteredText(canvas, "ONE NIGHT", 720, 1620, 120, new SKColor(255, 255, 255, 12), true, 1320, PosterDrawing.BlackTypeface);
+    }
+
+    private static void DrawSpotlight(SKCanvas canvas, SKPoint center, SKColor color, float radius)
+    {
+        using var paint = new SKPaint
+        {
+            Shader = SKShader.CreateRadialGradient(center, radius, [PosterDrawing.WithAlpha(color, 72), PosterDrawing.WithAlpha(color, 0)], [0f, 1f], SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawCircle(center.X, center.Y, radius, paint);
+    }
+
+    private static void DrawLightBeam(SKCanvas canvas, float topX, float topY, float targetX, float targetY, SKColor color)
+    {
+        using var path = new SKPath();
+        path.MoveTo(topX - 48, topY);
+        path.LineTo(topX + 48, topY);
+        path.LineTo(targetX + 210, targetY);
+        path.LineTo(targetX - 210, targetY);
+        path.Close();
+        using var paint = new SKPaint
+        {
+            Shader = SKShader.CreateLinearGradient(new SKPoint(topX, topY), new SKPoint(targetX, targetY),
+                [PosterDrawing.WithAlpha(color, 34), PosterDrawing.WithAlpha(color, 0)], [0f, 1f], SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawPath(path, paint);
+    }
+
+    private static void DrawDust(SKCanvas canvas, string sessionName)
+    {
+        var random = new Random(PosterDrawing.StableSeed(sessionName) & int.MaxValue);
+        for (var i = 0; i < 300; i++)
+        {
+            var x = random.Next(10, 1430);
+            var y = random.Next(390, 1660);
+            var alpha = (byte)random.Next(7, 30);
+            var radius = random.Next(1, 4);
+            using var dust = new SKPaint { Color = new SKColor(246, 231, 200, alpha), IsAntialias = true };
+            canvas.DrawCircle(x, y, radius, dust);
+        }
+    }
+
+    private static void DrawFilmScratch(SKCanvas canvas, SKRect rect, int seed)
+    {
+        var random = new Random(seed * 7919 + 73);
+        for (var i = 0; i < 6; i++)
+        {
+            var x = rect.Left + random.Next(20, Math.Max(21, (int)rect.Width - 20));
+            using var line = new SKPaint { Color = new SKColor(255, 255, 255, 13), StrokeWidth = 1 };
+            canvas.DrawLine(x, rect.Top + 10, x + random.Next(-4, 5), rect.Bottom - 10, line);
+        }
+    }
+
+    private static void DrawBillingBlock(SKCanvas canvas, IReadOnlyList<TeamCardTeam> teams)
+    {
+        if (teams.Count < 3) return;
+        var captains = teams.Select(team => PosterDrawing.FindCaptain(team)?.Name.ToUpperInvariant() ?? "CAPTAIN").ToList();
+        PosterDrawing.DrawCenteredText(canvas, $"STARRING  {captains[0]}   •   {captains[1]}   •   {captains[2]}", 720, 1648, 11, PosterDrawing.WithAlpha(Bone, 130), true, 1180);
     }
 }
 
