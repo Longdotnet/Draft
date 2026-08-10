@@ -1,0 +1,48 @@
+name: Apply legacy poster lock guard
+
+on:
+  push:
+    branches:
+      - fix/legacy-poster-lock
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/legacy-poster-lock
+      - name: Patch team-card assignment guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('server/VolleyDraft.Api/Services/ZaloTeamCardService.cs')
+          text = p.read_text(encoding='utf-8')
+          old_const = '    private const int MaxAvatarBytes = 2 * 1024 * 1024;\n'
+          new_const = '''    private const int MaxAvatarBytes = 2 * 1024 * 1024;\n    // Sessions created before the 10-poster collection existed already used Neon Arena.\n    // Keep them visually stable unless they already received a persisted assignment during rollout.\n    private static readonly DateTimeOffset PosterCollectionRolloutAt =\n        new(2026, 8, 10, 4, 59, 14, TimeSpan.Zero);\n\n    internal static bool ShouldJoinPosterRotation(DateTimeOffset createdAt) =>\n        createdAt >= PosterCollectionRolloutAt;\n'''
+          if new_const not in text:
+              if old_const not in text: raise SystemExit('constant anchor not found')
+              text = text.replace(old_const, new_const, 1)
+          old_flow = '''        var posterTemplateId = 1;\n        try\n        {\n            var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);\n            posterTemplateId = assignment.TemplateId;\n        }\n        catch (Exception exception)\n        {\n            // Keep image generation available even if the poster-deck persistence layer\n            // is temporarily unavailable. Template 1 is the safe visual fallback.\n            logger.LogWarning(exception,\n                "Could not assign poster template for Session={SessionId}; using Neon Arena fallback",\n                session.Id);\n        }\n'''
+          new_flow = '''        var posterTemplateId = 1;\n        try\n        {\n            // Preserve a poster already claimed during rollout. If there is no persisted\n            // assignment, only sessions created after the collection rollout join the deck.\n            // Older sessions keep the Neon Arena graphic they historically used.\n            var existingAssignment = await TeamPosterRotationStore.GetAssignmentAsync(db, session.Id, cancellationToken);\n            if (existingAssignment is not null)\n            {\n                posterTemplateId = existingAssignment.TemplateId;\n            }\n            else if (ShouldJoinPosterRotation(session.CreatedAt))\n            {\n                var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);\n                posterTemplateId = assignment.TemplateId;\n            }\n        }\n        catch (Exception exception)\n        {\n            // Keep image generation available even if the poster-deck persistence layer\n            // is temporarily unavailable. Template 1 is the safe visual fallback.\n            logger.LogWarning(exception,\n                "Could not resolve poster template for Session={SessionId}; using Neon Arena fallback",\n                session.Id);\n        }\n'''
+          if new_flow not in text:
+              if old_flow not in text: raise SystemExit('assignment flow anchor not found')
+              text = text.replace(old_flow, new_flow, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Run backend tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+      - name: Commit validated source guard
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/ZaloTeamCardService.cs
+          git commit -m "fix: keep pre-rotation sessions on their legacy poster"
+          git push origin HEAD:fix/legacy-poster-lock
