@@ -38,7 +38,6 @@ new_schema = '''    private static async Task EnsureSchemaAsync(VolleyDraftDbCon
 if old_schema not in text:
     raise SystemExit('schema method anchor not found')
 text = text.replace(old_schema, new_schema, 1)
-# Simplify deck RNG signature; cryptographic GetInt32 already provides unbiased shuffle.
 text = text.replace('public static IReadOnlyList<int> BuildShuffledDeck(int? lastAssignedTemplateId, RandomNumberGenerator? rng = null)', 'public static IReadOnlyList<int> BuildShuffledDeck(int? lastAssignedTemplateId)')
 text = text.replace('''        var ownsRng = rng is null;\n        rng ??= RandomNumberGenerator.Create();\n        try\n        {\n            for (var index = values.Length - 1; index > 0; index -= 1)\n            {\n                var target = RandomNumberGenerator.GetInt32(index + 1);\n                (values[index], values[target]) = (values[target], values[index]);\n            }\n        }\n        finally\n        {\n            if (ownsRng) rng.Dispose();\n        }''', '''        for (var index = values.Length - 1; index > 0; index -= 1)\n        {\n            var target = RandomNumberGenerator.GetInt32(index + 1);\n            (values[index], values[target]) = (values[target], values[index]);\n        }''')
 p.write_text(text, encoding='utf-8')
@@ -51,5 +50,11 @@ replace_once(
     tests,
     '''    private static void AssertPng(byte[] bytes)\n    {''',
     '''    private static void WritePreviewIfRequested(int templateId, byte[] bytes)\n    {\n        var directory = Environment.GetEnvironmentVariable("TEAM_POSTER_PREVIEW_DIR");\n        if (string.IsNullOrWhiteSpace(directory)) return;\n        Directory.CreateDirectory(directory);\n        File.WriteAllBytes(Path.Combine(directory, $"poster-{templateId:00}.png"), bytes);\n    }\n\n    private static void AssertPng(byte[] bytes)\n    {''')
+
+# Inferno random channels need explicit byte conversion for SKColor.
+replace_once(
+    'server/VolleyDraft.Api/Services/Posters/PosterRenderersBatchB.cs',
+    'new SKColor(255, random.Next(80, 190), 35, random.Next(20, 95))',
+    'new SKColor(255, (byte)random.Next(80, 190), 35, (byte)random.Next(20, 95))')
 
 print('poster collection integration patch applied')
