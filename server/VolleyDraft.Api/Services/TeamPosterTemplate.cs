@@ -2,6 +2,7 @@ namespace VolleyDraft.Api.Services;
 
 public enum TeamPosterTemplate
 {
+    // Legacy enum name retained for persisted template id compatibility.
     NeonArena = 1,
     ChampionshipGold = 2,
     CyberStorm = 3,
@@ -35,7 +36,7 @@ public static class TeamPosterTemplateCatalog
 
     public static string GetDisplayName(int templateId) => (TeamPosterTemplate)templateId switch
     {
-        TeamPosterTemplate.NeonArena => "Neon Arena",
+        TeamPosterTemplate.NeonArena => "Court Index",
         TeamPosterTemplate.ChampionshipGold => "Championship Gold",
         TeamPosterTemplate.CyberStorm => "Cyber Storm",
         TeamPosterTemplate.MonolithBroadcast => "Monolith Broadcast",
@@ -45,6 +46,6 @@ public static class TeamPosterTemplateCatalog
         TeamPosterTemplate.VelocityWave => "Velocity Wave",
         TeamPosterTemplate.NoirSpotlight => "Noir Spotlight",
         TeamPosterTemplate.StreetClash => "Street Clash",
-        _ => "Neon Arena"
+        _ => "Court Index"
     };
 }
