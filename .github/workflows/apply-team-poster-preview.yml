@@ -26,7 +26,7 @@ jobs:
           dotnet-version: 9.0.x
       - name: Run backend tests and export poster preview
         env:
-          TEAM_POSTER_PREVIEW_PATH: .github/previews/team-poster-preview.png
+          TEAM_POSTER_PREVIEW_PATH: ${{ github.workspace }}/.github/previews/team-poster-preview.png
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
       - uses: actions/setup-node@v4
         with:
@@ -41,6 +41,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          test -f .github/previews/team-poster-preview.png
           git add server/VolleyDraft.Api/Services/ZaloTeamCardService.cs server/VolleyDraft.Api/Services/TournamentTeamPosterPng.cs .github/previews/team-poster-preview.png
           git commit -m "feat: wire tournament poster into @bot 10"
           git push origin HEAD:feat/tournament-team-poster
