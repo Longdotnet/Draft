@@ -1,0 +1,51 @@
+name: Apply poster collection integration
+
+on:
+  push:
+    branches:
+      - feat/team-poster-rotation
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-preview:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/team-poster-rotation
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply integration patch
+        run: python .github/scripts/patch_poster_collection.py
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Run backend tests and render all ten previews
+        env:
+          TEAM_POSTER_PREVIEW_DIR: ${{ github.workspace }}/poster-previews
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poster-previews
+          path: poster-previews/*.png
+          if-no-files-found: error
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Build frontend
+        run: npm ci && npm run build
+      - name: Build and test Zalo Bridge
+        working-directory: server/ZaloBridge
+        run: npm ci && npm run build && npm test
+      - name: Commit validated integration patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/ZaloTeamCardService.cs server/VolleyDraft.Api/Services/TeamPosterRotationStore.cs server/VolleyDraft.Api.Tests/TeamPosterCollectionTests.cs
+          git commit -m "feat: wire no-repeat poster deck into team image generation"
+          git push origin HEAD:feat/team-poster-rotation
