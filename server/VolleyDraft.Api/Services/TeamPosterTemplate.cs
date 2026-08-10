@@ -17,11 +17,21 @@ public enum TeamPosterTemplate
 public static class TeamPosterTemplateCatalog
 {
     public const int Count = 10;
+    public const int ActiveCount = 2;
 
     public static readonly IReadOnlyList<int> AllIds =
         Enumerable.Range(1, Count).ToArray();
 
+    // Phase 1: keep every renderer available in code, but only Poster 3 and 4
+    // participate in new poster assignment/rotation.
+    public static readonly IReadOnlyList<int> ActiveIds =
+        [(int)TeamPosterTemplate.CyberStorm, (int)TeamPosterTemplate.MonolithBroadcast];
+
     public static bool IsValid(int templateId) => templateId is >= 1 and <= Count;
+
+    public static bool IsActive(int templateId) =>
+        templateId == (int)TeamPosterTemplate.CyberStorm ||
+        templateId == (int)TeamPosterTemplate.MonolithBroadcast;
 
     public static string GetDisplayName(int templateId) => (TeamPosterTemplate)templateId switch
     {

@@ -18,14 +18,15 @@ public static class TeamPosterDeckLogic
 {
     public static IReadOnlyList<int> BuildShuffledDeck(int? lastAssignedTemplateId)
     {
-        var values = TeamPosterTemplateCatalog.AllIds.ToArray();
+        var values = TeamPosterTemplateCatalog.ActiveIds.ToArray();
         for (var index = values.Length - 1; index > 0; index -= 1)
         {
             var target = RandomNumberGenerator.GetInt32(index + 1);
             (values[index], values[target]) = (values[target], values[index]);
         }
 
-        if (lastAssignedTemplateId is >= 1 and <= TeamPosterTemplateCatalog.Count &&
+        if (lastAssignedTemplateId.HasValue &&
+            TeamPosterTemplateCatalog.IsActive(lastAssignedTemplateId.Value) &&
             values.Length > 1 && values[0] == lastAssignedTemplateId.Value)
         {
             var swapIndex = Array.FindIndex(values, 1, value => value != lastAssignedTemplateId.Value);
@@ -41,7 +42,7 @@ public static class TeamPosterDeckLogic
         {
             var values = JsonSerializer.Deserialize<List<int>>(json ?? "[]") ?? [];
             return values
-                .Where(TeamPosterTemplateCatalog.IsValid)
+                .Where(TeamPosterTemplateCatalog.IsActive)
                 .Distinct()
                 .ToList();
         }
@@ -54,7 +55,7 @@ public static class TeamPosterDeckLogic
 
 /// <summary>
 /// Persists one immutable poster assignment per session and one no-repeat deck per Zalo group.
-/// The deck is consumed once per newly assigned session. When all ten templates have been used,
+/// The deck is consumed once per newly assigned session. When all active templates have been used,
 /// a fresh shuffled deck is created and its first item is forced to differ from the previous cycle's last poster.
 /// </summary>
 public static class TeamPosterRotationStore
@@ -80,7 +81,7 @@ public static class TeamPosterRotationStore
 
             if (string.IsNullOrWhiteSpace(scope.ZaloConnectionId) || string.IsNullOrWhiteSpace(scope.GroupId))
             {
-                // Sessions outside a linked Zalo group are not part of a group deck. Keep them deterministic.
+                // Sessions outside a linked Zalo group still claim one active poster once and keep it immutable.
                 return await InsertStandaloneAssignmentAsync(db, sessionId, cancellationToken);
             }
 
@@ -189,10 +190,11 @@ public static class TeamPosterRotationStore
                 await transaction.CommitAsync(cancellationToken);
                 return existing;
             }
+            var templateId = TeamPosterDeckLogic.BuildShuffledDeck(null)[0];
             var now = DateTimeOffset.UtcNow;
-            await InsertAssignmentAsync(connection, transaction, sessionId, null, null, 1, 1, now, cancellationToken);
+            await InsertAssignmentAsync(connection, transaction, sessionId, null, null, templateId, 1, now, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return new TeamPosterAssignment(sessionId, 1, 1, now);
+            return new TeamPosterAssignment(sessionId, templateId, 1, now);
         }
         catch
         {

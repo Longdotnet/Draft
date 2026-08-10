@@ -62,20 +62,31 @@ public sealed class TeamPosterCollectionTests
     }
 
     [Fact]
-    public void New_deck_contains_all_ten_once_and_never_starts_with_previous_last()
+    public void New_deck_contains_only_active_templates_and_never_starts_with_previous_active_last()
     {
-        for (var last = 1; last <= TeamPosterTemplateCatalog.Count; last++)
+        Assert.Equal(2, TeamPosterTemplateCatalog.ActiveCount);
+        Assert.Equal(new[] { 3, 4 }, TeamPosterTemplateCatalog.ActiveIds.Order());
+        Assert.False(TeamPosterTemplateCatalog.IsActive(1));
+        Assert.False(TeamPosterTemplateCatalog.IsActive(2));
+        Assert.True(TeamPosterTemplateCatalog.IsActive(3));
+        Assert.True(TeamPosterTemplateCatalog.IsActive(4));
+        Assert.All(new[] { 5, 6, 7, 8, 9, 10 }, id => Assert.False(TeamPosterTemplateCatalog.IsActive(id)));
+
+        foreach (var last in TeamPosterTemplateCatalog.ActiveIds)
         {
             var deck = TeamPosterDeckLogic.BuildShuffledDeck(last);
-            Assert.Equal(TeamPosterTemplateCatalog.Count, deck.Count);
-            Assert.Equal(TeamPosterTemplateCatalog.Count, deck.Distinct().Count());
-            Assert.Equal(TeamPosterTemplateCatalog.AllIds.Order(), deck.Order());
+            Assert.Equal(TeamPosterTemplateCatalog.ActiveCount, deck.Count);
+            Assert.Equal(TeamPosterTemplateCatalog.ActiveCount, deck.Distinct().Count());
+            Assert.Equal(TeamPosterTemplateCatalog.ActiveIds.Order(), deck.Order());
             Assert.NotEqual(last, deck[0]);
         }
+
+        var deckAfterDisabledPoster = TeamPosterDeckLogic.BuildShuffledDeck(1);
+        Assert.Equal(TeamPosterTemplateCatalog.ActiveIds.Order(), deckAfterDisabledPoster.Order());
     }
 
     [Fact]
-    public async Task Group_rotation_locks_session_and_uses_all_ten_before_repeating()
+    public async Task Group_rotation_locks_session_and_uses_only_posters_three_and_four()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -90,7 +101,7 @@ public sealed class TeamPosterCollectionTests
                 "ZaloGroupId" TEXT NULL
             );
             """);
-        for (var index = 1; index <= 11; index++)
+        for (var index = 1; index <= 3; index++)
         {
             await db.Database.ExecuteSqlRawAsync(
                 "INSERT INTO \"MatchSessions\" (\"Id\", \"ZaloConnectionId\", \"ZaloGroupId\") VALUES ({0}, {1}, {2})",
@@ -98,10 +109,11 @@ public sealed class TeamPosterCollectionTests
         }
 
         var firstCycle = new List<TeamPosterAssignment>();
-        for (var index = 1; index <= 10; index++)
+        for (var index = 1; index <= TeamPosterTemplateCatalog.ActiveCount; index++)
             firstCycle.Add(await TeamPosterRotationStore.EnsureAssignedAsync(db, $"s{index}"));
 
-        Assert.Equal(10, firstCycle.Select(item => item.TemplateId).Distinct().Count());
+        Assert.Equal(TeamPosterTemplateCatalog.ActiveCount, firstCycle.Select(item => item.TemplateId).Distinct().Count());
+        Assert.All(firstCycle, item => Assert.True(TeamPosterTemplateCatalog.IsActive(item.TemplateId)));
         Assert.All(firstCycle, item => Assert.Equal(1, item.CycleNumber));
 
         var original = firstCycle[0];
@@ -109,10 +121,36 @@ public sealed class TeamPosterCollectionTests
         Assert.Equal(original.TemplateId, repeated.TemplateId);
         Assert.Equal(original.AssignedAt, repeated.AssignedAt);
 
-        var nextCycle = await TeamPosterRotationStore.EnsureAssignedAsync(db, "s11");
+        var nextCycle = await TeamPosterRotationStore.EnsureAssignedAsync(db, "s3");
         Assert.Equal(2, nextCycle.CycleNumber);
         Assert.NotEqual(firstCycle[^1].TemplateId, nextCycle.TemplateId);
-        Assert.True(TeamPosterTemplateCatalog.IsValid(nextCycle.TemplateId));
+        Assert.True(TeamPosterTemplateCatalog.IsActive(nextCycle.TemplateId));
+    }
+
+    [Fact]
+    public async Task Standalone_session_claims_only_an_active_poster()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE "MatchSessions" (
+                "Id" TEXT PRIMARY KEY,
+                "ZaloConnectionId" TEXT NULL,
+                "ZaloGroupId" TEXT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"MatchSessions\" (\"Id\", \"ZaloConnectionId\", \"ZaloGroupId\") VALUES ({0}, NULL, NULL)",
+            "standalone-1");
+
+        var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, "standalone-1");
+
+        Assert.True(TeamPosterTemplateCatalog.IsActive(assignment.TemplateId));
+        Assert.Contains(assignment.TemplateId, TeamPosterTemplateCatalog.ActiveIds);
     }
 
     private static IReadOnlyList<TeamCardTeam> BuildTeams() =>
