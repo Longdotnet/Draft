@@ -26,6 +26,7 @@ public sealed class TeamPosterCollectionTests
                 teams);
 
             AssertPng(bytes);
+            WritePreviewIfRequested(templateId, bytes);
             hashes.Add(Convert.ToHexString(SHA256.HashData(bytes)));
         }
         Assert.Equal(TeamPosterTemplateCatalog.Count, hashes.Count);
@@ -133,12 +134,20 @@ public sealed class TeamPosterCollectionTests
         return new TeamCardTeam(name, captainName, score, slots);
     }
 
+    private static void WritePreviewIfRequested(int templateId, byte[] bytes)
+    {
+        var directory = Environment.GetEnvironmentVariable("TEAM_POSTER_PREVIEW_DIR");
+        if (string.IsNullOrWhiteSpace(directory)) return;
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory, $"poster-{templateId:00}.png"), bytes);
+    }
+
     private static void AssertPng(byte[] bytes)
     {
         Assert.True(bytes.Length > 1024);
         using var bitmap = SKBitmap.Decode(bytes);
         Assert.NotNull(bitmap);
-        Assert.Equal(PosterDrawing.Width, bitmap.Width);
-        Assert.Equal(PosterDrawing.Height, bitmap.Height);
+        Assert.Equal(TeamPosterRendererRegistry.Width, bitmap.Width);
+        Assert.Equal(TeamPosterRendererRegistry.Height, bitmap.Height);
     }
 }

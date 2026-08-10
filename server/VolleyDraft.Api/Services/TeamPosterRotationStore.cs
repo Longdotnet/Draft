@@ -16,22 +16,13 @@ public sealed record TeamPosterAssignment(
 
 public static class TeamPosterDeckLogic
 {
-    public static IReadOnlyList<int> BuildShuffledDeck(int? lastAssignedTemplateId, RandomNumberGenerator? rng = null)
+    public static IReadOnlyList<int> BuildShuffledDeck(int? lastAssignedTemplateId)
     {
         var values = TeamPosterTemplateCatalog.AllIds.ToArray();
-        var ownsRng = rng is null;
-        rng ??= RandomNumberGenerator.Create();
-        try
+        for (var index = values.Length - 1; index > 0; index -= 1)
         {
-            for (var index = values.Length - 1; index > 0; index -= 1)
-            {
-                var target = RandomNumberGenerator.GetInt32(index + 1);
-                (values[index], values[target]) = (values[target], values[index]);
-            }
-        }
-        finally
-        {
-            if (ownsRng) rng.Dispose();
+            var target = RandomNumberGenerator.GetInt32(index + 1);
+            (values[index], values[target]) = (values[target], values[index]);
         }
 
         if (lastAssignedTemplateId is >= 1 and <= TeamPosterTemplateCatalog.Count &&
@@ -69,8 +60,6 @@ public static class TeamPosterDeckLogic
 public static class TeamPosterRotationStore
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> LocalGates = new(StringComparer.Ordinal);
-    private static int _schemaReady;
-    private static readonly SemaphoreSlim SchemaGate = new(1, 1);
 
     public static async Task<TeamPosterAssignment> EnsureAssignedAsync(
         VolleyDraftDbContext db,
@@ -214,47 +203,39 @@ public static class TeamPosterRotationStore
 
     private static async Task EnsureSchemaAsync(VolleyDraftDbContext db, CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _schemaReady) == 1) return;
-        await SchemaGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_schemaReady == 1) return;
-            var connection = db.Database.GetDbConnection();
-            if (connection.State != ConnectionState.Open)
-                await connection.OpenAsync(cancellationToken);
-            var postgres = (db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
-            var timestampType = postgres ? "timestamp with time zone" : "TEXT";
+        // CREATE IF NOT EXISTS is deliberately cheap and connection-local. Avoid a process-wide
+        // "schema ready" flag because tests and multi-database deployments can use different DBs
+        // inside the same process.
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(cancellationToken);
+        var postgres = (db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
+        var timestampType = postgres ? "timestamp with time zone" : "TEXT";
 
-            await ExecuteNonQueryAsync(connection, null, $"""
-                CREATE TABLE IF NOT EXISTS "TeamPosterAssignments" (
-                    "SessionId" TEXT PRIMARY KEY,
-                    "ZaloConnectionId" TEXT NULL,
-                    "GroupId" TEXT NULL,
-                    "TemplateId" INTEGER NOT NULL,
-                    "CycleNumber" INTEGER NOT NULL,
-                    "AssignedAt" {timestampType} NOT NULL
-                );
-                """, cancellationToken);
-            await ExecuteNonQueryAsync(connection, null, $"""
-                CREATE TABLE IF NOT EXISTS "TeamPosterRotationStates" (
-                    "RotationKey" TEXT PRIMARY KEY,
-                    "ZaloConnectionId" TEXT NOT NULL,
-                    "GroupId" TEXT NOT NULL,
-                    "RemainingTemplateIdsJson" TEXT NOT NULL,
-                    "LastAssignedTemplateId" INTEGER NULL,
-                    "CycleNumber" INTEGER NOT NULL,
-                    "UpdatedAt" {timestampType} NOT NULL
-                );
-                """, cancellationToken);
-            await ExecuteNonQueryAsync(connection, null,
-                "CREATE INDEX IF NOT EXISTS \"IX_TeamPosterAssignments_Group_Assigned\" ON \"TeamPosterAssignments\" (\"ZaloConnectionId\", \"GroupId\", \"AssignedAt\");",
-                cancellationToken);
-            Volatile.Write(ref _schemaReady, 1);
-        }
-        finally
-        {
-            SchemaGate.Release();
-        }
+        await ExecuteNonQueryAsync(connection, null, $"""
+            CREATE TABLE IF NOT EXISTS "TeamPosterAssignments" (
+                "SessionId" TEXT PRIMARY KEY,
+                "ZaloConnectionId" TEXT NULL,
+                "GroupId" TEXT NULL,
+                "TemplateId" INTEGER NOT NULL,
+                "CycleNumber" INTEGER NOT NULL,
+                "AssignedAt" {timestampType} NOT NULL
+            );
+            """, cancellationToken);
+        await ExecuteNonQueryAsync(connection, null, $"""
+            CREATE TABLE IF NOT EXISTS "TeamPosterRotationStates" (
+                "RotationKey" TEXT PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "RemainingTemplateIdsJson" TEXT NOT NULL,
+                "LastAssignedTemplateId" INTEGER NULL,
+                "CycleNumber" INTEGER NOT NULL,
+                "UpdatedAt" {timestampType} NOT NULL
+            );
+            """, cancellationToken);
+        await ExecuteNonQueryAsync(connection, null,
+            "CREATE INDEX IF NOT EXISTS \"IX_TeamPosterAssignments_Group_Assigned\" ON \"TeamPosterAssignments\" (\"ZaloConnectionId\", \"GroupId\", \"AssignedAt\");",
+            cancellationToken);
     }
 
     private static async Task<SessionScope?> ReadSessionScopeAsync(

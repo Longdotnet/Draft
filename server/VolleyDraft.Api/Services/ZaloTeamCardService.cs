@@ -5,6 +5,7 @@ using Microsoft.Extensions.Caching.Memory;
 using SkiaSharp;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services.Posters;
 
 namespace VolleyDraft.Api.Services;
 
@@ -23,6 +24,21 @@ public sealed class ZaloTeamCardService(
         var session = await db.MatchSessions.AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
         if (session is null) return null;
+
+        var posterTemplateId = 1;
+        try
+        {
+            var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);
+            posterTemplateId = assignment.TemplateId;
+        }
+        catch (Exception exception)
+        {
+            // Keep image generation available even if the poster-deck persistence layer
+            // is temporarily unavailable. Template 1 is the safe visual fallback.
+            logger.LogWarning(exception,
+                "Could not assign poster template for Session={SessionId}; using Neon Arena fallback",
+                session.Id);
+        }
 
         var hydrated = await zaloIntegration.HydrateMissingMemberAvatarsAsync(session.AdminUserId, session.Id);
         if (!hydrated.IsSuccess)
@@ -117,7 +133,8 @@ public sealed class ZaloTeamCardService(
         byte[] poster;
         try
         {
-            poster = TournamentTeamPosterPng.Render(
+            poster = TeamPosterRendererRegistry.Render(
+                posterTemplateId,
                 session.Name,
                 session.StartTime,
                 session.Location,
@@ -130,8 +147,9 @@ public sealed class ZaloTeamCardService(
             // intentionally retained as a last-resort safety net.
             logger.LogWarning(
                 exception,
-                "Tournament team poster render failed for Session={SessionId}; falling back to legacy card",
-                session.Id);
+                "Tournament team poster render failed for Session={SessionId} Template={TemplateId}; falling back to legacy card",
+                session.Id,
+                posterTemplateId);
             poster = SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams);
         }
 
