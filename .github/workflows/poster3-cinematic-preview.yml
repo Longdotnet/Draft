@@ -1,0 +1,412 @@
+name: Poster 3 cinematic preview
+
+on:
+  push:
+    branches:
+      - feat/poster-03-cinematic-rework
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/poster-03-cinematic-rework
+
+      - name: Rework Poster 3 into cinematic main-event composition
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('server/VolleyDraft.Api/Services/Posters/PosterRenderersBatchA.cs')
+          text = p.read_text(encoding='utf-8')
+          start = text.index('internal static class CyberStormPosterRenderer')
+          end = text.index('internal static class MonolithBroadcastPosterRenderer')
+          replacement = r'''internal static class CyberStormPosterRenderer
+{
+    // Template 03 intentionally behaves like a cinematic event one-sheet rather than a UI/dashboard.
+    private static readonly SKColor Night = new(6, 8, 14);
+    private static readonly SKColor Bone = new(245, 238, 221);
+    private static readonly SKColor Amber = new(244, 163, 72);
+    private static readonly SKColor Crimson = new(210, 48, 58);
+    private static readonly SKColor Ice = new(77, 192, 211);
+    private static readonly SKColor Smoke = new(147, 145, 142);
+
+    public static byte[] Render(string sessionName, DateTimeOffset? startTime, string? location, IReadOnlyList<TeamCardTeam> teams)
+    {
+        using var surface = PosterDrawing.CreateSurface(Night);
+        var canvas = surface.Canvas;
+        DrawCinematicBackdrop(canvas, sessionName);
+        DrawFilmFrame(canvas);
+
+        PosterDrawing.DrawCenteredText(canvas, "VOLLEY DRAFT PRESENTS", 720, 72, 16, PosterDrawing.WithAlpha(Bone, 175), true, 560);
+        PosterDrawing.DrawCenteredText(canvas, "TRIPLE", 720, 185, 94, Bone, true, 1180, PosterDrawing.BlackTypeface);
+        PosterDrawing.DrawCenteredText(canvas, "THREAT", 720, 284, 111, Amber, true, 1220, PosterDrawing.BlackTypeface);
+        PosterDrawing.DrawCenteredText(canvas, sessionName.ToUpperInvariant(), 720, 337, 25, Bone, true, 1140);
+        PosterDrawing.DrawCenteredText(canvas, PosterDrawing.BuildMetadata(startTime, location), 720, 377, 16, PosterDrawing.WithAlpha(Bone, 145), false, 1120);
+
+        var visible = teams.Take(3).ToList();
+        if (visible.Count == 0)
+        {
+            PosterDrawing.DrawCenteredText(canvas, "THE CAST HAS NOT BEEN REVEALED", 720, 885, 38, Bone, true, 1120, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, "Draft xong rồi gọi lại @bot 10", 720, 934, 18, Smoke, false, 820);
+            PosterDrawing.DrawCenteredText(canvas, "ONE COURT  •  THREE TEAMS  •  NO RETAKES", 720, 1694, 15, Amber, true, 900);
+            return PosterDrawing.Encode(surface);
+        }
+
+        var accents = new[] { Crimson, Ice, Amber };
+        var heroRects = BuildHeroRects(visible.Count);
+        for (var i = 0; i < visible.Count; i += 1)
+        {
+            DrawFaction(canvas, visible[i], i, accents[i], heroRects[i], visible.Count);
+        }
+
+        if (visible.Count == 3)
+            DrawVersusMark(canvas);
+
+        DrawBillingBlock(canvas, visible);
+        PosterDrawing.DrawCenteredText(canvas, "ONE COURT  •  THREE TEAMS  •  NO RETAKES", 720, 1692, 15, PosterDrawing.WithAlpha(Bone, 155), true, 900);
+        PosterDrawing.DrawCenteredText(canvas, "A VOLLEY DRAFT MATCHDAY PICTURE", 720, 1731, 11, PosterDrawing.WithAlpha(Amber, 170), true, 700);
+        return PosterDrawing.Encode(surface);
+    }
+
+    private static IReadOnlyList<SKRect> BuildHeroRects(int count)
+    {
+        if (count == 1)
+            return [new SKRect(480, 500, 960, 1030)];
+        if (count == 2)
+            return [new SKRect(90, 510, 540, 1010), new SKRect(900, 510, 1350, 1010)];
+        return
+        [
+            new SKRect(70, 470, 500, 915),
+            new SKRect(940, 470, 1370, 915),
+            new SKRect(505, 945, 935, 1390)
+        ];
+    }
+
+    private static void DrawFaction(SKCanvas canvas, TeamCardTeam team, int index, SKColor accent, SKRect portraitRect, int teamCount)
+    {
+        DrawPortraitAura(canvas, portraitRect, accent);
+        var captain = PosterDrawing.FindCaptain(team) ?? new TeamCardPlayer("CAPTAIN");
+        PosterDrawing.DrawAvatar(canvas, captain, portraitRect, accent, PosterAvatarShape.RoundedSquare, true, grayscale: true);
+        DrawPortraitFade(canvas, portraitRect);
+        DrawFilmScratch(canvas, portraitRect, index);
+
+        if (teamCount == 3 && index < 2)
+        {
+            var rightSide = index == 1;
+            var x = rightSide ? portraitRect.Right - 4 : portraitRect.Left + 4;
+            var align = rightSide ? SKTextAlign.Right : SKTextAlign.Left;
+            PosterDrawing.DrawText(canvas, $"0{index + 1}", x, portraitRect.Top - 24, 64, PosterDrawing.WithAlpha(accent, 82), true, 120, PosterDrawing.BlackTypeface, align);
+            PosterDrawing.DrawText(canvas, team.Name.ToUpperInvariant(), x, portraitRect.Bottom + 54, 42, Bone, true, portraitRect.Width, PosterDrawing.BlackTypeface, align);
+            PosterDrawing.DrawText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}", x, portraitRect.Bottom + 87, 13, accent, true, portraitRect.Width, null, align);
+            PosterDrawing.DrawText(canvas,
+                $"POWER {PosterDrawing.TeamScore(team)}   •   {PosterDrawing.PlayerCount(team)} PLAYERS",
+                x, portraitRect.Bottom + 114, 11, PosterDrawing.WithAlpha(Bone, 145), true, portraitRect.Width, null, align);
+            DrawRosterCredits(canvas, team, portraitRect.Left, portraitRect.Bottom + 149, portraitRect.Width, accent, rightSide ? SKTextAlign.Right : SKTextAlign.Left);
+        }
+        else if (teamCount == 3)
+        {
+            PosterDrawing.DrawCenteredText(canvas, "03", portraitRect.MidX, portraitRect.Top - 18, 64, PosterDrawing.WithAlpha(accent, 75), true, 120, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, team.Name.ToUpperInvariant(), portraitRect.MidX, portraitRect.Bottom + 49, 44, Bone, true, 650, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}", portraitRect.MidX, portraitRect.Bottom + 82, 13, accent, true, 600);
+            PosterDrawing.DrawCenteredText(canvas,
+                $"POWER {PosterDrawing.TeamScore(team)}   •   {PosterDrawing.PlayerCount(team)} PLAYERS",
+                portraitRect.MidX, portraitRect.Bottom + 108, 11, PosterDrawing.WithAlpha(Bone, 145), true, 600);
+            DrawRosterCredits(canvas, team, 380, portraitRect.Bottom + 145, 680, accent, SKTextAlign.Center);
+        }
+        else
+        {
+            PosterDrawing.DrawCenteredText(canvas, $"0{index + 1}", portraitRect.MidX, portraitRect.Top - 24, 66, PosterDrawing.WithAlpha(accent, 75), true, 120, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, team.Name.ToUpperInvariant(), portraitRect.MidX, portraitRect.Bottom + 60, 48, Bone, true, 760, PosterDrawing.BlackTypeface);
+            PosterDrawing.DrawCenteredText(canvas, $"CAPTAIN  {captain.Name.ToUpperInvariant()}   •   POWER {PosterDrawing.TeamScore(team)}", portraitRect.MidX, portraitRect.Bottom + 98, 14, accent, true, 780);
+            DrawRosterCredits(canvas, team, portraitRect.Left - 80, portraitRect.Bottom + 145, portraitRect.Width + 160, accent, SKTextAlign.Center);
+        }
+    }
+
+    private static void DrawRosterCredits(SKCanvas canvas, TeamCardTeam team, float left, float top, float width, SKColor accent, SKTextAlign align)
+    {
+        var labels = PosterDrawing.VisibleSlots(team, 6)
+            .Select(slot => slot.Players.Count > 1
+                ? string.Join(" + ", slot.Players.Select(player => player.Name.ToUpperInvariant()))
+                : (slot.Players.FirstOrDefault()?.Name ?? slot.DisplayName).ToUpperInvariant())
+            .ToList();
+
+        var x = align switch
+        {
+            SKTextAlign.Right => left + width,
+            SKTextAlign.Center => left + width / 2,
+            _ => left
+        };
+
+        using var rule = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 115), StrokeWidth = 1.5f, IsAntialias = true };
+        var ruleLeft = align == SKTextAlign.Right ? left + width - Math.Min(width, 245) : left;
+        var ruleRight = align == SKTextAlign.Left ? left + Math.Min(width, 245) : left + width;
+        if (align == SKTextAlign.Center)
+        {
+            ruleLeft = left + width * .25f;
+            ruleRight = left + width * .75f;
+        }
+        canvas.DrawLine(ruleLeft, top - 13, ruleRight, top - 13, rule);
+
+        for (var row = 0; row < 3; row++)
+        {
+            var first = row * 2;
+            if (first >= labels.Count) break;
+            var line = first + 1 < labels.Count ? $"{labels[first]}   •   {labels[first + 1]}" : labels[first];
+            PosterDrawing.DrawText(canvas, line, x, top + row * 27, 12, PosterDrawing.WithAlpha(Bone, 190), true, width, null, align);
+        }
+    }
+
+    private static void DrawPortraitAura(SKCanvas canvas, SKRect rect, SKColor accent)
+    {
+        var glowRect = new SKRect(rect.Left - 70, rect.Top - 70, rect.Right + 70, rect.Bottom + 70);
+        using var aura = new SKPaint
+        {
+            Shader = SKShader.CreateRadialGradient(
+                new SKPoint(rect.MidX, rect.MidY),
+                Math.Max(rect.Width, rect.Height) * .72f,
+                [PosterDrawing.WithAlpha(accent, 105), PosterDrawing.WithAlpha(accent, 0)],
+                [0f, 1f],
+                SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawOval(glowRect, aura);
+        using var shadow = new SKPaint { Color = new SKColor(0, 0, 0, 180), MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 28), IsAntialias = true };
+        canvas.DrawRoundRect(new SKRect(rect.Left + 12, rect.Top + 24, rect.Right + 12, rect.Bottom + 24), 28, 28, shadow);
+    }
+
+    private static void DrawPortraitFade(SKCanvas canvas, SKRect rect)
+    {
+        using var fade = new SKPaint
+        {
+            Shader = SKShader.CreateLinearGradient(
+                new SKPoint(rect.MidX, rect.Top + rect.Height * .48f),
+                new SKPoint(rect.MidX, rect.Bottom),
+                [new SKColor(0, 0, 0, 0), new SKColor(2, 3, 7, 205)],
+                [0f, 1f],
+                SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawRoundRect(rect, rect.Width * .18f, rect.Height * .18f, fade);
+    }
+
+    private static void DrawVersusMark(SKCanvas canvas)
+    {
+        using var halo = new SKPaint
+        {
+            Shader = SKShader.CreateRadialGradient(new SKPoint(720, 720), 128,
+                [new SKColor(244, 163, 72, 70), new SKColor(244, 163, 72, 0)], [0f, 1f], SKShaderTileMode.Clamp)
+        };
+        canvas.DrawCircle(720, 720, 128, halo);
+
+        using var path = new SKPath();
+        path.MoveTo(720, 654);
+        path.LineTo(781, 760);
+        path.LineTo(659, 760);
+        path.Close();
+        using var fill = new SKPaint { Color = new SKColor(10, 11, 16, 235), IsAntialias = true };
+        using var border = new SKPaint { Color = PosterDrawing.WithAlpha(Amber, 150), Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true };
+        canvas.DrawPath(path, fill);
+        canvas.DrawPath(path, border);
+        PosterDrawing.DrawCenteredText(canvas, "VS", 720, 735, 26, Bone, true, 80, PosterDrawing.BlackTypeface);
+    }
+
+    private static void DrawCinematicBackdrop(SKCanvas canvas, string sessionName)
+    {
+        using (var baseGradient = new SKPaint
+               {
+                   Shader = SKShader.CreateLinearGradient(
+                       new SKPoint(0, 0), new SKPoint(0, 1800),
+                       [new SKColor(9, 13, 23), new SKColor(20, 12, 16), new SKColor(3, 4, 8)],
+                       [0f, .48f, 1f], SKShaderTileMode.Clamp)
+               })
+            canvas.DrawRect(new SKRect(0, 0, 1440, 1800), baseGradient);
+
+        DrawSpotlight(canvas, new SKPoint(220, 590), Crimson, 500);
+        DrawSpotlight(canvas, new SKPoint(1220, 590), Ice, 500);
+        DrawSpotlight(canvas, new SKPoint(720, 1120), Amber, 540);
+        DrawLightBeam(canvas, 240, 0, 425, 910, Crimson);
+        DrawLightBeam(canvas, 1200, 0, 1015, 910, Ice);
+        DrawLightBeam(canvas, 720, 300, 720, 1420, Amber);
+        DrawDust(canvas, sessionName);
+
+        PosterDrawing.DrawCenteredText(canvas, "ONE NIGHT", 720, 1615, 116, new SKColor(255, 255, 255, 13), true, 1300, PosterDrawing.BlackTypeface);
+    }
+
+    private static void DrawSpotlight(SKCanvas canvas, SKPoint center, SKColor color, float radius)
+    {
+        using var paint = new SKPaint
+        {
+            Shader = SKShader.CreateRadialGradient(center, radius,
+                [PosterDrawing.WithAlpha(color, 80), PosterDrawing.WithAlpha(color, 0)], [0f, 1f], SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawCircle(center.X, center.Y, radius, paint);
+    }
+
+    private static void DrawLightBeam(SKCanvas canvas, float topX, float topY, float targetX, float targetY, SKColor color)
+    {
+        using var path = new SKPath();
+        path.MoveTo(topX - 42, topY);
+        path.LineTo(topX + 42, topY);
+        path.LineTo(targetX + 175, targetY);
+        path.LineTo(targetX - 175, targetY);
+        path.Close();
+        using var paint = new SKPaint
+        {
+            Shader = SKShader.CreateLinearGradient(
+                new SKPoint(topX, topY), new SKPoint(targetX, targetY),
+                [PosterDrawing.WithAlpha(color, 38), PosterDrawing.WithAlpha(color, 0)], [0f, 1f], SKShaderTileMode.Clamp),
+            IsAntialias = true
+        };
+        canvas.DrawPath(path, paint);
+    }
+
+    private static void DrawDust(SKCanvas canvas, string sessionName)
+    {
+        var random = new Random(PosterDrawing.StableSeed(sessionName) & int.MaxValue);
+        for (var i = 0; i < 260; i++)
+        {
+            var x = random.Next(20, 1420);
+            var y = random.Next(390, 1660);
+            var alpha = (byte)random.Next(8, 34);
+            var radius = random.Next(1, 4);
+            using var dust = new SKPaint { Color = new SKColor(246, 231, 200, alpha), IsAntialias = true };
+            canvas.DrawCircle(x, y, radius, dust);
+        }
+        for (var i = 0; i < 22; i++)
+        {
+            var x = random.Next(0, 1440);
+            var y = random.Next(420, 1620);
+            using var streak = new SKPaint { Color = new SKColor(255, 255, 255, (byte)random.Next(8, 24)), StrokeWidth = 1 };
+            canvas.DrawLine(x, y, x + random.Next(-12, 13), y + random.Next(35, 120), streak);
+        }
+    }
+
+    private static void DrawFilmScratch(SKCanvas canvas, SKRect rect, int seed)
+    {
+        var random = new Random(seed * 7919 + 73);
+        for (var i = 0; i < 5; i++)
+        {
+            var x = rect.Left + random.Next(20, Math.Max(21, (int)rect.Width - 20));
+            using var line = new SKPaint { Color = new SKColor(255, 255, 255, 15), StrokeWidth = 1 };
+            canvas.DrawLine(x, rect.Top + 10, x + random.Next(-4, 5), rect.Bottom - 10, line);
+        }
+    }
+
+    private static void DrawFilmFrame(SKCanvas canvas)
+    {
+        using var outer = new SKPaint { Color = new SKColor(245, 238, 221, 48), Style = SKPaintStyle.Stroke, StrokeWidth = 1.2f, IsAntialias = true };
+        canvas.DrawRect(new SKRect(25, 25, 1415, 1775), outer);
+        using var inner = new SKPaint { Color = new SKColor(245, 238, 221, 16), Style = SKPaintStyle.Stroke, StrokeWidth = 1, IsAntialias = true };
+        canvas.DrawRect(new SKRect(36, 36, 1404, 1764), inner);
+    }
+
+    private static void DrawBillingBlock(SKCanvas canvas, IReadOnlyList<TeamCardTeam> teams)
+    {
+        if (teams.Count < 3) return;
+        var captains = teams.Select(team => PosterDrawing.FindCaptain(team)?.Name.ToUpperInvariant() ?? "CAPTAIN").ToList();
+        PosterDrawing.DrawCenteredText(canvas,
+            $"STARRING  {captains[0]}   •   {captains[1]}   •   {captains[2]}",
+            720, 1648, 11, PosterDrawing.WithAlpha(Bone, 130), true, 1180);
+    }
+}
+
+'''
+          p.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          PY
+
+      - name: Add temporary preview test
+        run: |
+          cat > server/VolleyDraft.Api.Tests/Poster3CinematicPreviewTempTests.cs <<'CS'
+          using SkiaSharp;
+          using VolleyDraft.Api.Services;
+          using VolleyDraft.Api.Services.Posters;
+          using Xunit;
+
+          namespace VolleyDraft.Api.Tests;
+
+          public sealed class Poster3CinematicPreviewTempTests
+          {
+              [Fact]
+              public void Render_Cinematic_Poster3_Preview()
+              {
+                  var teams = new[]
+                  {
+                      BuildTeam("AURORA", "MINH", 7.8, new[] { "MINH", "TÙNG", "TO AN", "KHANG", "NAM", "HUY" }, new SKColor(210, 48, 58)),
+                      BuildTeam("PHANTOM", "PHÚC", 8.1, new[] { "PHÚC", "LONG", "DUY", "BẢO", "KIÊN", "TUẤN" }, new SKColor(77, 192, 211)),
+                      BuildTeam("TITAN", "QUÂN", 7.9, new[] { "QUÂN", "SƠN", "ĐỨC", "THẮNG", "HẢI", "HOÀNG" }, new SKColor(244, 163, 72))
+                  };
+
+                  var png = CyberStormPosterRenderer.Render(
+                      "CHỦ NHẬT • MAIN EVENT",
+                      new DateTimeOffset(2026, 8, 16, 19, 30, 0, TimeSpan.FromHours(7)),
+                      "RIVERSIDE VOLLEYBALL COURT",
+                      teams);
+
+                  using var bitmap = SKBitmap.Decode(png);
+                  Assert.NotNull(bitmap);
+                  Assert.Equal(1440, bitmap.Width);
+                  Assert.Equal(1800, bitmap.Height);
+
+                  var root = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? Directory.GetCurrentDirectory();
+                  File.WriteAllBytes(Path.Combine(root, "poster-03-cinematic-preview.png"), png);
+              }
+
+              private static TeamCardTeam BuildTeam(string name, string captain, double score, IReadOnlyList<string> players, SKColor color)
+              {
+                  var slots = players.Select((player, index) => new TeamCardSlot(
+                      player,
+                      [new TeamCardPlayer(player, AvatarData: MakeAvatar(player, color), IsCaptain: index == 0)],
+                      index == 0)).ToList();
+                  return new TeamCardTeam(name, captain, score, slots);
+              }
+
+              private static byte[] MakeAvatar(string name, SKColor color)
+              {
+                  using var surface = SKSurface.Create(new SKImageInfo(512, 512))!;
+                  var canvas = surface.Canvas;
+                  canvas.Clear(new SKColor(12, 14, 20));
+                  using (var glow = new SKPaint
+                         {
+                             Shader = SKShader.CreateRadialGradient(new SKPoint(256, 210), 310,
+                                 [color, new SKColor(8, 9, 14)], [0f, 1f], SKShaderTileMode.Clamp)
+                         })
+                      canvas.DrawCircle(256, 230, 310, glow);
+                  using var head = new SKPaint { Color = new SKColor(235, 226, 211), IsAntialias = true };
+                  canvas.DrawCircle(256, 185, 82, head);
+                  using var body = new SKPaint { Color = new SKColor(24, 25, 32), IsAntialias = true };
+                  canvas.DrawOval(new SKRect(105, 280, 407, 590), body);
+                  using var text = new SKPaint { Color = SKColors.White, TextSize = 42, TextAlign = SKTextAlign.Center, IsAntialias = true, Typeface = SKTypeface.Default };
+                  canvas.DrawText(name, 256, 470, text);
+                  using var image = surface.Snapshot();
+                  using var data = image.Encode(SKEncodedImageFormat.Png, 95);
+                  return data.ToArray();
+              }
+          }
+          CS
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Run full backend tests and render preview
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: poster-03-cinematic-preview
+          path: poster-03-cinematic-preview.png
+          if-no-files-found: error
+
+      - name: Commit validated Poster 3 source only
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/Posters/PosterRenderersBatchA.cs
+          git commit -m "feat: rework poster 03 as cinematic main event"
+          git push origin HEAD:feat/poster-03-cinematic-rework
