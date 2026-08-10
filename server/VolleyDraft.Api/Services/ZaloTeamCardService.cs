@@ -18,6 +18,13 @@ public sealed class ZaloTeamCardService(
     ILogger<ZaloTeamCardService> logger)
 {
     private const int MaxAvatarBytes = 2 * 1024 * 1024;
+    // Sessions created before the 10-poster collection existed already used Neon Arena.
+    // Keep them visually stable unless they already received a persisted assignment during rollout.
+    private static readonly DateTimeOffset PosterCollectionRolloutAt =
+        new(2026, 8, 10, 4, 59, 14, TimeSpan.Zero);
+
+    internal static bool ShouldJoinPosterRotation(DateTimeOffset createdAt) =>
+        createdAt >= PosterCollectionRolloutAt;
 
     public async Task<GeneratedTeamCard?> GenerateAsync(string sessionId, CancellationToken cancellationToken = default)
     {
@@ -28,15 +35,26 @@ public sealed class ZaloTeamCardService(
         var posterTemplateId = 1;
         try
         {
-            var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);
-            posterTemplateId = assignment.TemplateId;
+            // Preserve a poster already claimed during rollout. If there is no persisted
+            // assignment, only sessions created after the collection rollout join the deck.
+            // Older sessions keep the Neon Arena graphic they historically used.
+            var existingAssignment = await TeamPosterRotationStore.GetAssignmentAsync(db, session.Id, cancellationToken);
+            if (existingAssignment is not null)
+            {
+                posterTemplateId = existingAssignment.TemplateId;
+            }
+            else if (ShouldJoinPosterRotation(session.CreatedAt))
+            {
+                var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);
+                posterTemplateId = assignment.TemplateId;
+            }
         }
         catch (Exception exception)
         {
             // Keep image generation available even if the poster-deck persistence layer
             // is temporarily unavailable. Template 1 is the safe visual fallback.
             logger.LogWarning(exception,
-                "Could not assign poster template for Session={SessionId}; using Neon Arena fallback",
+                "Could not resolve poster template for Session={SessionId}; using Neon Arena fallback",
                 session.Id);
         }
 
