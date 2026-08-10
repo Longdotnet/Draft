@@ -1,0 +1,45 @@
+using SkiaSharp;
+using VolleyDraft.Api.Services;
+using VolleyDraft.Api.Services.Posters;
+using Xunit;
+
+namespace VolleyDraft.Api.Tests;
+
+public sealed class Poster4ClashPreviewTempTests
+{
+    [Fact]
+    public void Render_clash_night_preview()
+    {
+        static TeamCardTeam Team(string name, string captain, double score, params string[] names) =>
+            new(name, captain, score, names.Select((player, index) => new TeamCardSlot(
+                player,
+                [new TeamCardPlayer(player, IsCaptain: index == 0)],
+                index == 0)).ToList());
+
+        var teams = new[]
+        {
+            Team("AURORA", "MINH", 7.8, "MINH", "TÙNG", "TO AN", "KHANG", "NAM", "HUY"),
+            Team("PHANTOM", "PHÚC", 8.1, "PHÚC", "LONG", "DUY", "BẢO", "KIÊN", "TUẤN"),
+            Team("TITAN", "QUÂN", 7.9, "QUÂN", "SƠN", "ĐỨC", "THẮNG", "HẢI", "HOÀNG")
+        };
+
+        var png = MonolithBroadcastPosterRenderer.Render(
+            "CHỦ NHẬT • MAIN EVENT",
+            new DateTimeOffset(2026, 8, 16, 19, 30, 0, TimeSpan.FromHours(7)),
+            "RIVERSIDE VOLLEYBALL COURT",
+            teams);
+
+        using var bitmap = SKBitmap.Decode(png);
+        Assert.NotNull(bitmap);
+        Assert.Equal(1440, bitmap!.Width);
+        Assert.Equal(1800, bitmap.Height);
+        Assert.True(png.Length > 100_000);
+
+        var output = Environment.GetEnvironmentVariable("POSTER4_PREVIEW_PATH");
+        if (!string.IsNullOrWhiteSpace(output))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+            File.WriteAllBytes(output, png);
+        }
+    }
+}
