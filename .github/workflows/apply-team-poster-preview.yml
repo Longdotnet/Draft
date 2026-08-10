@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Patch team card service
+      - name: Patch team card service and tune poster
         run: python .github/scripts/patch_team_poster_service.py
       - uses: actions/setup-dotnet@v4
         with:
@@ -41,6 +41,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add server/VolleyDraft.Api/Services/ZaloTeamCardService.cs .github/previews/team-poster-preview.png
+          git add server/VolleyDraft.Api/Services/ZaloTeamCardService.cs server/VolleyDraft.Api/Services/TournamentTeamPosterPng.cs .github/previews/team-poster-preview.png
           git commit -m "feat: wire tournament poster into @bot 10"
           git push origin HEAD:feat/tournament-team-poster
