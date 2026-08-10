@@ -1,0 +1,27 @@
+namespace VolleyDraft.Api.Services.Posters;
+
+public static class TeamPosterRendererRegistry
+{
+    public const int Width = PosterDrawing.Width;
+    public const int Height = PosterDrawing.Height;
+
+    public static byte[] Render(
+        int templateId,
+        string sessionName,
+        DateTimeOffset? startTime,
+        string? location,
+        IReadOnlyList<TeamCardTeam> teams) => (TeamPosterTemplate)templateId switch
+    {
+        TeamPosterTemplate.NeonArena => TournamentTeamPosterPng.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.ChampionshipGold => ChampionshipGoldPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.CyberStorm => CyberStormPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.MonolithBroadcast => MonolithBroadcastPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.InfernoClash => InfernoClashPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.RetroArcade => RetroArcadePosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.TitaniumLeague => TitaniumLeaguePosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.VelocityWave => VelocityWavePosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.NoirSpotlight => NoirSpotlightPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.StreetClash => StreetClashPosterRenderer.Render(sessionName, startTime, location, teams),
+        _ => TournamentTeamPosterPng.Render(sessionName, startTime, location, teams)
+    };
+}
