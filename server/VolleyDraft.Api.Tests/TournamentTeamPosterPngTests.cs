@@ -23,6 +23,7 @@ public sealed class TournamentTeamPosterPngTests
             teams);
 
         AssertPng(bytes, TournamentTeamPosterPng.Width, TournamentTeamPosterPng.Height);
+        WritePreviewIfRequested(bytes);
     }
 
     [Fact]
@@ -83,6 +84,15 @@ public sealed class TournamentTeamPosterPngTests
             slots.Add(new TeamCardSlot(playerName, [player], index == 0));
         }
         return new TeamCardTeam(name, captainName, score, slots);
+    }
+
+    private static void WritePreviewIfRequested(byte[] bytes)
+    {
+        var path = Environment.GetEnvironmentVariable("TEAM_POSTER_PREVIEW_PATH");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        var fullPath = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        File.WriteAllBytes(fullPath, bytes);
     }
 
     private static void AssertPng(byte[] bytes, int width, int height)
