@@ -35,7 +35,7 @@ jobs:
       - name: Build frontend
         run: npm ci && npm run build
       - name: Build and test Zalo Bridge
-        working-directory: zalo-bridge
+        working-directory: server/ZaloBridge
         run: npm ci && npm run build && npm test
       - name: Commit validated service patch and preview
         run: |
