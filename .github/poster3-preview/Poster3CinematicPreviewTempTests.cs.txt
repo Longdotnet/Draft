@@ -1,0 +1,65 @@
+using SkiaSharp;
+using VolleyDraft.Api.Services;
+using VolleyDraft.Api.Services.Posters;
+using Xunit;
+
+namespace VolleyDraft.Api.Tests;
+
+public sealed class Poster3CinematicPreviewTempTests
+{
+    [Fact]
+    public void Render_Cinematic_Poster3_Preview()
+    {
+        var teams = new[]
+        {
+            BuildTeam("AURORA", "MINH", 7.8, new[] { "MINH", "TÙNG", "TO AN", "KHANG", "NAM", "HUY" }, new SKColor(210, 48, 58)),
+            BuildTeam("PHANTOM", "PHÚC", 8.1, new[] { "PHÚC", "LONG", "DUY", "BẢO", "KIÊN", "TUẤN" }, new SKColor(77, 192, 211)),
+            BuildTeam("TITAN", "QUÂN", 7.9, new[] { "QUÂN", "SƠN", "ĐỨC", "THẮNG", "HẢI", "HOÀNG" }, new SKColor(244, 163, 72))
+        };
+
+        var png = CyberStormPosterRenderer.Render(
+            "CHỦ NHẬT • MAIN EVENT",
+            new DateTimeOffset(2026, 8, 16, 19, 30, 0, TimeSpan.FromHours(7)),
+            "RIVERSIDE VOLLEYBALL COURT",
+            teams);
+
+        using var bitmap = SKBitmap.Decode(png);
+        Assert.NotNull(bitmap);
+        Assert.Equal(1440, bitmap.Width);
+        Assert.Equal(1800, bitmap.Height);
+
+        var root = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? Directory.GetCurrentDirectory();
+        File.WriteAllBytes(Path.Combine(root, "poster-03-cinematic-preview.png"), png);
+    }
+
+    private static TeamCardTeam BuildTeam(string name, string captain, double score, IReadOnlyList<string> players, SKColor color)
+    {
+        var slots = players.Select((player, index) => new TeamCardSlot(
+            player,
+            [new TeamCardPlayer(player, AvatarData: MakeAvatar(player, color), IsCaptain: index == 0)],
+            index == 0)).ToList();
+        return new TeamCardTeam(name, captain, score, slots);
+    }
+
+    private static byte[] MakeAvatar(string name, SKColor color)
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(512, 512))!;
+        var canvas = surface.Canvas;
+        canvas.Clear(new SKColor(12, 14, 20));
+        using (var glow = new SKPaint
+               {
+                   Shader = SKShader.CreateRadialGradient(new SKPoint(256, 210), 310,
+                       [color, new SKColor(8, 9, 14)], [0f, 1f], SKShaderTileMode.Clamp)
+               })
+            canvas.DrawCircle(256, 230, 310, glow);
+        using var head = new SKPaint { Color = new SKColor(235, 226, 211), IsAntialias = true };
+        canvas.DrawCircle(256, 185, 82, head);
+        using var body = new SKPaint { Color = new SKColor(24, 25, 32), IsAntialias = true };
+        canvas.DrawOval(new SKRect(105, 280, 407, 590), body);
+        using var text = new SKPaint { Color = SKColors.White, TextSize = 42, TextAlign = SKTextAlign.Center, IsAntialias = true, Typeface = SKTypeface.Default };
+        canvas.DrawText(name, 256, 470, text);
+        using var image = surface.Snapshot();
+        using var data = image.Encode(SKEncodedImageFormat.Png, 95);
+        return data.ToArray();
+    }
+}
