@@ -114,9 +114,28 @@ public sealed class ZaloTeamCardService(
                 slots);
         }).ToList();
 
-        return new GeneratedTeamCard(
-            SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams),
-            "image/png");
+        byte[] poster;
+        try
+        {
+            poster = TournamentTeamPosterPng.Render(
+                session.Name,
+                session.StartTime,
+                session.Location,
+                teams);
+        }
+        catch (Exception exception)
+        {
+            // Keep @bot 10 operational even if a future premium-renderer change hits
+            // an unexpected Skia/font edge case in production. The old renderer is
+            // intentionally retained as a last-resort safety net.
+            logger.LogWarning(
+                exception,
+                "Tournament team poster render failed for Session={SessionId}; falling back to legacy card",
+                session.Id);
+            poster = SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams);
+        }
+
+        return new GeneratedTeamCard(poster, "image/png");
     }
 
     private static string? GetAvatarUrl(

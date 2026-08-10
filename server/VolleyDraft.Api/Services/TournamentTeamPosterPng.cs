@@ -112,7 +112,7 @@ public static class TournamentTeamPosterPng
             };
             using var glow = new SKPaint
             {
-                Color = WithAlpha(color, teamCount == 0 ? 22 : 36),
+                Color = WithAlpha(color, (byte)(teamCount == 0 ? 22 : 36)),
                 IsAntialias = true,
                 MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 100)
             };
@@ -136,7 +136,7 @@ public static class TournamentTeamPosterPng
             canvas.DrawLine(0, y, Width, y - 140, grid);
 
         // Stable particles / dashes inspired by esports broadcast overlays.
-        var random = new Random(StableSeed(sessionName));
+        var random = new Random(StableSeed(sessionName) & int.MaxValue);
         for (var index = 0; index < 95; index += 1)
         {
             var x = random.Next(20, Width - 20);
@@ -184,7 +184,7 @@ public static class TournamentTeamPosterPng
             StrokeWidth = 2,
             IsAntialias = true
         };
-        canvas.DrawLine(56, 274, Width - 56, 274, separator);
+        canvas.DrawLine(56, 300, Width - 56, 300, separator);
 
         DrawPill(canvas, "AUTO DRAFT RESULT", 58, 246, 188, 36, new SKColor(15, 23, 42, 220), TeamColors[0], 13);
         DrawText(canvas, "3 TEAM • READY TO PLAY", 268, 272, 16, new SKColor(148, 163, 184, 210), true, 330);
@@ -245,10 +245,10 @@ public static class TournamentTeamPosterPng
         DrawText(canvas, team.Name, rect.Left + 34, rect.Top + 93, 38, Ink, true, 530, BlackTypeface);
 
         var score = team.AverageScore.ToString("0.0", CultureInfo.InvariantCulture);
-        DrawMetric(canvas, rect.Right - 330, rect.Top + 26, "TEAM POWER", score, accent);
+        DrawMetric(canvas, rect.Right - 330, rect.Top + 26, "TEAM POWER", score, accent, 128);
         var playerCount = team.Slots.Sum(slot => Math.Max(1, slot.Players.Count));
-        DrawMetric(canvas, rect.Right - 178, rect.Top + 26, "PLAYERS", playerCount.ToString(CultureInfo.InvariantCulture), accent);
-        DrawMetric(canvas, rect.Right - 92, rect.Top + 26, "SLOTS", team.Slots.Count.ToString(CultureInfo.InvariantCulture), accent, 74);
+        DrawMetric(canvas, rect.Right - 192, rect.Top + 26, "PLAYERS", playerCount.ToString(CultureInfo.InvariantCulture), accent, 88);
+        DrawMetric(canvas, rect.Right - 94, rect.Top + 26, "SLOTS", team.Slots.Count.ToString(CultureInfo.InvariantCulture), accent, 78);
 
         var captain = FindCaptain(team);
         var hero = new SKRect(rect.Left + 34, rect.Top + 120, rect.Left + 345, rect.Bottom - 28);
@@ -331,11 +331,11 @@ public static class TournamentTeamPosterPng
         if (captain is not null)
         {
             var centerX = rect.Left + 88;
-            var centerY = rect.Top + 128;
-            DrawAvatar(canvas, centerX, centerY, 68, captain, accent, true);
+            var centerY = rect.Top + 105;
+            DrawAvatar(canvas, centerX, centerY, 56, captain, accent, true);
 
-            DrawText(canvas, captain.Name, rect.Left + 26, rect.Top + 235, 27, Ink, true, rect.Width - 52, BlackTypeface);
-            DrawText(canvas, "ĐỘI TRƯỞNG", rect.Left + 26, rect.Top + 266, 13, accent, true, 150);
+            DrawText(canvas, captain.Name, rect.Left + 26, rect.Top + 191, 25, Ink, true, rect.Width - 52, BlackTypeface);
+            DrawText(canvas, "ĐỘI TRƯỞNG", rect.Left + 26, rect.Top + 216, 12, accent, true, 150);
         }
         else
         {
@@ -348,14 +348,14 @@ public static class TournamentTeamPosterPng
                 StrokeWidth = 3,
                 IsAntialias = true
             };
-            canvas.DrawCircle(centerX, centerY, 68, ring);
-            DrawText(canvas, "?", centerX - 19, centerY + 21, 54, WithAlpha(accent, 180), true, 50, BlackTypeface);
-            DrawText(canvas, "CHƯA CHỌN CAPTAIN", rect.Left + 26, rect.Top + 235, 20, Soft, true, rect.Width - 52);
+            canvas.DrawCircle(centerX, centerY, 56, ring);
+            DrawText(canvas, "?", centerX - 17, centerY + 18, 46, WithAlpha(accent, 180), true, 48, BlackTypeface);
+            DrawText(canvas, "CHƯA CHỌN CAPTAIN", rect.Left + 26, rect.Top + 191, 18, Soft, true, rect.Width - 52);
         }
 
         var average = team.AverageScore.ToString("0.0", CultureInfo.InvariantCulture);
-        DrawText(canvas, "TEAM POWER", rect.Left + 26, rect.Bottom - 48, 12, Muted, true, 100);
-        DrawText(canvas, average, rect.Right - 88, rect.Bottom - 40, 28, accent, true, 68, BlackTypeface);
+        DrawText(canvas, "TEAM POWER", rect.Left + 26, rect.Bottom - 20, 11, Muted, true, 100);
+        DrawText(canvas, average, rect.Right - 78, rect.Bottom - 17, 24, accent, true, 58, BlackTypeface);
     }
 
     private static void DrawRosterGrid(
