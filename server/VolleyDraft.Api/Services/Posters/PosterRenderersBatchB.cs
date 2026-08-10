@@ -115,7 +115,7 @@ internal static class InfernoClashPosterRenderer
             var x = random.Next(0, 1440);
             var y = random.Next(250, 1750);
             var size = random.Next(1, 5);
-            using var ember = new SKPaint { Color = new SKColor(255, random.Next(80, 190), 35, random.Next(20, 95)), IsAntialias = true };
+            using var ember = new SKPaint { Color = new SKColor(255, (byte)random.Next(80, 190), 35, (byte)random.Next(20, 95)), IsAntialias = true };
             canvas.DrawCircle(x, y, size, ember);
         }
     }
