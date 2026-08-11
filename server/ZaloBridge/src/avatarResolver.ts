@@ -2,16 +2,17 @@ import type { BridgeMember } from "./contracts.js";
 import { normalizeMemberId } from "./pollLogic.js";
 
 export const ZALO_LARGE_AVATAR_SIZE = 240;
-const FULL_AVATAR_CONCURRENCY = 8;
 const LARGE_AVATAR_TIMEOUT_MS = 2_500;
-const FULL_AVATAR_TIMEOUT_MS = 2_000;
-const FULL_AVATAR_BUDGET_MS = 6_000;
 
 export type AvatarProfileApi = {
   getAvatarUrlProfile?: (
     friendIds: string | string[],
     avatarSize?: number,
   ) => Promise<Record<string, { avatar?: string }>>;
+  // Kept in the interface because zca-js exposes it, but the bridge deliberately does
+  // not persist URLs from getFullAvatar. Production showed those URLs can be unusable
+  // from the Draft API container, which replaced a fetchable thumbnail with a broken
+  // source and made Poster 01 fall back to captain initials.
   getFullAvatar?: (friendId: string) => Promise<{
     full_avatar?: string;
     bk_full_avatar?: string;
@@ -54,9 +55,10 @@ function httpAvatarUrl(value: unknown): string | null {
 }
 
 export function chooseBestAvatarUrl(candidates: AvatarCandidateSet): string | null {
-  return httpAvatarUrl(candidates.full)
-    ?? httpAvatarUrl(candidates.backupFull)
-    ?? httpAvatarUrl(candidates.large)
+  // Only URLs returned by the normal profile endpoint are persisted into Draft.
+  // `full_avatar`/`bk_full_avatar` may be session-bound or otherwise unavailable to
+  // the backend HTTP client, so preferring them can turn a valid avatar into null.
+  return httpAvatarUrl(candidates.large)
     ?? httpAvatarUrl(candidates.current);
 }
 
@@ -74,23 +76,6 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<
   }
 }
 
-async function runWithConcurrency<T>(
-  values: T[],
-  concurrency: number,
-  worker: (value: T) => Promise<void>,
-): Promise<void> {
-  if (values.length === 0) return;
-  let nextIndex = 0;
-  const workerCount = Math.min(Math.max(1, concurrency), values.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < values.length) {
-      const value = values[nextIndex]!;
-      nextIndex += 1;
-      await worker(value);
-    }
-  }));
-}
-
 export async function enrichMemberAvatars(
   api: AvatarProfileApi,
   members: BridgeMember[],
@@ -105,11 +90,8 @@ export async function enrichMemberAvatars(
   if (ids.length === 0) return members;
 
   const largeTimeoutMs = Math.max(1, timing.largeAvatarTimeoutMs ?? LARGE_AVATAR_TIMEOUT_MS);
-  const fullTimeoutMs = Math.max(1, timing.fullAvatarTimeoutMs ?? FULL_AVATAR_TIMEOUT_MS);
-  const fullBudgetMs = Math.max(1, timing.fullAvatarBudgetMs ?? FULL_AVATAR_BUDGET_MS);
-  const fullConcurrency = Math.max(1, timing.fullAvatarConcurrency ?? FULL_AVATAR_CONCURRENCY);
-
   const largeById = new Map<string, string>();
+
   if (typeof api.getAvatarUrlProfile === "function") {
     try {
       const lookup = await settleWithin(
@@ -134,46 +116,11 @@ export async function enrichMemberAvatars(
     }
   }
 
-  const fullById = new Map<string, { full?: string; backupFull?: string }>();
-  if (typeof api.getFullAvatar === "function") {
-    const fullWork = runWithConcurrency(ids, fullConcurrency, async (memberId) => {
-      try {
-        const lookup = await settleWithin(api.getFullAvatar!(memberId), fullTimeoutMs);
-        if (lookup.timedOut) {
-          onFailure?.(
-            "getFullAvatar",
-            new Error(`Full avatar lookup exceeded ${fullTimeoutMs}ms`),
-            { memberId },
-          );
-          return;
-        }
-        fullById.set(memberId, {
-          full: httpAvatarUrl(lookup.value?.full_avatar) ?? undefined,
-          backupFull: httpAvatarUrl(lookup.value?.bk_full_avatar) ?? undefined,
-        });
-      } catch (error) {
-        onFailure?.("getFullAvatar", error, { memberId });
-      }
-    });
-
-    const budget = await settleWithin(fullWork, fullBudgetMs);
-    if (budget.timedOut) {
-      onFailure?.(
-        "getFullAvatar",
-        new Error(`Full avatar enrichment exceeded ${fullBudgetMs}ms total budget`),
-        { memberCount: ids.length },
-      );
-    }
-  }
-
   return members.map((member) => {
     const memberId = normalizeMemberId(member.zaloUserId);
-    const full = fullById.get(memberId);
     const avatarUrl = chooseBestAvatarUrl({
       current: member.avatarUrl,
       large: largeById.get(memberId),
-      full: full?.full,
-      backupFull: full?.backupFull,
     });
     return avatarUrl === member.avatarUrl ? member : { ...member, avatarUrl };
   });
