@@ -19,4 +19,9 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.jpg"
+                      LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg" />
+  </ItemGroup>
+
 </Project>

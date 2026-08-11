@@ -12,7 +12,7 @@ public static class TeamPosterRendererRegistry
         string? location,
         IReadOnlyList<TeamCardTeam> teams) => (TeamPosterTemplate)templateId switch
     {
-        TeamPosterTemplate.NeonArena => CourtIndexPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.NeonArena => CourtIndexAssetPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.ChampionshipGold => HallOfChampionsPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.CyberStorm => OrbitLeaguePosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.MonolithBroadcast => ClashNightPosterRenderer.Render(sessionName, startTime, location, teams),
@@ -22,6 +22,6 @@ public static class TeamPosterRendererRegistry
         TeamPosterTemplate.VelocityWave => VelocityWavePosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.NoirSpotlight => NoirSpotlightPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.StreetClash => StreetClashPosterRenderer.Render(sessionName, startTime, location, teams),
-        _ => CourtIndexPosterRenderer.Render(sessionName, startTime, location, teams)
+        _ => CourtIndexAssetPosterRenderer.Render(sessionName, startTime, location, teams)
     };
 }
