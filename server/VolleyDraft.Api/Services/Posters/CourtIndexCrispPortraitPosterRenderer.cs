@@ -8,10 +8,9 @@ namespace VolleyDraft.Api.Services.Posters;
 /// then redraws captain portraits and roster text for production Zalo data.
 ///
 /// Portrait strategy:
-/// - medium/high resolution avatars cover the hero frame directly;
-/// - very small Zalo avatars still read as a large hero treatment by using a softened full-frame
-///   background plus a large contained foreground plate, instead of shrinking into a tiny stamp;
-/// - all resizing happens once with conservative sampling and a small contrast lift.
+/// - every available captain avatar covers the complete hero frame, including small Zalo avatars;
+/// - the bitmap is sampled exactly once with no color matrix/filter pipeline, preserving original colors;
+/// - small sources may be softer than HD sources, but they never collapse into a tiny photo plate or black frame.
 ///
 /// Roster strategy:
 /// - single-player slots stay one line;
@@ -30,7 +29,6 @@ public static class CourtIndexCrispPortraitPosterRenderer
     ];
 
     private const int LowResolutionShortEdge = 360;
-    private const float MaxLowResolutionForegroundUpscale = 3.2f;
 
     public static byte[] Render(
         string sessionName,
@@ -79,152 +77,20 @@ public static class CourtIndexCrispPortraitPosterRenderer
         if (bitmap is null || bitmap.Width <= 0 || bitmap.Height <= 0) return;
 
         var accent = Accents[teamIndex % Accents.Length];
-        var shortEdge = Math.Min(bitmap.Width, bitmap.Height);
-
-        if (shortEdge < LowResolutionShortEdge)
-            DrawLowResolutionHero(canvas, rect, bitmap, accent);
-        else
-            DrawFullFrameHero(canvas, rect, bitmap, accent);
-
-        DrawFrames(canvas, rect, accent);
-    }
-
-    private static void DrawFullFrameHero(
-        SKCanvas canvas,
-        SKRect rect,
-        SKBitmap bitmap,
-        SKColor accent)
-    {
         var source = CoverSource(bitmap, rect.Width / rect.Height);
-        using var contrast = CreateGentleContrastFilter();
+
+        // Do not attach SKColorFilter here. The previous V3 contrast matrix rendered real Zalo
+        // avatar content as a black rectangle on the Linux/SkiaSharp production path.
+        // A direct one-pass bitmap draw is intentionally boring and reliable: original colors,
+        // full-size hero image and no platform-dependent filter behavior.
         using var paint = new SKPaint
         {
             IsAntialias = true,
-            FilterQuality = SKFilterQuality.Medium,
-            ColorFilter = contrast
+            FilterQuality = SKFilterQuality.Medium
         };
-
         canvas.DrawBitmap(bitmap, source, rect, paint);
 
-        // Preserve original avatar color while adding only a very light editorial edge lift.
-        using var edge = new SKPaint
-        {
-            Color = PosterDrawing.WithAlpha(accent, 18),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = 2,
-            IsAntialias = true
-        };
-        canvas.DrawRect(new SKRect(rect.Left + 3, rect.Top + 3, rect.Right - 3, rect.Bottom - 3), edge);
-    }
-
-    private static void DrawLowResolutionHero(
-        SKCanvas canvas,
-        SKRect rect,
-        SKBitmap bitmap,
-        SKColor accent)
-    {
-        // Fill the whole hero frame with the same real avatar so the composition remains as large
-        // as the approved preview. The softened background hides low-resolution interpolation.
-        var backgroundSource = CoverSource(bitmap, rect.Width / rect.Height);
-        using var contrast = CreateGentleContrastFilter();
-        using (var backgroundPaint = new SKPaint
-        {
-            IsAntialias = true,
-            FilterQuality = SKFilterQuality.Low,
-            ColorFilter = contrast
-        })
-        {
-            canvas.DrawBitmap(bitmap, backgroundSource, rect, backgroundPaint);
-        }
-
-        using (var soften = new SKPaint
-        {
-            Color = new SKColor(Paper.Red, Paper.Green, Paper.Blue, 92),
-            IsAntialias = true
-        })
-        {
-            canvas.DrawRect(rect, soften);
-        }
-
-        // The foreground keeps the full source crop and occupies most of the hero area. A typical
-        // 240px Zalo avatar becomes roughly 370-390px instead of a tiny 240px stamp.
-        var maxWidth = rect.Width - 30;
-        var maxHeight = rect.Height - 34;
-        var scale = Math.Min(
-            MaxLowResolutionForegroundUpscale,
-            Math.Min(maxWidth / bitmap.Width, maxHeight / bitmap.Height));
-        scale = Math.Max(scale, .01f);
-
-        var drawWidth = bitmap.Width * scale;
-        var drawHeight = bitmap.Height * scale;
-        var imageRect = new SKRect(
-            rect.MidX - drawWidth / 2,
-            rect.MidY - drawHeight / 2,
-            rect.MidX + drawWidth / 2,
-            rect.MidY + drawHeight / 2);
-
-        var shadowRect = imageRect;
-        shadowRect.Offset(7, 8);
-        using (var shadow = new SKPaint
-        {
-            Color = new SKColor(16, 16, 14, 46),
-            IsAntialias = true
-        })
-        {
-            canvas.DrawRect(shadowRect, shadow);
-        }
-
-        var mount = new SKRect(
-            imageRect.Left - 7,
-            imageRect.Top - 7,
-            imageRect.Right + 7,
-            imageRect.Bottom + 7);
-        using (var mountPaint = new SKPaint
-        {
-            Color = new SKColor(253, 250, 244),
-            IsAntialias = true
-        })
-        {
-            canvas.DrawRect(mount, mountPaint);
-        }
-
-        using (var foregroundPaint = new SKPaint
-        {
-            IsAntialias = true,
-            FilterQuality = SKFilterQuality.Medium,
-            ColorFilter = contrast
-        })
-        {
-            canvas.DrawBitmap(
-                bitmap,
-                new SKRect(0, 0, bitmap.Width, bitmap.Height),
-                imageRect,
-                foregroundPaint);
-        }
-
-        using var photoFrame = new SKPaint
-        {
-            Color = PosterDrawing.WithAlpha(accent, 205),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = 2.1f,
-            IsAntialias = true
-        };
-        canvas.DrawRect(mount, photoFrame);
-    }
-
-    private static SKColorFilter CreateGentleContrastFilter()
-    {
-        // Small contrast lift only. It restores micro-contrast lost by CDN compression/resampling
-        // without recoloring the captain or creating a fake AI-enhanced appearance.
-        const float contrast = 1.055f;
-        const float offset = -7f;
-        return SKColorFilter.CreateColorMatrix(
-        [
-            contrast, 0, 0, 0, offset,
-            0, contrast, 0, 0, offset,
-            0, 0, contrast, 0, offset,
-            0, 0, 0, 1, 0
-        ]);
+        DrawFrames(canvas, rect, accent);
     }
 
     private static void DrawAdaptiveRoster(
@@ -382,8 +248,8 @@ public static class CourtIndexCrispPortraitPosterRenderer
             paint.TextSize = size;
         }
 
-        // The roster intentionally never appends ellipsis. In the extremely rare case that a
-        // single name still exceeds the row at minimum size, compress only the x-axis while
+        // Poster 01 roster intentionally never appends ellipsis. In the extremely rare case that
+        // a single name still exceeds the row at minimum size, compress only the x-axis while
         // preserving the complete text.
         var measured = Math.Max(1f, paint.MeasureText(text));
         if (measured <= maxWidth)
@@ -408,6 +274,8 @@ public static class CourtIndexCrispPortraitPosterRenderer
         if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0)
             return false;
 
+        // Kept for compatibility with existing tests/callers. Rendering now deliberately uses
+        // full-frame photography for every valid source; this flag only describes source quality.
         return Math.Min(sourceWidth, sourceHeight) >= LowResolutionShortEdge;
     }
 

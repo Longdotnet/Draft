@@ -8,25 +8,26 @@ namespace VolleyDraft.Api.Tests;
 public sealed class CourtIndexPortraitQualityTests
 {
     [Fact]
-    public void Poster_one_keeps_small_zalo_avatar_visually_large_in_hero_frame()
+    public void Poster_one_keeps_small_zalo_avatar_large_and_not_black()
     {
         var bytes = RenderPosterWithCaptainAvatar(CreateSolidAvatar(240, 240));
         using var bitmap = SKBitmap.Decode(bytes);
         Assert.NotNull(bitmap);
 
-        // A 240px Zalo avatar must no longer become a tiny stamp in the middle of the 414x513
-        // captain frame. This corner sits outside the foreground plate but inside the softened
-        // avatar background, so it should still contain strong avatar color rather than paper.
+        // Small Zalo avatars must still fill the captain frame. This point is well inside the
+        // hero image and therefore must preserve the magenta fixture instead of becoming paper,
+        // a tiny centered plate, or the V3 black-frame regression.
         var pixel = bitmap.GetPixel(970, 110);
-        Assert.True(
-            Math.Abs(pixel.Red - 246) > 35 || Math.Abs(pixel.Blue - 231) > 35,
-            $"Expected avatar-backed hero frame for 240px source, got {pixel}");
+        Assert.True(pixel.Red > 180 && pixel.Blue > 180 && pixel.Green < 80,
+            $"Expected full-frame magenta avatar for 240px source, got {pixel}");
+        Assert.True(pixel.Red + pixel.Green + pixel.Blue > 220,
+            $"Captain portrait must not render as a black frame, got {pixel}");
 
         Assert.False(CourtIndexCrispPortraitPosterRenderer.ShouldUseFullBleed(240, 240, 414, 513));
     }
 
     [Fact]
-    public void Poster_one_uses_direct_full_frame_for_medium_or_hd_avatar()
+    public void Poster_one_keeps_medium_or_hd_avatar_full_frame_and_not_black()
     {
         var bytes = RenderPosterWithCaptainAvatar(CreateSolidAvatar(640, 640));
         using var bitmap = SKBitmap.Decode(bytes);
@@ -35,6 +36,8 @@ public sealed class CourtIndexPortraitQualityTests
         var pixel = bitmap.GetPixel(970, 110);
         Assert.True(pixel.Red > 180 && pixel.Blue > 180 && pixel.Green < 80,
             $"Expected full-frame magenta avatar for 640px source, got {pixel}");
+        Assert.True(pixel.Red + pixel.Green + pixel.Blue > 220,
+            $"Captain portrait must not render as a black frame, got {pixel}");
 
         Assert.True(CourtIndexCrispPortraitPosterRenderer.ShouldUseFullBleed(640, 640, 414, 513));
     }
