@@ -266,6 +266,20 @@ public static class ZaloNaturalCommandParser
                 @"^(?<anchor>.+?)\s+(?:muốn\s+|muon\s+)?(?:(?:share|chung|đánh\s+chung|danh\s+chung|chơi\s+chung|choi\s+chung)\s+(?:một\s+|mot\s+)?slot|thay\s+phiên|thay\s+phien)\s+(?:với|voi)\s+(?<partners>.+)$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                value,
+                @"^(?<anchor>.+?)\s+(?:với|voi|và|va)\s+(?<partners>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:share|chung|đánh\s+chung|danh\s+chung|chơi\s+chung|choi\s+chung)\s*(?:một\s+|mot\s+)?slot(?:\s+.*)?$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!match.Success)
+        {
+            match = Regex.Match(
+                value,
+                @"^(?<anchor>.+?)\s+(?:muốn\s+|muon\s+|xin\s+)?share\s+(?:slot\s+)?(?:(?:với|voi)\s+)?(?<partners>@.+)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
         if (!match.Success) return false;
 
         var partnerValue = RemoveTrailingSessionReference(match.Groups["partners"].Value, out var sessionReference);
@@ -304,11 +318,18 @@ public static class ZaloNaturalCommandParser
             var basis = IsCompleteShareSlotCommand(deterministicCommand)
                 ? deterministicCommand!
                 : currentCommand;
-            if (!IsCompleteShareSlotCommand(basis)) return currentCommand;
-
             var mention = mentionedUsers[0];
             var mentionName = mention.DisplayName.Trim().TrimStart('@');
             if (mentionName.Length == 0) return currentCommand;
+            if (!IsCompleteShareSlotCommand(basis))
+            {
+                return new ZaloShareSlotCommand(
+                    "tui",
+                    [mentionName],
+                    1,
+                    deterministicCommand?.SessionReference ?? currentCommand?.SessionReference,
+                    PartnerZaloUserIds: [mention.ZaloUserId]);
+            }
 
             if (SamePersonReference(basis!.Anchor, mentionName))
             {
