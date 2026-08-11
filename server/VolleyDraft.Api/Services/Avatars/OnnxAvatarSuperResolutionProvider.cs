@@ -18,7 +18,9 @@ public static class CaptainAvatarSuperResolution
     private const int ModelInputSize = 224;
     private const int ModelScale = 3;
     private const int DefaultEnhanceBelowPixels = 300;
-    private const int DefaultInferenceTimeoutMs = 2_500;
+    // Production Render CPU was completing just beyond 2.5s (~2.6-2.7s).
+    // Keep enough headroom for one inference without allowing it to consume the bridge's 20s image budget.
+    private const int DefaultInferenceTimeoutMs = 4_500;
     private const int ModelLoadTimeoutMs = 5_000;
 
     private static readonly HttpClient ModelClient = new()
@@ -26,6 +28,9 @@ public static class CaptainAvatarSuperResolution
         Timeout = TimeSpan.FromSeconds(6)
     };
     private static readonly object SessionLock = new();
+    // ONNX Run itself is not cancelled by Task.WaitAsync. A timed-out task can therefore finish in the
+    // background. Serialize SR work so a late captain cannot overlap the next captain and starve Render CPU.
+    private static readonly SemaphoreSlim InferenceGate = new(1, 1);
     private static readonly ConcurrentDictionary<string, byte[]> EnhancedCache = new(StringComparer.Ordinal);
     private static InferenceSession? session;
     private static DateTimeOffset retryModelAfter = DateTimeOffset.MinValue;
@@ -140,7 +145,7 @@ public static class CaptainAvatarSuperResolution
         var timeoutMs = ReadIntEnvironment(
             "AVATAR_ENHANCEMENT_TIMEOUT_MS",
             DefaultInferenceTimeoutMs,
-            250,
+            1_000,
             10_000);
         var stopwatch = Stopwatch.StartNew();
         using var timeout = new CancellationTokenSource();
@@ -239,61 +244,81 @@ public static class CaptainAvatarSuperResolution
         InferenceSession inferenceSession,
         CancellationToken cancellationToken)
     {
-        using var decoded = SKBitmap.Decode(sourceBytes);
-        if (decoded is null) return null;
-        using var prepared = PrepareInput(decoded);
-
-        // The ONNX model contract is fixed: [1, 1, 224, 224].
-        var input = new DenseTensor<float>(new[] { 1, 1, ModelInputSize, ModelInputSize });
-        var inputSpan = input.Buffer.Span;
-        for (var y = 0; y < ModelInputSize; y += 1)
+        InferenceGate.Wait(cancellationToken);
+        try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            for (var x = 0; x < ModelInputSize; x += 1)
+            using var decoded = SKBitmap.Decode(sourceBytes);
+            if (decoded is null) return null;
+            using var prepared = PrepareInput(decoded);
+
+            // Pull pixels into managed memory once. Calling SKBitmap.GetPixel for every sample crosses the
+            // managed/native boundary ~50k times per captain and is measurable on Render's shared CPU.
+            var preparedPixels = prepared.Pixels;
+
+            // The ONNX model contract is fixed: [1, 1, 224, 224].
+            var input = new DenseTensor<float>(new[] { 1, 1, ModelInputSize, ModelInputSize });
+            var inputSpan = input.Buffer.Span;
+            for (var index = 0; index < preparedPixels.Length; index += 1)
             {
-                var pixel = prepared.GetPixel(x, y);
-                inputSpan[y * ModelInputSize + x] = ToLuma(pixel.Red, pixel.Green, pixel.Blue) / 255f;
+                if ((index & 0x0FFF) == 0)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                var pixel = preparedPixels[index];
+                inputSpan[index] = ToLuma(pixel.Red, pixel.Green, pixel.Blue) / 255f;
             }
-        }
 
-        var inputName = inferenceSession.InputMetadata.Keys.Single();
-        var inputs = new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor(inputName, input)
-        };
-        using var results = inferenceSession.Run(inputs);
-        var output = results.First().AsTensor<float>();
-        if (output.Dimensions.Length < 4) return null;
-
-        var outputHeight = output.Dimensions[2];
-        var outputWidth = output.Dimensions[3];
-        if (outputHeight != ModelInputSize * ModelScale || outputWidth != ModelInputSize * ModelScale)
-            return null;
-        var outputValues = output.ToArray();
-
-        using var chromaBase = ResizeBitmap(prepared, outputWidth, outputHeight);
-        using var enhanced = new SKBitmap(outputWidth, outputHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
-        for (var y = 0; y < outputHeight; y += 1)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            for (var x = 0; x < outputWidth; x += 1)
+            var inputName = inferenceSession.InputMetadata.Keys.Single();
+            var inputs = new List<NamedOnnxValue>
             {
-                var basePixel = chromaBase.GetPixel(x, y);
+                NamedOnnxValue.CreateFromTensor(inputName, input)
+            };
+            using var results = inferenceSession.Run(inputs);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var output = results.First().AsTensor<float>();
+            if (output.Dimensions.Length < 4) return null;
+
+            var outputHeight = output.Dimensions[2];
+            var outputWidth = output.Dimensions[3];
+            if (outputHeight != ModelInputSize * ModelScale || outputWidth != ModelInputSize * ModelScale)
+                return null;
+            var outputValues = output.ToArray();
+
+            using var chromaBase = ResizeBitmap(prepared, outputWidth, outputHeight);
+            // Same optimization for the 672x672 output: read source pixels once and write one managed array,
+            // instead of ~450k GetPixel + ~450k SetPixel native calls.
+            var chromaPixels = chromaBase.Pixels;
+            var enhancedPixels = new SKColor[outputWidth * outputHeight];
+            for (var index = 0; index < enhancedPixels.Length; index += 1)
+            {
+                if ((index & 0x3FFF) == 0)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                var basePixel = chromaPixels[index];
                 var cb = 128f - 0.168736f * basePixel.Red - 0.331264f * basePixel.Green + 0.5f * basePixel.Blue;
                 var cr = 128f + 0.5f * basePixel.Red - 0.418688f * basePixel.Green - 0.081312f * basePixel.Blue;
-                var modelY = Math.Clamp(outputValues[y * outputWidth + x], 0f, 1f) * 255f;
+                var modelY = Math.Clamp(outputValues[index], 0f, 1f) * 255f;
 
-                enhanced.SetPixel(x, y, new SKColor(
+                enhancedPixels[index] = new SKColor(
                     ClampByte(modelY + 1.402f * (cr - 128f)),
                     ClampByte(modelY - 0.344136f * (cb - 128f) - 0.714136f * (cr - 128f)),
                     ClampByte(modelY + 1.772f * (cb - 128f)),
-                    basePixel.Alpha));
+                    basePixel.Alpha);
             }
-        }
 
-        using var image = SKImage.FromBitmap(enhanced);
-        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
-        return encoded?.ToArray();
+            using var enhanced = new SKBitmap(outputWidth, outputHeight, SKColorType.Rgba8888, SKAlphaType.Premul)
+            {
+                Pixels = enhancedPixels
+            };
+            using var image = SKImage.FromBitmap(enhanced);
+            using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+            return encoded?.ToArray();
+        }
+        finally
+        {
+            InferenceGate.Release();
+        }
     }
 
     private static InferenceSession? GetSession()
