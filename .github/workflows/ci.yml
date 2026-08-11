@@ -29,7 +29,9 @@ jobs:
           dotnet-version: 9.0.x
 
       - name: Apply share slot UX patch
-        run: python tools/share-slot-ux-patch.py
+        run: |
+          python tools/share-slot-ux-patch.py
+          python tools/share-slot-unshare-fix.py
 
       - name: Validate backend tests
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
@@ -39,7 +41,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout origin/main -- .github/workflows/ci.yml
-          git rm -f .github/workflows/share-slot-ux-apply.yml tools/share-slot-ux-patch.py
+          git rm -f .github/workflows/share-slot-ux-apply.yml tools/share-slot-ux-patch.py tools/share-slot-unshare-fix.py
           git add server/VolleyDraft.Api/Services/ZaloNaturalCommandParser.cs \
                   server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs \
                   server/VolleyDraft.Api/Services/ZaloBotService.cs \
