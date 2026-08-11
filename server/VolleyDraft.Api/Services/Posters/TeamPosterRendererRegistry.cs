@@ -1,3 +1,5 @@
+using VolleyDraft.Api.Services.Avatars;
+
 namespace VolleyDraft.Api.Services.Posters;
 
 public static class TeamPosterRendererRegistry
@@ -10,18 +12,22 @@ public static class TeamPosterRendererRegistry
         string sessionName,
         DateTimeOffset? startTime,
         string? location,
-        IReadOnlyList<TeamCardTeam> teams) => (TeamPosterTemplate)templateId switch
+        IReadOnlyList<TeamCardTeam> teams)
     {
-        TeamPosterTemplate.NeonArena => CourtIndexCrispPortraitPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.ChampionshipGold => HallOfChampionsPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.CyberStorm => OrbitLeaguePosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.MonolithBroadcast => ClashNightPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.InfernoClash => InfernoClashPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.RetroArcade => RetroArcadePosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.TitaniumLeague => TitaniumLeaguePosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.VelocityWave => VelocityWavePosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.NoirSpotlight => NoirSpotlightPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.StreetClash => StreetClashPosterRenderer.Render(sessionName, startTime, location, teams),
-        _ => CourtIndexCrispPortraitPosterRenderer.Render(sessionName, startTime, location, teams)
-    };
+        var enhancedTeams = CaptainAvatarSuperResolution.Apply(teams);
+        return (TeamPosterTemplate)templateId switch
+        {
+            TeamPosterTemplate.NeonArena => CourtIndexCrispPortraitPosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.ChampionshipGold => HallOfChampionsPosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.CyberStorm => OrbitLeaguePosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.MonolithBroadcast => ClashNightPosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.InfernoClash => InfernoClashPosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.RetroArcade => RetroArcadePosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.TitaniumLeague => TitaniumLeaguePosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.VelocityWave => VelocityWavePosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.NoirSpotlight => NoirSpotlightPosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            TeamPosterTemplate.StreetClash => StreetClashPosterRenderer.Render(sessionName, startTime, location, enhancedTeams),
+            _ => CourtIndexCrispPortraitPosterRenderer.Render(sessionName, startTime, location, enhancedTeams)
+        };
+    }
 }
