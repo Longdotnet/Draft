@@ -106,3 +106,32 @@ test("enrichMemberAvatars keeps current avatar when all enrichment APIs fail", a
 
   assert.equal(result[0]!.avatarUrl, current);
 });
+
+test("enrichMemberAvatars returns 240px fallback instead of waiting on a stuck full-avatar lookup", async () => {
+  const failures: string[] = [];
+  const never = new Promise<{ full_avatar?: string; bk_full_avatar?: string }>(() => undefined);
+  const startedAt = Date.now();
+  const result = await enrichMemberAvatars(
+    {
+      async getAvatarUrlProfile(ids) {
+        const list = Array.isArray(ids) ? ids : [ids];
+        return Object.fromEntries(list.map((id) => [id, { avatar: `https://cdn.example/${id}-240.jpg` }]));
+      },
+      async getFullAvatar() {
+        return never;
+      },
+    },
+    [member("101")],
+    (operation) => failures.push(operation),
+    {
+      largeAvatarTimeoutMs: 50,
+      fullAvatarTimeoutMs: 15,
+      fullAvatarBudgetMs: 30,
+      fullAvatarConcurrency: 1,
+    },
+  );
+
+  assert.equal(result[0]!.avatarUrl, "https://cdn.example/101-240.jpg");
+  assert.ok(Date.now() - startedAt < 250, "slow full avatar lookup should not block team-card rendering");
+  assert.ok(failures.includes("getFullAvatar"));
+});
