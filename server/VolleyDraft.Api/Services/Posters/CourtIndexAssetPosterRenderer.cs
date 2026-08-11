@@ -9,7 +9,7 @@ namespace VolleyDraft.Api.Services.Posters;
 public static class CourtIndexAssetPosterRenderer
 {
     private const string VolleyballResourceName =
-        "VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg";
+        "VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.png";
 
     private static readonly SKRect VolleyballDestination =
         new(88, 1096, 543, 1526);
