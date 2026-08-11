@@ -9,17 +9,17 @@ namespace VolleyDraft.Api.Services.Avatars;
 
 public static class CaptainAvatarSuperResolution
 {
-    // Apache-2.0 ONNX Model Zoo sub-pixel CNN. It produces an x3 luminance image.
-    // The model is only ~240 KB and runs locally on CPU after the first lazy download.
+    // Apache-2.0 ONNX Model Zoo sub-pixel CNN.
+    // Important: this exported model has a FIXED 224x224 input and produces 672x672 (x3).
     private const string DefaultModelUrl =
         "https://huggingface.co/onnxmodelzoo/super-resolution-10/resolve/main/super-resolution-10.onnx?download=true";
     private const string DefaultModelSha256 =
         "85f36ff88cc504a24af5e0602148bc56a8aa09a58eca8c0da2756f3e8186035e";
+    private const int ModelInputSize = 224;
     private const int ModelScale = 3;
-    private const int MinimumPreparedSide = 171; // 171 * 3 = 513, Poster 01 hero height.
-    private const int MaximumInputSide = 256;
     private const int DefaultEnhanceBelowPixels = 300;
-    private const int DefaultTimeoutMs = 2_500;
+    private const int DefaultInferenceTimeoutMs = 2_500;
+    private const int ModelLoadTimeoutMs = 5_000;
 
     private static readonly HttpClient ModelClient = new()
     {
@@ -80,9 +80,12 @@ public static class CaptainAvatarSuperResolution
 
         var originalWidth = decoded.Width;
         var originalHeight = decoded.Height;
-        var threshold = ReadIntEnvironment("AVATAR_ENHANCEMENT_BELOW_PIXELS", DefaultEnhanceBelowPixels, 64, 700);
-        if (Math.Min(originalWidth, originalHeight) >= threshold ||
-            Math.Max(originalWidth, originalHeight) > MaximumInputSide)
+        var threshold = ReadIntEnvironment(
+            "AVATAR_ENHANCEMENT_BELOW_PIXELS",
+            DefaultEnhanceBelowPixels,
+            64,
+            700);
+        if (Math.Min(originalWidth, originalHeight) >= threshold)
         {
             WriteDiagnostic(
                 captainName,
@@ -114,12 +117,38 @@ public static class CaptainAvatarSuperResolution
             return cached;
         }
 
-        var timeoutMs = ReadIntEnvironment("AVATAR_ENHANCEMENT_TIMEOUT_MS", DefaultTimeoutMs, 250, 10_000);
+        // Model download/session construction gets its own bounded cold-start budget.
+        // It must not consume the per-avatar inference timeout.
+        var sessionStopwatch = Stopwatch.StartNew();
+        var inferenceSession = GetSession();
+        sessionStopwatch.Stop();
+        if (inferenceSession is null)
+        {
+            WriteDiagnostic(
+                captainName,
+                originalWidth,
+                originalHeight,
+                originalWidth,
+                originalHeight,
+                sessionStopwatch.ElapsedMilliseconds,
+                false,
+                false,
+                "fallback-model-unavailable");
+            return sourceBytes;
+        }
+
+        var timeoutMs = ReadIntEnvironment(
+            "AVATAR_ENHANCEMENT_TIMEOUT_MS",
+            DefaultInferenceTimeoutMs,
+            250,
+            10_000);
         var stopwatch = Stopwatch.StartNew();
         using var timeout = new CancellationTokenSource();
         try
         {
-            var work = Task.Run(() => UpscaleCore(sourceBytes, timeout.Token), CancellationToken.None);
+            var work = Task.Run(
+                () => UpscaleCore(sourceBytes, inferenceSession, timeout.Token),
+                CancellationToken.None);
             var enhanced = work.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs)).GetAwaiter().GetResult();
             stopwatch.Stop();
 
@@ -140,8 +169,8 @@ public static class CaptainAvatarSuperResolution
 
             using var enhancedBitmap = SKBitmap.Decode(enhanced);
             if (enhancedBitmap is null ||
-                enhancedBitmap.Width <= originalWidth ||
-                enhancedBitmap.Height <= originalHeight)
+                enhancedBitmap.Width != ModelInputSize * ModelScale ||
+                enhancedBitmap.Height != ModelInputSize * ModelScale)
             {
                 WriteDiagnostic(
                     captainName,
@@ -189,7 +218,8 @@ public static class CaptainAvatarSuperResolution
         {
             timeout.Cancel();
             stopwatch.Stop();
-            Console.WriteLine($"[CaptainAvatarEnhancement] error={exception.GetType().Name} message=\"{Sanitize(exception.Message)}\"");
+            Console.WriteLine(
+                $"[CaptainAvatarEnhancement] error={exception.GetType().Name} message=\"{Sanitize(exception.Message)}\"");
             WriteDiagnostic(
                 captainName,
                 originalWidth,
@@ -204,26 +234,25 @@ public static class CaptainAvatarSuperResolution
         }
     }
 
-    private static byte[]? UpscaleCore(byte[] sourceBytes, CancellationToken cancellationToken)
+    private static byte[]? UpscaleCore(
+        byte[] sourceBytes,
+        InferenceSession inferenceSession,
+        CancellationToken cancellationToken)
     {
-        var inferenceSession = GetSession(cancellationToken);
-        if (inferenceSession is null) return null;
-
         using var decoded = SKBitmap.Decode(sourceBytes);
         if (decoded is null) return null;
         using var prepared = PrepareInput(decoded);
 
-        var width = prepared.Width;
-        var height = prepared.Height;
-        var input = new DenseTensor<float>(new[] { 1, 1, height, width });
+        // The ONNX model contract is fixed: [1, 1, 224, 224].
+        var input = new DenseTensor<float>(new[] { 1, 1, ModelInputSize, ModelInputSize });
         var inputSpan = input.Buffer.Span;
-        for (var y = 0; y < height; y += 1)
+        for (var y = 0; y < ModelInputSize; y += 1)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            for (var x = 0; x < width; x += 1)
+            for (var x = 0; x < ModelInputSize; x += 1)
             {
                 var pixel = prepared.GetPixel(x, y);
-                inputSpan[y * width + x] = ToLuma(pixel.Red, pixel.Green, pixel.Blue) / 255f;
+                inputSpan[y * ModelInputSize + x] = ToLuma(pixel.Red, pixel.Green, pixel.Blue) / 255f;
             }
         }
 
@@ -238,7 +267,8 @@ public static class CaptainAvatarSuperResolution
 
         var outputHeight = output.Dimensions[2];
         var outputWidth = output.Dimensions[3];
-        if (outputHeight <= height || outputWidth <= width) return null;
+        if (outputHeight != ModelInputSize * ModelScale || outputWidth != ModelInputSize * ModelScale)
+            return null;
         var outputValues = output.ToArray();
 
         using var chromaBase = ResizeBitmap(prepared, outputWidth, outputHeight);
@@ -266,7 +296,7 @@ public static class CaptainAvatarSuperResolution
         return encoded?.ToArray();
     }
 
-    private static InferenceSession? GetSession(CancellationToken cancellationToken)
+    private static InferenceSession? GetSession()
     {
         if (session is not null) return session;
         if (DateTimeOffset.UtcNow < retryModelAfter) return null;
@@ -276,16 +306,15 @@ public static class CaptainAvatarSuperResolution
             if (session is not null) return session;
             if (DateTimeOffset.UtcNow < retryModelAfter) return null;
 
+            var stopwatch = Stopwatch.StartNew();
             try
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 var modelUrl = Environment.GetEnvironmentVariable("AVATAR_ENHANCEMENT_MODEL_URL")?.Trim();
                 modelUrl = string.IsNullOrWhiteSpace(modelUrl) ? DefaultModelUrl : modelUrl;
                 if (!Uri.TryCreate(modelUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
                     throw new InvalidDataException("Avatar enhancement model URL is invalid");
 
-                using var modelTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                modelTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                using var modelTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(ModelLoadTimeoutMs));
                 var modelBytes = ModelClient.GetByteArrayAsync(uri, modelTimeout.Token).GetAwaiter().GetResult();
                 if (modelBytes.Length is < 100_000 or > 2_000_000)
                     throw new InvalidDataException($"Unexpected model size: {modelBytes.Length} bytes");
@@ -301,13 +330,17 @@ public static class CaptainAvatarSuperResolution
                 }
 
                 session = new InferenceSession(modelBytes);
-                Console.WriteLine($"[CaptainAvatarEnhancement] model-ready bytes={modelBytes.Length} host={uri.Host}");
+                stopwatch.Stop();
+                Console.WriteLine(
+                    $"[CaptainAvatarEnhancement] model-ready bytes={modelBytes.Length} host={uri.Host} InitMs={stopwatch.ElapsedMilliseconds} Input={ModelInputSize}x{ModelInputSize} Output={ModelInputSize * ModelScale}x{ModelInputSize * ModelScale}");
                 return session;
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidDataException or OnnxRuntimeException)
             {
+                stopwatch.Stop();
                 retryModelAfter = DateTimeOffset.UtcNow.AddMinutes(5);
-                Console.WriteLine($"[CaptainAvatarEnhancement] model-unavailable error={exception.GetType().Name} message=\"{Sanitize(exception.Message)}\"");
+                Console.WriteLine(
+                    $"[CaptainAvatarEnhancement] model-unavailable error={exception.GetType().Name} message=\"{Sanitize(exception.Message)}\" ElapsedMs={stopwatch.ElapsedMilliseconds}");
                 return null;
             }
         }
@@ -315,14 +348,27 @@ public static class CaptainAvatarSuperResolution
 
     private static SKBitmap PrepareInput(SKBitmap source)
     {
-        var minSide = Math.Min(source.Width, source.Height);
-        if (minSide >= MinimumPreparedSide)
-            return ResizeBitmap(source, source.Width, source.Height);
+        // Match the training/inference contract: one square 224x224 image.
+        // Center-crop instead of stretching non-square avatars.
+        var side = Math.Min(source.Width, source.Height);
+        var left = (source.Width - side) / 2f;
+        var top = (source.Height - side) / 2f;
+        var sourceRect = new SKRect(left, top, left + side, top + side);
 
-        var scale = MinimumPreparedSide / (float)Math.Max(1, minSide);
-        var width = Math.Clamp((int)MathF.Round(source.Width * scale), 1, MaximumInputSide);
-        var height = Math.Clamp((int)MathF.Round(source.Height * scale), 1, MaximumInputSide);
-        return ResizeBitmap(source, width, height);
+        var prepared = new SKBitmap(ModelInputSize, ModelInputSize, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var canvas = new SKCanvas(prepared);
+        using var paint = new SKPaint
+        {
+            IsAntialias = true,
+            FilterQuality = SKFilterQuality.Medium
+        };
+        canvas.Clear(SKColors.Transparent);
+        canvas.DrawBitmap(
+            source,
+            sourceRect,
+            new SKRect(0, 0, ModelInputSize, ModelInputSize),
+            paint);
+        return prepared;
     }
 
     private static SKBitmap ResizeBitmap(SKBitmap source, int width, int height)
@@ -364,7 +410,9 @@ public static class CaptainAvatarSuperResolution
             : fallback;
 
     private static string Sanitize(string value) =>
-        value.Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal).Replace("\"", "'", StringComparison.Ordinal);
+        value.Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Replace("\"", "'", StringComparison.Ordinal);
 
     private static float ToLuma(byte red, byte green, byte blue) =>
         0.299f * red + 0.587f * green + 0.114f * blue;
