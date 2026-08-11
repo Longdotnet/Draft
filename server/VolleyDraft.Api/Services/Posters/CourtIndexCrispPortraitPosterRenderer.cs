@@ -97,12 +97,12 @@ public static class CourtIndexCrispPortraitPosterRenderer
             target.Width,
             target.Height);
 
-        Console.WriteLine(FormattableString.Invariant(
+        Console.WriteLine(
             $"[Poster01AvatarDiagnostic] Session=\"{sessionName}\" Team=\"{teamName}\" Captain=\"{captain.Name}\" " +
             $"Source=\"{diagnostic.Source}\" Bytes={diagnostic.Bytes} " +
             $"SourceSize={diagnostic.SourceWidth}x{diagnostic.SourceHeight} " +
             $"TargetSize={diagnostic.TargetWidth}x{diagnostic.TargetHeight} " +
-            $"RequiredScale={diagnostic.RequiredScale:0.00} Quality={diagnostic.QualityBucket}"));
+            $"RequiredScale={diagnostic.RequiredScale.ToString("0.00", CultureInfo.InvariantCulture)} Quality={diagnostic.QualityBucket}");
     }
 
     internal static Poster01AvatarDiagnostic BuildAvatarDiagnostic(
