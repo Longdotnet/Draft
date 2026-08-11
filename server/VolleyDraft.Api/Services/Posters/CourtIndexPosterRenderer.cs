@@ -6,9 +6,9 @@ namespace VolleyDraft.Api.Services.Posters;
 /// <summary>
 /// Poster 01 — Court Index.
 /// A neo-Swiss / risograph match-program composition inspired by the approved preview:
-/// oversized editorial typography on warm paper, stacked team indexes, duotone captain
-/// portraits, print-registration details and compact roster data. The renderer remains
-/// fully data-driven and does not change poster assignment/rotation behavior.
+/// oversized editorial typography on warm paper, stacked team indexes, full-color captain
+/// portraits, print-registration details, compact roster data and a prominent volleyball study.
+/// The renderer remains fully data-driven and does not change poster assignment/rotation behavior.
 /// </summary>
 public static class CourtIndexPosterRenderer
 {
@@ -18,9 +18,9 @@ public static class CourtIndexPosterRenderer
     private static readonly SKColor Muted = new(84, 82, 74);
     private static readonly SKColor[] Accents =
     [
-        new SKColor(25, 82, 196),  // cobalt blue
-        new SKColor(230, 68, 38),  // vermilion
-        new SKColor(26, 108, 66)   // deep green
+        new SKColor(25, 82, 196),
+        new SKColor(230, 68, 38),
+        new SKColor(26, 108, 66)
     ];
 
     private static readonly string[] Traits =
@@ -118,7 +118,9 @@ public static class CourtIndexPosterRenderer
         DrawRule(canvas, left, 770, 455, 1.2f, Rule);
 
         DrawEventMetadata(canvas, left, 816, sessionName, startTime, location);
-        DrawVolleyballStudy(canvas, 92, 1080, 425, 385);
+
+        PosterDrawing.DrawText(canvas, "OFFICIAL MATCH BALL", left + 5, 1084, 13, Muted, true, 220);
+        DrawVolleyballStudy(canvas, 88, 1096, 455, 430);
 
         PosterDrawing.DrawText(canvas, "THREE TEAMS / ONE COURT", left, 1662, 43, Ink, true, 465, PosterDrawing.BlackTypeface);
         DrawRule(canvas, left, 1684, 455, 3, Ink);
@@ -204,7 +206,7 @@ public static class CourtIndexPosterRenderer
         PosterDrawing.DrawText(canvas, "ROSTER", rect.Left + 154, rect.Top + 362, 14, accent, true, 90);
         DrawRosterIndex(canvas, team, rect.Left + 154, rect.Top + 382, 160, accent);
 
-        DrawPortraitFeature(canvas, portrait, captain, teamNumber, team.Name, accent, index);
+        DrawPortraitFeature(canvas, portrait, captain, teamNumber, team.Name, accent);
         DrawVerticalText(canvas, Traits[index], rect.Right - 3, rect.Top + 448, 15, accent, true);
     }
 
@@ -248,10 +250,9 @@ public static class CourtIndexPosterRenderer
         TeamCardPlayer? captain,
         string teamNumber,
         string teamName,
-        SKColor accent,
-        int index)
+        SKColor accent)
     {
-        using (var basePaint = new SKPaint { Color = new SKColor(255, 255, 255, 62), IsAntialias = true })
+        using (var basePaint = new SKPaint { Color = new SKColor(255, 255, 255, 78), IsAntialias = true })
             canvas.DrawRect(rect, basePaint);
 
         DrawCompressedText(
@@ -260,177 +261,195 @@ public static class CourtIndexPosterRenderer
             rect.Left + 34,
             rect.Bottom - 26,
             rect.Height * .86f,
-            PosterDrawing.WithAlpha(accent, 48),
+            PosterDrawing.WithAlpha(accent, 36),
             rect.Width - 40,
             PosterDrawing.BlackTypeface);
 
         if (captain is not null)
-            DrawDuotoneAvatar(canvas, captain, rect, accent, index);
+        {
+            // Keep the actual Zalo avatar colors. Team identity now lives in the frame and typography,
+            // not as a duotone filter over the player's face/clothing.
+            PosterDrawing.DrawAvatar(
+                canvas,
+                captain,
+                rect,
+                accent,
+                PosterAvatarShape.Square,
+                strongBorder: false,
+                grayscale: false);
+        }
         else
+        {
             DrawMonogramFallback(canvas, rect, teamName, accent);
+        }
+
+        using var innerFrame = new SKPaint
+        {
+            Color = new SKColor(Paper.Red, Paper.Green, Paper.Blue, 135),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 5,
+            IsAntialias = true
+        };
+        canvas.DrawRect(new SKRect(rect.Left + 5, rect.Top + 5, rect.Right - 5, rect.Bottom - 5), innerFrame);
 
         using var frame = new SKPaint
         {
-            Color = PosterDrawing.WithAlpha(accent, 122),
+            Color = PosterDrawing.WithAlpha(accent, 150),
             Style = SKPaintStyle.Stroke,
-            StrokeWidth = 1.2f,
+            StrokeWidth = 1.4f,
             IsAntialias = true
         };
         canvas.DrawRect(rect, frame);
     }
 
-    private static void DrawDuotoneAvatar(SKCanvas canvas, TeamCardPlayer player, SKRect rect, SKColor accent, int index)
-    {
-        if (player.AvatarData is not { Length: > 0 })
-        {
-            PosterDrawing.DrawAvatar(canvas, player, rect, accent, PosterAvatarShape.Square, strongBorder: false, grayscale: true);
-            DrawHalftoneOverlay(canvas, rect, accent, PosterDrawing.StableSeed(player.Name));
-            return;
-        }
-
-        try
-        {
-            using var bitmap = SKBitmap.Decode(player.AvatarData);
-            if (bitmap is null || bitmap.Width <= 0 || bitmap.Height <= 0)
-            {
-                PosterDrawing.DrawAvatar(canvas, player, rect, accent, PosterAvatarShape.Square, false, true);
-                DrawHalftoneOverlay(canvas, rect, accent, PosterDrawing.StableSeed(player.Name));
-                return;
-            }
-
-            var save = canvas.Save();
-            canvas.ClipRect(rect, SKClipOperation.Intersect, true);
-            var source = CropToAspect(bitmap, rect.Width / rect.Height, index);
-            using var gray = new SKPaint
-            {
-                IsAntialias = true,
-                FilterQuality = SKFilterQuality.High,
-                ColorFilter = SKColorFilter.CreateColorMatrix(new float[]
-                {
-                    .299f, .587f, .114f, 0, 0,
-                    .299f, .587f, .114f, 0, 0,
-                    .299f, .587f, .114f, 0, 0,
-                    0, 0, 0, 1, 0
-                })
-            };
-            canvas.DrawBitmap(bitmap, source, rect, gray);
-
-            using var tint = new SKPaint
-            {
-                Color = PosterDrawing.WithAlpha(accent, 205),
-                BlendMode = SKBlendMode.Multiply,
-                IsAntialias = true
-            };
-            canvas.DrawRect(rect, tint);
-
-            using var paperWash = new SKPaint
-            {
-                Color = new SKColor(Paper.Red, Paper.Green, Paper.Blue, 36),
-                BlendMode = SKBlendMode.Screen,
-                IsAntialias = true
-            };
-            canvas.DrawRect(rect, paperWash);
-            DrawHalftoneOverlay(canvas, rect, accent, PosterDrawing.StableSeed(player.Name));
-            canvas.RestoreToCount(save);
-        }
-        catch
-        {
-            PosterDrawing.DrawAvatar(canvas, player, rect, accent, PosterAvatarShape.Square, false, true);
-            DrawHalftoneOverlay(canvas, rect, accent, PosterDrawing.StableSeed(player.Name));
-        }
-    }
-
-    private static SKRectI CropToAspect(SKBitmap bitmap, float targetAspect, int teamIndex)
-    {
-        var sourceAspect = bitmap.Width / (float)bitmap.Height;
-        if (sourceAspect > targetAspect)
-        {
-            var width = Math.Max(1, (int)(bitmap.Height * targetAspect));
-            var centerBias = teamIndex switch { 0 => -.05f, 1 => .03f, _ => -.02f };
-            var left = (int)((bitmap.Width - width) * (.5f + centerBias));
-            left = Math.Clamp(left, 0, Math.Max(0, bitmap.Width - width));
-            return new SKRectI(left, 0, left + width, bitmap.Height);
-        }
-
-        var height = Math.Max(1, (int)(bitmap.Width / Math.Max(.01f, targetAspect)));
-        var top = Math.Clamp((bitmap.Height - height) / 3, 0, Math.Max(0, bitmap.Height - height));
-        return new SKRectI(0, top, bitmap.Width, top + height);
-    }
-
-    private static void DrawHalftoneOverlay(SKCanvas canvas, SKRect rect, SKColor accent, int seed)
-    {
-        var random = new Random(seed & int.MaxValue);
-        using var inkDot = new SKPaint { IsAntialias = true };
-        using var paperDot = new SKPaint { IsAntialias = true };
-
-        for (var y = rect.Top + 4; y < rect.Bottom; y += 8)
-        {
-            for (var x = rect.Left + 4; x < rect.Right; x += 8)
-            {
-                var jitterX = (float)(random.NextDouble() * 2.4 - 1.2);
-                var jitterY = (float)(random.NextDouble() * 2.4 - 1.2);
-                if (random.NextDouble() < .58)
-                {
-                    inkDot.Color = PosterDrawing.WithAlpha(PosterDrawing.Darken(accent, .52f), (byte)random.Next(18, 45));
-                    canvas.DrawCircle(x + jitterX, y + jitterY, random.NextDouble() < .85 ? 1.05f : 1.7f, inkDot);
-                }
-                else if (random.NextDouble() < .36)
-                {
-                    paperDot.Color = new SKColor(Paper.Red, Paper.Green, Paper.Blue, (byte)random.Next(24, 62));
-                    canvas.DrawCircle(x + jitterX, y + jitterY, .9f, paperDot);
-                }
-            }
-        }
-    }
-
     private static void DrawMonogramFallback(SKCanvas canvas, SKRect rect, string teamName, SKColor accent)
     {
         var words = (teamName ?? string.Empty).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var monogram = words.Length == 0 ? "VD" : words.Length == 1 ? words[0][..Math.Min(2, words[0].Length)].ToUpperInvariant() : string.Concat(words[0][0], words[^1][0]).ToUpperInvariant();
+        var monogram = words.Length == 0
+            ? "VD"
+            : words.Length == 1
+                ? words[0][..Math.Min(2, words[0].Length)].ToUpperInvariant()
+                : string.Concat(words[0][0], words[^1][0]).ToUpperInvariant();
+
         PosterDrawing.DrawCenteredText(canvas, monogram, rect.MidX, rect.MidY + 64, 154, accent, true, rect.Width - 40, PosterDrawing.BlackTypeface);
-        DrawHalftoneOverlay(canvas, rect, accent, PosterDrawing.StableSeed(teamName));
     }
 
     private static void DrawVolleyballStudy(SKCanvas canvas, float x, float y, float width, float height)
     {
-        var center = new SKPoint(x + width * .52f, y + height * .42f);
-        var radius = Math.Min(width, height) * .29f;
+        var center = new SKPoint(x + width * .52f, y + height * .43f);
+        var radius = Math.Min(width, height) * .38f;
 
         using var shadow = new SKPaint
         {
-            Color = new SKColor(30, 28, 24, 42),
-            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 10),
+            Color = new SKColor(18, 17, 15, 62),
+            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 16),
             IsAntialias = true
         };
-        canvas.DrawOval(new SKRect(center.X - radius * 1.25f, center.Y + radius * .75f, center.X + radius * 1.35f, center.Y + radius * 1.22f), shadow);
+        canvas.DrawOval(
+            new SKRect(
+                center.X - radius * 1.28f,
+                center.Y + radius * .76f,
+                center.X + radius * 1.34f,
+                center.Y + radius * 1.18f),
+            shadow);
 
-        using var fill = new SKPaint { Color = new SKColor(232, 227, 216), IsAntialias = true };
-        using var outline = new SKPaint { Color = Ink, Style = SKPaintStyle.Stroke, StrokeWidth = 2.2f, IsAntialias = true };
-        canvas.DrawCircle(center, radius, fill);
+        using var ballFill = new SKPaint
+        {
+            IsAntialias = true,
+            Shader = SKShader.CreateRadialGradient(
+                new SKPoint(center.X - radius * .28f, center.Y - radius * .34f),
+                radius * 1.45f,
+                [new SKColor(252, 250, 243), new SKColor(224, 219, 208), new SKColor(190, 185, 175)],
+                [0f, .67f, 1f],
+                SKShaderTileMode.Clamp)
+        };
+        canvas.DrawCircle(center, radius, ballFill);
+
+        using var circlePath = new SKPath();
+        circlePath.AddCircle(center.X, center.Y, radius);
+        var save = canvas.Save();
+        canvas.ClipPath(circlePath, SKClipOperation.Intersect, true);
+
+        using var darkPanel = new SKPaint
+        {
+            Color = new SKColor(40, 39, 36, 235),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = radius * .34f,
+            StrokeCap = SKStrokeCap.Round,
+            IsAntialias = true
+        };
+        using var grayPanel = new SKPaint
+        {
+            Color = new SKColor(111, 108, 101, 190),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = radius * .24f,
+            StrokeCap = SKStrokeCap.Round,
+            IsAntialias = true
+        };
+
+        using (var band = new SKPath())
+        {
+            band.MoveTo(center.X - radius * 1.12f, center.Y - radius * .28f);
+            band.CubicTo(
+                center.X - radius * .42f, center.Y - radius * .70f,
+                center.X + radius * .28f, center.Y - radius * .26f,
+                center.X + radius * 1.08f, center.Y - radius * .54f);
+            canvas.DrawPath(band, darkPanel);
+        }
+
+        using (var band = new SKPath())
+        {
+            band.MoveTo(center.X + radius * .20f, center.Y - radius * 1.08f);
+            band.CubicTo(
+                center.X + radius * .56f, center.Y - radius * .46f,
+                center.X + radius * .14f, center.Y + radius * .16f,
+                center.X + radius * .72f, center.Y + radius * 1.06f);
+            canvas.DrawPath(band, grayPanel);
+        }
+
+        using (var band = new SKPath())
+        {
+            band.MoveTo(center.X - radius * .96f, center.Y + radius * .80f);
+            band.CubicTo(
+                center.X - radius * .48f, center.Y + radius * .24f,
+                center.X - radius * .10f, center.Y + radius * .22f,
+                center.X + radius * .42f, center.Y + radius * .72f);
+            canvas.DrawPath(band, darkPanel);
+        }
+
+        canvas.RestoreToCount(save);
+
+        using var seam = new SKPaint
+        {
+            Color = Ink,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2.4f,
+            IsAntialias = true
+        };
+        using var lightSeam = new SKPaint
+        {
+            Color = new SKColor(246, 241, 231, 210),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3.2f,
+            IsAntialias = true
+        };
+
+        var ballRect = new SKRect(center.X - radius, center.Y - radius, center.X + radius, center.Y + radius);
+        canvas.DrawArc(ballRect, -72, 134, false, seam);
+        canvas.DrawArc(new SKRect(ballRect.Left - radius * .16f, ballRect.Top + radius * .12f, ballRect.Right - radius * .08f, ballRect.Bottom + radius * .17f), 15, 164, false, seam);
+        canvas.DrawArc(new SKRect(ballRect.Left + radius * .15f, ballRect.Top - radius * .18f, ballRect.Right + radius * .18f, ballRect.Bottom - radius * .09f), 130, 150, false, lightSeam);
+
+        using var outline = new SKPaint
+        {
+            Color = Ink,
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 3.2f,
+            IsAntialias = true
+        };
         canvas.DrawCircle(center, radius, outline);
 
-        var ball = new SKRect(center.X - radius, center.Y - radius, center.X + radius, center.Y + radius);
-        canvas.DrawArc(ball, -65, 122, false, outline);
-        canvas.DrawArc(new SKRect(ball.Left - 22, ball.Top + 18, ball.Right - 12, ball.Bottom + 24), 15, 154, false, outline);
-        canvas.DrawArc(new SKRect(ball.Left + 24, ball.Top - 30, ball.Right + 28, ball.Bottom - 14), 132, 144, false, outline);
-
-        using var court = new SKPaint { Color = new SKColor(32, 31, 27, 132), StrokeWidth = 9, IsAntialias = true };
-        canvas.DrawLine(x + 12, y + height * .67f, x + width - 8, y + height * .47f, court);
-        canvas.DrawLine(center.X + 15, center.Y + 18, center.X + 15, y + height - 18, court);
-
+        // Print grain constrained to the ball gives it the tactile risograph feel while keeping
+        // the silhouette and volleyball panels unmistakable at Zalo thumbnail size.
         var random = new Random(1801);
         using var grain = new SKPaint { IsAntialias = true };
-        for (var index = 0; index < 1550; index++)
+        for (var index = 0; index < 1900; index++)
         {
-            var px = x + random.NextDouble() * width;
-            var py = y + random.NextDouble() * height;
-            var dx = px - center.X;
-            var dy = py - center.Y;
-            var insideBall = dx * dx + dy * dy <= radius * radius;
-            if (!insideBall && random.NextDouble() > .28) continue;
-            grain.Color = new SKColor(28, 27, 23, (byte)random.Next(18, insideBall ? 56 : 34));
-            canvas.DrawCircle((float)px, (float)py, random.NextDouble() < .86 ? .72f : 1.25f, grain);
+            var angle = random.NextDouble() * Math.PI * 2;
+            var distance = Math.Sqrt(random.NextDouble()) * radius;
+            var px = center.X + Math.Cos(angle) * distance;
+            var py = center.Y + Math.Sin(angle) * distance;
+            grain.Color = new SKColor(24, 23, 21, (byte)random.Next(10, 42));
+            canvas.DrawCircle((float)px, (float)py, random.NextDouble() < .88 ? .72f : 1.25f, grain);
         }
+
+        using var court = new SKPaint
+        {
+            Color = new SKColor(32, 31, 27, 128),
+            StrokeWidth = 9,
+            IsAntialias = true
+        };
+        canvas.DrawLine(x + 6, y + height * .79f, x + width - 2, y + height * .58f, court);
+        canvas.DrawLine(center.X + radius * .46f, center.Y + radius * .55f, center.X + radius * .46f, y + height - 8, court);
     }
 
     private static void DrawFooter(SKCanvas canvas)
@@ -499,7 +518,13 @@ public static class CourtIndexPosterRenderer
 
     private static void DrawRegistrationTarget(SKCanvas canvas, float x, float y, float radius)
     {
-        using var paint = new SKPaint { Color = new SKColor(28, 27, 23, 190), StrokeWidth = 1.2f, Style = SKPaintStyle.Stroke, IsAntialias = true };
+        using var paint = new SKPaint
+        {
+            Color = new SKColor(28, 27, 23, 190),
+            StrokeWidth = 1.2f,
+            Style = SKPaintStyle.Stroke,
+            IsAntialias = true
+        };
         canvas.DrawCircle(x, y, radius, paint);
         canvas.DrawCircle(x, y, radius * .34f, paint);
         canvas.DrawLine(x - radius - 8, y, x + radius + 8, y, paint);
