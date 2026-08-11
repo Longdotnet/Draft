@@ -14,7 +14,7 @@ public static class TeamPosterRendererRegistry
     {
         TeamPosterTemplate.NeonArena => CourtIndexPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.ChampionshipGold => HallOfChampionsPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.CyberStorm => CyberStormPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.CyberStorm => OrbitLeaguePosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.MonolithBroadcast => ClashNightPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.InfernoClash => InfernoClashPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.RetroArcade => RetroArcadePosterRenderer.Render(sessionName, startTime, location, teams),
