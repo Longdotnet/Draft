@@ -1,67 +1,19 @@
-name: NPC11 patch integration
+name: NPC11 validation
 
 on:
   push:
     branches:
       - agent/npc11-volleyverse
 
-permissions:
-  contents: write
-
 jobs:
-  patch:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
         with:
-          ref: agent/npc11-volleyverse
-          fetch-depth: 0
-      - name: Patch integration anchors
-        shell: python
-        run: |
-          from pathlib import Path
-
-          marker = Path("server/VolleyDraft.Api/Services/Npc11/.patched")
-          if marker.exists():
-              print("NPC11 integration already patched")
-              raise SystemExit(0)
-
-          program = Path("server/VolleyDraft.Api/Program.cs")
-          text = program.read_text()
-          old = "builder.Services.AddScoped<ZaloBotImageService>();\nbuilder.Services.AddScoped<ZaloTeamCardService>();"
-          new = "builder.Services.AddScoped<ZaloBotImageService>();\nbuilder.Services.AddScoped<ZaloTeamCardService>();\nbuilder.Services.AddScoped<Npc11CardService>();"
-          assert text.count(old) == 1, "Program DI anchor changed"
-          text = text.replace(old, new)
-          old = 'builder.Services.AddHttpClient("TeamCardAvatars", client => client.Timeout = TimeSpan.FromSeconds(6));'
-          new = old + '\nbuilder.Services.AddHttpClient("Npc11ArtWorker", client => client.Timeout = TimeSpan.FromSeconds(45));'
-          assert text.count(old) == 1, "Program HttpClient anchor changed"
-          text = text.replace(old, new)
-          program.write_text(text)
-
-          service = Path("server/VolleyDraft.Api/Services/ZaloBotService.cs")
-          text = service.read_text()
-          old = "    ZaloTeamCardService teamCards,\n    SessionWaitlistService waitlists,"
-          new = "    ZaloTeamCardService teamCards,\n    Npc11CardService npc11Cards,\n    SessionWaitlistService waitlists,"
-          assert text.count(old) == 1, "ZaloBotService constructor anchor changed"
-          text = text.replace(old, new)
-
-          old = "        var question = ExtractQuestion(incoming);\n        var normalizedQuestion = NormalizeText(question);\n\n        var sessions = await LoadSessionSnapshotsAsync"
-          new = "        var question = ExtractQuestion(incoming);\n        var normalizedQuestion = NormalizeText(question);\n\n        // NPC 11 is intentionally independent from match/session intent routing.\n        // The group still needs the bot enabled, but the card itself only depends on the Zalo identity/avatar.\n        if (Regex.IsMatch(normalizedQuestion, @\"^11(?:\\s|$)\", RegexOptions.CultureInvariant))\n        {\n            var card = await npc11Cards.GenerateAsync(activeConnectionId, incoming, question, cancellationToken);\n            return new BotAnswer(card.Text, card.ImageUrl, ZaloBotIntent.GeneralChat);\n        }\n\n        var sessions = await LoadSessionSnapshotsAsync"
-          assert text.count(old) == 1, "ZaloBotService command anchor changed"
-          text = text.replace(old, new)
-
-          old = "10. Gửi ảnh card 3 team\\n12. Lọc thành viên ít hoạt động (có quyền)"
-          new = "10. Gửi ảnh card 3 team\\n11. Triệu hồi VolleyVerse card (@Npc 11 hoặc @Npc 11 @Tên)\\n12. Lọc thành viên ít hoạt động (có quyền)"
-          assert text.count(old) == 1, "ZaloBotService help anchor changed"
-          text = text.replace(old, new)
-          service.write_text(text)
-
-          marker.write_text("patched\n")
-      - name: Commit integration patch
-        run: |
-          if git diff --quiet; then exit 0; fi
-          git config user.name "Longdotnet"
-          git config user.email "189841499+Longdotnet@users.noreply.github.com"
-          git add server/VolleyDraft.Api/Program.cs server/VolleyDraft.Api/Services/ZaloBotService.cs server/VolleyDraft.Api/Services/Npc11/.patched
-          git commit -m "feat: wire NPC11 VolleyVerse into Zalo bot"
-          git push origin HEAD:agent/npc11-volleyverse
+          dotnet-version: 9.0.x
+      - name: Restore backend tests
+        run: dotnet restore server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj
+      - name: Run backend tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-restore --logger "console;verbosity=normal"
