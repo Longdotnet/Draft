@@ -19,6 +19,10 @@ import type {
   ZaloCredentials,
 } from "./contracts.js";
 import {
+  enrichMemberAvatars,
+  type AvatarProfileApi,
+} from "./avatarResolver.js";
+import {
   mockCredentials,
   mockGroups,
   mockHistoricalMessages,
@@ -42,7 +46,7 @@ import {
 
 type QrLoginStatus = "waiting_qr" | "waiting_scan" | "waiting_confirm" | "completed" | "expired" | "declined" | "failed";
 
-type MinimalZaloApi = {
+type MinimalZaloApi = AvatarProfileApi & {
   getOwnId(): string;
   fetchAccountInfo(): Promise<{ displayName?: string; zaloName?: string; avatar?: string }>;
   getAllGroups(): Promise<{ gridVerMap?: Record<string, string> }>;
@@ -808,7 +812,25 @@ export async function getMembers(credentials: ZaloCredentials, memberIds: string
   const uniqueIds = [...new Set(memberIds.map(normalizeMemberId).filter(Boolean))];
   if (mockMode) return mockMembers.filter((member) => uniqueIds.includes(member.zaloUserId));
   const api = await getApi(credentials);
-  return resolveMembers(api, uniqueIds);
+  const members = await resolveMembers(api, uniqueIds);
+  let largeAvatarFailures = 0;
+  let fullAvatarFailures = 0;
+  const enriched = await enrichMemberAvatars(api, members, (operation) => {
+    if (operation === "getAvatarUrlProfile") largeAvatarFailures += 1;
+    else fullAvatarFailures += 1;
+  });
+  const upgradedCount = enriched.filter((member, index) =>
+    member.avatarUrl && member.avatarUrl !== members[index]?.avatarUrl,
+  ).length;
+  if (upgradedCount > 0 || largeAvatarFailures > 0 || fullAvatarFailures > 0) {
+    console.info("[Zalo bridge] avatar enrichment", {
+      requested: uniqueIds.length,
+      upgraded: upgradedCount,
+      largeAvatarFailures,
+      fullAvatarFailures,
+    });
+  }
+  return enriched;
 }
 
 function readMemberIds(value: unknown): string[] {
