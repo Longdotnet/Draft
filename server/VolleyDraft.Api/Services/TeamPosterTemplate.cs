@@ -18,27 +18,30 @@ public enum TeamPosterTemplate
 public static class TeamPosterTemplateCatalog
 {
     public const int Count = 10;
-    public const int ActiveCount = 2;
+    public const int ActiveCount = 4;
 
     public static readonly IReadOnlyList<int> AllIds =
         Enumerable.Range(1, Count).ToArray();
 
-    // Phase 1: keep every renderer available in code, but only Poster 3 and 4
-    // participate in new poster assignment/rotation.
+    // Active collection: the four redesigned poster directions are available to @bot 9/@bot 10.
+    // Posters 5-10 remain implemented but disabled from new assignment until they receive their redesign pass.
     public static readonly IReadOnlyList<int> ActiveIds =
-        [(int)TeamPosterTemplate.CyberStorm, (int)TeamPosterTemplate.MonolithBroadcast];
+        [
+            (int)TeamPosterTemplate.NeonArena,
+            (int)TeamPosterTemplate.ChampionshipGold,
+            (int)TeamPosterTemplate.CyberStorm,
+            (int)TeamPosterTemplate.MonolithBroadcast
+        ];
 
     public static bool IsValid(int templateId) => templateId is >= 1 and <= Count;
 
-    public static bool IsActive(int templateId) =>
-        templateId == (int)TeamPosterTemplate.CyberStorm ||
-        templateId == (int)TeamPosterTemplate.MonolithBroadcast;
+    public static bool IsActive(int templateId) => templateId is >= 1 and <= 4;
 
     public static string GetDisplayName(int templateId) => (TeamPosterTemplate)templateId switch
     {
         TeamPosterTemplate.NeonArena => "Court Index",
         TeamPosterTemplate.ChampionshipGold => "Hall of Champions",
-        TeamPosterTemplate.CyberStorm => "Cyber Storm",
+        TeamPosterTemplate.CyberStorm => "Orbit League",
         TeamPosterTemplate.MonolithBroadcast => "Monolith Broadcast",
         TeamPosterTemplate.InfernoClash => "Inferno Clash",
         TeamPosterTemplate.RetroArcade => "Retro Arcade",
