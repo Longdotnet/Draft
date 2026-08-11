@@ -1,3 +1,5 @@
+using System.Reflection;
+using SkiaSharp;
 using VolleyDraft.Api.Services;
 using VolleyDraft.Api.Services.Avatars;
 using Xunit;
@@ -91,5 +93,19 @@ public sealed class CaptainAvatarSuperResolutionTests
 
         Assert.False(called);
         Assert.Null(result[0].Slots[0].Players[0].AvatarData);
+    }
+
+    [Fact]
+    public void PrepareInput_matches_fixed_224_square_onnx_contract()
+    {
+        using var source = new SKBitmap(160, 120, SKColorType.Rgba8888, SKAlphaType.Premul);
+        var method = typeof(CaptainAvatarSuperResolution).GetMethod(
+            "PrepareInput",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        using var prepared = Assert.IsType<SKBitmap>(method!.Invoke(null, new object[] { source }));
+        Assert.Equal(224, prepared.Width);
+        Assert.Equal(224, prepared.Height);
     }
 }
