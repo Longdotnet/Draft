@@ -65,8 +65,8 @@ test("enrichMemberAvatars uses full avatar and batches the 240px fallback reques
     "https://cdn.example/202-full.jpg",
   ]);
   assert.equal(largeCalls.length, 1);
-  assert.deepEqual(largeCalls[0].ids, ["101", "202"]);
-  assert.equal(largeCalls[0].size, ZALO_LARGE_AVATAR_SIZE);
+  assert.deepEqual(largeCalls[0]!.ids, ["101", "202"]);
+  assert.equal(largeCalls[0]!.size, ZALO_LARGE_AVATAR_SIZE);
   assert.deepEqual(fullCalls.sort(), ["101", "202"]);
 });
 
@@ -86,7 +86,7 @@ test("enrichMemberAvatars falls back to 240px profile avatar when full avatar fa
     (operation) => failures.push(operation),
   );
 
-  assert.equal(result[0].avatarUrl, "https://cdn.example/101-240.jpg");
+  assert.equal(result[0]!.avatarUrl, "https://cdn.example/101-240.jpg");
   assert.deepEqual(failures, ["getFullAvatar"]);
 });
 
@@ -104,5 +104,5 @@ test("enrichMemberAvatars keeps current avatar when all enrichment APIs fail", a
     [member("101", current)],
   );
 
-  assert.equal(result[0].avatarUrl, current);
+  assert.equal(result[0]!.avatarUrl, current);
 });
