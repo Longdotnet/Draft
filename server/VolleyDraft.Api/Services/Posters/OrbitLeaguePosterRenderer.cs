@@ -240,7 +240,7 @@ internal static class OrbitLeaguePosterRenderer
         var rows = Math.Max(1, (int)Math.Ceiling(slots.Count / (double)columns));
         var cellWidth = rect.Width / columns;
         var cellHeight = rect.Height / rows;
-        var avatarSize = Math.Min(side == TeamZoneSide.Bottom ? 64 : 58, Math.Min(cellWidth * .58f, cellHeight * .58f));
+        var avatarSize = Math.Min(side == TeamZoneSide.Bottom ? 64f : 58f, Math.Min(cellWidth * .58f, cellHeight * .58f));
 
         for (var i = 0; i < slots.Count; i++)
         {
@@ -298,8 +298,8 @@ internal static class OrbitLeaguePosterRenderer
     {
         if (string.IsNullOrWhiteSpace(name)) return "PLAYER";
         var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length <= 2) return string.Join(' ', parts);
-        return string.Join(' ', parts.TakeLast(2));
+        if (parts.Length <= 2) return string.Join(" ", parts);
+        return string.Join(" ", parts.TakeLast(2));
     }
 
     private static void DrawZoneGlow(SKCanvas canvas, SKRect rect, SKColor accent, TeamZoneSide side)
@@ -343,7 +343,7 @@ internal static class OrbitLeaguePosterRenderer
             Style = SKPaintStyle.Stroke,
             StrokeWidth = 1.2f,
             IsAntialias = true,
-            PathEffect = SKPathEffect.CreateDash([8, 10], 0)
+            PathEffect = SKPathEffect.CreateDash(new float[] { 8, 10 }, 0)
         };
         var innerRect = new SKRect(rect.Left + inset, rect.Top + inset, rect.Right - inset, rect.Bottom - inset);
         canvas.DrawRoundRect(innerRect, side == TeamZoneSide.Bottom ? 95 : 76, side == TeamZoneSide.Bottom ? 95 : 76, inner);
@@ -401,7 +401,7 @@ internal static class OrbitLeaguePosterRenderer
                 [0f, .68f, 1f],
                 SKShaderTileMode.Clamp)
         };
-        canvas.DrawCircle(center, radius, ball);
+        canvas.DrawCircle(center.X, center.Y, radius, ball);
 
         var clip = canvas.Save();
         using var circlePath = new SKPath();
@@ -419,7 +419,7 @@ internal static class OrbitLeaguePosterRenderer
         canvas.RestoreToCount(clip);
 
         using var outline = new SKPaint { Color = new SKColor(235, 246, 255, 190), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 3 };
-        canvas.DrawCircle(center, radius, outline);
+        canvas.DrawCircle(center.X, center.Y, radius, outline);
 
         DrawOrbit(canvas, new SKRect(center.X - radius - 96, center.Y - radius + 40, center.X + radius + 96, center.Y + radius - 40), -18, 280, new SKColor(120, 220, 255, 155), 2.4f);
         DrawOrbit(canvas, new SKRect(center.X - radius - 68, center.Y - radius - 70, center.X + radius + 68, center.Y + radius + 70), 27, 270, new SKColor(255, 117, 64, 135), 2.0f);
