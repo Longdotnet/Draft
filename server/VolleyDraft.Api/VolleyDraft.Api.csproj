@@ -20,8 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.jpg"
-                      LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg" />
+    <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.png"
+                      LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.png" />
   </ItemGroup>
 
 </Project>
