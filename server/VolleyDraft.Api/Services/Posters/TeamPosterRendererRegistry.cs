@@ -13,7 +13,7 @@ public static class TeamPosterRendererRegistry
         IReadOnlyList<TeamCardTeam> teams) => (TeamPosterTemplate)templateId switch
     {
         TeamPosterTemplate.NeonArena => CourtIndexPosterRenderer.Render(sessionName, startTime, location, teams),
-        TeamPosterTemplate.ChampionshipGold => ChampionshipGoldPosterRenderer.Render(sessionName, startTime, location, teams),
+        TeamPosterTemplate.ChampionshipGold => HallOfChampionsPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.CyberStorm => CyberStormPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.MonolithBroadcast => ClashNightPosterRenderer.Render(sessionName, startTime, location, teams),
         TeamPosterTemplate.InfernoClash => InfernoClashPosterRenderer.Render(sessionName, startTime, location, teams),
