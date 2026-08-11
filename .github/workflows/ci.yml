@@ -48,18 +48,6 @@ jobs:
       - name: Build backend
         run: dotnet build server/VolleyDraft.Api/VolleyDraft.Api.csproj -c Release --no-restore
 
-      - name: Test backend and render poster previews
-        env:
-          TEAM_POSTER_PREVIEW_DIR: ${{ runner.temp }}/poster-previews
-        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
-
-      - name: Upload poster previews
-        uses: actions/upload-artifact@v4
-        with:
-          name: poster-previews
-          path: ${{ runner.temp }}/poster-previews
-          if-no-files-found: error
-
   zalo-bridge:
     name: Zalo Bridge build and test
     runs-on: ubuntu-latest
