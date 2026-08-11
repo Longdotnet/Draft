@@ -1,5 +1,6 @@
 using VolleyDraft.Api.Services;
 using VolleyDraft.Api.Services.Avatars;
+using Xunit;
 
 namespace VolleyDraft.Api.Tests;
 
