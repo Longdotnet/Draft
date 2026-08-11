@@ -267,8 +267,6 @@ public static class CourtIndexPosterRenderer
 
         if (captain is not null)
         {
-            // Keep the actual Zalo avatar colors. Team identity now lives in the frame and typography,
-            // not as a duotone filter over the player's face/clothing.
             PosterDrawing.DrawAvatar(
                 canvas,
                 captain,
@@ -317,139 +315,270 @@ public static class CourtIndexPosterRenderer
     private static void DrawVolleyballStudy(SKCanvas canvas, float x, float y, float width, float height)
     {
         var center = new SKPoint(x + width * .52f, y + height * .43f);
-        var radius = Math.Min(width, height) * .38f;
+        var radius = Math.Min(width, height) * .36f;
 
-        using var shadow = new SKPaint
+        // Court marks sit behind the object so the ball reads as something resting on the court,
+        // not as a symbol with lines painted over it.
+        using (var court = new SKPaint
         {
-            Color = new SKColor(18, 17, 15, 62),
-            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 16),
+            Color = new SKColor(32, 31, 27, 112),
+            StrokeWidth = 8,
+            StrokeCap = SKStrokeCap.Square,
             IsAntialias = true
-        };
-        canvas.DrawOval(
-            new SKRect(
-                center.X - radius * 1.28f,
-                center.Y + radius * .76f,
-                center.X + radius * 1.34f,
-                center.Y + radius * 1.18f),
-            shadow);
+        })
+        {
+            canvas.DrawLine(x + 2, y + height * .79f, x + width - 4, y + height * .60f, court);
+            canvas.DrawLine(center.X + radius * .55f, center.Y + radius * .68f, center.X + radius * .55f, y + height - 4, court);
+        }
 
-        using var ballFill = new SKPaint
+        // Wide cast shadow + tight contact shadow give the sphere believable weight.
+        using (var castShadow = new SKPaint
+        {
+            Color = new SKColor(25, 23, 20, 42),
+            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 19),
+            IsAntialias = true
+        })
+        {
+            canvas.DrawOval(
+                new SKRect(
+                    center.X - radius * .80f,
+                    center.Y + radius * .78f,
+                    center.X + radius * 1.47f,
+                    center.Y + radius * 1.16f),
+                castShadow);
+        }
+
+        using (var contactShadow = new SKPaint
+        {
+            Color = new SKColor(24, 22, 19, 78),
+            MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 6),
+            IsAntialias = true
+        })
+        {
+            canvas.DrawOval(
+                new SKRect(
+                    center.X - radius * .57f,
+                    center.Y + radius * .83f,
+                    center.X + radius * .70f,
+                    center.Y + radius * 1.02f),
+                contactShadow);
+        }
+
+        var ballSave = canvas.Save();
+        canvas.Translate(center.X, center.Y);
+        canvas.RotateDegrees(-14);
+        canvas.Translate(-center.X, -center.Y);
+
+        using var sphere = new SKPath();
+        sphere.AddCircle(center.X, center.Y, radius);
+        var ballRect = new SKRect(center.X - radius, center.Y - radius, center.X + radius, center.Y + radius);
+
+        using (var basePaint = new SKPaint
         {
             IsAntialias = true,
             Shader = SKShader.CreateRadialGradient(
-                new SKPoint(center.X - radius * .28f, center.Y - radius * .34f),
-                radius * 1.45f,
-                [new SKColor(252, 250, 243), new SKColor(224, 219, 208), new SKColor(190, 185, 175)],
-                [0f, .67f, 1f],
+                new SKPoint(center.X - radius * .34f, center.Y - radius * .38f),
+                radius * 1.42f,
+                [new SKColor(255, 253, 246), new SKColor(232, 227, 217), new SKColor(184, 178, 166)],
+                [0f, .66f, 1f],
                 SKShaderTileMode.Clamp)
-        };
-        canvas.DrawCircle(center, radius, ballFill);
-
-        using var circlePath = new SKPath();
-        circlePath.AddCircle(center.X, center.Y, radius);
-        var save = canvas.Save();
-        canvas.ClipPath(circlePath, SKClipOperation.Intersect, true);
-
-        using var darkPanel = new SKPaint
+        })
         {
-            Color = new SKColor(40, 39, 36, 235),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = radius * .34f,
-            StrokeCap = SKStrokeCap.Round,
-            IsAntialias = true
-        };
-        using var grayPanel = new SKPaint
-        {
-            Color = new SKColor(111, 108, 101, 190),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = radius * .24f,
-            StrokeCap = SKStrokeCap.Round,
-            IsAntialias = true
-        };
-
-        using (var band = new SKPath())
-        {
-            band.MoveTo(center.X - radius * 1.12f, center.Y - radius * .28f);
-            band.CubicTo(
-                center.X - radius * .42f, center.Y - radius * .70f,
-                center.X + radius * .28f, center.Y - radius * .26f,
-                center.X + radius * 1.08f, center.Y - radius * .54f);
-            canvas.DrawPath(band, darkPanel);
+            canvas.DrawCircle(center, radius, basePaint);
         }
 
-        using (var band = new SKPath())
+        var clipSave = canvas.Save();
+        canvas.ClipPath(sphere, SKClipOperation.Intersect, true);
+
+        using var panelIvory = new SKPaint { Color = new SKColor(246, 242, 231, 238), IsAntialias = true };
+        using var panelWarm = new SKPaint { Color = new SKColor(218, 213, 202, 232), IsAntialias = true };
+        using var panelMid = new SKPaint { Color = new SKColor(142, 138, 130, 220), IsAntialias = true };
+        using var panelGraphite = new SKPaint { Color = new SKColor(64, 63, 59, 222), IsAntialias = true };
+        using var panelCharcoal = new SKPaint { Color = new SKColor(38, 38, 36, 224), IsAntialias = true };
+
+        // Six filled panels, rather than thick decorative strokes. Their seams are based on the
+        // recognizable volleyball topology used by Tabler's ball-volleyball icon: a center junction
+        // with curved seams that sweep toward the circumference in six directions.
+        using (var panel = new SKPath())
         {
-            band.MoveTo(center.X + radius * .20f, center.Y - radius * 1.08f);
-            band.CubicTo(
-                center.X + radius * .56f, center.Y - radius * .46f,
-                center.X + radius * .14f, center.Y + radius * .16f,
-                center.X + radius * .72f, center.Y + radius * 1.06f);
-            canvas.DrawPath(band, grayPanel);
+            panel.MoveTo(center.X, center.Y);
+            panel.CubicTo(center.X - radius * .12f, center.Y - radius * .42f, center.X - radius * .20f, center.Y - radius * .76f, center.X - radius * .08f, center.Y - radius * 1.02f);
+            panel.ArcTo(ballRect, -95, 67, false);
+            panel.CubicTo(center.X + radius * .43f, center.Y - radius * .72f, center.X + radius * .31f, center.Y - radius * .24f, center.X, center.Y);
+            panel.Close();
+            canvas.DrawPath(panel, panelIvory);
         }
 
-        using (var band = new SKPath())
+        using (var panel = new SKPath())
         {
-            band.MoveTo(center.X - radius * .96f, center.Y + radius * .80f);
-            band.CubicTo(
-                center.X - radius * .48f, center.Y + radius * .24f,
-                center.X - radius * .10f, center.Y + radius * .22f,
-                center.X + radius * .42f, center.Y + radius * .72f);
-            canvas.DrawPath(band, darkPanel);
+            panel.MoveTo(center.X, center.Y);
+            panel.CubicTo(center.X + radius * .33f, center.Y - radius * .28f, center.X + radius * .63f, center.Y - radius * .42f, center.X + radius * .91f, center.Y - radius * .43f);
+            panel.ArcTo(ballRect, -28, 74, false);
+            panel.CubicTo(center.X + radius * .76f, center.Y + radius * .28f, center.X + radius * .39f, center.Y + radius * .24f, center.X, center.Y);
+            panel.Close();
+            canvas.DrawPath(panel, panelGraphite);
         }
 
-        canvas.RestoreToCount(save);
+        using (var panel = new SKPath())
+        {
+            panel.MoveTo(center.X, center.Y);
+            panel.CubicTo(center.X + radius * .41f, center.Y + radius * .24f, center.X + radius * .69f, center.Y + radius * .50f, center.X + radius * .72f, center.Y + radius * .72f);
+            panel.ArcTo(ballRect, 46, 63, false);
+            panel.CubicTo(center.X + radius * .27f, center.Y + radius * .83f, center.X + radius * .13f, center.Y + radius * .40f, center.X, center.Y);
+            panel.Close();
+            canvas.DrawPath(panel, panelWarm);
+        }
+
+        using (var panel = new SKPath())
+        {
+            panel.MoveTo(center.X, center.Y);
+            panel.CubicTo(center.X + radius * .05f, center.Y + radius * .42f, center.X - radius * .18f, center.Y + radius * .73f, center.X - radius * .43f, center.Y + radius * .90f);
+            panel.ArcTo(ballRect, 109, 61, false);
+            panel.CubicTo(center.X - radius * .52f, center.Y + radius * .54f, center.X - radius * .31f, center.Y + radius * .16f, center.X, center.Y);
+            panel.Close();
+            canvas.DrawPath(panel, panelCharcoal);
+        }
+
+        using (var panel = new SKPath())
+        {
+            panel.MoveTo(center.X, center.Y);
+            panel.CubicTo(center.X - radius * .32f, center.Y + radius * .17f, center.X - radius * .67f, center.Y + radius * .14f, center.X - radius * .98f, center.Y + radius * .02f);
+            panel.ArcTo(ballRect, 170, 61, false);
+            panel.CubicTo(center.X - radius * .74f, center.Y - radius * .31f, center.X - radius * .39f, center.Y - radius * .22f, center.X, center.Y);
+            panel.Close();
+            canvas.DrawPath(panel, panelMid);
+        }
+
+        using (var panel = new SKPath())
+        {
+            panel.MoveTo(center.X, center.Y);
+            panel.CubicTo(center.X - radius * .36f, center.Y - radius * .21f, center.X - radius * .56f, center.Y - radius * .50f, center.X - radius * .63f, center.Y - radius * .78f);
+            panel.ArcTo(ballRect, 231, 34, false);
+            panel.CubicTo(center.X - radius * .28f, center.Y - radius * .76f, center.X - radius * .12f, center.Y - radius * .38f, center.X, center.Y);
+            panel.Close();
+            canvas.DrawPath(panel, panelWarm);
+        }
+
+        // A shared spherical lighting pass unifies the flat panel fills into one three-dimensional ball.
+        using (var highlight = new SKPaint
+        {
+            BlendMode = SKBlendMode.Screen,
+            IsAntialias = true,
+            Shader = SKShader.CreateRadialGradient(
+                new SKPoint(center.X - radius * .38f, center.Y - radius * .43f),
+                radius * .95f,
+                [new SKColor(255, 255, 250, 110), new SKColor(255, 255, 250, 0)],
+                [0f, 1f],
+                SKShaderTileMode.Clamp)
+        })
+        {
+            canvas.DrawCircle(center, radius, highlight);
+        }
+
+        using (var shade = new SKPaint
+        {
+            BlendMode = SKBlendMode.Multiply,
+            IsAntialias = true,
+            Shader = SKShader.CreateRadialGradient(
+                new SKPoint(center.X + radius * .42f, center.Y + radius * .52f),
+                radius * 1.10f,
+                [new SKColor(80, 75, 68, 0), new SKColor(67, 62, 57, 82)],
+                [0f, 1f],
+                SKShaderTileMode.Clamp)
+        })
+        {
+            canvas.DrawCircle(center, radius, shade);
+        }
+
+        canvas.RestoreToCount(clipSave);
 
         using var seam = new SKPaint
         {
-            Color = Ink,
+            Color = new SKColor(31, 30, 27, 215),
             Style = SKPaintStyle.Stroke,
-            StrokeWidth = 2.4f,
-            IsAntialias = true
-        };
-        using var lightSeam = new SKPaint
-        {
-            Color = new SKColor(246, 241, 231, 210),
-            Style = SKPaintStyle.Stroke,
-            StrokeWidth = 3.2f,
+            StrokeWidth = 3.0f,
+            StrokeCap = SKStrokeCap.Round,
+            StrokeJoin = SKStrokeJoin.Round,
             IsAntialias = true
         };
 
-        var ballRect = new SKRect(center.X - radius, center.Y - radius, center.X + radius, center.Y + radius);
-        canvas.DrawArc(ballRect, -72, 134, false, seam);
-        canvas.DrawArc(new SKRect(ballRect.Left - radius * .16f, ballRect.Top + radius * .12f, ballRect.Right - radius * .08f, ballRect.Bottom + radius * .17f), 15, 164, false, seam);
-        canvas.DrawArc(new SKRect(ballRect.Left + radius * .15f, ballRect.Top - radius * .18f, ballRect.Right + radius * .18f, ballRect.Bottom - radius * .09f), 130, 150, false, lightSeam);
+        // Central seam -> lower-right, mirroring the first recognizable seam from Tabler.
+        using (var path = new SKPath())
+        {
+            path.MoveTo(center.X, center.Y);
+            path.CubicTo(center.X + radius * .22f, center.Y + radius * .18f, center.X + radius * .53f, center.Y + radius * .40f, center.X + radius * .86f, center.Y + radius * .46f);
+            canvas.DrawPath(path, seam);
+        }
+
+        using (var path = new SKPath())
+        {
+            path.MoveTo(center.X - radius * .44f, center.Y + radius * .22f);
+            path.CubicTo(center.X - radius * .16f, center.Y + radius * .61f, center.X + radius * .12f, center.Y + radius * .80f, center.X + radius * .48f, center.Y + radius * .88f);
+            canvas.DrawPath(path, seam);
+        }
+
+        // Central seam -> lower-left.
+        using (var path = new SKPath())
+        {
+            path.MoveTo(center.X, center.Y);
+            path.CubicTo(center.X - radius * .30f, center.Y + radius * .10f, center.X - radius * .65f, center.Y + radius * .16f, center.X - radius * .91f, center.Y + radius * .48f);
+            canvas.DrawPath(path, seam);
+        }
+
+        // Upper-left sweep toward center.
+        using (var path = new SKPath())
+        {
+            path.MoveTo(center.X - radius * .94f, center.Y - radius * .10f);
+            path.CubicTo(center.X - radius * .67f, center.Y - radius * .45f, center.X - radius * .28f, center.Y - radius * .46f, center.X, center.Y);
+            canvas.DrawPath(path, seam);
+        }
+
+        // Top seam into the central junction.
+        using (var path = new SKPath())
+        {
+            path.MoveTo(center.X - radius * .08f, center.Y - radius * .98f);
+            path.CubicTo(center.X + radius * .08f, center.Y - radius * .70f, center.X + radius * .13f, center.Y - radius * .31f, center.X, center.Y);
+            canvas.DrawPath(path, seam);
+        }
+
+        // Right-side sweep gives the ball the characteristic segmented volleyball shell.
+        using (var path = new SKPath())
+        {
+            path.MoveTo(center.X + radius * .55f, center.Y - radius * .80f);
+            path.CubicTo(center.X + radius * .83f, center.Y - radius * .42f, center.X + radius * .81f, center.Y + radius * .04f, center.X + radius * .59f, center.Y + radius * .50f);
+            canvas.DrawPath(path, seam);
+        }
 
         using var outline = new SKPaint
         {
-            Color = Ink,
+            Color = new SKColor(25, 24, 22, 235),
             Style = SKPaintStyle.Stroke,
-            StrokeWidth = 3.2f,
+            StrokeWidth = 3.4f,
             IsAntialias = true
         };
         canvas.DrawCircle(center, radius, outline);
 
-        // Print grain constrained to the ball gives it the tactile risograph feel while keeping
-        // the silhouette and volleyball panels unmistakable at Zalo thumbnail size.
+        // Halftone density follows the sphere's light direction: sparse at upper-left, denser in
+        // lower-right shadow. This keeps the print character without flattening the object.
         var random = new Random(1801);
         using var grain = new SKPaint { IsAntialias = true };
-        for (var index = 0; index < 1900; index++)
+        for (var index = 0; index < 2200; index++)
         {
             var angle = random.NextDouble() * Math.PI * 2;
-            var distance = Math.Sqrt(random.NextDouble()) * radius;
+            var distance = Math.Sqrt(random.NextDouble()) * radius * .985f;
             var px = center.X + Math.Cos(angle) * distance;
             var py = center.Y + Math.Sin(angle) * distance;
-            grain.Color = new SKColor(24, 23, 21, (byte)random.Next(10, 42));
-            canvas.DrawCircle((float)px, (float)py, random.NextDouble() < .88 ? .72f : 1.25f, grain);
+            var nx = (px - center.X) / radius;
+            var ny = (py - center.Y) / radius;
+            var shadowFactor = Math.Clamp((nx + ny + 1.15) / 3.15, 0.12, 0.78);
+            if (random.NextDouble() > shadowFactor)
+                continue;
+
+            grain.Color = new SKColor(22, 21, 19, (byte)random.Next(12, 49));
+            canvas.DrawCircle((float)px, (float)py, random.NextDouble() < .90 ? .68f : 1.18f, grain);
         }
 
-        using var court = new SKPaint
-        {
-            Color = new SKColor(32, 31, 27, 128),
-            StrokeWidth = 9,
-            IsAntialias = true
-        };
-        canvas.DrawLine(x + 6, y + height * .79f, x + width - 2, y + height * .58f, court);
-        canvas.DrawLine(center.X + radius * .46f, center.Y + radius * .55f, center.X + radius * .46f, y + height - 8, court);
+        canvas.RestoreToCount(ballSave);
     }
 
     private static void DrawFooter(SKCanvas canvas)
