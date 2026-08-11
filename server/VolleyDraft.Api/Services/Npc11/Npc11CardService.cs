@@ -25,7 +25,8 @@ public sealed class Npc11CardService(
     private const int MaxArtBytes = 8 * 1024 * 1024;
     private static readonly HashSet<string> Styles = new(StringComparer.OrdinalIgnoreCase)
     {
-        "classic", "cyber", "cyberpunk", "cute", "kawaii", "dark", "anime", "real", "realistic", "photo", "legend", "legendary"
+        "classic", "cyber", "cyberpunk", "cute", "kawaii", "dark", "anime",
+        "real", "realistic", "photo", "legend", "legendary"
     };
 
     public async Task<Npc11CardResult> GenerateAsync(
@@ -38,20 +39,18 @@ public sealed class Npc11CardService(
             .SingleOrDefaultAsync(item => item.Id == activeConnectionId, cancellationToken)
             ?? throw new InvalidOperationException("Không tìm thấy kết nối Zalo để tạo VolleyVerse card.");
 
+        var senderId = NormalizeId(incoming.SenderId);
         var targetId = incoming.Mentions
             .Select(mention => NormalizeId(mention.Uid))
             .FirstOrDefault(id => id.Length > 0 && id != NormalizeId(incoming.BotId))
-            ?? NormalizeId(incoming.SenderId);
-        var fallbackName = targetId == NormalizeId(incoming.SenderId)
-            ? incoming.SenderName
-            : "VolleyVerse Player";
+            ?? senderId;
+        var fallbackName = targetId == senderId ? incoming.SenderName : "VolleyVerse Player";
 
         var style = ParseStyle(question);
         var member = await ResolveMemberAsync(connection, targetId, cancellationToken);
-        var displayName = member?.DisplayName?.Trim();
-        if (string.IsNullOrWhiteSpace(displayName)) displayName = fallbackName;
+        var displayName = string.IsNullOrWhiteSpace(member?.DisplayName) ? fallbackName : member!.DisplayName.Trim();
         var avatarBytes = await LoadReferenceImageAsync(member?.AvatarUrl, cancellationToken);
-        var profile = Npc11CharacterEngine.Create(targetId, displayName!, style);
+        var profile = Npc11CharacterEngine.Create(targetId, displayName, style);
 
         var provider = (configuration["Npc11:ArtProvider"] ?? "flux2-klein-4b").Trim().ToLowerInvariant();
         var avatarHash = avatarBytes is { Length: > 0 }
@@ -59,23 +58,42 @@ public sealed class Npc11CardService(
             : "no-avatar";
         var cacheMaterial = $"npc11-v1|{Npc11CharacterEngine.Season}|{profile.UserId}|{profile.Style}|{provider}|{avatarHash}";
         var cacheHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cacheMaterial))).ToLowerInvariant();
-        var fileName = $"npc11-{cacheHash[..24]}.png";
+        var aiFileName = $"npc11-ai-{cacheHash[..24]}.png";
+        var fallbackFileName = $"npc11-fallback-{cacheHash[..24]}.png";
+        var aiRequested = ShouldAttemptAi(avatarBytes);
 
-        var cached = await db.ZaloBotImageAssets.AsNoTracking()
-            .Where(asset => asset.AdminUserId == connection.AdminUserId && asset.FileName == fileName)
-            .OrderByDescending(asset => asset.CreatedAt)
-            .Select(asset => new { asset.Id })
-            .FirstOrDefaultAsync(cancellationToken);
-        if (cached is not null)
+        var preferredName = aiRequested ? aiFileName : fallbackFileName;
+        var preferredId = await FindCachedAssetIdAsync(connection.AdminUserId, preferredName, cancellationToken);
+        if (preferredId is not null)
         {
             return new Npc11CardResult(
-                BuildMessage(profile, aiArtUsed: true, cached: true),
-                BuildPublicImageUrl(cached.Id),
-                true,
+                BuildMessage(profile, aiRequested, true),
+                BuildPublicImageUrl(preferredId),
+                aiRequested,
                 true);
         }
 
-        var aiArt = await TryGenerateAiArtAsync(profile, avatarBytes, provider, cancellationToken);
+        byte[]? aiArt = null;
+        if (aiRequested)
+        {
+            aiArt = await TryGenerateAiArtAsync(profile, avatarBytes, provider, cancellationToken);
+            if (aiArt is null)
+            {
+                // The AI cache stays empty so future calls retry the worker. Reuse one
+                // persistent fallback image while the worker is offline to avoid DB growth.
+                var fallbackId = await FindCachedAssetIdAsync(connection.AdminUserId, fallbackFileName, cancellationToken);
+                if (fallbackId is not null)
+                {
+                    return new Npc11CardResult(
+                        BuildMessage(profile, false, true),
+                        BuildPublicImageUrl(fallbackId),
+                        false,
+                        true);
+                }
+            }
+        }
+
+        var usedAi = aiArt is { Length: > 0 };
         var hero = aiArt ?? avatarBytes;
         var png = Npc11CardRenderer.Render(profile, hero);
         if (png.Length == 0 || png.Length > MaxArtBytes)
@@ -84,7 +102,7 @@ public sealed class Npc11CardService(
         var asset = new ZaloBotImageAsset
         {
             AdminUserId = connection.AdminUserId,
-            FileName = fileName,
+            FileName = usedAi ? aiFileName : fallbackFileName,
             ContentType = "image/png",
             Size = png.Length,
             Data = png,
@@ -93,7 +111,6 @@ public sealed class Npc11CardService(
         db.ZaloBotImageAssets.Add(asset);
         await db.SaveChangesAsync(cancellationToken);
 
-        var usedAi = aiArt is { Length: > 0 };
         logger.LogInformation(
             "NPC11 VolleyVerse rendered Target={TargetId} Style={Style} Provider={Provider} AiArt={AiArt} AvatarBytes={AvatarBytes} OutputBytes={OutputBytes}",
             targetId,
@@ -102,8 +119,29 @@ public sealed class Npc11CardService(
             usedAi,
             avatarBytes?.Length ?? 0,
             png.Length);
-        return new Npc11CardResult(BuildMessage(profile, usedAi, false), BuildPublicImageUrl(asset.Id), usedAi, false);
+        return new Npc11CardResult(
+            BuildMessage(profile, usedAi, false),
+            BuildPublicImageUrl(asset.Id),
+            usedAi,
+            false);
     }
+
+    private bool ShouldAttemptAi(byte[]? referenceBytes)
+    {
+        if (!configuration.GetValue("Npc11:AiEnabled", false) || referenceBytes is not { Length: > 0 }) return false;
+        var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');
+        return Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
+    }
+
+    private async Task<string?> FindCachedAssetIdAsync(
+        string adminUserId,
+        string fileName,
+        CancellationToken cancellationToken) =>
+        await db.ZaloBotImageAssets.AsNoTracking()
+            .Where(asset => asset.AdminUserId == adminUserId && asset.FileName == fileName)
+            .OrderByDescending(asset => asset.CreatedAt)
+            .Select(asset => asset.Id)
+            .FirstOrDefaultAsync(cancellationToken);
 
     private async Task<BridgeMember?> ResolveMemberAsync(
         ZaloConnection connection,
@@ -115,7 +153,8 @@ public sealed class Npc11CardService(
             using var credentialsDocument = JsonDocument.Parse(protector.Unprotect(connection.EncryptedCredentials));
             var credentials = credentialsDocument.RootElement.Clone();
             var members = await bridge.GetMembersAsync(credentials, [targetId]);
-            return members.FirstOrDefault(member => NormalizeId(member.ZaloUserId) == targetId) ?? members.FirstOrDefault();
+            return members.FirstOrDefault(member => NormalizeId(member.ZaloUserId) == targetId)
+                   ?? members.FirstOrDefault();
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or CryptographicException or InvalidOperationException)
         {
@@ -150,6 +189,7 @@ public sealed class Npc11CardService(
                 if (output.Length + read > MaxReferenceBytes) return null;
                 await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             }
+
             var bytes = output.ToArray();
             using var decoded = SKBitmap.Decode(bytes);
             return decoded is not null && decoded.Width > 0 && decoded.Height > 0 ? bytes : null;
@@ -167,21 +207,16 @@ public sealed class Npc11CardService(
         string provider,
         CancellationToken cancellationToken)
     {
-        if (!configuration.GetValue("Npc11:AiEnabled", false)) return null;
         if (referenceBytes is not { Length: > 0 }) return null;
         var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var workerUri) || workerUri.Scheme is not ("http" or "https"))
-        {
-            logger.LogWarning("NPC11 AI is enabled but ArtWorkerBaseUrl is missing or invalid; using deterministic fallback card");
             return null;
-        }
 
-        var prompt = BuildArtPrompt(profile);
         var request = new Npc11ArtWorkerRequest(
             provider,
             profile.Seed,
             profile.Style,
-            prompt,
+            BuildArtPrompt(profile),
             [new Npc11ArtReference("subject", DetectMime(referenceBytes), Convert.ToBase64String(referenceBytes))],
             new Npc11ArtOutput(1024, 1365, "png"));
 
@@ -198,18 +233,21 @@ public sealed class Npc11CardService(
             };
             var key = configuration["Npc11:ArtWorkerKey"];
             if (!string.IsNullOrWhiteSpace(key)) message.Headers.TryAddWithoutValidation("x-npc11-key", key);
+
             using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {
                 logger.LogWarning("NPC11 art worker returned HTTP {StatusCode}; using fallback", (int)response.StatusCode);
                 return null;
             }
+
             var payload = await response.Content.ReadFromJsonAsync<Npc11ArtWorkerResponse>(cancellationToken: timeout.Token);
             if (payload is null || !payload.Success || string.IsNullOrWhiteSpace(payload.ImageBase64)) return null;
             byte[] imageBytes;
             try { imageBytes = Convert.FromBase64String(payload.ImageBase64); }
             catch (FormatException) { return null; }
             if (imageBytes.Length is <= 0 or > MaxArtBytes) return null;
+
             using var decoded = SKBitmap.Decode(imageBytes);
             if (decoded is null || decoded.Width < 512 || decoded.Height < 512) return null;
             logger.LogInformation(
@@ -259,7 +297,8 @@ public sealed class Npc11CardService(
     private static string ParseStyle(string question)
     {
         var tokens = question.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        var matched = tokens.Select(token => token.Trim('"', '\'', ',', '.', '!', '?', ':', ';').ToLowerInvariant())
+        var matched = tokens
+            .Select(token => token.Trim('"', '\'', ',', '.', '!', '?', ':', ';').ToLowerInvariant())
             .FirstOrDefault(Styles.Contains);
         return Npc11CharacterEngine.NormalizeStyle(matched);
     }
@@ -299,8 +338,10 @@ public sealed class Npc11CardService(
                    !(ipv4[0] == 172 && ipv4[1] is >= 16 and <= 31) &&
                    !(ipv4[0] == 192 && ipv4[1] == 168);
         }
+
         var bytes = address.GetAddressBytes();
-        return bytes.Length < 2 || !(bytes[0] == 0xfc || bytes[0] == 0xfd || (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80));
+        return bytes.Length < 2 ||
+               !(bytes[0] == 0xfc || bytes[0] == 0xfd || (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80));
     }
 }
 
