@@ -16,7 +16,7 @@ function member(id: string, avatarUrl = "https://s120.example/avatar.jpg"): Brid
   };
 }
 
-test("chooseBestAvatarUrl prefers full avatar over backup, large and current", () => {
+test("chooseBestAvatarUrl keeps the fetchable large profile url ahead of unverified full urls", () => {
   assert.equal(
     chooseBestAvatarUrl({
       current: "https://cdn.example/current.jpg",
@@ -24,24 +24,24 @@ test("chooseBestAvatarUrl prefers full avatar over backup, large and current", (
       backupFull: "https://cdn.example/backup.jpg",
       full: "https://cdn.example/full.jpg",
     }),
-    "https://cdn.example/full.jpg",
+    "https://cdn.example/large.jpg",
   );
 });
 
-test("chooseBestAvatarUrl rejects non-http candidates and falls back safely", () => {
+test("chooseBestAvatarUrl rejects non-http large candidate and falls back safely", () => {
   assert.equal(
     chooseBestAvatarUrl({
       current: "https://cdn.example/current.jpg",
       large: "javascript:alert(1)",
-      full: "file:///tmp/avatar.jpg",
+      full: "https://cdn.example/unverified-full.jpg",
     }),
     "https://cdn.example/current.jpg",
   );
 });
 
-test("enrichMemberAvatars uses full avatar and batches the 240px fallback request", async () => {
+test("enrichMemberAvatars upgrades members with one batched 240px profile request", async () => {
   const largeCalls: Array<{ ids: string[]; size?: number }> = [];
-  const fullCalls: string[] = [];
+  let fullCalls = 0;
   const result = await enrichMemberAvatars(
     {
       async getAvatarUrlProfile(ids, size) {
@@ -50,7 +50,7 @@ test("enrichMemberAvatars uses full avatar and batches the 240px fallback reques
         return Object.fromEntries(list.map((id) => [id, { avatar: `https://cdn.example/${id}-240.jpg` }]));
       },
       async getFullAvatar(id) {
-        fullCalls.push(id);
+        fullCalls += 1;
         return {
           full_avatar: `https://cdn.example/${id}-full.jpg`,
           bk_full_avatar: `https://cdn.example/${id}-backup.jpg`,
@@ -61,54 +61,36 @@ test("enrichMemberAvatars uses full avatar and batches the 240px fallback reques
   );
 
   assert.deepEqual(result.map((item) => item.avatarUrl), [
-    "https://cdn.example/101-full.jpg",
-    "https://cdn.example/202-full.jpg",
+    "https://cdn.example/101-240.jpg",
+    "https://cdn.example/202-240.jpg",
   ]);
   assert.equal(largeCalls.length, 1);
   assert.deepEqual(largeCalls[0]!.ids, ["101", "202"]);
   assert.equal(largeCalls[0]!.size, ZALO_LARGE_AVATAR_SIZE);
-  assert.deepEqual(fullCalls.sort(), ["101", "202"]);
+  assert.equal(fullCalls, 0, "full-avatar urls must not replace a fetchable profile avatar");
 });
 
-test("enrichMemberAvatars falls back to 240px profile avatar when full avatar fails", async () => {
-  const failures: string[] = [];
-  const result = await enrichMemberAvatars(
-    {
-      async getAvatarUrlProfile(ids) {
-        const list = Array.isArray(ids) ? ids : [ids];
-        return Object.fromEntries(list.map((id) => [id, { avatar: `https://cdn.example/${id}-240.jpg` }]));
-      },
-      async getFullAvatar() {
-        throw new Error("full avatar unavailable");
-      },
-    },
-    [member("101")],
-    (operation) => failures.push(operation),
-  );
-
-  assert.equal(result[0]!.avatarUrl, "https://cdn.example/101-240.jpg");
-  assert.deepEqual(failures, ["getFullAvatar"]);
-});
-
-test("enrichMemberAvatars keeps current avatar when all enrichment APIs fail", async () => {
+test("enrichMemberAvatars keeps current avatar when large profile lookup fails", async () => {
   const current = "https://s120.example/current.jpg";
+  const failures: string[] = [];
   const result = await enrichMemberAvatars(
     {
       async getAvatarUrlProfile() {
         throw new Error("large unavailable");
       },
       async getFullAvatar() {
-        throw new Error("full unavailable");
+        throw new Error("full should never be called");
       },
     },
     [member("101", current)],
+    (operation) => failures.push(operation),
   );
 
   assert.equal(result[0]!.avatarUrl, current);
+  assert.deepEqual(failures, ["getAvatarUrlProfile"]);
 });
 
-test("enrichMemberAvatars returns 240px fallback instead of waiting on a stuck full-avatar lookup", async () => {
-  const failures: string[] = [];
+test("enrichMemberAvatars does not wait on getFullAvatar even when that api never resolves", async () => {
   const never = new Promise<{ full_avatar?: string; bk_full_avatar?: string }>(() => undefined);
   const startedAt = Date.now();
   const result = await enrichMemberAvatars(
@@ -122,16 +104,10 @@ test("enrichMemberAvatars returns 240px fallback instead of waiting on a stuck f
       },
     },
     [member("101")],
-    (operation) => failures.push(operation),
-    {
-      largeAvatarTimeoutMs: 50,
-      fullAvatarTimeoutMs: 15,
-      fullAvatarBudgetMs: 30,
-      fullAvatarConcurrency: 1,
-    },
+    undefined,
+    { largeAvatarTimeoutMs: 50 },
   );
 
   assert.equal(result[0]!.avatarUrl, "https://cdn.example/101-240.jpg");
-  assert.ok(Date.now() - startedAt < 250, "slow full avatar lookup should not block team-card rendering");
-  assert.ok(failures.includes("getFullAvatar"));
+  assert.ok(Date.now() - startedAt < 250, "unverified full-avatar lookup must not block team-card rendering");
 });
