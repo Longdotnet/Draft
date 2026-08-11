@@ -58,13 +58,94 @@ public static class CourtIndexCrispPortraitPosterRenderer
             var top = 68f + index * 547f;
             var portrait = new SKRect(952, top + 12, 1366, top + 525);
 
-            if (captain?.AvatarData is { Length: > 0 })
-                DrawCaptainHero(canvas, portrait, captain, index);
+            if (captain is not null)
+            {
+                LogCaptainAvatarDiagnostic(sessionName, team.Name, captain, portrait);
+                if (captain.AvatarData is { Length: > 0 })
+                    DrawCaptainHero(canvas, portrait, captain, index);
+            }
 
             DrawAdaptiveRoster(canvas, team, top, index);
         }
 
         return PosterDrawing.Encode(surface);
+    }
+
+    private static void LogCaptainAvatarDiagnostic(
+        string sessionName,
+        string teamName,
+        TeamCardPlayer captain,
+        SKRect target)
+    {
+        var sourceWidth = 0;
+        var sourceHeight = 0;
+        if (captain.AvatarData is { Length: > 0 })
+        {
+            using var bitmap = SKBitmap.Decode(captain.AvatarData);
+            if (bitmap is not null)
+            {
+                sourceWidth = bitmap.Width;
+                sourceHeight = bitmap.Height;
+            }
+        }
+
+        var diagnostic = BuildAvatarDiagnostic(
+            captain.AvatarUrl,
+            captain.AvatarData?.Length ?? 0,
+            sourceWidth,
+            sourceHeight,
+            target.Width,
+            target.Height);
+
+        Console.WriteLine(FormattableString.Invariant(
+            $"[Poster01AvatarDiagnostic] Session=\"{sessionName}\" Team=\"{teamName}\" Captain=\"{captain.Name}\" " +
+            $"Source=\"{diagnostic.Source}\" Bytes={diagnostic.Bytes} " +
+            $"SourceSize={diagnostic.SourceWidth}x{diagnostic.SourceHeight} " +
+            $"TargetSize={diagnostic.TargetWidth}x{diagnostic.TargetHeight} " +
+            $"RequiredScale={diagnostic.RequiredScale:0.00} Quality={diagnostic.QualityBucket}"));
+    }
+
+    internal static Poster01AvatarDiagnostic BuildAvatarDiagnostic(
+        string? avatarUrl,
+        int avatarBytes,
+        int sourceWidth,
+        int sourceHeight,
+        float targetWidth,
+        float targetHeight)
+    {
+        var safeSource = SanitizeAvatarUrl(avatarUrl);
+        var targetWidthRounded = Math.Max(0, (int)MathF.Round(targetWidth));
+        var targetHeightRounded = Math.Max(0, (int)MathF.Round(targetHeight));
+
+        var requiredScale = sourceWidth > 0 && sourceHeight > 0
+            ? Math.Max(targetWidth / sourceWidth, targetHeight / sourceHeight)
+            : 0f;
+
+        var shortEdge = Math.Min(sourceWidth, sourceHeight);
+        var qualityBucket = shortEdge <= 0
+            ? "Missing"
+            : shortEdge < 300
+                ? "Tiny"
+                : shortEdge < 700
+                    ? "Medium"
+                    : "HD";
+
+        return new Poster01AvatarDiagnostic(
+            safeSource,
+            Math.Max(0, avatarBytes),
+            Math.Max(0, sourceWidth),
+            Math.Max(0, sourceHeight),
+            targetWidthRounded,
+            targetHeightRounded,
+            requiredScale,
+            qualityBucket);
+    }
+
+    private static string SanitizeAvatarUrl(string? avatarUrl)
+    {
+        if (string.IsNullOrWhiteSpace(avatarUrl)) return "none";
+        if (!Uri.TryCreate(avatarUrl, UriKind.Absolute, out var uri)) return "invalid";
+        return uri.GetLeftPart(UriPartial.Path);
     }
 
     private static void DrawCaptainHero(
@@ -315,3 +396,13 @@ public static class CourtIndexCrispPortraitPosterRenderer
         canvas.DrawRect(rect, outer);
     }
 }
+
+internal sealed record Poster01AvatarDiagnostic(
+    string Source,
+    int Bytes,
+    int SourceWidth,
+    int SourceHeight,
+    int TargetWidth,
+    int TargetHeight,
+    float RequiredScale,
+    string QualityBucket);
