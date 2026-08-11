@@ -16,6 +16,7 @@ public sealed partial class ZaloBotService(
     ZaloIntegrationService zaloIntegration,
     SessionDraftService draftService,
     ZaloTeamCardService teamCards,
+    Npc11CardService npc11Cards,
     SessionWaitlistService waitlists,
     ZaloBotActionHistoryService actionHistory,
     ZaloMemberIntelligenceBotService memberIntelligence,
@@ -423,6 +424,14 @@ public sealed partial class ZaloBotService(
         var question = ExtractQuestion(incoming);
         var normalizedQuestion = NormalizeText(question);
 
+        // NPC 11 is intentionally independent from match/session intent routing.
+        // The group still needs the bot enabled, but the card itself only depends on the Zalo identity/avatar.
+        if (Regex.IsMatch(normalizedQuestion, @"^11(?:\s|$)", RegexOptions.CultureInvariant))
+        {
+            var card = await npc11Cards.GenerateAsync(activeConnectionId, incoming, question, cancellationToken);
+            return new BotAnswer(card.Text, card.ImageUrl, ZaloBotIntent.GeneralChat);
+        }
+
         var sessions = await LoadSessionSnapshotsAsync(connectionIds, groupId, incoming.SenderId, cancellationToken);
         if (sessions.Count == 0)
         {
@@ -786,7 +795,7 @@ public sealed partial class ZaloBotService(
         if (decision.Intent == ZaloBotIntent.Help)
         {
             return new BotAnswer(
-                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n12. Lọc thành viên ít hoạt động (có quyền)\n\nVới lệnh 12, bot sẽ hỏi số người cần xem rồi đưa bằng chứng gần nhất từ poll/tin nhắn đã đồng bộ. Bạn cũng có thể hỏi tự nhiên như “ai 4 tháng chưa vote?”, “tui vote gần nhất ở poll nào?”, “top 10 người ít hoạt động nhất” hoặc “đồng bộ tới đâu rồi?”.\n\nBạn cũng có thể nói: “cân bằng team 2 và team 3”, “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Các lệnh thay đổi đội hình sẽ hỏi xác nhận; undo chỉ khôi phục dữ liệu backend, không thu hồi tin Zalo.\n\nDanh sách và phân tích toàn nhóm chỉ dành cho trưởng nhóm, phó nhóm và UID được admin cấp. Thành viên thường vẫn xem được hoạt động của chính mình.",
+                " \n🤖 Menu bot:\n1. Xem giờ và địa điểm trận\n2. Kiểm tra mình có trong danh sách\n3. Xem vị trí và hướng dẫn gửi xe\n4. Xem còn thiếu bao nhiêu slot\n5. Xem các trận sắp tới\n6. Xem QR và hướng dẫn thanh toán\n7. Xem danh sách 3 team\n8. Đồng bộ người đã vote lên web (có quyền)\n9. Tự chạy draft/khui túi (có quyền + xác nhận)\n10. Gửi ảnh card 3 team\n11. Triệu hồi VolleyVerse card (@Npc 11 hoặc @Npc 11 @Tên)\n12. Lọc thành viên ít hoạt động (có quyền)\n\nVới lệnh 12, bot sẽ hỏi số người cần xem rồi đưa bằng chứng gần nhất từ poll/tin nhắn đã đồng bộ. Bạn cũng có thể hỏi tự nhiên như “ai 4 tháng chưa vote?”, “tui vote gần nhất ở poll nào?”, “top 10 người ít hoạt động nhất” hoặc “đồng bộ tới đâu rồi?”.\n\nBạn cũng có thể nói: “cân bằng team 2 và team 3”, “cho tui vào danh sách chờ T6”, “nhận slot”, “xem waitlist”, “xem lịch sử thao tác” hoặc “undo thao tác vừa rồi”. Các lệnh thay đổi đội hình sẽ hỏi xác nhận; undo chỉ khôi phục dữ liệu backend, không thu hồi tin Zalo.\n\nDanh sách và phân tích toàn nhóm chỉ dành cho trưởng nhóm, phó nhóm và UID được admin cấp. Thành viên thường vẫn xem được hoạt động của chính mình.",
                 null,
                 ZaloBotIntent.Help);
         }
