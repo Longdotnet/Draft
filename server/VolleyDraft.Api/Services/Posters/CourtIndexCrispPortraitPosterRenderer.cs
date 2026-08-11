@@ -5,9 +5,11 @@ namespace VolleyDraft.Api.Services.Posters;
 
 /// <summary>
 /// Final Poster 01 compositor. Keeps the approved Court Index + embedded volleyball artwork,
-/// then redraws captain portraits with source-resolution-aware sampling. Low-resolution Zalo
-/// avatars are intentionally presented as smaller editorial photo plates instead of being
-/// stretched across a 414x513 hero frame, which keeps faces materially sharper.
+/// then redraws captain portraits with conservative source-resolution-aware sampling.
+/// Zalo avatars are frequently compressed even when their nominal pixel dimensions look large,
+/// so only genuinely oversized sources are allowed to fill the 414x513 hero frame. Normal Zalo
+/// avatars are rendered as intentional editorial photo plates at or below native size instead of
+/// being stretched to fill the frame.
 /// </summary>
 public static class CourtIndexCrispPortraitPosterRenderer
 {
@@ -19,6 +21,12 @@ public static class CourtIndexCrispPortraitPosterRenderer
         new SKColor(230, 68, 38),
         new SKColor(26, 108, 66)
     ];
+
+    // A source must have substantial headroom before it is allowed to cover the large captain
+    // frame. A 480-640px Zalo avatar may technically fit the frame but still looks soft because
+    // the CDN image is already compressed. Requiring ~2x source resolution prevents that case.
+    private const float FullBleedPixelRatio = 1.9f;
+    private const int FullBleedMinShortEdge = 900;
 
     public static byte[] Render(
         string sessionName,
@@ -64,45 +72,77 @@ public static class CourtIndexCrispPortraitPosterRenderer
         if (bitmap is null || bitmap.Width <= 0 || bitmap.Height <= 0) return;
 
         var accent = Accents[teamIndex % Accents.Length];
-        var enoughPixelsForFullBleed =
-            bitmap.Width >= rect.Width * .95f &&
-            bitmap.Height >= rect.Height * .95f;
-
-        if (enoughPixelsForFullBleed)
+        if (ShouldUseFullBleed(bitmap.Width, bitmap.Height, rect.Width, rect.Height))
         {
-            var source = CoverSource(bitmap, rect.Width / rect.Height);
-            using var paint = new SKPaint
-            {
-                IsAntialias = true,
-                FilterQuality = SKFilterQuality.High
-            };
-            canvas.DrawBitmap(bitmap, source, rect, paint);
-            DrawFrames(canvas, rect, accent);
+            DrawFullBleedCaptain(canvas, rect, bitmap, accent);
             return;
         }
 
-        // Do not enlarge a 120/240px Zalo thumbnail to a 414x513 hero image. Instead use an
-        // editorial matte and cap upscale at 1.65x. The smaller photo reads intentional in the
-        // Court Index design and preserves substantially more facial sharpness.
+        DrawNativeScaleEditorialPlate(canvas, rect, bitmap, accent, teamIndex);
+    }
+
+    internal static bool ShouldUseFullBleed(
+        int sourceWidth,
+        int sourceHeight,
+        float targetWidth,
+        float targetHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0)
+            return false;
+
+        var pixelRatio = Math.Min(sourceWidth / targetWidth, sourceHeight / targetHeight);
+        return pixelRatio >= FullBleedPixelRatio &&
+               Math.Min(sourceWidth, sourceHeight) >= FullBleedMinShortEdge;
+    }
+
+    private static void DrawFullBleedCaptain(
+        SKCanvas canvas,
+        SKRect rect,
+        SKBitmap bitmap,
+        SKColor accent)
+    {
+        var source = CoverSource(bitmap, rect.Width / rect.Height);
+        using var paint = new SKPaint
+        {
+            IsAntialias = true,
+            // Medium retains a little more micro-contrast than the very soft high-quality
+            // resampler while still downsampling cleanly from a genuinely oversized source.
+            FilterQuality = SKFilterQuality.Medium
+        };
+        canvas.DrawBitmap(bitmap, source, rect, paint);
+        DrawFrames(canvas, rect, accent);
+    }
+
+    private static void DrawNativeScaleEditorialPlate(
+        SKCanvas canvas,
+        SKRect rect,
+        SKBitmap bitmap,
+        SKColor accent,
+        int teamIndex)
+    {
+        // Cover the softer full-bleed image already present in the base poster. The photo plate
+        // below deliberately trades a little image area for materially better perceived detail.
         using (var matte = new SKPaint { Color = Paper, IsAntialias = true })
             canvas.DrawRect(rect, matte);
-        using (var wash = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 18), IsAntialias = true })
+        using (var wash = new SKPaint { Color = PosterDrawing.WithAlpha(accent, 16), IsAntialias = true })
             canvas.DrawRect(new SKRect(rect.Left + 10, rect.Top + 10, rect.Right - 10, rect.Bottom - 10), wash);
 
         PosterDrawing.DrawCenteredText(
             canvas,
             (teamIndex + 1).ToString("00", CultureInfo.InvariantCulture),
             rect.MidX,
-            rect.Bottom - 30,
+            rect.Bottom - 28,
             250,
-            PosterDrawing.WithAlpha(accent, 28),
+            PosterDrawing.WithAlpha(accent, 25),
             true,
-            rect.Width - 30,
+            rect.Width - 28,
             PosterDrawing.BlackTypeface);
 
-        const float maxUpscale = 1.65f;
-        var maxWidth = rect.Width - 42;
-        var maxHeight = rect.Height - 54;
+        // Never enlarge a normal Zalo avatar. A 240px image stays 240px; a 640px image is reduced
+        // into the editorial plate. This avoids manufacturing blur by interpolation.
+        const float maxUpscale = 1f;
+        var maxWidth = rect.Width - 62;
+        var maxHeight = rect.Height - 94;
         var scale = Math.Min(
             maxUpscale,
             Math.Min(maxWidth / bitmap.Width, maxHeight / bitmap.Height));
@@ -112,24 +152,24 @@ public static class CourtIndexCrispPortraitPosterRenderer
         var drawHeight = bitmap.Height * scale;
         var imageRect = new SKRect(
             rect.MidX - drawWidth / 2,
-            rect.MidY - drawHeight / 2,
+            rect.MidY - drawHeight / 2 - 8,
             rect.MidX + drawWidth / 2,
-            rect.MidY + drawHeight / 2);
+            rect.MidY + drawHeight / 2 - 8);
 
+        // Give the photo a small physical-print mount. The slightly smaller plate makes even a
+        // compressed avatar read as an intentional editorial photograph instead of a blurry hero.
         var shadowRect = imageRect;
-        shadowRect.Offset(7, 8);
-        using (var shadow = new SKPaint { Color = new SKColor(18, 18, 16, 36), IsAntialias = true })
+        shadowRect.Offset(8, 9);
+        using (var shadow = new SKPaint { Color = new SKColor(18, 18, 16, 40), IsAntialias = true })
             canvas.DrawRect(shadowRect, shadow);
 
-        var mount = new SKRect(imageRect.Left - 7, imageRect.Top - 7, imageRect.Right + 7, imageRect.Bottom + 7);
+        var mount = new SKRect(imageRect.Left - 8, imageRect.Top - 8, imageRect.Right + 8, imageRect.Bottom + 8);
         using (var paperFrame = new SKPaint { Color = new SKColor(253, 250, 244), IsAntialias = true })
             canvas.DrawRect(mount, paperFrame);
 
         using (var paint = new SKPaint
         {
             IsAntialias = true,
-            // Medium is deliberately crisper than the soft high-quality resampler when a
-            // small source must be enlarged slightly.
             FilterQuality = SKFilterQuality.Medium
         })
         {
@@ -138,16 +178,16 @@ public static class CourtIndexCrispPortraitPosterRenderer
 
         using (var photoFrame = new SKPaint
         {
-            Color = PosterDrawing.WithAlpha(accent, 190),
+            Color = PosterDrawing.WithAlpha(accent, 200),
             Style = SKPaintStyle.Stroke,
-            StrokeWidth = 2.2f,
+            StrokeWidth = 2.1f,
             IsAntialias = true
         })
             canvas.DrawRect(mount, photoFrame);
 
         PosterDrawing.DrawText(
             canvas,
-            "PROFILE / ORIGINAL CROP",
+            "CAPTAIN PORTRAIT",
             rect.Left + 18,
             rect.Bottom - 18,
             10,
