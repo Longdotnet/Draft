@@ -56,7 +56,7 @@ async function runWithConcurrency<T>(
   const workerCount = Math.min(Math.max(1, concurrency), values.length);
   await Promise.all(Array.from({ length: workerCount }, async () => {
     while (nextIndex < values.length) {
-      const value = values[nextIndex];
+      const value = values[nextIndex]!;
       nextIndex += 1;
       await worker(value);
     }
