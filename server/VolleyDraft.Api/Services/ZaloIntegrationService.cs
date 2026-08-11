@@ -259,47 +259,79 @@ public sealed class ZaloIntegrationService(
             .Include(player => player.PlayerProfile)
             .Where(player => player.SessionId == sessionId && player.IsPresent && player.PlayerProfile != null)
             .ToListAsync();
-        var changed = 0;
-        foreach (var player in players)
-        {
-            if (string.IsNullOrWhiteSpace(player.AvatarUrl) &&
-                !string.IsNullOrWhiteSpace(player.PlayerProfile?.AvatarUrl))
-            {
-                player.AvatarUrl = player.PlayerProfile.AvatarUrl;
-                changed += 1;
-            }
-        }
 
-        var missingIds = players
-            .Where(player => string.IsNullOrWhiteSpace(player.AvatarUrl) &&
-                             !string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId))
-            .Select(player => NormalizeId(player.PlayerProfile!.ZaloUserId))
+        // Poster rendering used to resolve only players with a missing AvatarUrl. That meant a
+        // low-resolution group-directory thumbnail could live forever even though Zalo's profile
+        // endpoint exposes a better `avatar` URL. Refresh every present Zalo profile here so an
+        // existing @bot 10 session can upgrade itself without re-importing the poll.
+        var profileIds = players
+            .Select(player => NormalizeId(player.PlayerProfile?.ZaloUserId ?? string.Empty))
+            .Where(id => id.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        if (missingIds.Count == 0)
+
+        var changed = 0;
+        if (profileIds.Count == 0)
         {
+            foreach (var player in players)
+            {
+                if (string.IsNullOrWhiteSpace(player.AvatarUrl) &&
+                    !string.IsNullOrWhiteSpace(player.PlayerProfile?.AvatarUrl))
+                {
+                    player.AvatarUrl = player.PlayerProfile.AvatarUrl;
+                    changed += 1;
+                }
+            }
             if (changed > 0) await db.SaveChangesAsync();
             return ServiceResult<int>.Success(changed);
         }
 
         try
         {
-            var members = await bridge.GetMembersAsync(ReadCredentials(linked.Connection!), missingIds);
+            var members = await bridge.GetMembersAsync(ReadCredentials(linked.Connection!), profileIds);
             var memberById = members
                 .Where(member => !string.IsNullOrWhiteSpace(member.AvatarUrl))
                 .GroupBy(member => NormalizeId(member.ZaloUserId), StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-            foreach (var player in players.Where(player => string.IsNullOrWhiteSpace(player.AvatarUrl)))
+            var now = DateTimeOffset.UtcNow;
+
+            foreach (var player in players)
             {
-                var zaloUserId = NormalizeId(player.PlayerProfile?.ZaloUserId ?? string.Empty);
-                if (!memberById.TryGetValue(zaloUserId, out var member)) continue;
-                player.AvatarUrl = member.AvatarUrl;
-                player.PlayerProfile!.AvatarUrl = member.AvatarUrl;
-                player.PlayerProfile.LastSyncedAt = DateTimeOffset.UtcNow;
-                player.PlayerProfile.UpdatedAt = DateTimeOffset.UtcNow;
-                changed += 1;
+                var profile = player.PlayerProfile!;
+                var zaloUserId = NormalizeId(profile.ZaloUserId ?? string.Empty);
+                var playerChanged = false;
+
+                if (memberById.TryGetValue(zaloUserId, out var member) &&
+                    !string.IsNullOrWhiteSpace(member.AvatarUrl))
+                {
+                    var freshAvatar = member.AvatarUrl.Trim();
+                    if (!string.Equals(player.AvatarUrl, freshAvatar, StringComparison.Ordinal))
+                    {
+                        player.AvatarUrl = freshAvatar;
+                        playerChanged = true;
+                    }
+                    if (!string.Equals(profile.AvatarUrl, freshAvatar, StringComparison.Ordinal))
+                    {
+                        profile.AvatarUrl = freshAvatar;
+                        playerChanged = true;
+                    }
+                    profile.LastSyncedAt = now;
+                    profile.UpdatedAt = now;
+                }
+                else if (string.IsNullOrWhiteSpace(player.AvatarUrl) &&
+                         !string.IsNullOrWhiteSpace(profile.AvatarUrl))
+                {
+                    player.AvatarUrl = profile.AvatarUrl;
+                    playerChanged = true;
+                }
+
+                if (playerChanged) changed += 1;
             }
-            if (changed > 0) await db.SaveChangesAsync();
+
+            // LastSyncedAt intentionally records that the HD-profile refresh was attempted even
+            // when the URL string stayed identical; SaveChanges also persists upgraded URLs when
+            // Zalo returns a different profile asset.
+            if (players.Count > 0) await db.SaveChangesAsync();
             return ServiceResult<int>.Success(changed);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
