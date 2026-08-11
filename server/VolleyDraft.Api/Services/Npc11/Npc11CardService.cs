@@ -1,0 +1,316 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using SkiaSharp;
+using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
+
+namespace VolleyDraft.Api.Services;
+
+public sealed record Npc11CardResult(string Text, string ImageUrl, bool AiArtUsed, bool CacheHit);
+
+public sealed class Npc11CardService(
+    VolleyDraftDbContext db,
+    ZaloBridgeClient bridge,
+    ZaloCredentialProtector protector,
+    IConfiguration configuration,
+    IHttpClientFactory httpClientFactory,
+    ILogger<Npc11CardService> logger)
+{
+    private const int MaxReferenceBytes = 3 * 1024 * 1024;
+    private const int MaxArtBytes = 8 * 1024 * 1024;
+    private static readonly HashSet<string> Styles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "classic", "cyber", "cyberpunk", "cute", "kawaii", "dark", "anime", "real", "realistic", "photo", "legend", "legendary"
+    };
+
+    public async Task<Npc11CardResult> GenerateAsync(
+        string activeConnectionId,
+        ZaloIncomingMessageEvent incoming,
+        string question,
+        CancellationToken cancellationToken = default)
+    {
+        var connection = await db.ZaloConnections.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == activeConnectionId, cancellationToken)
+            ?? throw new InvalidOperationException("Không tìm thấy kết nối Zalo để tạo VolleyVerse card.");
+
+        var targetId = incoming.Mentions
+            .Select(mention => NormalizeId(mention.Uid))
+            .FirstOrDefault(id => id.Length > 0 && id != NormalizeId(incoming.BotId))
+            ?? NormalizeId(incoming.SenderId);
+        var fallbackName = targetId == NormalizeId(incoming.SenderId)
+            ? incoming.SenderName
+            : "VolleyVerse Player";
+
+        var style = ParseStyle(question);
+        var member = await ResolveMemberAsync(connection, targetId, cancellationToken);
+        var displayName = member?.DisplayName?.Trim();
+        if (string.IsNullOrWhiteSpace(displayName)) displayName = fallbackName;
+        var avatarBytes = await LoadReferenceImageAsync(member?.AvatarUrl, cancellationToken);
+        var profile = Npc11CharacterEngine.Create(targetId, displayName!, style);
+
+        var provider = (configuration["Npc11:ArtProvider"] ?? "flux2-klein-4b").Trim().ToLowerInvariant();
+        var avatarHash = avatarBytes is { Length: > 0 }
+            ? Convert.ToHexString(SHA256.HashData(avatarBytes)).ToLowerInvariant()
+            : "no-avatar";
+        var cacheMaterial = $"npc11-v1|{Npc11CharacterEngine.Season}|{profile.UserId}|{profile.Style}|{provider}|{avatarHash}";
+        var cacheHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cacheMaterial))).ToLowerInvariant();
+        var fileName = $"npc11-{cacheHash[..24]}.png";
+
+        var cached = await db.ZaloBotImageAssets.AsNoTracking()
+            .Where(asset => asset.AdminUserId == connection.AdminUserId && asset.FileName == fileName)
+            .OrderByDescending(asset => asset.CreatedAt)
+            .Select(asset => new { asset.Id })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (cached is not null)
+        {
+            return new Npc11CardResult(
+                BuildMessage(profile, aiArtUsed: true, cached: true),
+                BuildPublicImageUrl(cached.Id),
+                true,
+                true);
+        }
+
+        var aiArt = await TryGenerateAiArtAsync(profile, avatarBytes, provider, cancellationToken);
+        var hero = aiArt ?? avatarBytes;
+        var png = Npc11CardRenderer.Render(profile, hero);
+        if (png.Length == 0 || png.Length > MaxArtBytes)
+            throw new InvalidOperationException("VolleyVerse card render produced an invalid image size.");
+
+        var asset = new ZaloBotImageAsset
+        {
+            AdminUserId = connection.AdminUserId,
+            FileName = fileName,
+            ContentType = "image/png",
+            Size = png.Length,
+            Data = png,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.ZaloBotImageAssets.Add(asset);
+        await db.SaveChangesAsync(cancellationToken);
+
+        var usedAi = aiArt is { Length: > 0 };
+        logger.LogInformation(
+            "NPC11 VolleyVerse rendered Target={TargetId} Style={Style} Provider={Provider} AiArt={AiArt} AvatarBytes={AvatarBytes} OutputBytes={OutputBytes}",
+            targetId,
+            profile.Style,
+            provider,
+            usedAi,
+            avatarBytes?.Length ?? 0,
+            png.Length);
+        return new Npc11CardResult(BuildMessage(profile, usedAi, false), BuildPublicImageUrl(asset.Id), usedAi, false);
+    }
+
+    private async Task<BridgeMember?> ResolveMemberAsync(
+        ZaloConnection connection,
+        string targetId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var credentialsDocument = JsonDocument.Parse(protector.Unprotect(connection.EncryptedCredentials));
+            var credentials = credentialsDocument.RootElement.Clone();
+            var members = await bridge.GetMembersAsync(credentials, [targetId]);
+            return members.FirstOrDefault(member => NormalizeId(member.ZaloUserId) == targetId) ?? members.FirstOrDefault();
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException or CryptographicException or InvalidOperationException)
+        {
+            logger.LogWarning(exception, "NPC11 could not resolve Zalo profile Target={TargetId}; using sender fallback", targetId);
+            return null;
+        }
+    }
+
+    private async Task<byte[]?> LoadReferenceImageAsync(string? url, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https") ||
+            !await IsPublicHostAsync(uri, cancellationToken))
+            return null;
+
+        try
+        {
+            var client = httpClientFactory.CreateClient("TeamCardAvatars");
+            using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode ||
+                response.Content.Headers.ContentLength > MaxReferenceBytes ||
+                response.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) != true)
+                return null;
+
+            await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var output = new MemoryStream();
+            var buffer = new byte[16 * 1024];
+            while (true)
+            {
+                var read = await input.ReadAsync(buffer, cancellationToken);
+                if (read == 0) break;
+                if (output.Length + read > MaxReferenceBytes) return null;
+                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            }
+            var bytes = output.ToArray();
+            using var decoded = SKBitmap.Decode(bytes);
+            return decoded is not null && decoded.Width > 0 && decoded.Height > 0 ? bytes : null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException)
+        {
+            logger.LogDebug(exception, "NPC11 could not download avatar Host={Host}", uri.Host);
+            return null;
+        }
+    }
+
+    private async Task<byte[]?> TryGenerateAiArtAsync(
+        Npc11CharacterProfile profile,
+        byte[]? referenceBytes,
+        string provider,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.GetValue("Npc11:AiEnabled", false)) return null;
+        if (referenceBytes is not { Length: > 0 }) return null;
+        var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var workerUri) || workerUri.Scheme is not ("http" or "https"))
+        {
+            logger.LogWarning("NPC11 AI is enabled but ArtWorkerBaseUrl is missing or invalid; using deterministic fallback card");
+            return null;
+        }
+
+        var prompt = BuildArtPrompt(profile);
+        var request = new Npc11ArtWorkerRequest(
+            provider,
+            profile.Seed,
+            profile.Style,
+            prompt,
+            [new Npc11ArtReference("subject", DetectMime(referenceBytes), Convert.ToBase64String(referenceBytes))],
+            new Npc11ArtOutput(1024, 1365, "png"));
+
+        var timeoutSeconds = Math.Clamp(configuration.GetValue("Npc11:ArtTimeoutSeconds", 18), 3, 45);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            var client = httpClientFactory.CreateClient("Npc11ArtWorker");
+            var endpoint = new Uri(workerUri, "/v1/volleyverse/art");
+            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = JsonContent.Create(request)
+            };
+            var key = configuration["Npc11:ArtWorkerKey"];
+            if (!string.IsNullOrWhiteSpace(key)) message.Headers.TryAddWithoutValidation("x-npc11-key", key);
+            using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning("NPC11 art worker returned HTTP {StatusCode}; using fallback", (int)response.StatusCode);
+                return null;
+            }
+            var payload = await response.Content.ReadFromJsonAsync<Npc11ArtWorkerResponse>(cancellationToken: timeout.Token);
+            if (payload is null || !payload.Success || string.IsNullOrWhiteSpace(payload.ImageBase64)) return null;
+            byte[] imageBytes;
+            try { imageBytes = Convert.FromBase64String(payload.ImageBase64); }
+            catch (FormatException) { return null; }
+            if (imageBytes.Length is <= 0 or > MaxArtBytes) return null;
+            using var decoded = SKBitmap.Decode(imageBytes);
+            if (decoded is null || decoded.Width < 512 || decoded.Height < 512) return null;
+            logger.LogInformation(
+                "NPC11 AI art ready Provider={Provider} WorkerStrategy={Strategy} Size={Width}x{Height} Bytes={Bytes}",
+                provider,
+                payload.Strategy ?? "unknown",
+                decoded.Width,
+                decoded.Height,
+                imageBytes.Length);
+            return imageBytes;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or JsonException)
+        {
+            logger.LogWarning(exception, "NPC11 art worker unavailable; using deterministic fallback card");
+            return null;
+        }
+    }
+
+    internal static string BuildArtPrompt(Npc11CharacterProfile profile) =>
+        $"""
+        Create premium collectible volleyball character artwork using the supplied reference image as the primary subject.
+        Preserve the subject's identity, species/object identity, silhouette, key colors, distinctive facial features and recognizable pose/gesture when appropriate.
+        The reference may be a human, animal, mascot, toy, logo-like object or other non-human subject: do not force a human face or human anatomy onto a non-human object.
+        Re-stage the same subject as a VolleyVerse hero in an indoor professional volleyball arena, dark emerald jersey number 11, cinematic stadium lights, energetic crowd bokeh, premium game-card key art.
+        Archetype mood: {profile.Archetype}. Visual style: {profile.Style}. Rarity mood: {profile.Rarity}.
+        Compose the subject center-right, upper body dominant, with some negative space on the left and lower edge for deterministic card UI.
+        Keep volleyballs, hands, limbs and held objects anatomically/structurally coherent. Preserve object count unless the prompt explicitly requests otherwise.
+        NO text, NO letters, NO numbers except the jersey number 11, NO logos, NO badges, NO card border, NO UI, NO watermark.
+        Output only character artwork; the application renders all Vietnamese text and game UI separately.
+        """;
+
+    private string BuildPublicImageUrl(string assetId)
+    {
+        var configured = configuration["Public:BaseUrl"]?.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(configured) && Uri.TryCreate(configuration["Zalo:WebhookUrl"], UriKind.Absolute, out var webhook))
+            configured = webhook.GetLeftPart(UriPartial.Authority);
+        configured ??= "http://localhost:5030";
+        return $"{configured}/api/public/bot-images/{Uri.EscapeDataString(assetId)}?v={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+    }
+
+    private static string BuildMessage(Npc11CharacterProfile profile, bool aiArtUsed, bool cached) =>
+        $"🃏 VolleyVerse • {profile.DisplayName} — {profile.Rarity}\n" +
+        $"Class: {profile.Archetype}\n" +
+        $"Skill: {profile.SpecialSkill}\n" +
+        $"Art: {(aiArtUsed ? "AI local" : "avatar fallback")}{(cached ? " • cache" : string.Empty)}";
+
+    private static string ParseStyle(string question)
+    {
+        var tokens = question.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        var matched = tokens.Select(token => token.Trim('"', '\'', ',', '.', '!', '?', ':', ';').ToLowerInvariant())
+            .FirstOrDefault(Styles.Contains);
+        return Npc11CharacterEngine.NormalizeStyle(matched);
+    }
+
+    private static string DetectMime(byte[] bytes)
+    {
+        if (bytes.Length > 12 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return "image/png";
+        if (bytes.Length > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8) return "image/jpeg";
+        if (bytes.Length > 12 && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF") return "image/webp";
+        return "image/jpeg";
+    }
+
+    private static string NormalizeId(string? value) => (value ?? string.Empty).Trim();
+
+    private static async Task<bool> IsPublicHostAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        if (uri.IsLoopback || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)) return false;
+        try
+        {
+            var addresses = await Dns.GetHostAddressesAsync(uri.DnsSafeHost, cancellationToken);
+            return addresses.Length > 0 && addresses.All(IsPublicAddress);
+        }
+        catch (Exception exception) when (exception is System.Net.Sockets.SocketException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPublicAddress(IPAddress address)
+    {
+        if (IPAddress.IsLoopback(address)) return false;
+        if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork || address.IsIPv4MappedToIPv6)
+        {
+            var ipv4 = address.MapToIPv4().GetAddressBytes();
+            return ipv4[0] != 10 && ipv4[0] != 127 &&
+                   !(ipv4[0] == 169 && ipv4[1] == 254) &&
+                   !(ipv4[0] == 172 && ipv4[1] is >= 16 and <= 31) &&
+                   !(ipv4[0] == 192 && ipv4[1] == 168);
+        }
+        var bytes = address.GetAddressBytes();
+        return bytes.Length < 2 || !(bytes[0] == 0xfc || bytes[0] == 0xfd || (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80));
+    }
+}
+
+public sealed record Npc11ArtReference(string Role, string MimeType, string ImageBase64);
+public sealed record Npc11ArtOutput(int Width, int Height, string Format);
+public sealed record Npc11ArtWorkerRequest(
+    string Provider,
+    int Seed,
+    string Style,
+    string Prompt,
+    IReadOnlyList<Npc11ArtReference> References,
+    Npc11ArtOutput Output);
+public sealed record Npc11ArtWorkerResponse(bool Success, string? ImageBase64, string? Strategy, string? Error);
