@@ -78,6 +78,22 @@ public sealed class TeamPosterCollectionTests
     }
 
     [Fact]
+    public void Poster_two_is_hall_of_champions_but_remains_disabled_from_rotation()
+    {
+        Assert.Equal("Hall of Champions", TeamPosterTemplateCatalog.GetDisplayName(2));
+        Assert.False(TeamPosterTemplateCatalog.IsActive(2));
+
+        var bytes = TeamPosterRendererRegistry.Render(
+            2,
+            "CN 16/08 - KÈO TỐI",
+            new DateTimeOffset(2026, 8, 16, 20, 0, 0, TimeSpan.FromHours(7)),
+            "Sân bóng chuyền Bình Trưng",
+            BuildTeams());
+
+        AssertPng(bytes);
+    }
+
+    [Fact]
     public void New_deck_contains_only_active_templates_and_never_starts_with_previous_active_last()
     {
         Assert.Equal(2, TeamPosterTemplateCatalog.ActiveCount);
