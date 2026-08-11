@@ -62,46 +62,35 @@ public sealed class TeamPosterCollectionTests
     }
 
     [Fact]
-    public void Poster_one_is_court_index_but_remains_disabled_from_rotation()
+    public void Redesigned_posters_one_two_and_three_are_active_with_poster_four()
     {
         Assert.Equal("Court Index", TeamPosterTemplateCatalog.GetDisplayName(1));
-        Assert.False(TeamPosterTemplateCatalog.IsActive(1));
-
-        var bytes = TeamPosterRendererRegistry.Render(
-            1,
-            "CN 16/08 - KÈO TỐI",
-            new DateTimeOffset(2026, 8, 16, 20, 0, 0, TimeSpan.FromHours(7)),
-            "Sân bóng chuyền Bình Trưng",
-            BuildTeams());
-
-        AssertPng(bytes);
-    }
-
-    [Fact]
-    public void Poster_two_is_hall_of_champions_but_remains_disabled_from_rotation()
-    {
         Assert.Equal("Hall of Champions", TeamPosterTemplateCatalog.GetDisplayName(2));
-        Assert.False(TeamPosterTemplateCatalog.IsActive(2));
+        Assert.Equal("Orbit League", TeamPosterTemplateCatalog.GetDisplayName(3));
 
-        var bytes = TeamPosterRendererRegistry.Render(
-            2,
-            "CN 16/08 - KÈO TỐI",
-            new DateTimeOffset(2026, 8, 16, 20, 0, 0, TimeSpan.FromHours(7)),
-            "Sân bóng chuyền Bình Trưng",
-            BuildTeams());
-
-        AssertPng(bytes);
-    }
-
-    [Fact]
-    public void New_deck_contains_only_active_templates_and_never_starts_with_previous_active_last()
-    {
-        Assert.Equal(2, TeamPosterTemplateCatalog.ActiveCount);
-        Assert.Equal(new[] { 3, 4 }, TeamPosterTemplateCatalog.ActiveIds.Order());
-        Assert.False(TeamPosterTemplateCatalog.IsActive(1));
-        Assert.False(TeamPosterTemplateCatalog.IsActive(2));
+        Assert.True(TeamPosterTemplateCatalog.IsActive(1));
+        Assert.True(TeamPosterTemplateCatalog.IsActive(2));
         Assert.True(TeamPosterTemplateCatalog.IsActive(3));
         Assert.True(TeamPosterTemplateCatalog.IsActive(4));
+
+        foreach (var templateId in new[] { 1, 2, 3 })
+        {
+            var bytes = TeamPosterRendererRegistry.Render(
+                templateId,
+                "CN 16/08 - KÈO TỐI",
+                new DateTimeOffset(2026, 8, 16, 20, 0, 0, TimeSpan.FromHours(7)),
+                "Sân bóng chuyền Bình Trưng",
+                BuildTeams());
+            AssertPng(bytes);
+        }
+    }
+
+    [Fact]
+    public void New_deck_contains_only_the_four_active_redesigned_posters_and_avoids_immediate_repeat()
+    {
+        Assert.Equal(4, TeamPosterTemplateCatalog.ActiveCount);
+        Assert.Equal(new[] { 1, 2, 3, 4 }, TeamPosterTemplateCatalog.ActiveIds.Order());
+        Assert.All(new[] { 1, 2, 3, 4 }, id => Assert.True(TeamPosterTemplateCatalog.IsActive(id)));
         Assert.All(new[] { 5, 6, 7, 8, 9, 10 }, id => Assert.False(TeamPosterTemplateCatalog.IsActive(id)));
 
         foreach (var last in TeamPosterTemplateCatalog.ActiveIds)
@@ -113,12 +102,23 @@ public sealed class TeamPosterCollectionTests
             Assert.NotEqual(last, deck[0]);
         }
 
-        var deckAfterDisabledPoster = TeamPosterDeckLogic.BuildShuffledDeck(1);
+        var deckAfterDisabledPoster = TeamPosterDeckLogic.BuildShuffledDeck(9);
         Assert.Equal(TeamPosterTemplateCatalog.ActiveIds.Order(), deckAfterDisabledPoster.Order());
     }
 
     [Fact]
-    public async Task Group_rotation_locks_session_and_uses_only_posters_three_and_four()
+    public void Legacy_two_poster_remaining_deck_is_still_valid_until_the_next_four_poster_cycle()
+    {
+        var remaining = TeamPosterDeckLogic.NormalizeRemainingDeck("[3,4,9]");
+        Assert.Equal(new[] { 3, 4 }, remaining);
+
+        var freshDeck = TeamPosterDeckLogic.BuildShuffledDeck(remaining[^1]);
+        Assert.Equal(new[] { 1, 2, 3, 4 }, freshDeck.Order());
+        Assert.NotEqual(remaining[^1], freshDeck[0]);
+    }
+
+    [Fact]
+    public async Task Group_rotation_locks_session_and_uses_all_four_active_posters_before_repeat()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -133,7 +133,7 @@ public sealed class TeamPosterCollectionTests
                 "ZaloGroupId" TEXT NULL
             );
             """);
-        for (var index = 1; index <= 3; index++)
+        for (var index = 1; index <= TeamPosterTemplateCatalog.ActiveCount + 1; index++)
         {
             await db.Database.ExecuteSqlRawAsync(
                 "INSERT INTO \"MatchSessions\" (\"Id\", \"ZaloConnectionId\", \"ZaloGroupId\") VALUES ({0}, {1}, {2})",
@@ -145,6 +145,7 @@ public sealed class TeamPosterCollectionTests
             firstCycle.Add(await TeamPosterRotationStore.EnsureAssignedAsync(db, $"s{index}"));
 
         Assert.Equal(TeamPosterTemplateCatalog.ActiveCount, firstCycle.Select(item => item.TemplateId).Distinct().Count());
+        Assert.Equal(TeamPosterTemplateCatalog.ActiveIds.Order(), firstCycle.Select(item => item.TemplateId).Order());
         Assert.All(firstCycle, item => Assert.True(TeamPosterTemplateCatalog.IsActive(item.TemplateId)));
         Assert.All(firstCycle, item => Assert.Equal(1, item.CycleNumber));
 
@@ -153,7 +154,7 @@ public sealed class TeamPosterCollectionTests
         Assert.Equal(original.TemplateId, repeated.TemplateId);
         Assert.Equal(original.AssignedAt, repeated.AssignedAt);
 
-        var nextCycle = await TeamPosterRotationStore.EnsureAssignedAsync(db, "s3");
+        var nextCycle = await TeamPosterRotationStore.EnsureAssignedAsync(db, $"s{TeamPosterTemplateCatalog.ActiveCount + 1}");
         Assert.Equal(2, nextCycle.CycleNumber);
         Assert.NotEqual(firstCycle[^1].TemplateId, nextCycle.TemplateId);
         Assert.True(TeamPosterTemplateCatalog.IsActive(nextCycle.TemplateId));
