@@ -4,53 +4,11 @@ on:
   push:
     branches:
       - main
-      - agent/share-slot-natural-ux
   pull_request:
     branches:
       - main
 
 jobs:
-  patch-share-slot-ux:
-    if: github.ref == 'refs/heads/agent/share-slot-natural-ux'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: agent/share-slot-natural-ux
-          fetch-depth: 0
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 9.0.x
-
-      - name: Apply share slot UX patch
-        run: |
-          python tools/share-slot-ux-patch.py
-          python tools/share-slot-unshare-fix.py
-
-      - name: Validate backend tests
-        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
-
-      - name: Commit clean code diff
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout origin/main -- .github/workflows/ci.yml
-          git rm -f .github/workflows/share-slot-ux-apply.yml tools/share-slot-ux-patch.py tools/share-slot-unshare-fix.py
-          git add server/VolleyDraft.Api/Services/ZaloNaturalCommandParser.cs \
-                  server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs \
-                  server/VolleyDraft.Api/Services/ZaloBotService.cs \
-                  server/VolleyDraft.Api/Services/ZaloBotService.ShareUx.cs \
-                  server/VolleyDraft.Api.Tests/ZaloShareNaturalUxTests.cs \
-                  .github/workflows/ci.yml
-          git commit -m "fix: make share slot self-service natural"
-          git push origin HEAD:agent/share-slot-natural-ux
-
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest

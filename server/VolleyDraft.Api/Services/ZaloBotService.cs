@@ -2745,7 +2745,7 @@ public sealed partial class ZaloBotService(
             command = explicitMentionCommand;
         }
         if (command is null)
-            return new BotAnswer("Mình chưa nhận ra người chính và người chơi chung. Ví dụ: @bot Nick Tran muốn share slot với An; hoặc @bot Nick Tran xin +2 cho An và Bình.", null, decision.Intent, aiCalled);
+            return new BotAnswer("Bạn chỉ cần nhắn kiểu: @Npc tui share slot với @Tên. Nếu có nhiều trận mình sẽ hỏi lại ngày; không cần gõ đúng một mẫu lệnh cố định.", null, decision.Intent, aiCalled);
 
         var senderAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than" };
         var anchorMention = FindMentionedUser(command.Anchor, mentionedUsers);
@@ -2778,21 +2778,20 @@ public sealed partial class ZaloBotService(
             command.SessionReference,
             decision.SessionReference
         }.Where(value => !string.IsNullOrWhiteSpace(value))));
-        var matchingSessions = sessions
-            .Where(session => (anchorZaloUserId.Length > 0 &&
-                               session.PlayerNamesByZaloUserId.ContainsKey(anchorZaloUserId)) ||
-                              ResolvePlayerReference(rawAnchor, session.PlayerNames) is not null ||
-                              (requestedOwnSlot && session.SenderIsListed))
-            .ToList();
         var operationalCandidateIds = ZaloBotIntelligence.SelectOperationalSessionCandidateIds(
             selector,
             sessions.Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime)).ToList());
         var operationalSessions = sessions
             .Where(session => operationalCandidateIds.Contains(session.Id, StringComparer.Ordinal))
             .ToList();
-        var relevantMatchingSessions = matchingSessions
-            .Where(session => operationalCandidateIds.Contains(session.Id, StringComparer.Ordinal))
-            .ToList();
+        var relevantMatchingSessions = RankShareSessionCandidates(
+            operationalSessions,
+            rawAnchor,
+            anchorZaloUserId,
+            requestedOwnSlot,
+            partners,
+            command,
+            mentionedUsers);
         var selected = relevantMatchingSessions.Count == 1
             ? new SessionSelection(relevantMatchingSessions[0], null)
             : relevantMatchingSessions.Count > 1
@@ -2814,7 +2813,7 @@ public sealed partial class ZaloBotService(
                     cancellationToken);
             }
             return new BotAnswer(
-                selected.Clarification + " Bạn chỉ cần trả lời ngày hoặc tên trận; bot vẫn nhớ yêu cầu share slot này.",
+                FormatShareSessionClarification(incoming.SenderName, partners, selectionCandidates, selected.Clarification),
                 null,
                 decision.Intent,
                 aiCalled);
@@ -2835,12 +2834,13 @@ public sealed partial class ZaloBotService(
                 ProtectedTerms: [initialSession.Name]);
         }
         var session = refresh.Session;
-        var senderIsCurrentPollVoter = requestedOwnSlot &&
+        var isPostDraft = session.Status == SessionStatus.Finished;
+        var senderIsCurrentPollVoter = requestedOwnSlot && !isPostDraft &&
                                        await IsSenderCurrentPollVoterAsync(
                                            session,
                                            incoming.SenderId,
                                            cancellationToken);
-        if (requestedOwnSlot && !senderIsCurrentPollVoter)
+        if (requestedOwnSlot && !isPostDraft && !senderIsCurrentPollVoter)
         {
             var operatorDenial = await GetOperatorDenialAsync(
                 session,
@@ -2849,11 +2849,11 @@ public sealed partial class ZaloBotService(
                 aiCalled);
             if (operatorDenial is not null)
             {
-                var message = session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection
-                    ? string.IsNullOrWhiteSpace(session.LatestPoll)
-                        ? $"Mình chưa có poll/option đã liên kết để xác minh vote hiện tại của {session.Name}. Thành viên thường chỉ tự share slot khi chính UID của mình đang vote option của trận này."
-                        : $"Mình đã đồng bộ vote hiện tại của {session.Name} nhưng UID của bạn không nằm trong option đang liên kết. Thành viên thường chỉ tự share slot khi chính mình đang vote option của trận này. Hãy vote đúng option rồi thử lại."
-                    : $"{session.Name} đã bắt đầu draft hoặc draft xong nên mình không thể xác minh vote hiện tại an toàn cho self-service. Hãy nhờ trưởng nhóm, phó nhóm hoặc operator thực hiện.";
+                var message = session.Status == SessionStatus.Drafting
+                    ? $"{session.Name} đang trong lúc draft. Chờ draft xong rồi gửi lại yêu cầu share slot; lúc đó mình sẽ kiểm tra slot của chính bạn."
+                    : string.IsNullOrWhiteSpace(session.LatestPoll)
+                        ? $"Mình chưa có poll đã liên kết để kiểm tra bạn có tham gia {session.Name}. Nhờ admin liên kết/import đúng poll rồi thử lại."
+                        : $"Mình đã đồng bộ poll nhưng chưa thấy bạn trong lượt vote của {session.Name}. Bạn vote đúng option rồi thử lại nhé.";
                 return new BotAnswer(
                     message,
                     null,
@@ -2886,11 +2886,12 @@ public sealed partial class ZaloBotService(
                 aiCalled,
                 ProtectedTerms: [session.Name]);
         }
-        var selfService = senderIsCurrentPollVoter &&
-                          session.SenderIsListed &&
-                          !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
-                          resolvedAnchor is not null &&
-                          NormalizeText(resolvedAnchor) == NormalizeText(session.SenderPlayerName);
+        var selfService = IsShareSelfServiceAllowed(
+            session.Status,
+            senderIsCurrentPollVoter,
+            session.SenderIsListed,
+            session.SenderPlayerName,
+            resolvedAnchor);
         if (!selfService)
         {
             var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
@@ -3018,12 +3019,15 @@ public sealed partial class ZaloBotService(
         }
         session = refresh.Session;
 
-        var senderIsCurrentPollVoter = plan.SelfService &&
+        if (plan.IsPostDraft && session.Status != SessionStatus.Finished)
+            return new BotAnswer("Trạng thái buổi đã thay đổi sau lúc xem trước. Hãy gửi lại yêu cầu share slot để mình kiểm tra lại.", null, ZaloBotIntent.ShareSlotConfirm, aiCalled);
+
+        var senderIsCurrentPollVoter = plan.SelfService && !plan.IsPostDraft &&
                                        await IsSenderCurrentPollVoterAsync(
                                            session,
                                            incoming.SenderId,
                                            cancellationToken);
-        if (plan.SelfService && !senderIsCurrentPollVoter)
+        if (plan.SelfService && !plan.IsPostDraft && !senderIsCurrentPollVoter)
         {
             var operatorDenial = await GetOperatorDenialAsync(
                 session,
@@ -3033,18 +3037,19 @@ public sealed partial class ZaloBotService(
             if (operatorDenial is not null)
             {
                 return new BotAnswer(
-                    $"Bạn không còn nằm trong vote hiện tại của option đang liên kết cho {session.Name}, nên mình không áp dụng share slot self-service. Hãy vote lại đúng option rồi gửi lại yêu cầu; trưởng/phó nhóm hoặc operator vẫn có thể xử lý thay.",
+                    $"Mình vừa kiểm tra lại và không còn thấy bạn trong lượt vote của {session.Name}. Bạn vote đúng option rồi gửi lại yêu cầu nhé.",
                     null,
                     ZaloBotIntent.ShareSlotConfirm,
                     aiCalled,
                     ProtectedTerms: [session.Name]);
             }
         }
-        var selfStillValid = plan.SelfService &&
-                             senderIsCurrentPollVoter &&
-                             session.SenderIsListed &&
-                             !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
-                             NormalizeText(plan.AnchorPlayerName) == NormalizeText(session.SenderPlayerName);
+        var selfStillValid = plan.SelfService && IsShareSelfServiceAllowed(
+            session.Status,
+            senderIsCurrentPollVoter,
+            session.SenderIsListed,
+            session.SenderPlayerName,
+            plan.AnchorPlayerName);
         if (!selfStillValid)
         {
             var denial = await GetOperatorDenialAsync(session, incoming.SenderId, ZaloBotIntent.ShareSlotConfirm, aiCalled);
