@@ -48,6 +48,22 @@ jobs:
       - name: Build backend
         run: dotnet build server/VolleyDraft.Api/VolleyDraft.Api.csproj -c Release --no-restore
 
+  npc11-worker:
+    name: NPC11 worker syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile worker
+        run: python -m py_compile server/Npc11ArtWorker/app.py
+
   zalo-bridge:
     name: Zalo Bridge build and test
     runs-on: ubuntu-latest

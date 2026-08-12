@@ -142,7 +142,9 @@ public static class Npc11CardRenderer
     private static readonly SKTypeface Regular = FindTypeface(SKFontStyle.Normal);
     private static readonly SKTypeface Bold = FindTypeface(SKFontStyle.Bold);
 
-    public static byte[] Render(Npc11CharacterProfile profile, byte[]? heroArt)
+    internal static string SelectedFontFamily => Regular.FamilyName;
+
+    public static byte[] Render(Npc11CharacterProfile profile, byte[]? heroArt, bool heroIsAi = false)
     {
         using var bitmap = new SKBitmap(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul);
         using var canvas = new SKCanvas(bitmap);
@@ -161,7 +163,7 @@ public static class Npc11CardRenderer
             canvas.DrawRect(new SKRect(0, 0, Width, Height), background);
         }
 
-        DrawHero(canvas, heroArt);
+        DrawHero(canvas, heroArt, heroIsAi);
         DrawHeroShade(canvas);
         DrawFrame(canvas, profile.Rarity);
         DrawHeader(canvas, profile);
@@ -174,7 +176,7 @@ public static class Npc11CardRenderer
         return encoded.ToArray();
     }
 
-    private static void DrawHero(SKCanvas canvas, byte[]? art)
+    private static void DrawHero(SKCanvas canvas, byte[]? art, bool heroIsAi)
     {
         var rect = new SKRect(28, 28, Width - 28, 1040);
         if (art is { Length: > 0 })
@@ -182,9 +184,16 @@ public static class Npc11CardRenderer
             using var hero = SKBitmap.Decode(art);
             if (hero is not null && hero.Width > 0 && hero.Height > 0)
             {
-                var src = Cover(hero.Width, hero.Height, rect.Width, rect.Height);
-                using var paint = new SKPaint { IsAntialias = true, FilterQuality = SKFilterQuality.High };
-                canvas.DrawBitmap(hero, src, rect, paint);
+                if (heroIsAi)
+                {
+                    var src = Cover(hero.Width, hero.Height, rect.Width, rect.Height);
+                    using var paint = new SKPaint { IsAntialias = true, FilterQuality = SKFilterQuality.High };
+                    canvas.DrawBitmap(hero, src, rect, paint);
+                }
+                else
+                {
+                    DrawFallbackAvatarHero(canvas, rect, hero);
+                }
                 return;
             }
         }
@@ -199,6 +208,53 @@ public static class Npc11CardRenderer
                 SKShaderTileMode.Clamp)
         };
         canvas.DrawRect(rect, placeholder);
+    }
+
+    private static void DrawFallbackAvatarHero(SKCanvas canvas, SKRect rect, SKBitmap hero)
+    {
+        // Deterministic V1 fallback: preserve the whole Zalo avatar instead of stretching/cropping
+        // a 120-160px source across the card. A blurred copy supplies atmosphere while the
+        // readable foreground portrait sits on the right, away from all text/stats.
+        var backgroundSource = Cover(hero.Width, hero.Height, rect.Width, rect.Height);
+        using (var backgroundPaint = new SKPaint
+        {
+            IsAntialias = true,
+            FilterQuality = SKFilterQuality.High,
+            ImageFilter = SKImageFilter.CreateBlur(26, 26)
+        })
+        {
+            canvas.DrawBitmap(hero, backgroundSource, rect, backgroundPaint);
+        }
+        using (var wash = new SKPaint { Color = new SKColor(1, 18, 13, 155), IsAntialias = true })
+            canvas.DrawRect(rect, wash);
+
+        var portraitArea = new SKRect(rect.Left + 475, rect.Top + 78, rect.Right - 48, rect.Bottom - 72);
+        var foreground = Contain(hero.Width, hero.Height, portraitArea);
+        var shadowRect = new SKRect(foreground.Left - 14, foreground.Top + 12, foreground.Right + 14, foreground.Bottom + 26);
+        using (var shadow = new SKPaint { Color = new SKColor(0, 0, 0, 118), IsAntialias = true })
+            canvas.DrawRoundRect(shadowRect, 24, 24, shadow);
+        using (var plate = new SKPaint { Color = new SKColor(236, 241, 226, 36), IsAntialias = true })
+            canvas.DrawRoundRect(new SKRect(foreground.Left - 8, foreground.Top - 8, foreground.Right + 8, foreground.Bottom + 8), 20, 20, plate);
+        using (var portraitPaint = new SKPaint { IsAntialias = true, FilterQuality = SKFilterQuality.High })
+            canvas.DrawBitmap(hero, new SKRect(0, 0, hero.Width, hero.Height), foreground, portraitPaint);
+        using (var border = new SKPaint
+        {
+            Color = new SKColor(210, 181, 82, 210),
+            Style = SKPaintStyle.Stroke,
+            StrokeWidth = 2.5f,
+            IsAntialias = true
+        })
+            canvas.DrawRoundRect(new SKRect(foreground.Left - 8, foreground.Top - 8, foreground.Right + 8, foreground.Bottom + 8), 20, 20, border);
+
+        DrawText(canvas, "ZALO AVATAR • AI FALLBACK", rect.Right - 58, rect.Bottom - 34, 15, new SKColor(199, 213, 190), true, SKTextAlign.Right);
+    }
+
+    private static SKRect Contain(int sourceWidth, int sourceHeight, SKRect target)
+    {
+        var scale = Math.Min(target.Width / sourceWidth, target.Height / sourceHeight);
+        var width = sourceWidth * scale;
+        var height = sourceHeight * scale;
+        return new SKRect(target.Right - width, target.MidY - height / 2f, target.Right, target.MidY + height / 2f);
     }
 
     private static void DrawHeroShade(SKCanvas canvas)
@@ -435,8 +491,15 @@ public static class Npc11CardRenderer
         _ => new SKColor(49, 150, 92)
     };
 
-    private static SKTypeface FindTypeface(SKFontStyle style) =>
-        SKTypeface.FromFamilyName("DejaVu Sans", style)
-        ?? SKTypeface.FromFamilyName("Arial", style)
-        ?? SKTypeface.Default;
+    private static SKTypeface FindTypeface(SKFontStyle style)
+    {
+        // Render production installs Noto Sans. Prefer it explicitly because relying on
+        // Skia's default family caused Vietnamese glyphs to become square tofu boxes.
+        foreach (var family in new[] { "Noto Sans", "Noto Sans Display", "DejaVu Sans", "Arial" })
+        {
+            var typeface = SKTypeface.FromFamilyName(family, style);
+            if (typeface is not null && !string.IsNullOrWhiteSpace(typeface.FamilyName)) return typeface;
+        }
+        return SKTypeface.Default;
+    }
 }
