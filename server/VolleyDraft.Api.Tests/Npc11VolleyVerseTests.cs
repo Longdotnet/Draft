@@ -69,6 +69,52 @@ public sealed class Npc11VolleyVerseTests
     }
 
     [Fact]
+    public void Cloudflare_reference_is_resized_below_512_pixels_and_encoded_as_jpeg()
+    {
+        using var source = new SKBitmap(900, 600, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using (var canvas = new SKCanvas(source)) canvas.Clear(new SKColor(80, 180, 110));
+        using var image = SKImage.FromBitmap(source);
+        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+
+        var prepared = Npc11CardService.PrepareCloudflareReference(encoded.ToArray());
+
+        Assert.NotNull(prepared);
+        Assert.True(prepared.Value.Width < 512);
+        Assert.True(prepared.Value.Height < 512);
+        Assert.Equal("image/jpeg", prepared.Value.MimeType);
+        using var decoded = SKBitmap.Decode(prepared.Value.Bytes);
+        Assert.NotNull(decoded);
+        Assert.Equal(prepared.Value.Width, decoded!.Width);
+        Assert.Equal(prepared.Value.Height, decoded.Height);
+    }
+
+    [Fact]
+    public void Cloudflare_reference_upscales_tiny_zalo_avatar_to_511_pixel_canvas()
+    {
+        using var source = new SKBitmap(160, 160, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using (var canvas = new SKCanvas(source)) canvas.Clear(new SKColor(70, 150, 220));
+        using var image = SKImage.FromBitmap(source);
+        using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+
+        var prepared = Npc11CardService.PrepareCloudflareReference(encoded.ToArray());
+
+        Assert.NotNull(prepared);
+        Assert.Equal(511, prepared.Value.Width);
+        Assert.Equal(511, prepared.Value.Height);
+    }
+
+    [Fact]
+    public void Cloudflare_response_parser_reads_result_image_only_for_success_envelopes()
+    {
+        using var ok = System.Text.Json.JsonDocument.Parse("{\"success\":true,\"result\":{\"image\":\"aGVsbG8=\"}}");
+        Assert.True(Npc11CardService.TryReadCloudflareImage(ok.RootElement, out var image));
+        Assert.Equal("aGVsbG8=", image);
+
+        using var failed = System.Text.Json.JsonDocument.Parse("{\"success\":false,\"result\":{\"image\":\"aGVsbG8=\"}}");
+        Assert.False(Npc11CardService.TryReadCloudflareImage(failed.RootElement, out _));
+    }
+
+    [Fact]
     public void Art_prompt_tells_worker_to_preserve_non_human_subjects_and_avoid_ui_text()
     {
         var profile = Npc11CharacterEngine.Create("frog-11", "Ếch Cầu Cứu", "classic");
