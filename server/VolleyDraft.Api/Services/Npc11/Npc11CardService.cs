@@ -364,7 +364,9 @@ public sealed class Npc11CardService(
         using var source = SKBitmap.Decode(bytes);
         if (source is null || source.Width <= 0 || source.Height <= 0) return null;
         const int maximumEdge = 511;
-        var scale = Math.Min(1f, maximumEdge / (float)Math.Max(source.Width, source.Height));
+        // Cloudflare requires every reference dimension to be below 512px. Normalize even tiny Zalo
+        // thumbnails to a 511px longest edge so the edit model receives a consistent visual canvas.
+        var scale = maximumEdge / (float)Math.Max(source.Width, source.Height);
         var width = Math.Max(1, (int)MathF.Round(source.Width * scale));
         var height = Math.Max(1, (int)MathF.Round(source.Height * scale));
 

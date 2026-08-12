@@ -89,6 +89,21 @@ public sealed class Npc11VolleyVerseTests
     }
 
     [Fact]
+    public void Cloudflare_reference_upscales_tiny_zalo_avatar_to_511_pixel_canvas()
+    {
+        using var source = new SKBitmap(160, 160, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using (var canvas = new SKCanvas(source)) canvas.Clear(new SKColor(70, 150, 220));
+        using var image = SKImage.FromBitmap(source);
+        using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+
+        var prepared = Npc11CardService.PrepareCloudflareReference(encoded.ToArray());
+
+        Assert.NotNull(prepared);
+        Assert.Equal(511, prepared.Value.Width);
+        Assert.Equal(511, prepared.Value.Height);
+    }
+
+    [Fact]
     public void Cloudflare_response_parser_reads_result_image_only_for_success_envelopes()
     {
         using var ok = System.Text.Json.JsonDocument.Parse("{\"success\":true,\"result\":{\"image\":\"aGVsbG8=\"}}");
