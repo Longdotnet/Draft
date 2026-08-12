@@ -52,7 +52,7 @@ public sealed class Npc11CardService(
         var avatarBytes = await LoadReferenceImageAsync(member?.AvatarUrl, cancellationToken);
         var profile = Npc11CharacterEngine.Create(targetId, displayName, style);
 
-        var provider = (configuration["Npc11:ArtProvider"] ?? "flux2-klein-4b").Trim().ToLowerInvariant();
+        var provider = (configuration["Npc11:ArtProvider"] ?? "qwen-image-edit-2511").Trim().ToLowerInvariant();
         var avatarHash = avatarBytes is { Length: > 0 }
             ? Convert.ToHexString(SHA256.HashData(avatarBytes)).ToLowerInvariant()
             : "no-avatar";
@@ -95,7 +95,7 @@ public sealed class Npc11CardService(
 
         var usedAi = aiArt is { Length: > 0 };
         var hero = aiArt ?? avatarBytes;
-        var png = Npc11CardRenderer.Render(profile, hero);
+        var png = Npc11CardRenderer.Render(profile, hero, usedAi);
         if (png.Length == 0 || png.Length > MaxArtBytes)
             throw new InvalidOperationException("VolleyVerse card render produced an invalid image size.");
 
@@ -220,7 +220,7 @@ public sealed class Npc11CardService(
             [new Npc11ArtReference("subject", DetectMime(referenceBytes), Convert.ToBase64String(referenceBytes))],
             new Npc11ArtOutput(1024, 1365, "png"));
 
-        var timeoutSeconds = Math.Clamp(configuration.GetValue("Npc11:ArtTimeoutSeconds", 18), 3, 45);
+        var timeoutSeconds = Math.Clamp(configuration.GetValue("Npc11:ArtTimeoutSeconds", 45), 15, 180);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         try

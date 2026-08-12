@@ -76,7 +76,7 @@ builder.Services.AddSingleton<ZaloSchedulerTrigger>();
 builder.Services.AddSingleton<ZaloPollEventQueue>();
 builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddHttpClient("TeamCardAvatars", client => client.Timeout = TimeSpan.FromSeconds(6));
-builder.Services.AddHttpClient("Npc11ArtWorker", client => client.Timeout = TimeSpan.FromSeconds(45));
+builder.Services.AddHttpClient("Npc11ArtWorker", client => client.Timeout = TimeSpan.FromSeconds(190));
 builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddHostedService<ZaloSchedulerWorker>();

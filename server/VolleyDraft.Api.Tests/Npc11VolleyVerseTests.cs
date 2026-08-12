@@ -44,6 +44,20 @@ public sealed class Npc11VolleyVerseTests
         Assert.True(png.Length > 50_000);
     }
 
+
+    [Fact]
+    public void Renderer_exposes_a_real_font_family_for_vietnamese_card_copy()
+    {
+        Assert.False(string.IsNullOrWhiteSpace(Npc11CardRenderer.SelectedFontFamily));
+
+        var profile = Npc11CharacterEngine.Create("vi-font", "Đặng Thế Nguyễn", "classic");
+        var png = Npc11CardRenderer.Render(profile, null);
+        using var rendered = SKBitmap.Decode(png);
+        Assert.NotNull(rendered);
+        Assert.Equal(1080, rendered!.Width);
+        Assert.Equal(1600, rendered.Height);
+    }
+
     [Theory]
     [InlineData("cyberpunk", "cyber")]
     [InlineData("kawaii", "cute")]
