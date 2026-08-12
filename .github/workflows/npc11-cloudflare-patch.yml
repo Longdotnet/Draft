@@ -1,0 +1,84 @@
+name: NPC11 Cloudflare patch
+
+on:
+  push:
+    branches:
+      - agent/npc11-cloudflare-ai
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/npc11-cloudflare-ai
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Patch Cloudflare Workers AI provider
+        shell: python
+        run: |
+          from pathlib import Path
+
+          service = Path('server/VolleyDraft.Api/Services/Npc11/Npc11CardService.cs')
+          text = service.read_text()
+
+          text = text.replace('using System.Net;\nusing System.Net.Http.Json;\n', 'using System.Globalization;\nusing System.Net;\nusing System.Net.Http.Headers;\nusing System.Net.Http.Json;\n')
+          text = text.replace('(configuration["Npc11:ArtProvider"] ?? "qwen-image-edit-2511").Trim().ToLowerInvariant()', '(configuration["Npc11:ArtProvider"] ?? "cloudflare-flux2-klein-4b").Trim().ToLowerInvariant()')
+
+          old = '''    private bool ShouldAttemptAi(byte[]? referenceBytes)\n    {\n        if (!configuration.GetValue("Npc11:AiEnabled", false) || referenceBytes is not { Length: > 0 }) return false;\n        var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');\n        return Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";\n    }'''
+          new = '''    private bool ShouldAttemptAi(byte[]? referenceBytes)\n    {\n        if (!configuration.GetValue("Npc11:AiEnabled", true) || referenceBytes is not { Length: > 0 }) return false;\n        var provider = (configuration["Npc11:ArtProvider"] ?? "cloudflare-flux2-klein-4b").Trim().ToLowerInvariant();\n        if (provider.StartsWith("cloudflare-", StringComparison.OrdinalIgnoreCase))\n        {\n            return !string.IsNullOrWhiteSpace(configuration["Npc11:Cloudflare:AccountId"]) &&\n                   !string.IsNullOrWhiteSpace(configuration["Npc11:Cloudflare:ApiToken"]);\n        }\n\n        var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');\n        return Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";\n    }'''
+          assert old in text, 'ShouldAttemptAi anchor changed'
+          text = text.replace(old, new)
+
+          old_sig = '''    private async Task<byte[]?> TryGenerateAiArtAsync(\n        Npc11CharacterProfile profile,\n        byte[]? referenceBytes,\n        string provider,\n        CancellationToken cancellationToken)\n    {\n        if (referenceBytes is not { Length: > 0 }) return null;\n        var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');'''
+          new_sig = '''    private async Task<byte[]?> TryGenerateAiArtAsync(\n        Npc11CharacterProfile profile,\n        byte[]? referenceBytes,\n        string provider,\n        CancellationToken cancellationToken)\n    {\n        if (referenceBytes is not { Length: > 0 }) return null;\n        if (provider.StartsWith("cloudflare-", StringComparison.OrdinalIgnoreCase))\n            return await TryGenerateCloudflareArtAsync(profile, referenceBytes, cancellationToken);\n\n        return await TryGenerateLocalWorkerArtAsync(profile, referenceBytes, provider, cancellationToken);\n    }\n\n    private async Task<byte[]?> TryGenerateLocalWorkerArtAsync(\n        Npc11CharacterProfile profile,\n        byte[] referenceBytes,\n        string provider,\n        CancellationToken cancellationToken)\n    {\n        var baseUrl = configuration["Npc11:ArtWorkerBaseUrl"]?.TrimEnd('/');'''
+          assert old_sig in text, 'AI method anchor changed'
+          text = text.replace(old_sig, new_sig)
+
+          insert_anchor = '''    internal static string BuildArtPrompt(Npc11CharacterProfile profile) =>'''
+          cloudflare_methods = '''    private async Task<byte[]?> TryGenerateCloudflareArtAsync(\n        Npc11CharacterProfile profile,\n        byte[] referenceBytes,\n        CancellationToken cancellationToken)\n    {\n        var accountId = configuration["Npc11:Cloudflare:AccountId"]?.Trim();\n        var apiToken = configuration["Npc11:Cloudflare:ApiToken"]?.Trim();\n        if (string.IsNullOrWhiteSpace(accountId) || string.IsNullOrWhiteSpace(apiToken)) return null;\n\n        var reference = PrepareCloudflareReference(referenceBytes);\n        if (reference is null) return null;\n\n        var model = configuration["Npc11:Cloudflare:Model"]?.Trim();\n        if (string.IsNullOrWhiteSpace(model)) model = "@cf/black-forest-labs/flux-2-klein-4b";\n        if (!model.StartsWith("@cf/", StringComparison.Ordinal))\n        {\n            logger.LogWarning("NPC11 Cloudflare model must use @cf/ prefix; using safe default instead");\n            model = "@cf/black-forest-labs/flux-2-klein-4b";\n        }\n\n        var timeoutSeconds = Math.Clamp(configuration.GetValue("Npc11:Cloudflare:TimeoutSeconds", 45), 10, 120);\n        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);\n        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));\n\n        try\n        {\n            var client = httpClientFactory.CreateClient("Npc11CloudflareAi");\n            var endpoint = $"https://api.cloudflare.com/client/v4/accounts/{Uri.EscapeDataString(accountId)}/ai/run/{model}";\n            using var form = new MultipartFormDataContent();\n            form.Add(new StringContent(BuildArtPrompt(profile), Encoding.UTF8), "prompt");\n            form.Add(new StringContent("1024", Encoding.ASCII), "width");\n            form.Add(new StringContent("1365", Encoding.ASCII), "height");\n            form.Add(new StringContent(Math.Abs((long)profile.Seed).ToString(CultureInfo.InvariantCulture), Encoding.ASCII), "seed");\n            form.Add(new StringContent("3.5", Encoding.ASCII), "guidance");\n            var imageContent = new ByteArrayContent(reference.Value.Bytes);\n            imageContent.Headers.ContentType = new MediaTypeHeaderValue(reference.Value.MimeType);\n            form.Add(imageContent, "input_image_0", reference.Value.FileName);\n\n            using var message = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = form };\n            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiToken);\n            using var response = await client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token);\n            if (!response.IsSuccessStatusCode)\n            {\n                var error = await response.Content.ReadAsStringAsync(timeout.Token);\n                logger.LogWarning(\n                    "NPC11 Cloudflare AI returned HTTP {StatusCode}; using fallback. Body={Body}",\n                    (int)response.StatusCode,\n                    error.Length > 500 ? error[..500] : error);\n                return null;\n            }\n\n            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(timeout.Token));\n            if (!TryReadCloudflareImage(document.RootElement, out var base64)) return null;\n            byte[] bytes;\n            try { bytes = Convert.FromBase64String(base64); }\n            catch (FormatException) { return null; }\n            if (bytes.Length is <= 0 or > MaxArtBytes) return null;\n\n            using var decoded = SKBitmap.Decode(bytes);\n            if (decoded is null || decoded.Width < 512 || decoded.Height < 512) return null;\n            logger.LogInformation(\n                "NPC11 Cloudflare AI art ready Model={Model} Size={Width}x{Height} Bytes={Bytes} Reference={ReferenceWidth}x{ReferenceHeight}",\n                model, decoded.Width, decoded.Height, bytes.Length, reference.Value.Width, reference.Value.Height);\n            return bytes;\n        }\n        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or JsonException)\n        {\n            logger.LogWarning(exception, "NPC11 Cloudflare AI unavailable; using deterministic fallback card");\n            return null;\n        }\n    }\n\n    internal static CloudflareReferenceImage? PrepareCloudflareReference(byte[] bytes)\n    {\n        using var source = SKBitmap.Decode(bytes);\n        if (source is null || source.Width <= 0 || source.Height <= 0) return null;\n        const int maximumEdge = 511;\n        var scale = Math.Min(1f, maximumEdge / (float)Math.Max(source.Width, source.Height));\n        var width = Math.Max(1, (int)MathF.Round(source.Width * scale));\n        var height = Math.Max(1, (int)MathF.Round(source.Height * scale));\n\n        using var resized = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Premul);\n        using (var canvas = new SKCanvas(resized))\n        using (var paint = new SKPaint { IsAntialias = true, FilterQuality = SKFilterQuality.High })\n        {\n            canvas.Clear(SKColors.White);\n            canvas.DrawBitmap(source, new SKRect(0, 0, source.Width, source.Height), new SKRect(0, 0, width, height), paint);\n        }\n        using var image = SKImage.FromBitmap(resized);\n        using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, 92);\n        return new CloudflareReferenceImage(encoded.ToArray(), "image/jpeg", "reference.jpg", width, height);\n    }\n\n    internal static bool TryReadCloudflareImage(JsonElement root, out string base64)\n    {\n        base64 = string.Empty;\n        if (!root.TryGetProperty("success", out var success) || success.ValueKind != JsonValueKind.True) return false;\n        if (!root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object) return false;\n        if (!result.TryGetProperty("image", out var image) || image.ValueKind != JsonValueKind.String) return false;\n        base64 = image.GetString() ?? string.Empty;\n        return base64.Length > 0;\n    }\n\n'''
+          assert insert_anchor in text, 'prompt anchor changed'
+          text = text.replace(insert_anchor, cloudflare_methods + insert_anchor)
+          text = text.replace('$"Art: {(aiArtUsed ? "AI local" : "avatar fallback")}{(cached ? " • cache" : string.Empty)}";', '$"Art: {(aiArtUsed ? "AI cloud" : "avatar fallback")}{(cached ? " • cache" : string.Empty)}";')
+
+          record_anchor = 'public sealed record Npc11ArtReference(string Role, string MimeType, string ImageBase64);'
+          assert record_anchor in text, 'record anchor changed'
+          text = text.replace(record_anchor, 'public readonly record struct CloudflareReferenceImage(byte[] Bytes, string MimeType, string FileName, int Width, int Height);\n' + record_anchor)
+          service.write_text(text)
+
+          program = Path('server/VolleyDraft.Api/Program.cs')
+          text = program.read_text()
+          anchor = 'builder.Services.AddHttpClient("Npc11ArtWorker", client => client.Timeout = TimeSpan.FromSeconds(190));'
+          assert anchor in text, 'Program HttpClient anchor changed'
+          program.write_text(text.replace(anchor, anchor + '\nbuilder.Services.AddHttpClient("Npc11CloudflareAi", client => client.Timeout = TimeSpan.FromSeconds(125));'))
+
+          app = Path('server/VolleyDraft.Api/appsettings.json')
+          text = app.read_text()
+          old = '''  "Npc11": {\n    "AiEnabled": false,\n    "ArtProvider": "qwen-image-edit-2511",\n    "ArtWorkerBaseUrl": "",\n    "ArtWorkerKey": "",\n    "ArtTimeoutSeconds": 45\n  },'''
+          new = '''  "Npc11": {\n    "AiEnabled": true,\n    "ArtProvider": "cloudflare-flux2-klein-4b",\n    "ArtWorkerBaseUrl": "",\n    "ArtWorkerKey": "",\n    "ArtTimeoutSeconds": 45,\n    "Cloudflare": {\n      "AccountId": "",\n      "ApiToken": "",\n      "Model": "@cf/black-forest-labs/flux-2-klein-4b",\n      "TimeoutSeconds": 45\n    }\n  },'''
+          assert old in text, 'appsettings anchor changed'
+          app.write_text(text.replace(old, new))
+
+          tests = Path('server/VolleyDraft.Api.Tests/Npc11VolleyVerseTests.cs')
+          text = tests.read_text()
+          anchor = '''    [Fact]\n    public void Art_prompt_tells_worker_to_preserve_non_human_subjects_and_avoid_ui_text()'''
+          extra = '''    [Fact]\n    public void Cloudflare_reference_is_resized_below_512_pixels_and_encoded_as_jpeg()\n    {\n        using var source = new SKBitmap(900, 600, SKColorType.Rgba8888, SKAlphaType.Premul);\n        using (var canvas = new SKCanvas(source)) canvas.Clear(new SKColor(80, 180, 110));\n        using var image = SKImage.FromBitmap(source);\n        using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);\n\n        var prepared = Npc11CardService.PrepareCloudflareReference(encoded.ToArray());\n\n        Assert.NotNull(prepared);\n        Assert.True(prepared.Value.Width < 512);\n        Assert.True(prepared.Value.Height < 512);\n        Assert.Equal("image/jpeg", prepared.Value.MimeType);\n        using var decoded = SKBitmap.Decode(prepared.Value.Bytes);\n        Assert.NotNull(decoded);\n        Assert.Equal(prepared.Value.Width, decoded!.Width);\n        Assert.Equal(prepared.Value.Height, decoded.Height);\n    }\n\n    [Fact]\n    public void Cloudflare_response_parser_reads_result_image_only_for_success_envelopes()\n    {\n        using var ok = System.Text.Json.JsonDocument.Parse("{\\\"success\\\":true,\\\"result\\\":{\\\"image\\\":\\\"aGVsbG8=\\\"}}");\n        Assert.True(Npc11CardService.TryReadCloudflareImage(ok.RootElement, out var image));\n        Assert.Equal("aGVsbG8=", image);\n\n        using var failed = System.Text.Json.JsonDocument.Parse("{\\\"success\\\":false,\\\"result\\\":{\\\"image\\\":\\\"aGVsbG8=\\\"}}");\n        Assert.False(Npc11CardService.TryReadCloudflareImage(failed.RootElement, out _));\n    }\n\n'''
+          assert anchor in text, 'tests anchor changed'
+          tests.write_text(text.replace(anchor, extra + anchor))
+      - name: Restore tests
+        run: dotnet restore server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj
+      - name: Run tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-restore
+      - name: Commit patch
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "Longdotnet"
+          git config user.email "189841499+Longdotnet@users.noreply.github.com"
+          git add server/VolleyDraft.Api server/VolleyDraft.Api.Tests/Npc11VolleyVerseTests.cs
+          git commit -m "feat(npc11): add Cloudflare Workers AI art provider"
+          git push origin HEAD:agent/npc11-cloudflare-ai
