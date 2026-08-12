@@ -1,0 +1,50 @@
+name: NPC11 Cloudflare refine
+
+on:
+  push:
+    branches:
+      - agent/npc11-cloudflare-ai
+
+permissions:
+  contents: write
+
+jobs:
+  refine-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/npc11-cloudflare-ai
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - name: Refine reference preprocessing
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('server/VolleyDraft.Api/Services/Npc11/Npc11CardService.cs')
+          text = p.read_text()
+          old = '        var scale = Math.Min(1f, maximumEdge / (float)Math.Max(source.Width, source.Height));\n'
+          new = '        // Cloudflare requires every reference dimension to be below 512px. Normalize even tiny Zalo\n        // thumbnails to a 511px longest edge so the edit model receives a consistent visual canvas.\n        var scale = maximumEdge / (float)Math.Max(source.Width, source.Height);\n'
+          assert old in text, 'reference scale anchor changed'
+          p.write_text(text.replace(old, new))
+
+          tests = Path('server/VolleyDraft.Api.Tests/Npc11VolleyVerseTests.cs')
+          text = tests.read_text()
+          anchor = '''    [Fact]\n    public void Cloudflare_response_parser_reads_result_image_only_for_success_envelopes()'''
+          extra = '''    [Fact]\n    public void Cloudflare_reference_upscales_tiny_zalo_avatar_to_511_pixel_canvas()\n    {\n        using var source = new SKBitmap(160, 160, SKColorType.Rgba8888, SKAlphaType.Premul);\n        using (var canvas = new SKCanvas(source)) canvas.Clear(new SKColor(70, 150, 220));\n        using var image = SKImage.FromBitmap(source);\n        using var encoded = image.Encode(SKEncodedImageFormat.Jpeg, 90);\n\n        var prepared = Npc11CardService.PrepareCloudflareReference(encoded.ToArray());\n\n        Assert.NotNull(prepared);\n        Assert.Equal(511, prepared.Value.Width);\n        Assert.Equal(511, prepared.Value.Height);\n    }\n\n'''
+          assert anchor in text, 'test anchor changed'
+          tests.write_text(text.replace(anchor, extra + anchor))
+      - name: Restore tests
+        run: dotnet restore server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj
+      - name: Run tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-restore
+      - name: Commit refinement
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "Longdotnet"
+          git config user.email "189841499+Longdotnet@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/Npc11/Npc11CardService.cs server/VolleyDraft.Api.Tests/Npc11VolleyVerseTests.cs
+          git commit -m "test(npc11): normalize Cloudflare avatar references"
+          git push origin HEAD:agent/npc11-cloudflare-ai
