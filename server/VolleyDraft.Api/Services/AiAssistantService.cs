@@ -39,6 +39,14 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(model))
             return new(ZaloBotIntent.Unknown, 0, null, false, null, "ai_not_configured");
 
+        context = context with
+        {
+            RecentMessages = ZaloConversationContextAssembler.Assemble(
+                context.Sender,
+                context.Question,
+                context.RecentMessages)
+        };
+
         var prompt = """
             Bạn là bộ phân loại intent cho bot quản lý nhóm bóng chuyền. Chỉ trả về đúng một JSON object, không markdown và không văn bản khác.
             Schema bắt buộc:
@@ -609,6 +617,14 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
         {
             return "Mình chưa đủ dữ kiện để trả lời chắc chắn. Bạn hãy nói rõ tên hoặc ngày của trận; gõ help để xem các câu hỏi có sẵn.";
         }
+
+        context = context with
+        {
+            RecentMessages = ZaloConversationContextAssembler.Assemble(
+                context.Sender,
+                context.Question,
+                context.RecentMessages)
+        };
 
         var systemPrompt = """
             Bạn là trợ lý trong nhóm bóng chuyền Volley Draft. Hãy trả lời đúng câu hỏi hiện tại bằng tiếng Việt, ngắn gọn, tự nhiên và thân thiện.
