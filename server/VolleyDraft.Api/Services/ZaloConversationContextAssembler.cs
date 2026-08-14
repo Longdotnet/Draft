@@ -31,10 +31,18 @@ public static class ZaloConversationContextAssembler
             .Select(item => item.index)
             .ToHashSet();
 
-        var ranked = messages
+        // Always retain a small immediate tail. Pure score-based selection can
+        // otherwise let older sender-adjacent turns crowd out the latest group
+        // message, which is often the missing referent for "cái đó", "ông này",
+        // or a short follow-up after another member just spoke.
+        var tailCount = Math.Min(ImmediateTailSize, Math.Max(1, maxMessages / 2));
+        var tailStart = Math.Max(0, messages.Count - tailCount);
+        var selectedIndexes = Enumerable.Range(tailStart, messages.Count - tailStart).ToHashSet();
+        var semanticSlots = Math.Max(0, maxMessages - selectedIndexes.Count);
+
+        var semanticIndexes = messages
             .Select((message, index) => new
             {
-                Message = message,
                 Index = index,
                 Score = Score(
                     message,
@@ -45,14 +53,17 @@ public static class ZaloConversationContextAssembler
                     senderIndexes,
                     questionTokens)
             })
+            .Where(item => !selectedIndexes.Contains(item.Index))
             .OrderByDescending(item => item.Score)
             .ThenByDescending(item => item.Index)
-            .Take(maxMessages)
-            .OrderBy(item => item.Index)
-            .Select(item => item.Message)
-            .ToList();
+            .Take(semanticSlots)
+            .Select(item => item.Index);
 
-        return ranked;
+        selectedIndexes.UnionWith(semanticIndexes);
+        return selectedIndexes
+            .OrderBy(index => index)
+            .Select(index => messages[index])
+            .ToList();
     }
 
     private static int Score(
