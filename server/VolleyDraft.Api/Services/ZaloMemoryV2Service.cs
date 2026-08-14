@@ -94,7 +94,7 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         return true;
     }
 
-    private static async Task<string> ExecuteCommandAsync(
+    private async Task<string> ExecuteCommandAsync(
         string groupId,
         string senderId,
         ZaloUserConceptStore store,
@@ -114,20 +114,23 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
                    "\nBạn có thể bảo mình quên tên gọi, lịch chơi, vị trí hoặc xóa hết memory.";
         }
 
+        var privacy = new ZaloUserConceptPrivacyStore(db);
         if (command.Kind == ZaloMemoryCommandKind.ForgetAll)
         {
-            var disabled = 0;
-            foreach (var key in active.Select(item => item.Key).Distinct(StringComparer.Ordinal))
-                disabled += await store.DisableAsync(groupId, senderId, key, cancellationToken);
-            return disabled == 0
-                ? "Mình không có memory cá nhân nào đang hoạt động để xóa."
-                : $"Đã tắt toàn bộ {disabled} memory cá nhân đang hoạt động của bạn trong nhóm này.";
+            var deleted = await privacy.DeleteAllAsync(groupId, senderId, cancellationToken);
+            return deleted == 0
+                ? "Mình không có memory cá nhân nào để xóa trong nhóm này."
+                : $"Đã xóa toàn bộ {deleted} bản ghi memory cá nhân của bạn trong nhóm này, gồm cả lịch sử cũ đã bị thay thế.";
         }
 
-        var count = await store.DisableAsync(groupId, senderId, command.ConceptKey ?? string.Empty, cancellationToken);
+        var count = await privacy.DeleteKeyHistoryAsync(
+            groupId,
+            senderId,
+            command.ConceptKey ?? string.Empty,
+            cancellationToken);
         return count == 0
-            ? "Mình không tìm thấy memory đó đang hoạt động."
-            : $"Đã quên {DescribeKey(command.ConceptKey)} của bạn trong nhóm này.";
+            ? "Mình không tìm thấy memory đó để xóa."
+            : $"Đã quên {DescribeKey(command.ConceptKey)} của bạn trong nhóm này và xóa cả lịch sử cũ của mục đó.";
     }
 
     private static string Describe(ZaloUserConceptSnapshot concept)
