@@ -162,28 +162,36 @@ public sealed partial class ZaloOverbookService
         if (senderId.Length == 0) return;
         var now = DateTimeOffset.UtcNow;
 
-        // Query first, order on the client to keep SQLite/PostgreSQL behavior aligned
-        // because SQLite cannot translate DateTimeOffset ORDER BY expressions.
+        // Keep stable identity predicates in SQL, then evaluate DateTimeOffset expiry
+        // and ordering in memory so SQLite/PostgreSQL use the same temporal semantics.
         var pendingRows = await db.ZaloBotConversationStates
             .Include(item => item.ZaloConnection)
             .Where(item => item.GroupId == groupId &&
                            item.SenderZaloUserId == senderId &&
-                           item.ExpiresAt > now &&
                            item.ZaloConnection.AccountZaloId == accountId)
             .ToListAsync(cancellationToken);
-        var pending = pendingRows.OrderByDescending(item => item.UpdatedAt).FirstOrDefault();
+        var pending = pendingRows
+            .Where(item => item.ExpiresAt > now)
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstOrDefault();
         if (pending is null) return;
 
         var v2Store = new ZaloConversationStateV2Store(db);
         try
         {
+            // Project the legacy payload into the typed V2 envelope in this webhook
+            // turn, before topic-switch/routing decisions. Do not copy arbitrary
+            // legacy JSON into V2 collected arguments.
+            var typed = ZaloLegacyPendingPayloadAdapter.Adapt(
+                pending.PendingIntent,
+                pending.PendingPayloadJson);
             await v2Store.SaveActiveAsync(
                 groupId,
                 senderId,
                 pending.PendingIntent,
-                NormalizeJsonObject(pending.PendingPayloadJson),
-                "[\"legacy_pending_resolution\"]",
-                "[]",
+                typed.CollectedArgumentsJson,
+                typed.MissingArgumentsJson,
+                typed.CandidateEntitiesJson,
                 sourceMessageId: null,
                 lastMessageId: incoming.MessageId,
                 expiresAt: pending.ExpiresAt,
@@ -193,7 +201,7 @@ public sealed partial class ZaloOverbookService
         {
             logger.LogWarning(
                 exception,
-                "Could not shadow legacy pending state into V2 Group={GroupId} Sender={SenderId} Intent={Intent}",
+                "Could not project legacy pending state into typed V2 state Group={GroupId} Sender={SenderId} Intent={Intent}",
                 groupId,
                 senderId,
                 pending.PendingIntent);
@@ -306,21 +314,6 @@ public sealed partial class ZaloOverbookService
             ReplyOutcome = "sent"
         });
         await db.SaveChangesAsync(cancellationToken);
-    }
-
-    private static string NormalizeJsonObject(string? value)
-    {
-        var text = (value ?? string.Empty).Trim();
-        if (text.Length == 0) return "{}";
-        try
-        {
-            using var document = JsonDocument.Parse(text);
-            return document.RootElement.ValueKind == JsonValueKind.Object ? text : "{}";
-        }
-        catch (JsonException)
-        {
-            return "{}";
-        }
     }
 
     private static string? NormalizeProviderMessageId(string? value)
