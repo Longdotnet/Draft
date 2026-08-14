@@ -27,7 +27,9 @@ An `IdentityPreRouting` trace stores only stable person keys, not the original p
 
 `ZaloLegacyPendingPayloadAdapter` converts handler-specific pending JSON into a bounded V2 envelope containing typed session/person/team identifiers, missing arguments, and candidate entities. Arbitrary legacy fields are not copied into V2 collected arguments.
 
-`ZaloLegacyPendingStateProjector` keeps active legacy execution authoritative during migration while projecting the typed representation into `ZaloConversationStatesV2`. It refuses to overwrite an already-active V2 state for a different intent.
+For an addressed follow-up, `ZaloOverbookService.V2PreRouting` now applies this adapter in the **same webhook turn**, before the central topic-switch decision and before the legacy bot router runs. The next user turn therefore sees typed collected/missing/candidate state immediately instead of waiting for a maintenance cycle. Temporal filtering/order for legacy pending rows is evaluated in memory so SQLite and PostgreSQL follow the same `DateTimeOffset` semantics.
+
+`ZaloLegacyPendingStateProjector` remains as background reconciliation for active legacy workflows. It refuses to overwrite an already-active V2 state for a different intent.
 
 ## Trace enrichment
 
@@ -44,7 +46,7 @@ It does not infer or reconstruct business facts from raw chat text.
 The existing maintenance worker runs migration work in this order:
 
 1. canonicalize provider outbound IDs
-2. project typed pending state
+2. reconcile typed pending state
 3. project terminal legacy outcomes
 4. enrich projected traces
 5. run retention cleanup
