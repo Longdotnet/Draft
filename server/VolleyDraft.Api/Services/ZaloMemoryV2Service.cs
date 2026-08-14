@@ -61,20 +61,23 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         if (value.Length == 0) return false;
         value = StripBotPrefix(value);
 
+        // Destructive commands must be recognized before broad phrases such as
+        // "memory cua tui"; otherwise "xoa het memory cua tui" can be mistaken
+        // for a list request merely because it contains that substring.
+        if (HasAny(value,
+                "xoa het memory", "xoa toan bo memory", "quen het ve tui", "quen het ve toi",
+                "xoa het ky uc", "xoa tat ca ky uc", "xoa moi thu nho ve tui", "xoa moi thu nho ve toi"))
+        {
+            command = new(ZaloMemoryCommandKind.ForgetAll);
+            return true;
+        }
+
         if (HasAny(value,
                 "nho gi ve tui", "nho gi ve toi", "nho gi ve minh", "nho gi ve em",
                 "memory cua tui", "memory cua toi", "ky uc cua tui", "ky uc cua toi",
                 "xem memory", "xem ky uc"))
         {
             command = new(ZaloMemoryCommandKind.List);
-            return true;
-        }
-
-        if (HasAny(value,
-                "xoa het memory", "xoa toan bo memory", "quen het ve tui", "quen het ve toi",
-                "xoa het ky uc", "xoa tat ca ky uc", "xoa moi thu nho ve tui", "xoa moi thu nho ve toi"))
-        {
-            command = new(ZaloMemoryCommandKind.ForgetAll);
             return true;
         }
 
