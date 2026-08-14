@@ -14,6 +14,8 @@ public sealed record ZaloUserConceptDraft(
 /// <summary>
 /// High-precision deterministic extraction for explicit self facts/preferences.
 /// This intentionally does not infer concepts from ordinary group chatter.
+/// Stored values stay structured and minimal so quoted user text is not replayed
+/// into future AI prompts as pseudo-instructions.
 /// </summary>
 public static class ZaloUserConceptExtractor
 {
@@ -59,7 +61,7 @@ public static class ZaloUserConceptExtractor
             draft = new ZaloUserConceptDraft(
                 "Preference",
                 "session_availability",
-                JsonSerializer.Serialize(new { sessions, mode, statement = original }),
+                JsonSerializer.Serialize(new { sessions, mode }),
                 .98);
             return true;
         }
@@ -69,7 +71,7 @@ public static class ZaloUserConceptExtractor
             draft = new ZaloUserConceptDraft(
                 "DomainFact",
                 "volleyball_role",
-                JsonSerializer.Serialize(new { role, statement = original }),
+                JsonSerializer.Serialize(new { role }),
                 .98);
             return true;
         }
@@ -113,7 +115,8 @@ public static class ZaloUserConceptExtractor
 
     private static bool LooksLikeInstruction(string value) => HasAny(
         value,
-        "tra loi", "thuc hien", "xoa", "doi team", "draft", "chuyen slot", "gui tin");
+        "tra loi", "thuc hien", "xoa", "doi team", "draft", "chuyen slot", "gui tin",
+        "bo qua", "chi dan", "system", "prompt", "instruction", "ignore", "previous", "developer", "assistant");
 
     private static bool HasAny(string value, params string[] tokens) =>
         tokens.Any(token => value.Contains(token, StringComparison.Ordinal));
