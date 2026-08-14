@@ -31,6 +31,11 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         string question,
         CancellationToken cancellationToken = default)
     {
+        // Set synchronously before the first await so the caller's await continuation
+        // captures this turn context. Both classifier and answer context assembly then
+        // see the same quote relation without widening all existing public contracts.
+        ZaloTurnQuoteContext.Set(incoming);
+
         var sender = new ZaloAiSender(Clean(incoming.SenderId, 100), Clean(incoming.SenderName, 160));
         if (sender.Id.Length == 0 || string.IsNullOrWhiteSpace(groupId))
             return new(false, null, null, null);
