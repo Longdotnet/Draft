@@ -19,6 +19,21 @@ public sealed class ZaloIdentityResolverDbTests
         await using var db = new VolleyDraftDbContext(options);
         await db.Database.EnsureCreatedAsync();
 
+        db.Users.Add(new User
+        {
+            Id = "admin-1",
+            DisplayName = "Admin",
+            Email = "admin@example.test",
+            PasswordHash = "test-only"
+        });
+        db.ZaloConnections.Add(new ZaloConnection
+        {
+            Id = "conn-1",
+            AdminUserId = "admin-1",
+            AccountZaloId = "bot-uid",
+            DisplayName = "Volley Bot",
+            EncryptedCredentials = "test-only"
+        });
         db.ZaloGroupMembers.Add(new ZaloGroupMember
         {
             ZaloConnectionId = "conn-1",
