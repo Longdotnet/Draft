@@ -159,14 +159,23 @@ public sealed class ZaloBridgeClient
         // never turn the operation into a retryable send failure. Record the real
         // provider ID best-effort in an independent scope and only log if that fails.
         if (result.Sent && !result.Mock && !string.IsNullOrWhiteSpace(result.MessageId))
-            await TryRememberProviderOutboundIdAsync(accountId, groupId, result.MessageId!);
+        {
+            await TryRememberProviderOutboundIdAsync(
+                accountId,
+                groupId,
+                result.MessageId!,
+                message,
+                ParseParentMessageId(accountId, idempotencyKey));
+        }
         return result;
     }
 
     private async Task TryRememberProviderOutboundIdAsync(
         string accountId,
         string groupId,
-        string providerMessageId)
+        string providerMessageId,
+        string message,
+        string? parentMessageId)
     {
         if (scopeFactory is null) return;
 
@@ -187,7 +196,13 @@ public sealed class ZaloBridgeClient
                 connectionId,
                 groupId,
                 providerMessageId,
-                inReplyToMessageId: null);
+                parentMessageId);
+            await new ZaloOutboundReceiptStore(db).RememberAsync(
+                connectionId,
+                groupId,
+                providerMessageId,
+                parentMessageId,
+                message);
         }
         catch (Exception exception)
         {
@@ -198,6 +213,17 @@ public sealed class ZaloBridgeClient
                 groupId,
                 providerMessageId);
         }
+    }
+
+    internal static string? ParseParentMessageId(string accountId, string? idempotencyKey)
+    {
+        var account = (accountId ?? string.Empty).Trim();
+        var key = (idempotencyKey ?? string.Empty).Trim();
+        if (account.Length == 0 || key.Length == 0) return null;
+        var prefix = account + ":";
+        if (!key.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        var parent = key[prefix.Length..].Trim();
+        return parent.Length == 0 ? null : parent.Length <= 160 ? parent : parent[..160];
     }
 
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
