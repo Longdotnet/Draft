@@ -18,36 +18,47 @@ public static class ZaloConversationContextAssembler
         IReadOnlyList<ZaloAiMessage> messages,
         int maxMessages = DefaultMaxMessages)
     {
-        if (messages.Count == 0) return [];
         maxMessages = Math.Clamp(maxMessages, 1, 20);
-        if (messages.Count <= maxMessages) return messages.ToList();
+        var working = messages.ToList();
+        var quote = ZaloTurnQuoteContext.GetFor(sender);
+        if (quote is { HasQuote: true })
+        {
+            working.Add(new ZaloAiMessage(
+                "context",
+                quote.SenderId ?? string.Empty,
+                quote.SenderName ?? "Quoted Zalo member",
+                "[UNTRUSTED_ZALO_QUOTE] " + ZaloQuotedContextResolver.BuildAiGrounding(quote),
+                quote.SentAt ?? DateTimeOffset.UtcNow));
+        }
+
+        if (working.Count == 0) return [];
+        if (working.Count <= maxMessages) return working;
 
         var senderId = NormalizeId(sender.Id);
         var senderName = sender.Name?.Trim() ?? string.Empty;
         var questionTokens = SignificantTokens(question);
-        var senderIndexes = messages
+        var senderIndexes = working
             .Select((message, index) => new { message, index })
             .Where(item => string.Equals(NormalizeId(item.message.SenderId), senderId, StringComparison.Ordinal))
             .Select(item => item.index)
             .ToHashSet();
 
-        // Always retain a small immediate tail. Pure score-based selection can
-        // otherwise let older sender-adjacent turns crowd out the latest group
-        // message, which is often the missing referent for "cái đó", "ông này",
-        // or a short follow-up after another member just spoke.
+        // Always retain a small immediate tail. The turn-scoped quote is appended at
+        // the end, so it is guaranteed to survive this tail rule instead of being
+        // crowded out by old same-sender history.
         var tailCount = Math.Min(ImmediateTailSize, Math.Max(1, maxMessages / 2));
-        var tailStart = Math.Max(0, messages.Count - tailCount);
-        var selectedIndexes = Enumerable.Range(tailStart, messages.Count - tailStart).ToHashSet();
+        var tailStart = Math.Max(0, working.Count - tailCount);
+        var selectedIndexes = Enumerable.Range(tailStart, working.Count - tailStart).ToHashSet();
         var semanticSlots = Math.Max(0, maxMessages - selectedIndexes.Count);
 
-        var semanticIndexes = messages
+        var semanticIndexes = working
             .Select((message, index) => new
             {
                 Index = index,
                 Score = Score(
                     message,
                     index,
-                    messages.Count,
+                    working.Count,
                     senderId,
                     senderName,
                     senderIndexes,
@@ -62,7 +73,7 @@ public static class ZaloConversationContextAssembler
         selectedIndexes.UnionWith(semanticIndexes);
         return selectedIndexes
             .OrderBy(index => index)
-            .Select(index => messages[index])
+            .Select(index => working[index])
             .ToList();
     }
 
@@ -84,6 +95,10 @@ public static class ZaloConversationContextAssembler
         if (message.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) &&
             IsAddressedToSender(message.Content, senderName))
             score += 800;
+
+        if (message.Role.Equals("context", StringComparison.OrdinalIgnoreCase) &&
+            message.Content.StartsWith("[UNTRUSTED_ZALO_QUOTE]", StringComparison.Ordinal))
+            score += 2_000;
 
         if (senderIndexes.Contains(index - 1) || senderIndexes.Contains(index + 1))
             score += 550;
