@@ -59,13 +59,15 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
         var existing = await FindActiveAsync(connection, transaction, groupId, subjectId, type, key, cancellationToken);
+        var hasExisting = existing.HasValue;
+        var existingValue = existing.GetValueOrDefault();
         var now = DateTimeOffset.UtcNow;
 
         // Pre-routing V2 ingestion and the legacy AI-answer enrichment can observe
         // the same explicit self statement in one request. Repeating an identical
         // concept should confirm it, not create a fake conflict chain that supersedes
         // the exact same value. A genuinely different value still supersedes below.
-        if (existing is not null && string.Equals(existing.ValueJson, valueJson, StringComparison.Ordinal))
+        if (hasExisting && string.Equals(existingValue.ValueJson, valueJson, StringComparison.Ordinal))
         {
             await using var confirm = connection.CreateCommand();
             confirm.Transaction = transaction;
@@ -85,14 +87,14 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
             Add(confirm, "@expiresAt", draft.ExpiresAt);
             Add(confirm, "@confirmedAt", now);
             Add(confirm, "@updatedAt", now);
-            Add(confirm, "@id", existing.Id);
+            Add(confirm, "@id", existingValue.Id);
             await confirm.ExecuteNonQueryAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return await LoadByIdAsync(connection, existing.Id, cancellationToken)
+            return await LoadByIdAsync(connection, existingValue.Id, cancellationToken)
                    ?? throw new InvalidOperationException("Confirmed user concept could not be reloaded.");
         }
 
-        if (existing is not null)
+        if (hasExisting)
         {
             await using var supersede = connection.CreateCommand();
             supersede.Transaction = transaction;
@@ -102,7 +104,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
                 WHERE "Id" = @id AND "Status" = 'Active';
                 """;
             Add(supersede, "@updatedAt", now);
-            Add(supersede, "@id", existing.Id);
+            Add(supersede, "@id", existingValue.Id);
             await supersede.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -131,7 +133,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
             Add(insert, "@sourceMessageId", sourceMessageId);
             Add(insert, "@createdBy", subjectId);
             Add(insert, "@createdByName", senderName);
-            Add(insert, "@supersedesId", existing?.Id);
+            Add(insert, "@supersedesId", hasExisting ? existingValue.Id : null);
             Add(insert, "@expiresAt", draft.ExpiresAt);
             Add(insert, "@confirmedAt", now);
             Add(insert, "@createdAt", now);
@@ -153,7 +155,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
             subjectId,
             senderName,
             "Active",
-            existing?.Id,
+            hasExisting ? existingValue.Id : null,
             draft.ExpiresAt,
             now,
             now,
