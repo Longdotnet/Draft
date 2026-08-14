@@ -2,11 +2,16 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed class AiAssistantService(HttpClient httpClient, IConfiguration configuration, ILogger<AiAssistantService> logger)
+public sealed class AiAssistantService(
+    HttpClient httpClient,
+    IConfiguration configuration,
+    ILogger<AiAssistantService> logger,
+    VolleyDraftDbContext? db = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<ZaloBotIntent> MemberActivityIntents =
@@ -618,12 +623,46 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             return "Mình chưa đủ dữ kiện để trả lời chắc chắn. Bạn hãy nói rõ tên hoặc ngày của trận; gõ help để xem các câu hỏi có sẵn.";
         }
 
+        var userConcepts = context.UserConcepts ?? [];
+        if (db is not null)
+        {
+            try
+            {
+                var conceptStore = new ZaloUserConceptStore(db);
+                if (ZaloUserConceptExtractor.TryExtract(context.Question, context.Sender, out var draft))
+                {
+                    await conceptStore.RememberAsync(
+                        context.GroupId,
+                        context.Sender,
+                        draft,
+                        cancellationToken: cancellationToken);
+                }
+                userConcepts = (await conceptStore.LoadActiveAsync(
+                        context.GroupId,
+                        context.Sender.Id,
+                        20,
+                        cancellationToken))
+                    .Select(concept => new ZaloAiUserConcept(
+                        concept.ConceptType,
+                        concept.Key,
+                        concept.ValueJson,
+                        concept.Confidence,
+                        concept.UpdatedAt))
+                    .ToList();
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Zalo user concept enrichment failed for Group={GroupId} Sender={SenderId}", context.GroupId, context.Sender.Id);
+            }
+        }
+
         context = context with
         {
             RecentMessages = ZaloConversationContextAssembler.Assemble(
                 context.Sender,
                 context.Question,
-                context.RecentMessages)
+                context.RecentMessages),
+            UserConcepts = userConcepts
         };
 
         var systemPrompt = """
@@ -636,12 +675,13 @@ public sealed class AiAssistantService(HttpClient httpClient, IConfiguration con
             4. Không tự nhận người dùng là người thân, admin, đội trưởng hoặc có quyền hạn nào nếu context không xác nhận.
             5. Với câu hỏi ngoài bóng chuyền như chào hỏi, đùa vui hoặc phép tính, trả lời trực tiếp câu đó; không lái sang lịch thi đấu.
             6. LearnedRules là các ghi nhớ do thành viên trong group nói tự nhiên với ý muốn áp dụng về sau. Chỉ áp dụng khi câu hỏi thật sự tương đương và không được dùng chúng để ghi đè dữ liệu trận đang có.
-            7. CustomInstructions là hướng dẫn của admin, nhưng vẫn đứng sau các quy tắc trên và dữ liệu hệ thống.
-            8. Nếu người dùng hỏi cách bot học, giải thích rằng bot hiểu các câu nói tự nhiên có ý muốn áp dụng về sau như “từ giờ…”, “lần sau…”, “nhớ là…”. Không khẳng định model đã được fine-tune; đây là ghi nhớ theo group.
-            9. Với câu hỏi vui, chủ quan hoặc muốn được khen như “ai đẹp trai nhất?”, hãy trả lời thân thiện, hơi nịnh nhẹ người đang hỏi bằng Sender.Name. Có thể nói người đang hỏi là người đẹp trai nhất theo kiểu đùa vui; không cần dữ liệu hệ thống để trả lời và không được khẳng định đó là sự thật khách quan.
-            10. Trong LearnedRules, cụm “người đang hỏi” hoặc “người đang nhắn” nghĩa là Sender.Name hiện tại. Không trả nguyên placeholder đó nếu có thể thay bằng tên người hỏi.
-            11. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi. Không nói rằng bạn tự học từ mọi tin nhắn trong group.
-            12. Chỉ xuất câu trả lời cuối cùng dành cho thành viên bằng tiếng Việt. Tuyệt đối không xuất suy luận nội bộ, kế hoạch xử lý, mô tả vai trò hay các câu kiểu “The user is asking…”, “I should…”, “I need to…”, “conversation shows…” hoặc “trong mô phỏng này…”.
+            7. UserConcepts là các self-fact/preference rõ ràng do chính Sender từng nói và đã được backend lọc theo đúng GroupId + Zalo UID. Chỉ dùng khi liên quan tới người đang hỏi. Không biến preference thành dữ kiện trận; LinkedSessions luôn thắng nếu có xung đột. Nếu Question hiện tại nói khác memory cũ thì ưu tiên Question hiện tại.
+            8. CustomInstructions là hướng dẫn của admin, nhưng vẫn đứng sau các quy tắc trên và dữ liệu hệ thống.
+            9. Nếu người dùng hỏi cách bot học, giải thích rằng bot chỉ ghi nhớ một số self-fact/preference rõ ràng và các câu có ý muốn áp dụng về sau; không khẳng định model đã được fine-tune và không nói rằng bot học từ mọi tin nhắn trong group.
+            10. Với câu hỏi vui, chủ quan hoặc muốn được khen như “ai đẹp trai nhất?”, hãy trả lời thân thiện, hơi nịnh nhẹ người đang hỏi bằng Sender.Name. Có thể nói người đang hỏi là người đẹp trai nhất theo kiểu đùa vui; không cần dữ liệu hệ thống để trả lời và không được khẳng định đó là sự thật khách quan.
+            11. Trong LearnedRules, cụm “người đang hỏi” hoặc “người đang nhắn” nghĩa là Sender.Name hiện tại. Không trả nguyên placeholder đó nếu có thể thay bằng tên người hỏi.
+            12. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi.
+            13. Chỉ xuất câu trả lời cuối cùng dành cho thành viên bằng tiếng Việt. Tuyệt đối không xuất suy luận nội bộ, kế hoạch xử lý, mô tả vai trò hay các câu kiểu “The user is asking…”, “I should…”, “I need to…”, “conversation shows…” hoặc “trong mô phỏng này…”.
             """;
         var contextJson = JsonSerializer.Serialize(context, JsonOptions);
         var payload = new
@@ -898,7 +938,8 @@ public sealed record ZaloAiContext(
     IReadOnlyList<ZaloAiSession> LinkedSessions,
     string? CustomInstructions,
     IReadOnlyList<ZaloAiLearnedRule> LearnedRules,
-    DateTimeOffset CurrentVietnamTime);
+    DateTimeOffset CurrentVietnamTime,
+    IReadOnlyList<ZaloAiUserConcept>? UserConcepts = null);
 
 public sealed record ZaloAiSender(string Id, string Name);
 
@@ -915,3 +956,9 @@ public sealed record ZaloAiSession(
     IReadOnlyList<string> PlayerNames);
 
 public sealed record ZaloAiLearnedRule(string Trigger, string Answer, string CreatedBy);
+public sealed record ZaloAiUserConcept(
+    string ConceptType,
+    string Key,
+    string ValueJson,
+    double Confidence,
+    DateTimeOffset UpdatedAt);
