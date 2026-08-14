@@ -62,6 +62,15 @@ public static class ZaloConversationStateMigrationPolicy
             if (normalized.EndsWith(suffix, StringComparison.Ordinal))
                 normalized = normalized[..^suffix.Length];
         }
-        return normalized;
+
+        // AutoDraft and Redraft are different execution intents but belong to one
+        // conversational draft workflow. A user who is already confirming a draft
+        // and says "draft lại team này" is correcting that workflow, not starting an
+        // unrelated topic. Keep other intent families distinct unless explicitly mapped.
+        return normalized switch
+        {
+            "autodraft" or "redraft" => "draft",
+            _ => normalized
+        };
     }
 }
