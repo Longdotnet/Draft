@@ -39,13 +39,32 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         zaloConnectionId = Clean(zaloConnectionId, 100);
         if (fromMessageId.Length == 0 || groupId.Length == 0 || zaloConnectionId.Length == 0) return null;
 
+        var quotedProviderId = CleanOptional(incoming.Quote.MessageId, 160);
+        var quotedSenderId = CleanOptional(incoming.Quote.SenderId, 100);
+        if (quotedProviderId is not null &&
+            !string.IsNullOrWhiteSpace(incoming.BotId) &&
+            string.Equals(quotedSenderId, incoming.BotId.Trim(), StringComparison.Ordinal))
+        {
+            // V1 stored bot replies with a local bot:{guid}. Once Zalo gives us a
+            // direct quote to that message we finally have a trustworthy provider ID.
+            // Reconcile only a unique/nearby content match and never guess between
+            // several candidates.
+            await ReconcileQuotedLegacyBotMessageAsync(
+                zaloConnectionId,
+                groupId,
+                quotedProviderId,
+                incoming.Quote.Content,
+                incoming.Quote.SentAtUnixMs,
+                cancellationToken);
+        }
+
         return await UpsertAsync(
             zaloConnectionId,
             groupId,
             fromMessageId,
-            CleanOptional(incoming.Quote.MessageId, 160),
+            quotedProviderId,
             "ReplyTo",
-            CleanOptional(incoming.Quote.SenderId, 100),
+            quotedSenderId,
             CleanOptional(incoming.Quote.SenderName, 160),
             CleanOptional(incoming.Quote.Content, 4000),
             null,
@@ -93,6 +112,65 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         Add(command, "@fromMessageId", Clean(fromMessageId, 160));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken) ? Read(reader) : null;
+    }
+
+    public async Task<bool> ReconcileQuotedLegacyBotMessageAsync(
+        string zaloConnectionId,
+        string groupId,
+        string providerMessageId,
+        string? quotedContent,
+        long? quotedSentAtUnixMs,
+        CancellationToken cancellationToken = default)
+    {
+        zaloConnectionId = Clean(zaloConnectionId, 100);
+        groupId = Clean(groupId, 100);
+        providerMessageId = Clean(providerMessageId, 160);
+        var content = Clean(quotedContent, 4000);
+        if (zaloConnectionId.Length == 0 || groupId.Length == 0 || providerMessageId.Length == 0 || content.Length == 0)
+            return false;
+
+        if (await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
+                item.ZaloConnectionId == zaloConnectionId && item.MessageId == providerMessageId,
+                cancellationToken))
+            return true;
+
+        var candidates = await db.ZaloGroupMessages
+            .Where(item => item.ZaloConnectionId == zaloConnectionId &&
+                           item.GroupId == groupId &&
+                           item.IsFromBot &&
+                           item.MessageId.StartsWith("bot:") &&
+                           item.Content == content)
+            .ToListAsync(cancellationToken);
+        if (candidates.Count == 0) return false;
+
+        var quotedAt = ToTimestamp(quotedSentAtUnixMs);
+        ZaloGroupMessage? selected;
+        if (quotedAt is not null)
+        {
+            var ranked = candidates
+                .Select(item => new
+                {
+                    Message = item,
+                    Delta = Math.Abs((item.SentAt - quotedAt.Value).TotalSeconds)
+                })
+                .OrderBy(item => item.Delta)
+                .ToList();
+            if (ranked[0].Delta > 15 * 60) return false;
+            if (ranked.Count > 1 && Math.Abs(ranked[1].Delta - ranked[0].Delta) < 1) return false;
+            selected = ranked[0].Message;
+        }
+        else
+        {
+            // Without a provider timestamp, only a unique content match is safe.
+            selected = candidates.Count == 1 ? candidates[0] : null;
+        }
+        if (selected is null) return false;
+
+        selected.MessageId = providerMessageId;
+        selected.ObservationSource = "ProviderIdReconciled";
+        selected.LastObservedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private async Task<ZaloMessageGraphRelation> UpsertAsync(
@@ -190,6 +268,19 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
         NullableString(reader, 4), reader.GetString(5), NullableString(reader, 6), NullableString(reader, 7),
         NullableString(reader, 8), NullableString(reader, 9), Timestamp(reader.GetValue(10)));
+
+    private static DateTimeOffset? ToTimestamp(long? unixMs)
+    {
+        if (unixMs is null) return null;
+        try
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds(unixMs.Value);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
 
     private static string Clean(string? value, int maxLength)
     {
