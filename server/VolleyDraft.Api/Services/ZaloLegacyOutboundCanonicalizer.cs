@@ -37,13 +37,17 @@ public sealed class ZaloLegacyOutboundCanonicalizer(VolleyDraftDbContext db)
 
             var lower = receipt.CreatedAt.AddMinutes(-2);
             var upper = receipt.CreatedAt.AddMinutes(2);
+            // Keep stable identity/text predicates in SQL and evaluate the
+            // DateTimeOffset window in memory for consistent SQLite/PostgreSQL behavior.
             var candidates = await db.ZaloGroupMessages
                 .Where(item => item.ZaloConnectionId == receipt.ZaloConnectionId &&
                                item.GroupId == receipt.GroupId &&
                                item.IsFromBot &&
-                               item.MessageId.StartsWith("bot:") &&
-                               item.SentAt >= lower && item.SentAt <= upper)
+                               item.MessageId.StartsWith("bot:"))
                 .ToListAsync(cancellationToken);
+            candidates = candidates
+                .Where(item => item.SentAt >= lower && item.SentAt <= upper)
+                .ToList();
 
             var exact = candidates
                 .Where(item => string.Equals(
