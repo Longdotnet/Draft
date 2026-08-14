@@ -18,6 +18,11 @@ public static class ZaloTurnQuoteContext
         var senderId = Clean(incoming.SenderId);
         var quote = incoming.Quote is null ? null : ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
         CurrentState.Value = new State(senderId, quote);
+
+        // During incremental migration, existing member-targeting handlers already
+        // understand structured mention UIDs. Project only an explicit deictic quote
+        // ("ông này", "anh đó"...) into that safe UID path without changing text.
+        ZaloIncomingIdentityEnricher.TryAddQuotedPersonMention(incoming);
     }
 
     public static ZaloQuotedSemanticContext? GetFor(ZaloAiSender sender)
