@@ -31,14 +31,18 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         string question,
         CancellationToken cancellationToken = default)
     {
-        // Set synchronously before the first await so the caller's await continuation
-        // captures this turn context. Both classifier and answer context assembly then
-        // see the same quote relation without widening all existing public contracts.
+        // Bind quote context to the current ASP.NET request Activity before any
+        // downstream awaits; classifier/answer assembly can read the same turn later.
         ZaloTurnQuoteContext.Set(incoming);
 
         var sender = new ZaloAiSender(Clean(incoming.SenderId, 100), Clean(incoming.SenderName, 160));
         if (sender.Id.Length == 0 || string.IsNullOrWhiteSpace(groupId))
             return new(false, null, null, null);
+
+        // Transitional identity migration: legacy handlers already understand
+        // structured mention UIDs. Promote only uniquely resolved exact member
+        // names / approved aliases to metadata-only mentions before routing.
+        await TryEnrichLegacyIdentityAsync(groupId, incoming, cancellationToken);
 
         var store = new ZaloUserConceptStore(db);
         if (TryParseCommand(question, out var command))
@@ -97,6 +101,51 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         if (key is null) return false;
         command = new(ZaloMemoryCommandKind.ForgetKey, key);
         return true;
+    }
+
+    private async Task TryEnrichLegacyIdentityAsync(
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var enrichment = await new ZaloLegacyIdentityMigrationAdapter(db)
+                .EnrichAsync(groupId, incoming, cancellationToken);
+            if (enrichment.AddedZaloUserIds.Count == 0) return;
+
+            var addedIds = enrichment.AddedZaloUserIds.ToHashSet(StringComparer.Ordinal);
+            var personKeys = enrichment.Resolutions
+                .Where(item => item.Status == ZaloIdentityResolutionStatus.Resolved &&
+                               item.ZaloUserId is not null &&
+                               addedIds.Contains(item.ZaloUserId) &&
+                               item.PersonKey is not null)
+                .Select(item => item.PersonKey!)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+            await new ZaloBotTraceStore(db).WriteAsync(
+                new ZaloBotTraceEntry(
+                    incoming.MessageId,
+                    groupId,
+                    Clean(incoming.SenderId, 100),
+                    quote.RepliesToBot ? "ReplyToBot" : "ExplicitMention",
+                    IntentSource: "IdentityPreRouting",
+                    Confidence: 1,
+                    QuotedMessageId: quote.MessageId,
+                    ResolvedPersonIdsJson: JsonSerializer.Serialize(personKeys),
+                    AiCalled: false),
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Identity enrichment is a migration aid. Never block the existing
+            // deterministic/domain router if this additive path is unavailable.
+        }
     }
 
     private async Task<string> ExecuteCommandAsync(
