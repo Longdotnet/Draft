@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
@@ -21,10 +22,34 @@ public sealed class ZaloLegacyPendingStateProjector(VolleyDraftDbContext db)
         var rows = await db.ZaloBotConversationStates.AsNoTracking()
             .Where(item => item.ExpiresAt > now)
             .ToListAsync(cancellationToken);
-        var active = rows
-            .OrderByDescending(item => item.UpdatedAt)
-            .Take(limit)
-            .ToList();
+        return await ProjectRowsAsync(
+            rows.OrderByDescending(item => item.UpdatedAt).Take(limit).ToList(),
+            cancellationToken);
+    }
+
+    public async Task<ZaloLegacyPendingProjectionResult> ProjectScopeAsync(
+        string groupId,
+        string senderZaloUserId,
+        CancellationToken cancellationToken = default)
+    {
+        groupId = Clean(groupId, 100);
+        senderZaloUserId = Clean(senderZaloUserId, 100);
+        if (groupId.Length == 0 || senderZaloUserId.Length == 0) return new(0, 0, 0);
+        var now = DateTimeOffset.UtcNow;
+        var rows = await db.ZaloBotConversationStates.AsNoTracking()
+            .Where(item => item.GroupId == groupId &&
+                           item.SenderZaloUserId == senderZaloUserId &&
+                           item.ExpiresAt > now)
+            .ToListAsync(cancellationToken);
+        return await ProjectRowsAsync(
+            rows.OrderByDescending(item => item.UpdatedAt).Take(1).ToList(),
+            cancellationToken);
+    }
+
+    private async Task<ZaloLegacyPendingProjectionResult> ProjectRowsAsync(
+        IReadOnlyList<ZaloBotConversationState> active,
+        CancellationToken cancellationToken)
+    {
         var store = new ZaloConversationStateV2Store(db);
         var projected = 0;
         var skippedDifferentIntent = 0;
