@@ -66,6 +66,16 @@ export type BridgeBoardPage = {
   items: BridgeBoardItem[];
 };
 
+export type BridgeMessageQuote = {
+  messageId: string | null;
+  senderId: string | null;
+  senderName: string | null;
+  content: string;
+  messageType: string | null;
+  sentAtUnixMs: number | null;
+  attachment: string | null;
+};
+
 export type BridgeHistoricalMessage = {
   messageId: string;
   senderId: string;
@@ -74,6 +84,7 @@ export type BridgeHistoricalMessage = {
   messageType: string;
   isFromBot: boolean;
   sentAtUnixMs: number;
+  quote?: BridgeMessageQuote | null;
 };
 
 export type BridgeMessageHistoryProbe = {
@@ -130,6 +141,7 @@ export type IncomingGroupMessageEvent = {
   mentions: BridgeMention[];
   mentionedBot: boolean;
   sentAtUnixMs: number;
+  quote?: BridgeMessageQuote | null;
 };
 
 export type PollBoardChangedEvent = {
