@@ -9,12 +9,12 @@ public sealed partial class ZaloOverbookService
 {
     /// <summary>
     /// Transitional pre-routing adapter used by the Zalo webhook before the legacy
-    /// ZaloBotService path. It wires only the V2 operations that are safe to run
-    /// before domain routing: quote graph capture, explicit self-memory ingestion,
-    /// and deterministic user-owned memory controls.
+    /// ZaloBotService path. It wires only V2 operations that are safe to run before
+    /// domain routing: quote graph capture, structured pending-state shadowing,
+    /// explicit self-memory ingestion and deterministic user-owned memory controls.
     ///
     /// Returning true means the message was fully handled and the legacy bot must
-    /// not process it again. Returning false leaves all existing domain behavior intact.
+    /// not process it again. Returning false leaves existing domain behavior intact.
     /// </summary>
     private async Task<bool> TryHandleV2PreRoutingAsync(
         ZaloIncomingMessageEvent incoming,
@@ -57,8 +57,14 @@ public sealed partial class ZaloOverbookService
         }
 
         // V1 already normalizes a verified direct reply to the bot into MentionedBot=true.
-        // Do not learn personal memory from unrelated group chatter.
+        // Do not learn personal memory or change pending workflows from unrelated chatter.
         if (!incoming.MentionedBot) return false;
+
+        await ShadowAndApplyPendingTopicSwitchAsync(
+            accountId,
+            groupId,
+            incoming,
+            cancellationToken);
 
         ZaloMemoryPreRouteResult memory;
         try
@@ -146,6 +152,79 @@ public sealed partial class ZaloOverbookService
         return true;
     }
 
+    private async Task ShadowAndApplyPendingTopicSwitchAsync(
+        string accountId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        if (senderId.Length == 0) return;
+        var now = DateTimeOffset.UtcNow;
+
+        // Query first, order on the client to keep SQLite/PostgreSQL behavior aligned
+        // because SQLite cannot translate DateTimeOffset ORDER BY expressions.
+        var pendingRows = await db.ZaloBotConversationStates
+            .Include(item => item.ZaloConnection)
+            .Where(item => item.GroupId == groupId &&
+                           item.SenderZaloUserId == senderId &&
+                           item.ExpiresAt > now &&
+                           item.ZaloConnection.AccountZaloId == accountId)
+            .ToListAsync(cancellationToken);
+        var pending = pendingRows.OrderByDescending(item => item.UpdatedAt).FirstOrDefault();
+        if (pending is null) return;
+
+        var v2Store = new ZaloConversationStateV2Store(db);
+        try
+        {
+            await v2Store.SaveActiveAsync(
+                groupId,
+                senderId,
+                pending.PendingIntent,
+                NormalizeJsonObject(pending.PendingPayloadJson),
+                "[\"legacy_pending_resolution\"]",
+                "[]",
+                sourceMessageId: null,
+                lastMessageId: incoming.MessageId,
+                expiresAt: pending.ExpiresAt,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not shadow legacy pending state into V2 Group={GroupId} Sender={SenderId} Intent={Intent}",
+                groupId,
+                senderId,
+                pending.PendingIntent);
+            return;
+        }
+
+        var migration = ZaloConversationStateMigrationPolicy.Evaluate(pending.PendingIntent, incoming.Content);
+        if (migration.Decision != ZaloTopicSwitchDecision.SwitchToNewIntent) return;
+
+        db.ZaloBotConversationStates.Remove(pending);
+        await db.SaveChangesAsync(cancellationToken);
+        await v2Store.CancelAsync(groupId, senderId, cancellationToken);
+
+        var quoted = ZaloQuotedContextResolver.Resolve(incoming);
+        await new ZaloBotTraceStore(db).WriteAsync(
+            new ZaloBotTraceEntry(
+                incoming.MessageId,
+                groupId,
+                senderId,
+                quoted.RepliesToBot ? "ReplyToBot" : "ExplicitMention",
+                IntentSource: "DeterministicPreRouting",
+                Intent: migration.FreshIntent,
+                Confidence: migration.Confidence,
+                QuotedMessageId: quoted.MessageId,
+                PendingStateBefore: pending.PendingIntent,
+                PendingStateAfter: null,
+                AiCalled: false,
+                FallbackReason: migration.Reason),
+            cancellationToken);
+    }
+
     private async Task<ZaloGroupMessage> EnsureV2IncomingMessageAsync(
         string connectionId,
         string groupId,
@@ -227,6 +306,21 @@ public sealed partial class ZaloOverbookService
             ReplyOutcome = "sent"
         });
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static string NormalizeJsonObject(string? value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        if (text.Length == 0) return "{}";
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.ValueKind == JsonValueKind.Object ? text : "{}";
+        }
+        catch (JsonException)
+        {
+            return "{}";
+        }
     }
 
     private static string? NormalizeProviderMessageId(string? value)
