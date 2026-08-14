@@ -18,7 +18,7 @@ public sealed record ZaloUserConceptDraft(
 public static class ZaloUserConceptExtractor
 {
     private static readonly Regex PreferredNameOriginalRegex = new(
-        @"\b(?:gọi|goi|kêu|keu)\s+(?:tui|tôi|toi|mình|minh|em)\s+(?:là|la\s+)?(?<name>[\p{L}][\p{L}\p{M}\d ._-]{0,39})$",
+        @"\b(?:gọi|goi|kêu|keu)\s+(?:tui|tôi|toi|mình|minh|em)\s+(?:(?:là|la)\s+)?(?<name>[\p{L}][\p{L}\p{M}\d ._-]{0,39})$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     public static bool TryExtract(string question, ZaloAiSender sender, out ZaloUserConceptDraft draft)
