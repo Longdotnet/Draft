@@ -19,10 +19,20 @@ public sealed class ZaloOverbookWorker(
                     .ProcessDueAsync(stoppingToken);
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
 
+                var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+                var projection = await new ZaloLegacyOutcomeTraceProjector(db)
+                    .ProjectAsync(500, stoppingToken);
+                if (projection.Projected > 0)
+                {
+                    logger.LogInformation(
+                        "Zalo V2 trace projection scanned {ScannedCount} terminal messages and added {ProjectedCount} trace(s)",
+                        projection.Scanned,
+                        projection.Projected);
+                }
+
                 var now = DateTimeOffset.UtcNow;
                 if (now >= nextV2RetentionAt)
                 {
-                    var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
                     var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
                     var policy = ZaloRetentionPolicy.FromConfiguration(configuration);
                     var cleanup = await new ZaloV2RetentionService(db)
@@ -44,7 +54,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/V2 retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/V2 trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
