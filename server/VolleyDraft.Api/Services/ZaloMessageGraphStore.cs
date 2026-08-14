@@ -45,10 +45,6 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
             !string.IsNullOrWhiteSpace(incoming.BotId) &&
             string.Equals(quotedSenderId, incoming.BotId.Trim(), StringComparison.Ordinal))
         {
-            // V1 stored bot replies with a local bot:{guid}. Once Zalo gives us a
-            // direct quote to that message we finally have a trustworthy provider ID.
-            // Reconcile only a unique/nearby content match and never guess between
-            // several candidates.
             await ReconcileQuotedLegacyBotMessageAsync(
                 zaloConnectionId,
                 groupId,
@@ -161,7 +157,6 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         }
         else
         {
-            // Without a provider timestamp, only a unique content match is safe.
             selected = candidates.Count == 1 ? candidates[0] : null;
         }
         if (selected is null) return false;
@@ -229,34 +224,55 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
     private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
     {
         var provider = db.Database.ProviderName ?? string.Empty;
-        if (!provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase) &&
-            !provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)) return;
+        var isPostgres = provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
+        var isSqlite = provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase);
+        if (!isPostgres && !isSqlite) return;
+
         await SchemaGate.WaitAsync(cancellationToken);
         try
         {
-            var timestamp = provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
-                ? "timestamp with time zone"
-                : "TEXT";
-            await db.Database.ExecuteSqlRawAsync($"""
-                CREATE TABLE IF NOT EXISTS "ZaloMessageRelations" (
-                    "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloMessageRelations" PRIMARY KEY,
-                    "ZaloConnectionId" TEXT NOT NULL,
-                    "GroupId" TEXT NOT NULL,
-                    "FromMessageId" TEXT NOT NULL,
-                    "ToMessageId" TEXT NULL,
-                    "RelationType" TEXT NOT NULL,
-                    "QuotedSenderId" TEXT NULL,
-                    "QuotedSenderName" TEXT NULL,
-                    "QuotedContentSnapshot" TEXT NULL,
-                    "ProviderOutboundMessageId" TEXT NULL,
-                    "CreatedAt" {timestamp} NOT NULL,
-                    CONSTRAINT "UX_ZaloMessageRelations_From" UNIQUE ("ZaloConnectionId", "GroupId", "FromMessageId")
-                );
-                CREATE INDEX IF NOT EXISTS "IX_ZaloMessageRelations_To"
-                ON "ZaloMessageRelations" ("ZaloConnectionId", "GroupId", "ToMessageId");
-                CREATE INDEX IF NOT EXISTS "IX_ZaloMessageRelations_ProviderOutbound"
-                ON "ZaloMessageRelations" ("ProviderOutboundMessageId");
-                """, cancellationToken);
+            var sql = isPostgres
+                ? """
+                    CREATE TABLE IF NOT EXISTS "ZaloMessageRelations" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloMessageRelations" PRIMARY KEY,
+                        "ZaloConnectionId" TEXT NOT NULL,
+                        "GroupId" TEXT NOT NULL,
+                        "FromMessageId" TEXT NOT NULL,
+                        "ToMessageId" TEXT NULL,
+                        "RelationType" TEXT NOT NULL,
+                        "QuotedSenderId" TEXT NULL,
+                        "QuotedSenderName" TEXT NULL,
+                        "QuotedContentSnapshot" TEXT NULL,
+                        "ProviderOutboundMessageId" TEXT NULL,
+                        "CreatedAt" timestamp with time zone NOT NULL,
+                        CONSTRAINT "UX_ZaloMessageRelations_From" UNIQUE ("ZaloConnectionId", "GroupId", "FromMessageId")
+                    );
+                    CREATE INDEX IF NOT EXISTS "IX_ZaloMessageRelations_To"
+                    ON "ZaloMessageRelations" ("ZaloConnectionId", "GroupId", "ToMessageId");
+                    CREATE INDEX IF NOT EXISTS "IX_ZaloMessageRelations_ProviderOutbound"
+                    ON "ZaloMessageRelations" ("ProviderOutboundMessageId");
+                    """
+                : """
+                    CREATE TABLE IF NOT EXISTS "ZaloMessageRelations" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloMessageRelations" PRIMARY KEY,
+                        "ZaloConnectionId" TEXT NOT NULL,
+                        "GroupId" TEXT NOT NULL,
+                        "FromMessageId" TEXT NOT NULL,
+                        "ToMessageId" TEXT NULL,
+                        "RelationType" TEXT NOT NULL,
+                        "QuotedSenderId" TEXT NULL,
+                        "QuotedSenderName" TEXT NULL,
+                        "QuotedContentSnapshot" TEXT NULL,
+                        "ProviderOutboundMessageId" TEXT NULL,
+                        "CreatedAt" TEXT NOT NULL,
+                        CONSTRAINT "UX_ZaloMessageRelations_From" UNIQUE ("ZaloConnectionId", "GroupId", "FromMessageId")
+                    );
+                    CREATE INDEX IF NOT EXISTS "IX_ZaloMessageRelations_To"
+                    ON "ZaloMessageRelations" ("ZaloConnectionId", "GroupId", "ToMessageId");
+                    CREATE INDEX IF NOT EXISTS "IX_ZaloMessageRelations_ProviderOutbound"
+                    ON "ZaloMessageRelations" ("ProviderOutboundMessageId");
+                    """;
+            await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
         }
         finally
         {
