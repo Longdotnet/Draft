@@ -1,5 +1,16 @@
-import type { BridgeHistoricalMessage, BridgeMessageHistoryProbe } from "./contracts.js";
+import type { BridgeHistoricalMessage, BridgeMessageHistoryProbe, BridgeMessageQuote } from "./contracts.js";
 import { normalizeId, normalizeMemberId } from "./pollLogic.js";
+
+export type RawMessageQuote = {
+  ownerId?: string | number;
+  cliMsgId?: string | number;
+  globalMsgId?: string | number;
+  cliMsgType?: string | number;
+  ts?: string | number;
+  msg?: unknown;
+  attach?: unknown;
+  fromD?: unknown;
+};
 
 export type RawHistoricalMessage = {
   isSelf?: boolean;
@@ -12,8 +23,38 @@ export type RawHistoricalMessage = {
     dName?: string;
     ts?: string | number;
     content?: unknown;
+    quote?: RawMessageQuote;
   };
 };
+
+export function normalizeMessageQuote(value: RawMessageQuote | null | undefined): BridgeMessageQuote | null {
+  if (!value) return null;
+  const messageId = normalizeId(value.globalMsgId ?? value.cliMsgId ?? "") || null;
+  const senderId = normalizeMemberId(String(value.ownerId ?? "")) || null;
+  const content = typeof value.msg === "string" ? value.msg : "";
+  const senderName = typeof value.fromD === "string" && value.fromD.trim().length > 0
+    ? value.fromD.trim()
+    : null;
+  const messageType = value.cliMsgType === undefined || value.cliMsgType === null
+    ? null
+    : String(value.cliMsgType);
+  const normalizedTimestamp = normalizeUnixMs(value.ts);
+  const sentAtUnixMs = normalizedTimestamp > 0 ? normalizedTimestamp : null;
+  const attachment = typeof value.attach === "string" && value.attach.length > 0
+    ? value.attach
+    : null;
+
+  if (!messageId && !senderId && !content && !attachment) return null;
+  return {
+    messageId,
+    senderId,
+    senderName,
+    content,
+    messageType,
+    sentAtUnixMs,
+    attachment,
+  };
+}
 
 export function normalizeHistoricalMessage(
   value: RawHistoricalMessage,
@@ -30,6 +71,7 @@ export function normalizeHistoricalMessage(
     messageType: String(data.msgType ?? "unknown"),
     isFromBot: Boolean(value.isSelf),
     sentAtUnixMs: normalizeUnixMs(data.ts),
+    quote: normalizeMessageQuote(data.quote),
   };
 }
 

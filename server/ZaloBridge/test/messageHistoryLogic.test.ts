@@ -5,6 +5,7 @@ import {
   buildUnsupportedMessageHistoryProbe,
   isHistoryEndpointUnavailable,
   normalizeHistoricalMessage,
+  normalizeMessageQuote,
   normalizeUnixMs,
 } from "../src/messageHistoryLogic.js";
 
@@ -26,6 +27,62 @@ test("normalizes historical sender UID and second timestamps without losing prec
   assert.equal(message.senderId, "12345678901234567890");
   assert.equal(message.sentAtUnixMs, 1_720_000_000_000);
   assert.equal(message.content, "xin chào");
+  assert.equal(message.quote, null);
+});
+
+test("normalizes quoted Zalo messages for reply-chain context", () => {
+  const quote = normalizeMessageQuote({
+    ownerId: "12345678901234567890_0",
+    globalMsgId: 998877,
+    cliMsgId: 112233,
+    cliMsgType: 1,
+    ts: 1_720_000_001,
+    msg: "T6 này tui nghỉ nha",
+    attach: "{\"kind\":\"photo\"}",
+    fromD: "Long",
+  });
+
+  assert.deepEqual(quote, {
+    messageId: "998877",
+    senderId: "12345678901234567890",
+    senderName: "Long",
+    content: "T6 này tui nghỉ nha",
+    messageType: "1",
+    sentAtUnixMs: 1_720_000_001_000,
+    attachment: "{\"kind\":\"photo\"}",
+  });
+});
+
+test("historical message preserves its quote relation", () => {
+  const message = normalizeHistoricalMessage({
+    isSelf: false,
+    data: {
+      msgId: "m2",
+      uidFrom: "u2",
+      dName: "Tùng",
+      msgType: "chat",
+      ts: "1720000001000",
+      content: "ông này hả?",
+      quote: {
+        ownerId: "u1",
+        globalMsgId: "m1",
+        fromD: "Long",
+        msg: "Long đánh libero nha",
+        ts: "1720000000000",
+      },
+    },
+  });
+
+  assert.ok(message);
+  assert.equal(message.quote?.messageId, "m1");
+  assert.equal(message.quote?.senderId, "u1");
+  assert.equal(message.quote?.senderName, "Long");
+  assert.equal(message.quote?.content, "Long đánh libero nha");
+});
+
+test("empty quote payload is ignored rather than creating fake context", () => {
+  assert.equal(normalizeMessageQuote({}), null);
+  assert.equal(normalizeMessageQuote(undefined), null);
 });
 
 test("rejects history records without a stable message ID or sender UID", () => {
@@ -43,6 +100,7 @@ test("history probe preserves pagination evidence and timestamp coverage", () =>
       messageType: "chat",
       isFromBot: false,
       sentAtUnixMs: 2_000,
+      quote: null,
     },
     {
       messageId: "m2",
@@ -52,6 +110,7 @@ test("history probe preserves pagination evidence and timestamp coverage", () =>
       messageType: "chat",
       isFromBot: false,
       sentAtUnixMs: 1_000,
+      quote: null,
     },
   ];
 
