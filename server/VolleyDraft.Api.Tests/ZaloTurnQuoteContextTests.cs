@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
@@ -12,6 +13,7 @@ public sealed class ZaloTurnQuoteContextTests
     [Fact]
     public async Task Pre_routing_quote_is_visible_to_context_assembler_after_await()
     {
+        using var requestActivity = new Activity("zalo-webhook-test").Start();
         ZaloTurnQuoteContext.Clear();
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
