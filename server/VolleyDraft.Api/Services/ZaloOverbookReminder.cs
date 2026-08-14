@@ -104,7 +104,7 @@ public sealed partial class ZaloOverbookService
             {
                 state.LastError = Truncate(exception.Message, 1000);
                 state.NextReminderAt = now.AddMinutes(Math.Clamp(configuration.GetValue("Scheduler:RetryMinutes", 10), 5, 60));
-                await store.SaveAsync(snapshot, cancellationToken);
+                await store.SaveAsync(state, cancellationToken);
                 logger.LogWarning(exception, "Could not send overbook reminder Session={SessionId}", session.Id);
             }
         }
