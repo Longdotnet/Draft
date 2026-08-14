@@ -1,15 +1,37 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed class ZaloBridgeClient(
-    HttpClient httpClient,
-    IServiceScopeFactory scopeFactory,
-    ILogger<ZaloBridgeClient> logger)
+public sealed class ZaloBridgeClient
 {
+    private readonly HttpClient httpClient;
+    private readonly IServiceScopeFactory? scopeFactory;
+    private readonly ILogger<ZaloBridgeClient> logger;
+
+    public ZaloBridgeClient(
+        HttpClient httpClient,
+        IServiceScopeFactory scopeFactory,
+        ILogger<ZaloBridgeClient> logger)
+    {
+        this.httpClient = httpClient;
+        this.scopeFactory = scopeFactory;
+        this.logger = logger;
+    }
+
+    // Preserve the original lightweight construction path used by unit tests and
+    // any manual callers. Provider-ID persistence is an optional production-side
+    // observability enhancement; sending must still work without a DI scope factory.
+    public ZaloBridgeClient(HttpClient httpClient)
+    {
+        this.httpClient = httpClient;
+        scopeFactory = null;
+        logger = NullLogger<ZaloBridgeClient>.Instance;
+    }
+
     public async Task<BridgeStartQrResponse> StartQrLoginAsync()
     {
         using var response = await httpClient.PostAsJsonAsync("v1/qr-logins", new { });
@@ -146,6 +168,8 @@ public sealed class ZaloBridgeClient(
         string groupId,
         string providerMessageId)
     {
+        if (scopeFactory is null) return;
+
         try
         {
             await using var scope = scopeFactory.CreateAsyncScope();
