@@ -20,7 +20,7 @@ public sealed class ZaloIncomingIdentityEnricherTests
         var added = ZaloIncomingIdentityEnricher.TryAddQuotedPersonMention(incoming);
 
         Assert.True(added);
-        var quotedMention = Assert.Single(incoming.Mentions.Where(item => item.Uid == "u-tung"));
+        var quotedMention = Assert.Single(incoming.Mentions, item => item.Uid == "u-tung");
         Assert.Equal(0, quotedMention.Len);
         Assert.Equal(-1, quotedMention.Pos);
     }
