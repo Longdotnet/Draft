@@ -115,7 +115,7 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         await ReadAsync<BridgeStopListenerResponse>(response);
     }
 
-    public async Task SendGroupMessageAsync(
+    public async Task<BridgeSendMessageResponse> SendGroupMessageAsync(
         string accountId,
         string groupId,
         string message,
@@ -126,7 +126,7 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync(
             "v1/group-messages",
             new { accountId, groupId, message, mentions, imageUrl, idempotencyKey });
-        await ReadAsync<BridgeSendMessageResponse>(response);
+        return await ReadAsync<BridgeSendMessageResponse>(response);
     }
 
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
@@ -224,6 +224,14 @@ public sealed record BridgePoll(
 public sealed record BridgePollOption(string Id, string Content, int VoteCount, IReadOnlyList<string> VoterIds);
 public sealed record BridgeMembersResponse(IReadOnlyList<BridgeMember> Members);
 public sealed record BridgeMember(string ZaloUserId, string DisplayName, string? ZaloName, string? AvatarUrl);
+public sealed record BridgeMessageQuote(
+    string? MessageId,
+    string? SenderId,
+    string? SenderName,
+    string Content,
+    string? MessageType,
+    long? SentAtUnixMs,
+    string? Attachment);
 public sealed record BridgeMessageHistoryProbe(
     string GroupId,
     int RequestedCount,
@@ -243,9 +251,10 @@ public sealed record BridgeHistoricalMessage(
     string Content,
     string MessageType,
     bool IsFromBot,
-    long SentAtUnixMs);
+    long SentAtUnixMs,
+    BridgeMessageQuote? Quote = null);
 public sealed record BridgeListenerResponse(string AccountId, string BotId, long StartedAt, int GroupCount);
 public sealed record BridgeStopListenerResponse(bool Stopped);
 public sealed record BridgeOutgoingMention(string Uid, int Pos, int Len);
-public sealed record BridgeSendMessageResponse(bool Sent, bool Mock);
+public sealed record BridgeSendMessageResponse(bool Sent, bool Mock, string? MessageId = null);
 public sealed record BridgeErrorResponse(string? Error);

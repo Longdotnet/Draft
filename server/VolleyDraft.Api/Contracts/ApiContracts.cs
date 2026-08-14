@@ -214,6 +214,15 @@ public sealed record ReviewZaloBotLearnedRuleRequest(
     int Priority,
     string? ReviewNote);
 
+public sealed record ZaloBridgeMessageQuote(
+    string? MessageId,
+    string? SenderId,
+    string? SenderName,
+    string Content,
+    string? MessageType,
+    long? SentAtUnixMs,
+    string? Attachment);
+
 public sealed record ZaloIncomingMessageEvent(
     string AccountId,
     string BotId,
@@ -224,7 +233,8 @@ public sealed record ZaloIncomingMessageEvent(
     string Content,
     IReadOnlyList<ZaloBridgeMention> Mentions,
     bool MentionedBot,
-    long SentAtUnixMs);
+    long SentAtUnixMs,
+    ZaloBridgeMessageQuote? Quote = null);
 
 public sealed record ZaloPollBoardEvent(
     string AccountId,
