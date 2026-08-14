@@ -20,7 +20,7 @@ services:
       - key: Jwt__Key
         generateValue: true
       - key: Cors__Origins__0
-        sync: false
+        value: https://volley-draft.onrender.com
       - key: Zalo__BridgeBaseUrl
         sync: false
       - key: Zalo__BridgeInternalKey
