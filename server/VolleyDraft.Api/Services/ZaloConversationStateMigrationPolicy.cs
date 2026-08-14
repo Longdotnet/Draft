@@ -18,7 +18,8 @@ public static class ZaloConversationStateMigrationPolicy
 {
     public static ZaloPendingMigrationDecision Evaluate(string pendingIntent, string currentQuestion)
     {
-        var deterministic = ZaloBotIntelligence.ClassifyDeterministically(currentQuestion ?? string.Empty);
+        var question = currentQuestion ?? string.Empty;
+        var deterministic = ZaloBotIntelligence.ClassifyDeterministically(question);
         var freshIntent = deterministic.Intent is ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat or ZaloBotIntent.Help
             ? null
             : deterministic.Intent.ToString();
@@ -29,7 +30,7 @@ public static class ZaloConversationStateMigrationPolicy
         var confidence = freshIntent is null ? 0 : deterministic.Confidence;
         var decision = ZaloConversationStateV2Store.DecideTopicSwitch(
             pendingIntent,
-            currentQuestion,
+            question,
             freshIntent,
             confidence);
         var reason = decision switch
