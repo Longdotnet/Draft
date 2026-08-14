@@ -7,6 +7,15 @@ namespace VolleyDraft.Api.Tests;
 public sealed class StartupRuntimeConfigurationTests
 {
     [Fact]
+    public void Zalo_bridge_typed_client_has_one_public_constructor()
+    {
+        // AddHttpClient<TClient> supplies HttpClient explicitly through ActivatorUtilities.
+        // A second public constructor accepting HttpClient makes typed-client activation
+        // ambiguous and causes every endpoint that resolves ZaloBridgeClient to return 500.
+        Assert.Single(typeof(ZaloBridgeClient).GetConstructors());
+    }
+
+    [Fact]
     public void Cors_origins_always_include_production_and_normalize_configured_values()
     {
         var configuration = new ConfigurationBuilder()
