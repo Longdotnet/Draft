@@ -1,6 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
 
@@ -194,22 +193,31 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
     private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
     {
         var provider = db.Database.ProviderName ?? string.Empty;
+        var isSqlite = provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase);
         var connection = db.Database.GetDbConnection();
-        var connectionIdentity = connection.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase)
-            ? RuntimeHelpers.GetHashCode(connection).ToString()
-            : $"{connection.DataSource}|{connection.Database}";
-        var schemaKey = provider + "|" + connectionIdentity;
-        lock (ReadySchemas)
+
+        // SQLite in-memory databases are scoped to a physical connection and
+        // multiple tests/DbContexts can report the same DataSource/Database.
+        // CREATE IF NOT EXISTS is cheap and idempotent, so never share the
+        // process-wide schema cache for SQLite. PostgreSQL keeps the cache.
+        var schemaKey = provider + "|" + connection.DataSource + "|" + connection.Database;
+        if (!isSqlite)
         {
-            if (ReadySchemas.Contains(schemaKey)) return;
+            lock (ReadySchemas)
+            {
+                if (ReadySchemas.Contains(schemaKey)) return;
+            }
         }
 
         await SchemaGate.WaitAsync(cancellationToken);
         try
         {
-            lock (ReadySchemas)
+            if (!isSqlite)
             {
-                if (ReadySchemas.Contains(schemaKey)) return;
+                lock (ReadySchemas)
+                {
+                    if (ReadySchemas.Contains(schemaKey)) return;
+                }
             }
 
             if (provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
@@ -240,7 +248,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
                     ON "ZaloUserConcepts" ("GroupId", "ConceptType", "ConceptKey", "Status");
                     """, cancellationToken);
             }
-            else if (provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            else if (isSqlite)
             {
                 await db.Database.ExecuteSqlRawAsync("""
                     CREATE TABLE IF NOT EXISTS "ZaloUserConcepts" (
@@ -273,7 +281,10 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
                 return;
             }
 
-            lock (ReadySchemas) ReadySchemas.Add(schemaKey);
+            if (!isSqlite)
+            {
+                lock (ReadySchemas) ReadySchemas.Add(schemaKey);
+            }
         }
         finally
         {
