@@ -19,12 +19,17 @@ public sealed class ZaloLegacyPendingStateProjector(VolleyDraftDbContext db)
     {
         limit = Math.Clamp(limit, 1, 2000);
         var now = DateTimeOffset.UtcNow;
+        // SQLite cannot translate DateTimeOffset comparisons/order reliably. Keep
+        // entity selection in the provider and evaluate temporal semantics in memory
+        // so SQLite and PostgreSQL use the same rule.
         var rows = await db.ZaloBotConversationStates.AsNoTracking()
-            .Where(item => item.ExpiresAt > now)
             .ToListAsync(cancellationToken);
-        return await ProjectRowsAsync(
-            rows.OrderByDescending(item => item.UpdatedAt).Take(limit).ToList(),
-            cancellationToken);
+        var active = rows
+            .Where(item => item.ExpiresAt > now)
+            .OrderByDescending(item => item.UpdatedAt)
+            .Take(limit)
+            .ToList();
+        return await ProjectRowsAsync(active, cancellationToken);
     }
 
     public async Task<ZaloLegacyPendingProjectionResult> ProjectScopeAsync(
@@ -38,12 +43,14 @@ public sealed class ZaloLegacyPendingStateProjector(VolleyDraftDbContext db)
         var now = DateTimeOffset.UtcNow;
         var rows = await db.ZaloBotConversationStates.AsNoTracking()
             .Where(item => item.GroupId == groupId &&
-                           item.SenderZaloUserId == senderZaloUserId &&
-                           item.ExpiresAt > now)
+                           item.SenderZaloUserId == senderZaloUserId)
             .ToListAsync(cancellationToken);
-        return await ProjectRowsAsync(
-            rows.OrderByDescending(item => item.UpdatedAt).Take(1).ToList(),
-            cancellationToken);
+        var active = rows
+            .Where(item => item.ExpiresAt > now)
+            .OrderByDescending(item => item.UpdatedAt)
+            .Take(1)
+            .ToList();
+        return await ProjectRowsAsync(active, cancellationToken);
     }
 
     private async Task<ZaloLegacyPendingProjectionResult> ProjectRowsAsync(
