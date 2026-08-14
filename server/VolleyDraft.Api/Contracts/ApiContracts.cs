@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Contracts;
@@ -223,18 +224,59 @@ public sealed record ZaloBridgeMessageQuote(
     long? SentAtUnixMs,
     string? Attachment);
 
-public sealed record ZaloIncomingMessageEvent(
-    string AccountId,
-    string BotId,
-    string GroupId,
-    string MessageId,
-    string SenderId,
-    string SenderName,
-    string Content,
-    IReadOnlyList<ZaloBridgeMention> Mentions,
-    bool MentionedBot,
-    long SentAtUnixMs,
-    ZaloBridgeMessageQuote? Quote = null);
+public sealed record ZaloIncomingMessageEvent
+{
+    [JsonConstructor]
+    public ZaloIncomingMessageEvent(
+        string accountId,
+        string botId,
+        string groupId,
+        string messageId,
+        string senderId,
+        string senderName,
+        string content,
+        IReadOnlyList<ZaloBridgeMention>? mentions,
+        bool mentionedBot,
+        long sentAtUnixMs,
+        ZaloBridgeMessageQuote? quote = null)
+    {
+        AccountId = accountId ?? string.Empty;
+        BotId = botId ?? string.Empty;
+        GroupId = groupId ?? string.Empty;
+        MessageId = messageId ?? string.Empty;
+        SenderId = senderId ?? string.Empty;
+        SenderName = senderName ?? string.Empty;
+        Content = content ?? string.Empty;
+        SentAtUnixMs = sentAtUnixMs;
+        Quote = quote;
+
+        var incomingMentions = mentions?.ToList() ?? [];
+        var repliedToBot = !string.IsNullOrWhiteSpace(BotId) &&
+                           string.Equals(quote?.SenderId?.Trim(), BotId.Trim(), StringComparison.Ordinal);
+        if (repliedToBot && !incomingMentions.Any(mention =>
+                string.Equals(mention.Uid?.Trim(), BotId.Trim(), StringComparison.Ordinal)))
+        {
+            // Metadata-only marker. Len=0 means ExtractQuestion will not remove
+            // any character from a short follow-up such as "T6" or "xác nhận".
+            incomingMentions.Add(new ZaloBridgeMention(BotId.Trim(), -1, 0));
+        }
+
+        Mentions = incomingMentions;
+        MentionedBot = mentionedBot || repliedToBot;
+    }
+
+    public string AccountId { get; init; }
+    public string BotId { get; init; }
+    public string GroupId { get; init; }
+    public string MessageId { get; init; }
+    public string SenderId { get; init; }
+    public string SenderName { get; init; }
+    public string Content { get; init; }
+    public IReadOnlyList<ZaloBridgeMention> Mentions { get; init; }
+    public bool MentionedBot { get; init; }
+    public long SentAtUnixMs { get; init; }
+    public ZaloBridgeMessageQuote? Quote { get; init; }
+}
 
 public sealed record ZaloPollBoardEvent(
     string AccountId,
