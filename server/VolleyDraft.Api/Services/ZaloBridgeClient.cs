@@ -12,24 +12,19 @@ public sealed class ZaloBridgeClient
     private readonly IServiceScopeFactory? scopeFactory;
     private readonly ILogger<ZaloBridgeClient> logger;
 
+    // Keep exactly one public constructor. AddHttpClient<TClient> creates typed clients
+    // through ActivatorUtilities with HttpClient as an explicit argument; two public
+    // constructors that both accept HttpClient can become ambiguous at activation time.
+    // Optional dependencies preserve the lightweight new ZaloBridgeClient(httpClient)
+    // construction used by unit tests while production DI still supplies both services.
     public ZaloBridgeClient(
         HttpClient httpClient,
-        IServiceScopeFactory scopeFactory,
-        ILogger<ZaloBridgeClient> logger)
+        IServiceScopeFactory? scopeFactory = null,
+        ILogger<ZaloBridgeClient>? logger = null)
     {
         this.httpClient = httpClient;
         this.scopeFactory = scopeFactory;
-        this.logger = logger;
-    }
-
-    // Preserve the original lightweight construction path used by unit tests and
-    // any manual callers. Provider-ID persistence is an optional production-side
-    // observability enhancement; sending must still work without a DI scope factory.
-    public ZaloBridgeClient(HttpClient httpClient)
-    {
-        this.httpClient = httpClient;
-        scopeFactory = null;
-        logger = NullLogger<ZaloBridgeClient>.Instance;
+        this.logger = logger ?? NullLogger<ZaloBridgeClient>.Instance;
     }
 
     public async Task<BridgeStartQrResponse> StartQrLoginAsync()
