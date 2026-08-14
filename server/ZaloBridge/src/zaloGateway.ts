@@ -41,10 +41,18 @@ import {
   buildUnsupportedMessageHistoryProbe,
   isHistoryEndpointUnavailable,
   normalizeHistoricalMessage,
+  normalizeMessageQuote,
   normalizeUnixMs,
+  type RawMessageQuote,
 } from "./messageHistoryLogic.js";
 
 type QrLoginStatus = "waiting_qr" | "waiting_scan" | "waiting_confirm" | "completed" | "expired" | "declined" | "failed";
+
+type BridgeSendResult = {
+  sent: boolean;
+  mock: boolean;
+  messageId: string | null;
+};
 
 type MinimalZaloApi = AvatarProfileApi & {
   getOwnId(): string;
@@ -74,6 +82,7 @@ type MinimalZaloApi = AvatarProfileApi & {
         dName?: string;
         ts?: string | number;
         content?: unknown;
+        quote?: RawMessageQuote;
       };
     }>;
   }>;
@@ -93,7 +102,10 @@ type MinimalZaloApi = AvatarProfileApi & {
     },
     threadId: string,
     type: number,
-  ): Promise<unknown>;
+  ): Promise<{
+    message?: { msgId?: string | number } | null;
+    attachment?: Array<{ msgId?: string | number }>;
+  }>;
 };
 
 type MinimalMessage = {
@@ -108,6 +120,7 @@ type MinimalMessage = {
     ts?: string;
     content?: unknown;
     mentions?: Array<{ uid?: string; pos?: number; len?: number }>;
+    quote?: RawMessageQuote;
   };
 };
 
@@ -129,7 +142,7 @@ type MinimalQrEvent = {
   data: Record<string, unknown> | null;
 };
 
-const outgoingIdempotency = new Map<string, { expiresAt: number; result: Promise<{ sent: boolean; mock: boolean }> }>();
+const outgoingIdempotency = new Map<string, { expiresAt: number; result: Promise<BridgeSendResult> }>();
 const pendingBoardEvents = new Map<string, ReturnType<typeof setTimeout>>();
 
 type MinimalZaloClient = {
@@ -333,6 +346,7 @@ async function handleIncomingMessage(accountId: string, listener: ActiveListener
     mentions,
     mentionedBot: mentions.some((mention) => mention.uid === listener.botId),
     sentAtUnixMs,
+    quote: normalizeMessageQuote(message.data.quote),
   });
 }
 
@@ -447,13 +461,13 @@ export async function sendGroupMessage(request: SendGroupMessageRequest) {
   return sendGroupMessageCore(request);
 }
 
-async function sendGroupMessageCore(request: SendGroupMessageRequest) {
+async function sendGroupMessageCore(request: SendGroupMessageRequest): Promise<BridgeSendResult> {
   const accountId = normalizeMemberId(request.accountId);
   const listener = activeListeners.get(accountId);
   if (!listener) throw new Error("Zalo listener is not active for this account");
   if (mockMode || !listener.api) {
     console.log(`[Zalo mock -> ${request.groupId}] ${request.message}`);
-    return { sent: true, mock: true };
+    return { sent: true, mock: true, messageId: null };
   }
   let attachments: Array<Awaited<ReturnType<typeof downloadImage>>> | undefined;
   if (request.imageUrl) {
@@ -463,12 +477,13 @@ async function sendGroupMessageCore(request: SendGroupMessageRequest) {
       console.warn(`[Zalo message ${accountId}] Could not attach configured image:`, error);
     }
   }
-  await listener.api.sendMessage(
+  const sent = await listener.api.sendMessage(
     { msg: request.message, mentions: request.mentions, attachments },
     normalizeId(request.groupId),
     ThreadType.Group,
   );
-  return { sent: true, mock: false };
+  const messageId = normalizeId(String(sent.message?.msgId ?? sent.attachment?.[0]?.msgId ?? "")) || null;
+  return { sent: true, mock: false, messageId };
 }
 
 function onQrEvent(session: QrLoginSession, event: MinimalQrEvent) {
