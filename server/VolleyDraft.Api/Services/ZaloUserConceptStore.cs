@@ -58,9 +58,41 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
         await OpenIfNeededAsync(connection, cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-        var existingId = await FindActiveIdAsync(connection, transaction, groupId, subjectId, type, key, cancellationToken);
+        var existing = await FindActiveAsync(connection, transaction, groupId, subjectId, type, key, cancellationToken);
         var now = DateTimeOffset.UtcNow;
-        if (existingId is not null)
+
+        // Pre-routing V2 ingestion and the legacy AI-answer enrichment can observe
+        // the same explicit self statement in one request. Repeating an identical
+        // concept should confirm it, not create a fake conflict chain that supersedes
+        // the exact same value. A genuinely different value still supersedes below.
+        if (existing is not null && string.Equals(existing.ValueJson, valueJson, StringComparison.Ordinal))
+        {
+            await using var confirm = connection.CreateCommand();
+            confirm.Transaction = transaction;
+            confirm.CommandText = """
+                UPDATE "ZaloUserConcepts"
+                SET "Confidence" = CASE WHEN "Confidence" < @confidence THEN @confidence ELSE "Confidence" END,
+                    "SourceMessageId" = COALESCE(@sourceMessageId, "SourceMessageId"),
+                    "CreatedBySenderName" = @createdByName,
+                    "ExpiresAt" = @expiresAt,
+                    "LastConfirmedAt" = @confirmedAt,
+                    "UpdatedAt" = @updatedAt
+                WHERE "Id" = @id AND "Status" = 'Active';
+                """;
+            Add(confirm, "@confidence", Math.Clamp(draft.Confidence, 0, 1));
+            Add(confirm, "@sourceMessageId", sourceMessageId);
+            Add(confirm, "@createdByName", senderName);
+            Add(confirm, "@expiresAt", draft.ExpiresAt);
+            Add(confirm, "@confirmedAt", now);
+            Add(confirm, "@updatedAt", now);
+            Add(confirm, "@id", existing.Id);
+            await confirm.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return await LoadByIdAsync(connection, existing.Id, cancellationToken)
+                   ?? throw new InvalidOperationException("Confirmed user concept could not be reloaded.");
+        }
+
+        if (existing is not null)
         {
             await using var supersede = connection.CreateCommand();
             supersede.Transaction = transaction;
@@ -70,7 +102,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
                 WHERE "Id" = @id AND "Status" = 'Active';
                 """;
             Add(supersede, "@updatedAt", now);
-            Add(supersede, "@id", existingId);
+            Add(supersede, "@id", existing.Id);
             await supersede.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -99,7 +131,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
             Add(insert, "@sourceMessageId", sourceMessageId);
             Add(insert, "@createdBy", subjectId);
             Add(insert, "@createdByName", senderName);
-            Add(insert, "@supersedesId", existingId);
+            Add(insert, "@supersedesId", existing?.Id);
             Add(insert, "@expiresAt", draft.ExpiresAt);
             Add(insert, "@confirmedAt", now);
             Add(insert, "@createdAt", now);
@@ -121,7 +153,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
             subjectId,
             senderName,
             "Active",
-            existingId,
+            existing?.Id,
             draft.ExpiresAt,
             now,
             now,
@@ -292,7 +324,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
         }
     }
 
-    private static async Task<string?> FindActiveIdAsync(
+    private static async Task<(string Id, string ValueJson)?> FindActiveAsync(
         DbConnection connection,
         DbTransaction transaction,
         string groupId,
@@ -304,7 +336,7 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT "Id" FROM "ZaloUserConcepts"
+            SELECT "Id", "ValueJson" FROM "ZaloUserConcepts"
             WHERE "GroupId" = @groupId AND "SubjectZaloUserId" = @subjectId
               AND "ConceptType" = @type AND "ConceptKey" = @key AND "Status" = 'Active'
             ORDER BY "UpdatedAt" DESC LIMIT 1;
@@ -313,8 +345,27 @@ public sealed class ZaloUserConceptStore(VolleyDraftDbContext db)
         Add(command, "@subjectId", subjectId);
         Add(command, "@type", type);
         Add(command, "@key", key);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is null or DBNull ? null : Convert.ToString(value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? (reader.GetString(0), reader.GetString(1))
+            : null;
+    }
+
+    private static async Task<ZaloUserConceptSnapshot?> LoadByIdAsync(
+        DbConnection connection,
+        string id,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT "Id", "GroupId", "SubjectZaloUserId", "ConceptType", "ConceptKey", "ValueJson",
+                   "Scope", "Confidence", "SourceMessageId", "CreatedBySenderId", "CreatedBySenderName",
+                   "Status", "SupersedesConceptId", "ExpiresAt", "LastConfirmedAt", "CreatedAt", "UpdatedAt"
+            FROM "ZaloUserConcepts" WHERE "Id" = @id LIMIT 1;
+            """;
+        Add(command, "@id", id);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? Read(reader) : null;
     }
 
     private static ZaloUserConceptSnapshot Read(DbDataReader reader) => new(
