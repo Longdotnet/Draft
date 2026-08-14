@@ -42,7 +42,7 @@ public static class ZaloUserConceptExtractor
                 draft = new ZaloUserConceptDraft(
                     "Alias",
                     "preferred_name",
-                    JsonSerializer.Serialize(new { name, subject = sender.Name }),
+                    JsonSerializer.Serialize(new { name }),
                     1.0);
                 return true;
             }
