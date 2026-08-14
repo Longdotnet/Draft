@@ -220,35 +220,56 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
     private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
     {
         var provider = db.Database.ProviderName ?? string.Empty;
-        if (!provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase) &&
-            !provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)) return;
+        var isPostgres = provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
+        var isSqlite = provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase);
+        if (!isPostgres && !isSqlite) return;
+
         await SchemaGate.WaitAsync(cancellationToken);
         try
         {
-            var timestampType = provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
-                ? "timestamp with time zone"
-                : "TEXT";
-            var sql = $"""
-                CREATE TABLE IF NOT EXISTS "ZaloConversationStatesV2" (
-                    "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloConversationStatesV2" PRIMARY KEY,
-                    "GroupId" TEXT NOT NULL,
-                    "SenderZaloUserId" TEXT NOT NULL,
-                    "Intent" TEXT NOT NULL,
-                    "CollectedArgumentsJson" TEXT NOT NULL,
-                    "MissingArgumentsJson" TEXT NOT NULL DEFAULT '[]',
-                    "CandidateEntitiesJson" TEXT NOT NULL DEFAULT '[]',
-                    "SourceMessageId" TEXT NULL,
-                    "LastMessageId" TEXT NULL,
-                    "StateVersion" INTEGER NOT NULL DEFAULT 1,
-                    "Status" TEXT NOT NULL DEFAULT 'Active',
-                    "ExpiresAt" {timestampType} NOT NULL,
-                    "CreatedAt" {timestampType} NOT NULL,
-                    "UpdatedAt" {timestampType} NOT NULL,
-                    CONSTRAINT "UX_ZaloConversationStatesV2_Scope" UNIQUE ("GroupId", "SenderZaloUserId")
-                );
-                CREATE INDEX IF NOT EXISTS "IX_ZaloConversationStatesV2_Active"
-                ON "ZaloConversationStatesV2" ("GroupId", "SenderZaloUserId", "Status", "ExpiresAt");
-                """;
+            var sql = isPostgres
+                ? """
+                    CREATE TABLE IF NOT EXISTS "ZaloConversationStatesV2" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloConversationStatesV2" PRIMARY KEY,
+                        "GroupId" TEXT NOT NULL,
+                        "SenderZaloUserId" TEXT NOT NULL,
+                        "Intent" TEXT NOT NULL,
+                        "CollectedArgumentsJson" TEXT NOT NULL,
+                        "MissingArgumentsJson" TEXT NOT NULL DEFAULT '[]',
+                        "CandidateEntitiesJson" TEXT NOT NULL DEFAULT '[]',
+                        "SourceMessageId" TEXT NULL,
+                        "LastMessageId" TEXT NULL,
+                        "StateVersion" INTEGER NOT NULL DEFAULT 1,
+                        "Status" TEXT NOT NULL DEFAULT 'Active',
+                        "ExpiresAt" timestamp with time zone NOT NULL,
+                        "CreatedAt" timestamp with time zone NOT NULL,
+                        "UpdatedAt" timestamp with time zone NOT NULL,
+                        CONSTRAINT "UX_ZaloConversationStatesV2_Scope" UNIQUE ("GroupId", "SenderZaloUserId")
+                    );
+                    CREATE INDEX IF NOT EXISTS "IX_ZaloConversationStatesV2_Active"
+                    ON "ZaloConversationStatesV2" ("GroupId", "SenderZaloUserId", "Status", "ExpiresAt");
+                    """
+                : """
+                    CREATE TABLE IF NOT EXISTS "ZaloConversationStatesV2" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloConversationStatesV2" PRIMARY KEY,
+                        "GroupId" TEXT NOT NULL,
+                        "SenderZaloUserId" TEXT NOT NULL,
+                        "Intent" TEXT NOT NULL,
+                        "CollectedArgumentsJson" TEXT NOT NULL,
+                        "MissingArgumentsJson" TEXT NOT NULL DEFAULT '[]',
+                        "CandidateEntitiesJson" TEXT NOT NULL DEFAULT '[]',
+                        "SourceMessageId" TEXT NULL,
+                        "LastMessageId" TEXT NULL,
+                        "StateVersion" INTEGER NOT NULL DEFAULT 1,
+                        "Status" TEXT NOT NULL DEFAULT 'Active',
+                        "ExpiresAt" TEXT NOT NULL,
+                        "CreatedAt" TEXT NOT NULL,
+                        "UpdatedAt" TEXT NOT NULL,
+                        CONSTRAINT "UX_ZaloConversationStatesV2_Scope" UNIQUE ("GroupId", "SenderZaloUserId")
+                    );
+                    CREATE INDEX IF NOT EXISTS "IX_ZaloConversationStatesV2_Active"
+                    ON "ZaloConversationStatesV2" ("GroupId", "SenderZaloUserId", "Status", "ExpiresAt");
+                    """;
             await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
         }
         finally
