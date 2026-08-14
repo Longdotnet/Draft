@@ -20,6 +20,29 @@ public sealed class ZaloOverbookWorker(
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
 
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+
+                var canonicalization = await new ZaloLegacyOutboundCanonicalizer(db)
+                    .CanonicalizeAsync(500, stoppingToken);
+                if (canonicalization.Canonicalized > 0 || canonicalization.Ambiguous > 0)
+                {
+                    logger.LogInformation(
+                        "Zalo V2 provider-ID canonicalization scanned {ScannedCount}, canonicalized {CanonicalizedCount}, ambiguous {AmbiguousCount}",
+                        canonicalization.Scanned,
+                        canonicalization.Canonicalized,
+                        canonicalization.Ambiguous);
+                }
+
+                var pendingProjection = await new ZaloLegacyPendingStateProjector(db)
+                    .ProjectAsync(500, stoppingToken);
+                if (pendingProjection.Projected > 0 || pendingProjection.SkippedDifferentIntent > 0)
+                {
+                    logger.LogInformation(
+                        "Zalo V2 pending-state projection scanned {ScannedCount}, projected {ProjectedCount}, skippedDifferentIntent {SkippedCount}",
+                        pendingProjection.Scanned,
+                        pendingProjection.Projected,
+                        pendingProjection.SkippedDifferentIntent);
+                }
+
                 var projection = await new ZaloLegacyOutcomeTraceProjector(db)
                     .ProjectAsync(500, stoppingToken);
                 if (projection.Projected > 0)
@@ -30,6 +53,16 @@ public sealed class ZaloOverbookWorker(
                         projection.Projected);
                 }
 
+                var enrichment = await new ZaloLegacyTraceEnricher(db)
+                    .EnrichAsync(500, stoppingToken);
+                if (enrichment.Enriched > 0)
+                {
+                    logger.LogInformation(
+                        "Zalo V2 trace enrichment scanned {ScannedCount} projected traces and enriched {EnrichedCount}",
+                        enrichment.Scanned,
+                        enrichment.Enriched);
+                }
+
                 var now = DateTimeOffset.UtcNow;
                 if (now >= nextV2RetentionAt)
                 {
@@ -37,13 +70,16 @@ public sealed class ZaloOverbookWorker(
                     var policy = ZaloRetentionPolicy.FromConfiguration(configuration);
                     var cleanup = await new ZaloV2RetentionService(db)
                         .CleanupAsync(policy, now, stoppingToken);
-                    if (cleanup.DeletedTraces + cleanup.DeletedMessageRelations + cleanup.DeletedUserConcepts > 0)
+                    var deletedReceipts = await new ZaloOutboundReceiptStore(db)
+                        .DeleteOlderThanAsync(policy.MessageRelationCutoff(now), stoppingToken);
+                    if (cleanup.DeletedTraces + cleanup.DeletedMessageRelations + cleanup.DeletedUserConcepts + deletedReceipts > 0)
                     {
                         logger.LogInformation(
-                            "Zalo V2 retention cleanup deleted traces={TraceCount}, relations={RelationCount}, concepts={ConceptCount}",
+                            "Zalo V2 retention cleanup deleted traces={TraceCount}, relations={RelationCount}, concepts={ConceptCount}, outboundReceipts={ReceiptCount}",
                             cleanup.DeletedTraces,
                             cleanup.DeletedMessageRelations,
-                            cleanup.DeletedUserConcepts);
+                            cleanup.DeletedUserConcepts,
+                            deletedReceipts);
                     }
                     nextV2RetentionAt = now.AddHours(6);
                 }
@@ -54,7 +90,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/V2 trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
