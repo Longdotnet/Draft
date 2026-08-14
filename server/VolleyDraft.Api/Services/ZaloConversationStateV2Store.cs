@@ -234,7 +234,7 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
                     "GroupId" TEXT NOT NULL,
                     "SenderZaloUserId" TEXT NOT NULL,
                     "Intent" TEXT NOT NULL,
-                    "CollectedArgumentsJson" TEXT NOT NULL DEFAULT '{{}}',
+                    "CollectedArgumentsJson" TEXT NOT NULL,
                     "MissingArgumentsJson" TEXT NOT NULL DEFAULT '[]',
                     "CandidateEntitiesJson" TEXT NOT NULL DEFAULT '[]',
                     "SourceMessageId" TEXT NULL,
