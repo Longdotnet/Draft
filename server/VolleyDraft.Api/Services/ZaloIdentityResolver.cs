@@ -152,11 +152,16 @@ public sealed class ZaloIdentityResolver(VolleyDraftDbContext db)
         string groupId,
         CancellationToken cancellationToken)
     {
-        var members = await db.ZaloGroupMembers.AsNoTracking()
+        // SQLite cannot translate DateTimeOffset ordering. Filter/project in SQL,
+        // then order the bounded group-member set on the client. This preserves the
+        // same recency semantics on SQLite and PostgreSQL instead of branching behavior.
+        var memberRows = await db.ZaloGroupMembers.AsNoTracking()
             .Where(item => item.GroupId == groupId && item.IsCurrentMember)
-            .OrderByDescending(item => item.LastSeenAt)
-            .Select(item => new { item.ZaloUserId, item.DisplayName })
+            .Select(item => new { item.ZaloUserId, item.DisplayName, item.LastSeenAt })
             .ToListAsync(cancellationToken);
+        var members = memberRows
+            .OrderByDescending(item => item.LastSeenAt)
+            .ToList();
         var uniqueMembers = members
             .Where(item => !string.IsNullOrWhiteSpace(item.ZaloUserId))
             .GroupBy(item => item.ZaloUserId.Trim(), StringComparer.Ordinal)
