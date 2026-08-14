@@ -1,9 +1,14 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed class ZaloBridgeClient(HttpClient httpClient)
+public sealed class ZaloBridgeClient(
+    HttpClient httpClient,
+    IServiceScopeFactory scopeFactory,
+    ILogger<ZaloBridgeClient> logger)
 {
     public async Task<BridgeStartQrResponse> StartQrLoginAsync()
     {
@@ -126,7 +131,49 @@ public sealed class ZaloBridgeClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync(
             "v1/group-messages",
             new { accountId, groupId, message, mentions, imageUrl, idempotencyKey });
-        return await ReadAsync<BridgeSendMessageResponse>(response);
+        var result = await ReadAsync<BridgeSendMessageResponse>(response);
+
+        // Once the provider has accepted the message, observability/persistence must
+        // never turn the operation into a retryable send failure. Record the real
+        // provider ID best-effort in an independent scope and only log if that fails.
+        if (result.Sent && !result.Mock && !string.IsNullOrWhiteSpace(result.MessageId))
+            await TryRememberProviderOutboundIdAsync(accountId, groupId, result.MessageId!);
+        return result;
+    }
+
+    private async Task TryRememberProviderOutboundIdAsync(
+        string accountId,
+        string groupId,
+        string providerMessageId)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+            var connectionId = await db.ZaloConnections
+                .AsNoTracking()
+                .Where(item => item.AccountZaloId == accountId &&
+                               item.MatchSessions.Any(session => session.ZaloGroupId == groupId))
+                .OrderByDescending(item => item.UpdatedAt)
+                .Select(item => item.Id)
+                .FirstOrDefaultAsync();
+            if (string.IsNullOrWhiteSpace(connectionId)) return;
+
+            await new ZaloMessageGraphStore(db).RememberOutboundAsync(
+                connectionId,
+                groupId,
+                providerMessageId,
+                inReplyToMessageId: null);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Zalo provider message was sent but V2 provider-ID persistence failed Account={AccountId} Group={GroupId} MessageId={MessageId}",
+                accountId,
+                groupId,
+                providerMessageId);
+        }
     }
 
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
