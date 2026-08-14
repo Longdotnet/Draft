@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -18,24 +17,25 @@ public sealed record ZaloUserConceptDraft(
 /// </summary>
 public static class ZaloUserConceptExtractor
 {
-    private static readonly Regex PreferredNameRegex = new(
-        @"\b(?:goi|keu)\s+(?:tui|toi|minh|em)\s+(?:la\s+)?(?<name>[\p{L}][\p{L}\p{M}\d ._-]{0,39})$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PreferredNameOriginalRegex = new(
+        @"\b(?:gọi|goi|kêu|keu)\s+(?:tui|tôi|toi|mình|minh|em)\s+(?:là|la\s+)?(?<name>[\p{L}][\p{L}\p{M}\d ._-]{0,39})$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     public static bool TryExtract(string question, ZaloAiSender sender, out ZaloUserConceptDraft draft)
     {
         draft = null!;
-        var normalized = ZaloBotIntelligence.Normalize(question);
+        var original = (question ?? string.Empty).Trim();
+        var normalized = ZaloBotIntelligence.Normalize(original);
         if (string.IsNullOrWhiteSpace(normalized)) return false;
 
         normalized = Regex.Replace(normalized, @"^(?:@?bot|@?npc)\s+", string.Empty, RegexOptions.CultureInvariant).Trim();
         normalized = Regex.Replace(normalized, @"^(?:nho la|nho rang|tu gio|lan sau)\s+", string.Empty, RegexOptions.CultureInvariant).Trim();
 
-        var preferredName = PreferredNameRegex.Match(normalized);
+        var preferredName = PreferredNameOriginalRegex.Match(original);
         if (preferredName.Success)
         {
             var name = preferredName.Groups["name"].Value.Trim(' ', '.', ',', '!', '?');
-            if (name.Length is >= 1 and <= 40 && !LooksLikeInstruction(name))
+            if (name.Length is >= 1 and <= 40 && !LooksLikeInstruction(ZaloBotIntelligence.Normalize(name)))
             {
                 draft = new ZaloUserConceptDraft(
                     "Alias",
@@ -59,7 +59,7 @@ public static class ZaloUserConceptExtractor
             draft = new ZaloUserConceptDraft(
                 "Preference",
                 "session_availability",
-                JsonSerializer.Serialize(new { sessions, mode, statement = question.Trim() }),
+                JsonSerializer.Serialize(new { sessions, mode, statement = original }),
                 .98);
             return true;
         }
@@ -69,7 +69,7 @@ public static class ZaloUserConceptExtractor
             draft = new ZaloUserConceptDraft(
                 "DomainFact",
                 "volleyball_role",
-                JsonSerializer.Serialize(new { role, statement = question.Trim() }),
+                JsonSerializer.Serialize(new { role, statement = original }),
                 .98);
             return true;
         }
