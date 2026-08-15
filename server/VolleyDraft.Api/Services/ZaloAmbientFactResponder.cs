@@ -253,7 +253,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
                     selected.Id);
             }
 
-            var lines = enabled.Take(8).Select(FormatReminderSchedule);
+            var lines = enabled.Take(8).Select(schedule => FormatReminderSchedule(schedule));
             return new ZaloAmbientFactReply(
                 ZaloBotIntent.ReminderStatus,
                 $"Lịch nhắc {selected.Name}:\n{string.Join("\n", lines)}",
