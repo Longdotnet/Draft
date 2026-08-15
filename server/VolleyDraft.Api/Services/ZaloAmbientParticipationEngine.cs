@@ -152,7 +152,10 @@ public static class ZaloAmbientParticipationEngine
         var score = 0;
         if (conversationalReadOnly)
         {
-            score += 75;
+            // Once a turn is deterministically identified as talking to/about the bot,
+            // make it independently pass the high-confidence Fact pilot floor (85).
+            // This does not relax ordinary ambient traffic or write/action requests.
+            score += 90;
             signals.Add(capabilityTurn ? "bot_capability_inquiry" : "conversational_action_advisor");
             signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
         }
