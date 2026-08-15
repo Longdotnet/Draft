@@ -95,6 +95,38 @@ public sealed class ZaloAmbientSocialPilotTests
         Assert.Equal(0, handler.CallCount);
     }
 
+    [Theory]
+    [InlineData("ack_or_emoji_only")]
+    [InlineData("bot_cooldown")]
+    [InlineData("busy_group")]
+    public async Task Ambient_hard_suppression_beats_high_confidence_bot_address(string signal)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("không được gọi");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var decision = SocialDecision("m-suppressed") with
+        {
+            Signals = [signal],
+            Score = 100
+        };
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("m-suppressed", "user-long", "Long", "con bot haha"),
+            decision,
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Equal(0, handler.CallCount);
+    }
+
     [Fact]
     public async Task Action_decision_never_enters_social_ai()
     {
