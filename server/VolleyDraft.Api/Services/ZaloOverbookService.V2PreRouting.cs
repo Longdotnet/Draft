@@ -56,9 +56,9 @@ public sealed partial class ZaloOverbookService
                 incoming.MessageId);
         }
 
-        // Ambient phase 1 observes ordinary group chatter and records whether the
-        // future participant would have spoken. It never sends and never enters a
-        // mutation handler. Explicit mentions/replies continue through the existing path.
+        // Ambient observation always runs before the legacy address gate. A live
+        // Fact pilot requires two independent gates: ShadowMode=false AND
+        // FactPilot.Enabled=true. Explicit mentions/replies continue through V1.
         if (!incoming.MentionedBot)
         {
             await TryObserveAmbientShadowAsync(connection.Id, groupId, incoming, cancellationToken);
@@ -164,7 +164,7 @@ public sealed partial class ZaloOverbookService
         CancellationToken cancellationToken)
     {
         var settings = ZaloAmbientSettings.FromConfiguration(configuration);
-        if (!settings.Enabled || !settings.ShadowMode) return;
+        if (!settings.Enabled) return;
 
         var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
         var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
@@ -177,25 +177,165 @@ public sealed partial class ZaloOverbookService
             var decision = await new ZaloAmbientObserver(db)
                 .ObserveAsync(connectionId, incoming, settings, cancellationToken);
             logger.LogDebug(
-                "Ambient shadow Group={GroupId} Message={MessageId} Sender={SenderId} WouldReply={WouldReply} Score={Score} Kind={Kind} Intent={Intent}",
+                "Ambient observation Group={GroupId} Message={MessageId} Sender={SenderId} WouldReply={WouldReply} Score={Score} Kind={Kind} Intent={Intent} ShadowMode={ShadowMode}",
                 groupId,
                 incoming.MessageId,
                 senderId,
                 decision.WouldReply,
                 decision.Score,
                 decision.Kind,
-                decision.Intent);
+                decision.Intent,
+                settings.ShadowMode);
+
+            var pilot = ZaloAmbientFactPilotSettings.FromConfiguration(configuration);
+            if (settings.ShadowMode || !pilot.Enabled) return;
+
+            var fact = await new ZaloAmbientFactResponder(db).TryBuildAsync(
+                incoming.AccountId,
+                groupId,
+                incoming,
+                decision,
+                pilot.MinimumScore,
+                cancellationToken);
+            if (fact is null) return;
+
+            await TrySendAmbientFactAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                decision,
+                fact,
+                cancellationToken);
         }
         catch (Exception exception)
         {
-            // Ambient observation is additive telemetry. A failure here must never
-            // interrupt normal chat ingestion, poll sync, or explicit bot routing.
+            // Ambient participation is additive. A failure here must never interrupt
+            // normal chat ingestion, poll sync, or explicitly-addressed bot routing.
             logger.LogWarning(
                 exception,
-                "Ambient shadow observation failed Group={GroupId} Sender={SenderId} Message={MessageId}",
+                "Ambient observation/pilot failed Group={GroupId} Sender={SenderId} Message={MessageId}",
                 groupId,
                 senderId,
                 incoming.MessageId);
+        }
+    }
+
+    private async Task TrySendAmbientFactAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloIncomingMessageEvent incoming,
+        ZaloAmbientParticipationDecision decision,
+        ZaloAmbientFactReply fact,
+        CancellationToken cancellationToken)
+    {
+        var messageId = ZaloOverbookLogic.NormalizeId(incoming.MessageId);
+        var processingToken = $"ambient-fact:{Guid.NewGuid():n}";
+        var staleCutoff = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var claimed = await db.ZaloGroupMessages
+            .Where(item => item.ZaloConnectionId == connectionId &&
+                           item.MessageId == messageId &&
+                           item.BotReplySentAt == null &&
+                           (item.ProcessingStartedAt == null || item.ProcessingStartedAt < staleCutoff) &&
+                           (item.ReplyOutcome == null || item.ReplyOutcome == "ambient_send_failed"))
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(item => item.ProcessingStartedAt, DateTimeOffset.UtcNow)
+                .SetProperty(item => item.ProcessingToken, processingToken)
+                .SetProperty(item => item.ReplyAttemptCount, item => item.ReplyAttemptCount + 1)
+                .SetProperty(item => item.ReplyOutcome, "ambient_processing"), cancellationToken);
+        if (claimed == 0) return;
+
+        var accountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+        var idempotencyKey = $"ambient-fact:{accountId}:{messageId}";
+        try
+        {
+            var send = await bridge.SendGroupMessageAsync(
+                accountId,
+                groupId,
+                fact.Text,
+                [],
+                idempotencyKey: idempotencyKey);
+            var providerReplyId = NormalizeProviderMessageId(send.MessageId);
+            var persistedReplyId = providerReplyId ?? $"local:{idempotencyKey}";
+            var botName = await db.ZaloConnections
+                .AsNoTracking()
+                .Where(item => item.Id == connectionId)
+                .Select(item => item.DisplayName)
+                .SingleOrDefaultAsync(cancellationToken)
+                ?? "Volley Bot";
+
+            try
+            {
+                await EnsureV2OutboundMessageAsync(
+                    connectionId,
+                    groupId,
+                    persistedReplyId,
+                    accountId,
+                    botName,
+                    fact.Text,
+                    cancellationToken);
+                if (providerReplyId is not null)
+                {
+                    await new ZaloMessageGraphStore(db).RememberOutboundAsync(
+                        connectionId,
+                        groupId,
+                        providerReplyId,
+                        messageId,
+                        cancellationToken);
+                }
+            }
+            catch (Exception persistenceException)
+            {
+                // The provider send already succeeded. Do not turn telemetry failure
+                // into a second user-visible send; the idempotency key remains stable.
+                logger.LogWarning(
+                    persistenceException,
+                    "Ambient fact sent but outbound telemetry persistence failed Group={GroupId} Message={MessageId}",
+                    groupId,
+                    messageId);
+            }
+
+            await db.ZaloGroupMessages
+                .Where(item => item.ZaloConnectionId == connectionId &&
+                               item.MessageId == messageId &&
+                               item.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(item => item.BotReplySentAt, DateTimeOffset.UtcNow)
+                    .SetProperty(item => item.SelectedIntent, fact.Intent.ToString())
+                    .SetProperty(item => item.AiCalled, false)
+                    .SetProperty(item => item.ReplyOutcome, "ambient_sent")
+                    .SetProperty(item => item.ProcessingToken, (string?)null), cancellationToken);
+
+            await new ZaloBotTraceStore(db).WriteAsync(new ZaloBotTraceEntry(
+                MessageId: messageId,
+                GroupId: groupId,
+                SenderZaloUserId: senderId,
+                AddressReason: "AmbientFactSent",
+                IntentSource: "AmbientFactPilot",
+                Intent: fact.Intent.ToString(),
+                Confidence: decision.Score / 100d,
+                ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
+                ResolvedSessionId: fact.SessionId,
+                AiCalled: false,
+                ReplyMessageId: persistedReplyId), cancellationToken);
+        }
+        catch (Exception sendException)
+        {
+            await db.ZaloGroupMessages
+                .Where(item => item.ZaloConnectionId == connectionId &&
+                               item.MessageId == messageId &&
+                               item.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null)
+                    .SetProperty(item => item.ProcessingToken, (string?)null)
+                    .SetProperty(item => item.ReplyOutcome, "ambient_send_failed"), cancellationToken);
+            logger.LogWarning(
+                sendException,
+                "Could not send ambient Fact reply Group={GroupId} Message={MessageId} Intent={Intent}",
+                groupId,
+                messageId,
+                fact.Intent);
         }
     }
 
