@@ -39,6 +39,13 @@ public sealed class ZaloAmbientSocialResponder
     private static readonly Regex HumanVocativePattern = new(
         @"^[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40}\s+oi\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly HashSet<string> HardSuppressionSignals = new(StringComparer.Ordinal)
+    {
+        "ack_or_emoji_only",
+        "bot_cooldown",
+        "busy_group",
+        "reply_to_member"
+    };
 
     private readonly VolleyDraftDbContext db;
     private readonly IConfiguration configuration;
@@ -68,6 +75,8 @@ public sealed class ZaloAmbientSocialResponder
         if (!settings.Enabled || !IsAiConfigured()) return null;
         if (decision.Kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Action)
             return null;
+        if (decision.Signals.Any(HardSuppressionSignals.Contains))
+            return null;
 
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         if (HumanVocativePattern.IsMatch(normalizedIncoming))
@@ -90,7 +99,7 @@ public sealed class ZaloAmbientSocialResponder
         // The generic ambient score was intentionally tuned for Fact precision, so a
         // direct high-confidence social address may use its address confidence as the
         // social score. This never upgrades Action/Fact intents because they were
-        // rejected above.
+        // rejected above, and suppression signals still win over address confidence.
         var effectiveScore = Math.Max(
             decision.Score,
             (int)Math.Round(address.Confidence * 100, MidpointRounding.AwayFromZero));
