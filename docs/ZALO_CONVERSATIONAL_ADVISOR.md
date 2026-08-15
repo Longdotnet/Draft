@@ -82,6 +82,10 @@ This PR reuses the already-tested Ambient Fact Pilot send gates. Repository defa
 
 So merging code alone does not make the bot start replying to untagged group messages. Production enablement still requires the shadow review and explicit rollout configuration.
 
+## Validation gate
+
+The stacked PR is validated against the complete Ambient tree (`#34 + #35 + this phase`) before its base is restored. Tests must cover both the exact natural-language examples above and the negative human-thread/mutation cases.
+
 ## Out of scope
 
 Social AI / banter / autonomous joking is intentionally deferred. This phase is limited to conversational addressing, capability explanation, stable-identity domain advice, session clarification, and read-only proposal state.
