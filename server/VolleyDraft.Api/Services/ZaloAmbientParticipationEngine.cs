@@ -83,7 +83,8 @@ public static class ZaloAmbientParticipationEngine
         ZaloAmbientGroupSituation situation,
         ZaloAmbientSettings settings,
         DateTimeOffset? now = null,
-        bool hasActiveProposal = false)
+        bool hasActiveProposal = false,
+        bool hasActiveLease = false)
     {
         var current = now ?? DateTimeOffset.UtcNow;
         var content = incoming.Content ?? string.Empty;
@@ -104,30 +105,44 @@ public static class ZaloAmbientParticipationEngine
                 ["empty_message"], situation);
         }
 
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, content);
+        var repliesToMember = quote.HasQuote && !quote.RepliesToBot;
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal);
+        var leaseEligible = hasActiveLease &&
+                            !repliesToMember &&
+                            address.Target != ZaloConversationalTarget.AnotherMember;
         var wakeTurn = address.Target == ZaloConversationalTarget.Bot &&
                        ZaloAmbientWakePhrase.IsMatch(content);
         var capabilityTurn = address.Target == ZaloConversationalTarget.Bot &&
                              address.SpeechAct == ZaloConversationalSpeechAct.AskCapability;
 
+        var parsedTeamPreference = ZaloNaturalCommandParser.TryParseTeamPreference(content, out _);
         var shorthandTeamFeasibility = address.Target != ZaloConversationalTarget.AnotherMember &&
-                                       ZaloNaturalCommandParser.TryParseTeamPreference(content, out _) &&
+                                       parsedTeamPreference &&
                                        ConversationalTeamFeasibilityPattern.IsMatch(normalized);
+        var leaseTeamAdvisor = leaseEligible && parsedTeamPreference;
         var advisorTurn = shorthandTeamFeasibility ||
+                          leaseTeamAdvisor ||
                           (address.Target == ZaloConversationalTarget.Bot &&
                            address.SpeechAct is ZaloConversationalSpeechAct.AskFeasibility or
                                ZaloConversationalSpeechAct.RequestPreview or
                                ZaloConversationalSpeechAct.ClarificationAnswer or
                                ZaloConversationalSpeechAct.Confirm or
                                ZaloConversationalSpeechAct.Cancel);
-        var conversationalReadOnly = wakeTurn || capabilityTurn || advisorTurn;
 
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(content);
+        var leaseInferredIntent = leaseEligible && deterministic.Intent == ZaloBotIntent.Unknown
+            ? InferLeaseFactIntent(normalized)
+            : ZaloBotIntent.Unknown;
         var effectiveIntent = wakeTurn || capabilityTurn
             ? ZaloBotIntent.Help
             : advisorTurn
                 ? ZaloBotIntent.TeamPreference
-                : deterministic.Intent;
+                : leaseInferredIntent != ZaloBotIntent.Unknown
+                    ? leaseInferredIntent
+                    : deterministic.Intent;
+        var leaseFactFollowUp = leaseEligible && IsFactIntent(effectiveIntent);
+        var conversationalReadOnly = wakeTurn || capabilityTurn || advisorTurn || leaseFactFollowUp;
         var factIntent = conversationalReadOnly || IsFactIntent(effectiveIntent);
         var operationalIntent = effectiveIntent is not ZaloBotIntent.Unknown
             and not ZaloBotIntent.GeneralChat
@@ -137,8 +152,6 @@ public static class ZaloAmbientParticipationEngine
         var hasSession = SessionPattern.IsMatch(normalized);
         var hasDomainWords = DomainPattern.IsMatch(normalized);
         var acknowledgement = IsAcknowledgementOrEmojiOnly(normalized) && !hasActiveProposal;
-        var quote = ZaloQuotedContextResolver.Resolve(incoming, content);
-        var repliesToMember = quote.HasQuote && !quote.RepliesToBot;
         var botCooldown = settings.BotCooldownSeconds > 0 &&
                           situation.LastBotMessageAt is { } lastBot &&
                           current - lastBot < TimeSpan.FromSeconds(settings.BotCooldownSeconds);
@@ -155,15 +168,21 @@ public static class ZaloAmbientParticipationEngine
         if (conversationalReadOnly)
         {
             // Deterministically bot-directed read-only turns stay comfortably above
-            // the Fact pilot floor. Plain-text wake phrases are treated like an
-            // explicit read-only address but never grant mutation authority.
+            // the Fact pilot floor. A same-sender lease is addressing context only;
+            // TeamPreference still goes through the read-only advisor/confirmation
+            // flow and never becomes an ambient mutation authorization.
             score += 90;
             signals.Add(wakeTurn
                 ? "bot_plain_text_wake"
                 : capabilityTurn
                     ? "bot_capability_inquiry"
-                    : "conversational_action_advisor");
-            signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
+                    : advisorTurn
+                        ? "conversational_action_advisor"
+                        : "lease_fact_followup");
+            if (leaseFactFollowUp || leaseTeamAdvisor)
+                signals.Add("active_conversation_lease");
+            else
+                signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
         }
         else if (factIntent)
         {
@@ -176,6 +195,8 @@ public static class ZaloAmbientParticipationEngine
             signals.Add("action_requires_address");
         }
 
+        if (leaseInferredIntent != ZaloBotIntent.Unknown)
+            signals.Add("lease_inferred_fact_intent");
         if (question)
         {
             score += 25;
@@ -229,9 +250,11 @@ public static class ZaloAmbientParticipationEngine
 
         var conversationalConfidence = wakeTurn
             ? .99
-            : shorthandTeamFeasibility
-                ? .91
-                : address.Confidence;
+            : leaseFactFollowUp || leaseTeamAdvisor
+                ? .96
+                : shorthandTeamFeasibility
+                    ? .91
+                    : address.Confidence;
         return new ZaloAmbientParticipationDecision(
             wouldReply,
             score,
@@ -240,6 +263,41 @@ public static class ZaloAmbientParticipationEngine
             conversationalReadOnly ? conversationalConfidence : deterministic.Confidence,
             signals.Distinct(StringComparer.Ordinal).ToArray(),
             situation);
+    }
+
+    private static ZaloBotIntent InferLeaseFactIntent(string normalized)
+    {
+        if (!SessionPattern.IsMatch(normalized)) return ZaloBotIntent.Unknown;
+
+        var slotSubject = Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])(?:slot|nguoi|cho)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        var slotState = Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])(?:con|nhieu|it|thieu|du|het|day|trong)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        if (slotSubject && slotState) return ZaloBotIntent.MissingSlots;
+
+        if (Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(?:may\s+gio|gio|luc\s+nao|khi\s+nao|thoi\s+gian)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+            return ZaloBotIntent.SessionSchedule;
+
+        if (Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(?:danh\s+sach|roster|ai\s+danh|ai\s+choi|co\s+ai)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+            return ZaloBotIntent.Roster;
+
+        if (Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(?:san|dia\s+diem|gui\s+xe|bai\s+xe)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+            return ZaloBotIntent.LocationParking;
+
+        return ZaloBotIntent.Unknown;
     }
 
     private static bool IsFactIntent(ZaloBotIntent intent) => intent is
