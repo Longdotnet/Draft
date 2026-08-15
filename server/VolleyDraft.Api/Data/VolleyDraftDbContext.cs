@@ -88,6 +88,15 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(connection => connection.DisplayName).HasMaxLength(160);
             entity.Property(connection => connection.AvatarUrl).HasMaxLength(2048);
             entity.Property(connection => connection.Status).HasConversion<string>();
+            if (Database.IsSqlite())
+            {
+                // SQLite cannot translate ORDER BY over DateTimeOffset. Keep the
+                // database TEXT representation but expose a UTC DateTime provider
+                // value so legacy queries and PostgreSQL-parity tests can order it.
+                entity.Property(connection => connection.UpdatedAt).HasConversion(
+                    value => value.UtcDateTime,
+                    value => new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc)));
+            }
             entity.HasIndex(connection => new { connection.AdminUserId, connection.AccountZaloId }).IsUnique();
             entity.HasOne(connection => connection.AdminUser)
                 .WithMany(user => user.ZaloConnections)
@@ -123,6 +132,17 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(message => message.ProcessingToken).HasMaxLength(80);
             entity.Property(message => message.SelectedIntent).HasMaxLength(80);
             entity.Property(message => message.ReplyOutcome).HasMaxLength(80);
+            if (Database.IsSqlite())
+            {
+                // ProcessingStartedAt is lease metadata. SQLite cannot compare
+                // nullable DateTimeOffset values inside ExecuteUpdate predicates,
+                // so use a UTC DateTime provider value while preserving the model API.
+                entity.Property(message => message.ProcessingStartedAt).HasConversion(
+                    value => value.HasValue ? value.Value.UtcDateTime : (DateTime?)null,
+                    value => value.HasValue
+                        ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc))
+                        : (DateTimeOffset?)null);
+            }
             entity.HasIndex(message => new { message.ZaloConnectionId, message.MessageId }).IsUnique();
             entity.HasIndex(message => new { message.ZaloConnectionId, message.GroupId, message.SentAt });
             entity.HasOne(message => message.ZaloConnection)
