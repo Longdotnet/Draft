@@ -15,6 +15,18 @@ public sealed partial class ZaloOverbookService
         ZaloAmbientSettings ambientSettings,
         CancellationToken cancellationToken)
     {
+        // A live same-sender conversation lease can promote only preview-first draft
+        // operations into the existing deterministic bot router. This happens before
+        // Social AI and never treats the lease itself as confirmation authority.
+        if (await TryHandleAmbientLeaseActionPreviewAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         var socialSettings = ZaloAmbientSocialPilotSettings.FromConfiguration(configuration);
         if (!socialSettings.Enabled) return false;
 
@@ -68,6 +80,52 @@ public sealed partial class ZaloOverbookService
             decision,
             social,
             cancellationToken);
+        return true;
+    }
+
+    private async Task<bool> TryHandleAmbientLeaseActionPreviewAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloIncomingMessageEvent incoming,
+        ZaloAmbientSettings ambientSettings,
+        CancellationToken cancellationToken)
+    {
+        if (ambientSettings.ShadowMode || botService is null || incoming.MentionedBot)
+            return false;
+
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+        if (quote.HasQuote && !quote.RepliesToBot) return false;
+
+        var hasLease = await new ZaloAmbientConversationLeaseResolver(db)
+            .IsActiveAsync(connectionId, groupId, senderId, 180, cancellationToken);
+        if (!hasLease) return false;
+
+        var promotion = ZaloAmbientLeaseActionPromotionPolicy.TryCreate(incoming.Content);
+        if (promotion is null) return false;
+
+        var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
+        if (botId.Length == 0) return false;
+
+        // Internal promotion supplies only the address metadata expected by the
+        // existing router. The original sender/group/message identity is preserved,
+        // so authorization, operator checks, pending confirmation and idempotency all
+        // remain in ZaloBotService. This call may create a preview/pending state, but
+        // it does not fabricate a confirmation turn.
+        var promoted = incoming with
+        {
+            Content = promotion.PromotedContent,
+            MentionedBot = true,
+            Mentions = [new ZaloBridgeMention(botId, 0, 0)]
+        };
+
+        logger.LogInformation(
+            "Ambient lease promoted preview-safe action Group={GroupId} Sender={SenderId} Message={MessageId} Intent={Intent}",
+            groupId,
+            senderId,
+            incoming.MessageId,
+            promotion.Intent);
+        await botService.HandleIncomingAsync(promoted, cancellationToken);
         return true;
     }
 
