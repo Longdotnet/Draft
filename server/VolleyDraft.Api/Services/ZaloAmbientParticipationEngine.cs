@@ -24,7 +24,7 @@ public sealed record ZaloAmbientSettings(
     public static ZaloAmbientSettings FromConfiguration(IConfiguration configuration) => new(
         Enabled: configuration.GetValue("ZaloBot:Ambient:Enabled", true),
         ShadowMode: configuration.GetValue("ZaloBot:Ambient:ShadowMode", true),
-        WouldReplyThreshold: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:WouldReplyThreshold", 65), 40, 95),
+        WouldReplyThreshold: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:WouldReplyThreshold", 60), 40, 95),
         RecentWindowMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:RecentWindowMinutes", 5), 1, 30),
         MaxRecentMessages: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:MaxRecentMessages", 40), 5, 100),
         BotCooldownSeconds: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:BotCooldownSeconds", 20), 0, 300),
@@ -152,9 +152,9 @@ public static class ZaloAmbientParticipationEngine
         var score = 0;
         if (conversationalReadOnly)
         {
-            // Once a turn is deterministically identified as talking to/about the bot,
-            // make it independently pass the high-confidence Fact pilot floor (85).
-            // This does not relax ordinary ambient traffic or write/action requests.
+            // Deterministically bot-directed read-only turns stay comfortably above
+            // the Fact pilot floor. Lowering the floor to 60 broadens ordinary Fact
+            // coverage without weakening the action/reply/cooldown hard suppressions.
             score += 90;
             signals.Add(capabilityTurn ? "bot_capability_inquiry" : "conversational_action_advisor");
             signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
