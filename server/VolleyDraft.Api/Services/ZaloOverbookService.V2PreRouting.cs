@@ -24,18 +24,24 @@ public sealed partial class ZaloOverbookService
         var groupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
         if (accountId.Length == 0 || groupId.Length == 0) return false;
 
-        var connection = await db.ZaloConnections
+        // Keep DateTimeOffset ordering out of provider SQL. SQLite cannot ORDER BY
+        // DateTimeOffset, while PostgreSQL can; selecting first in memory keeps both
+        // providers on the same deterministic semantics.
+        var connectionRows = await db.ZaloConnections
             .AsNoTracking()
             .Where(item => item.AccountZaloId == accountId &&
                            item.MatchSessions.Any(session => session.BotEnabled && session.ZaloGroupId == groupId))
-            .OrderByDescending(item => item.UpdatedAt)
             .Select(item => new
             {
                 item.Id,
                 item.AccountZaloId,
-                item.DisplayName
+                item.DisplayName,
+                item.UpdatedAt
             })
-            .FirstOrDefaultAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
+        var connection = connectionRows
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstOrDefault();
         if (connection is null) return false;
 
         // Capture reply/quote topology for every message in a bot-enabled group,
@@ -56,9 +62,9 @@ public sealed partial class ZaloOverbookService
                 incoming.MessageId);
         }
 
-        // Ambient phase 1 observes ordinary group chatter and records whether the
-        // future participant would have spoken. It never sends and never enters a
-        // mutation handler. Explicit mentions/replies continue through the existing path.
+        // Ambient observation always runs before the legacy address gate. A live
+        // Fact pilot requires two independent gates: ShadowMode=false AND
+        // FactPilot.Enabled=true. Explicit mentions/replies continue through V1.
         if (!incoming.MentionedBot)
         {
             await TryObserveAmbientShadowAsync(connection.Id, groupId, incoming, cancellationToken);
@@ -164,7 +170,7 @@ public sealed partial class ZaloOverbookService
         CancellationToken cancellationToken)
     {
         var settings = ZaloAmbientSettings.FromConfiguration(configuration);
-        if (!settings.Enabled || !settings.ShadowMode) return;
+        if (!settings.Enabled) return;
 
         var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
         var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
@@ -177,25 +183,211 @@ public sealed partial class ZaloOverbookService
             var decision = await new ZaloAmbientObserver(db)
                 .ObserveAsync(connectionId, incoming, settings, cancellationToken);
             logger.LogDebug(
-                "Ambient shadow Group={GroupId} Message={MessageId} Sender={SenderId} WouldReply={WouldReply} Score={Score} Kind={Kind} Intent={Intent}",
+                "Ambient observation Group={GroupId} Message={MessageId} Sender={SenderId} WouldReply={WouldReply} Score={Score} Kind={Kind} Intent={Intent} ShadowMode={ShadowMode}",
                 groupId,
                 incoming.MessageId,
                 senderId,
                 decision.WouldReply,
                 decision.Score,
                 decision.Kind,
-                decision.Intent);
+                decision.Intent,
+                settings.ShadowMode);
+
+            var pilot = ZaloAmbientFactPilotSettings.FromConfiguration(configuration);
+            if (settings.ShadowMode || !pilot.Enabled) return;
+
+            var fact = await new ZaloAmbientFactResponder(db).TryBuildAsync(
+                incoming.AccountId,
+                groupId,
+                incoming,
+                decision,
+                pilot.MinimumScore,
+                cancellationToken);
+            if (fact is null) return;
+
+            await TrySendAmbientFactAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                decision,
+                fact,
+                cancellationToken);
         }
         catch (Exception exception)
         {
-            // Ambient observation is additive telemetry. A failure here must never
-            // interrupt normal chat ingestion, poll sync, or explicit bot routing.
+            // Ambient participation is additive. A failure here must never interrupt
+            // normal chat ingestion, poll sync, or explicitly-addressed bot routing.
             logger.LogWarning(
                 exception,
-                "Ambient shadow observation failed Group={GroupId} Sender={SenderId} Message={MessageId}",
+                "Ambient observation/pilot failed Group={GroupId} Sender={SenderId} Message={MessageId}",
                 groupId,
                 senderId,
                 incoming.MessageId);
+        }
+    }
+
+    private async Task TrySendAmbientFactAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloIncomingMessageEvent incoming,
+        ZaloAmbientParticipationDecision decision,
+        ZaloAmbientFactReply fact,
+        CancellationToken cancellationToken)
+    {
+        var messageId = ZaloOverbookLogic.NormalizeId(incoming.MessageId);
+        var observed = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.ZaloConnectionId == connectionId && item.MessageId == messageId, cancellationToken);
+        if (observed is null || observed.BotReplySentAt is not null) return;
+
+        // Evaluate lease staleness in memory for SQLite/PostgreSQL parity. The atomic
+        // claim uses ReplyAttemptCount as a simple non-null concurrency token so two
+        // webhook deliveries cannot both win without nullable SQL equality semantics.
+        if (string.Equals(observed.ReplyOutcome, "ambient_processing", StringComparison.Ordinal) &&
+            observed.ProcessingStartedAt is { } startedAt &&
+            startedAt >= DateTimeOffset.UtcNow.AddMinutes(-2))
+            return;
+        if (observed.ReplyOutcome is not null &&
+            observed.ReplyOutcome is not "ambient_processing" and not "ambient_send_failed")
+            return;
+
+        var previousAttemptCount = observed.ReplyAttemptCount;
+        var processingToken = $"ambient-fact:{Guid.NewGuid():n}";
+        var claimStartedAt = DateTimeOffset.UtcNow;
+        var claimed = await db.ZaloGroupMessages
+            .Where(item => item.Id == observed.Id &&
+                           item.BotReplySentAt == null &&
+                           item.ReplyAttemptCount == previousAttemptCount)
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(item => item.ProcessingStartedAt, claimStartedAt)
+                .SetProperty(item => item.ProcessingToken, processingToken)
+                .SetProperty(item => item.ReplyAttemptCount, item => item.ReplyAttemptCount + 1)
+                .SetProperty(item => item.ReplyOutcome, "ambient_processing"), cancellationToken);
+        if (claimed == 0) return;
+
+        var accountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+        var idempotencyKey = $"ambient-fact:{accountId}:{messageId}";
+        BridgeSendMessageResponse send;
+        try
+        {
+            send = await bridge.SendGroupMessageAsync(
+                accountId,
+                groupId,
+                fact.Text,
+                [],
+                idempotencyKey: idempotencyKey);
+        }
+        catch (Exception sendException)
+        {
+            await db.ZaloGroupMessages
+                .Where(item => item.ZaloConnectionId == connectionId &&
+                               item.MessageId == messageId &&
+                               item.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null)
+                    .SetProperty(item => item.ProcessingToken, (string?)null)
+                    .SetProperty(item => item.ReplyOutcome, "ambient_send_failed"), cancellationToken);
+            logger.LogWarning(
+                sendException,
+                "Could not send ambient Fact reply Group={GroupId} Message={MessageId} Intent={Intent}",
+                groupId,
+                messageId,
+                fact.Intent);
+            return;
+        }
+
+        var providerReplyId = NormalizeProviderMessageId(send.MessageId);
+        var persistedReplyId = providerReplyId ?? $"local:{idempotencyKey}";
+        var botName = await db.ZaloConnections
+            .AsNoTracking()
+            .Where(item => item.Id == connectionId)
+            .Select(item => item.DisplayName)
+            .SingleOrDefaultAsync(cancellationToken)
+            ?? "Volley Bot";
+
+        try
+        {
+            await EnsureV2OutboundMessageAsync(
+                connectionId,
+                groupId,
+                persistedReplyId,
+                accountId,
+                botName,
+                fact.Text,
+                cancellationToken);
+            if (providerReplyId is not null)
+            {
+                await new ZaloMessageGraphStore(db).RememberOutboundAsync(
+                    connectionId,
+                    groupId,
+                    providerReplyId,
+                    messageId,
+                    cancellationToken);
+            }
+        }
+        catch (Exception persistenceException)
+        {
+            // The provider send already succeeded. Do not turn telemetry failure
+            // into a second user-visible send; the idempotency key remains stable.
+            logger.LogWarning(
+                persistenceException,
+                "Ambient fact sent but outbound telemetry persistence failed Group={GroupId} Message={MessageId}",
+                groupId,
+                messageId);
+        }
+
+        try
+        {
+            var replySentAt = DateTimeOffset.UtcNow;
+            var selectedIntent = fact.Intent.ToString();
+            await db.ZaloGroupMessages
+                .Where(item => item.ZaloConnectionId == connectionId &&
+                               item.MessageId == messageId &&
+                               item.ProcessingToken == processingToken)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(item => item.BotReplySentAt, replySentAt)
+                    .SetProperty(item => item.SelectedIntent, selectedIntent)
+                    .SetProperty(item => item.AiCalled, false)
+                    .SetProperty(item => item.ReplyOutcome, "ambient_sent")
+                    .SetProperty(item => item.ProcessingToken, (string?)null), cancellationToken);
+        }
+        catch (Exception terminalPersistenceException)
+        {
+            // Provider has already accepted the idempotent send. Do not classify a
+            // terminal persistence problem as a send failure and do not issue another
+            // user-visible send from this invocation.
+            logger.LogWarning(
+                terminalPersistenceException,
+                "Ambient fact provider send succeeded but terminal state persistence failed Group={GroupId} Message={MessageId}",
+                groupId,
+                messageId);
+            return;
+        }
+
+        try
+        {
+            await new ZaloBotTraceStore(db).WriteAsync(new ZaloBotTraceEntry(
+                MessageId: messageId,
+                GroupId: groupId,
+                SenderZaloUserId: senderId,
+                AddressReason: "AmbientFactSent",
+                IntentSource: "AmbientFactPilot",
+                Intent: fact.Intent.ToString(),
+                Confidence: decision.Score / 100d,
+                ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
+                ResolvedSessionId: fact.SessionId,
+                AiCalled: false,
+                ReplyMessageId: persistedReplyId), cancellationToken);
+        }
+        catch (Exception traceException)
+        {
+            logger.LogWarning(
+                traceException,
+                "Ambient fact sent but terminal trace persistence failed Group={GroupId} Message={MessageId}",
+                groupId,
+                messageId);
         }
     }
 
