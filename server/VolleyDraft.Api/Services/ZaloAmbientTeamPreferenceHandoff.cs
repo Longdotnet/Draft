@@ -12,60 +12,13 @@ namespace VolleyDraft.Api.Services;
 /// explicitly-confirmed TeamPreference write path.
 ///
 /// The V2 proposal itself never grants write authority. A handoff is allowed only
-/// when the same sender replies to the exact provider message that presented the
-/// latest ready proposal and sends a deterministic confirmation phrase.
+/// when the same sender replies to the exact provider message that the message graph
+/// proves was emitted for the latest ready proposal and sends a deterministic
+/// confirmation phrase.
 /// </summary>
 public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
 {
     public const string ProposalIntent = "AmbientTeamPreferenceProposal";
-    private const string ReplyMessageIdProperty = "proposalReplyMessageId";
-    private const string ReplySourceMessageIdProperty = "proposalReplySourceMessageId";
-
-    /// <summary>
-    /// Binds the active proposal to the provider-generated outbound message id.
-    /// Synthetic/local ids are deliberately never passed here because they cannot
-    /// be proven to be the Zalo message the user actually replied to.
-    /// </summary>
-    public async Task<bool> BindOutboundReplyAsync(
-        string groupId,
-        string senderZaloUserId,
-        string providerReplyMessageId,
-        string sourceInboundMessageId,
-        CancellationToken cancellationToken = default)
-    {
-        groupId = Clean(groupId, 100);
-        senderZaloUserId = Clean(senderZaloUserId, 100);
-        providerReplyMessageId = Clean(providerReplyMessageId, 160);
-        sourceInboundMessageId = Clean(sourceInboundMessageId, 160);
-        if (groupId.Length == 0 || senderZaloUserId.Length == 0 ||
-            providerReplyMessageId.Length == 0 || sourceInboundMessageId.Length == 0)
-            return false;
-
-        var store = new ZaloConversationStateV2Store(db);
-        var state = await store.LoadActiveAsync(groupId, senderZaloUserId, cancellationToken);
-        if (state is null ||
-            !string.Equals(state.Intent, ProposalIntent, StringComparison.Ordinal) ||
-            !string.Equals(Clean(state.LastMessageId, 160), sourceInboundMessageId, StringComparison.Ordinal))
-            return false;
-
-        var collected = ParseObject(state.CollectedArgumentsJson);
-        if (collected is null) return false;
-        collected[ReplyMessageIdProperty] = providerReplyMessageId;
-        collected[ReplySourceMessageIdProperty] = sourceInboundMessageId;
-
-        await store.SaveActiveAsync(
-            state.GroupId,
-            state.SenderZaloUserId,
-            state.Intent,
-            collected.ToJsonString(),
-            state.MissingArgumentsJson,
-            state.CandidateEntitiesJson,
-            state.SourceMessageId,
-            state.LastMessageId,
-            state.ExpiresAt,
-            cancellationToken);
-        return true;
-    }
 
     /// <summary>
     /// Validates an exact-reply confirmation and promotes the V2 proposal into the
@@ -100,22 +53,32 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
         if (state is null || !string.Equals(state.Intent, ProposalIntent, StringComparison.Ordinal))
             return false;
 
+        var proposalSourceMessageId = Clean(state.LastMessageId, 160);
+        if (proposalSourceMessageId.Length == 0) return false;
+
+        // The provider message id is not trusted from chat text or memory. It must
+        // be the outbound BotReply edge created when this exact proposal source
+        // message was answered by the live send path.
+        var providerProposalReplyId = Clean(await new ZaloMessageGraphQuery(db)
+            .LoadBotReplyMessageIdAsync(
+                connectionId,
+                groupId,
+                proposalSourceMessageId,
+                cancellationToken), 160);
+        if (providerProposalReplyId.Length == 0 ||
+            !string.Equals(providerProposalReplyId, quotedMessageId, StringComparison.Ordinal))
+            return false;
+
         var collected = ParseObject(state.CollectedArgumentsJson);
         if (collected is null) return false;
 
-        var boundReplyId = GetString(collected, ReplyMessageIdProperty, 160);
-        var boundSourceMessageId = GetString(collected, ReplySourceMessageIdProperty, 160);
         var requesterId = GetString(collected, "requesterZaloUserId", 100);
         var requesterName = GetString(collected, "requesterDisplayName", 160);
         var partnerId = GetString(collected, "partnerZaloUserId", 100);
         var partnerName = GetString(collected, "partnerDisplayName", 160);
         var sessionId = GetString(collected, "sessionId", 100);
 
-        if (boundReplyId.Length == 0 ||
-            !string.Equals(boundReplyId, quotedMessageId, StringComparison.Ordinal) ||
-            boundSourceMessageId.Length == 0 ||
-            !string.Equals(boundSourceMessageId, Clean(state.LastMessageId, 160), StringComparison.Ordinal) ||
-            requesterId.Length == 0 ||
+        if (requesterId.Length == 0 ||
             !string.Equals(requesterId, senderId, StringComparison.Ordinal) ||
             requesterName.Length == 0 || partnerId.Length == 0 || partnerName.Length == 0 || sessionId.Length == 0)
             return false;
