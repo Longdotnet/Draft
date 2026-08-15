@@ -15,6 +15,26 @@ public sealed partial class ZaloOverbookService
         ZaloAmbientSettings ambientSettings,
         CancellationToken cancellationToken)
     {
+        // Final mutation confirmation may continue without a native @mention only
+        // when the user replies to the exact provider bot message that created an
+        // allowed pending preview. The verifier checks sender/group/pending state and
+        // message-graph identity before the legacy router sees a synthetic mention.
+        if (!ambientSettings.ShadowMode && botService is not null)
+        {
+            var promotedPendingReply = await new ZaloAmbientLeasePendingReplyPromotion(db)
+                .TryPromoteAsync(connectionId, groupId, incoming, cancellationToken);
+            if (promotedPendingReply is not null)
+            {
+                logger.LogInformation(
+                    "Ambient exact-reply promoted pending action Group={GroupId} Sender={SenderId} Message={MessageId}",
+                    groupId,
+                    senderId,
+                    incoming.MessageId);
+                await botService.HandleIncomingAsync(promotedPendingReply, cancellationToken);
+                return true;
+            }
+        }
+
         // A live same-sender conversation lease can promote only preview-first draft
         // operations into the existing deterministic bot router. This happens before
         // Social AI and never treats the lease itself as confirmation authority.
