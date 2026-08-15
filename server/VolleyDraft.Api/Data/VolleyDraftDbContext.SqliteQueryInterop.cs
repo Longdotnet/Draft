@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace VolleyDraft.Api.Data;
 
@@ -8,10 +9,38 @@ public sealed partial class VolleyDraftDbContext
 {
     private static readonly IInterceptor SqliteUtcNowInterceptor = new SqliteDateTimeOffsetUtcNowInterceptor();
 
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        if (Database.IsSqlite())
+        {
+            configurationBuilder
+                .Properties<DateTimeOffset>()
+                .HaveConversion<UtcDateTimeOffsetConverter>();
+        }
+    }
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         base.OnConfiguring(optionsBuilder);
         optionsBuilder.AddInterceptors(SqliteUtcNowInterceptor);
+    }
+
+    /// <summary>
+    /// SQLite does not natively support ordering/comparison over DateTimeOffset.
+    /// Normalize SQLite provider values to UTC DateTime while keeping DateTimeOffset
+    /// in the domain model. Explicit property mappings in OnModelCreating can still
+    /// override this pre-convention where a nullable/custom conversion is required.
+    /// Non-SQLite providers keep their original mappings.
+    /// </summary>
+    private sealed class UtcDateTimeOffsetConverter : ValueConverter<DateTimeOffset, DateTime>
+    {
+        public UtcDateTimeOffsetConverter()
+            : base(
+                value => value.UtcDateTime,
+                value => new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc)))
+        {
+        }
     }
 
     /// <summary>
