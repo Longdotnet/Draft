@@ -152,14 +152,14 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
         try
         {
             var traceStore = new ZaloBotTraceStore(db);
-            // Central trace store owns additive schema creation. UnixEpoch cannot delete
-            // normal rows and gives this observer a provider-independent schema probe.
-            await traceStore.DeleteOlderThanAsync(DateTimeOffset.UnixEpoch, cancellationToken);
+            await traceStore.EnsureReadyAsync(cancellationToken);
             var connection = db.Database.GetDbConnection();
             if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
             if (await TraceExistsAsync(connection, groupId, incoming.MessageId, source, cancellationToken)) return;
 
             var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+            var metadata = new[] { $"kind:{decision.Kind}" }
+                .Concat(decision.Signals.Take(12));
             await traceStore.WriteAsync(new ZaloBotTraceEntry(
                 MessageId: Clean(incoming.MessageId, 160),
                 GroupId: groupId,
@@ -171,7 +171,7 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
                 ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
                 QuotedMessageId: quote.MessageId,
                 AiCalled: false,
-                FallbackReason: string.Join('|', decision.Signals.Take(12))), cancellationToken);
+                FallbackReason: string.Join('|', metadata)), cancellationToken);
         }
         finally
         {
