@@ -45,10 +45,17 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         int minimumScore,
         CancellationToken cancellationToken = default)
     {
+        var parsed = Enum.TryParse<ZaloBotIntent>(decision.Intent, out var parsedIntent)
+            ? parsedIntent
+            : ZaloBotIntent.Unknown;
+        var naturalReadOnly = ZaloAmbientReadOnlyNaturalIntentResolver.TryResolve(
+            incoming.Content,
+            out var naturalIntent);
+        var intent = naturalReadOnly ? naturalIntent : parsed;
+
         if (!decision.WouldReply ||
-            decision.Kind != ZaloAmbientParticipationKind.Fact ||
             decision.Score < Math.Clamp(minimumScore, 60, 100) ||
-            !Enum.TryParse<ZaloBotIntent>(decision.Intent, out var intent) ||
+            (!naturalReadOnly && decision.Kind != ZaloAmbientParticipationKind.Fact) ||
             !AllowedIntents.Contains(intent))
             return null;
 
