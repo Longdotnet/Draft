@@ -63,7 +63,7 @@ public sealed class ZaloAmbientParticipationEngineTests
     }
 
     [Fact]
-    public void Recent_bot_turn_reduces_participation_score()
+    public void Recent_bot_turn_hard_suppresses_even_a_strong_fact_candidate()
     {
         var now = DateTimeOffset.UtcNow;
         var quiet = ZaloAmbientParticipationEngine.Evaluate(
@@ -77,8 +77,46 @@ public sealed class ZaloAmbientParticipationEngineTests
             Settings,
             now);
 
+        Assert.True(quiet.WouldReply);
+        Assert.False(cooldown.WouldReply);
         Assert.True(cooldown.Score < quiet.Score);
         Assert.Contains("bot_cooldown", cooldown.Signals);
+    }
+
+    [Fact]
+    public void Reply_to_another_member_hard_suppresses_even_a_strong_fact_candidate()
+    {
+        var quote = new ZaloBridgeMessageQuote(
+            "human-message-1",
+            "user-2",
+            "Nam",
+            "T6 hình như đông rồi",
+            "chat",
+            DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds(),
+            null);
+        var decision = ZaloAmbientParticipationEngine.Evaluate(
+            Incoming("m5", "T6 còn bao nhiêu slot?", quote: quote),
+            QuietSituation(),
+            Settings,
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(ZaloAmbientParticipationKind.Fact, decision.Kind);
+        Assert.False(decision.WouldReply);
+        Assert.Contains("reply_to_member", decision.Signals);
+    }
+
+    [Fact]
+    public void Explicit_address_never_uses_ambient_participation()
+    {
+        var decision = ZaloAmbientParticipationEngine.Evaluate(
+            Incoming("m6", "T6 còn bao nhiêu slot?", mentionedBot: true),
+            QuietSituation(),
+            Settings,
+            DateTimeOffset.UtcNow);
+
+        Assert.False(decision.WouldReply);
+        Assert.Equal(ZaloAmbientParticipationKind.None, decision.Kind);
+        Assert.Contains("explicit_address_uses_normal_router", decision.Signals);
     }
 
     [Fact]
@@ -124,7 +162,7 @@ public sealed class ZaloAmbientParticipationEngineTests
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT COUNT(*), MAX("AddressReason"), MAX("IntentSource"), MAX("ReplyMessageId")
+            SELECT COUNT(*), MAX("AddressReason"), MAX("IntentSource"), MAX("ReplyMessageId"), MAX("FallbackReason")
             FROM "ZaloBotTraces"
             WHERE "MessageId"='ambient-1' AND "IntentSource"='AmbientShadow';
             """;
@@ -134,9 +172,14 @@ public sealed class ZaloAmbientParticipationEngineTests
         Assert.Equal("AmbientShadowWouldReply", reader.GetString(1));
         Assert.Equal("AmbientShadow", reader.GetString(2));
         Assert.True(reader.IsDBNull(3));
+        Assert.Contains("kind:Fact", reader.GetString(4));
     }
 
-    private static ZaloIncomingMessageEvent Incoming(string messageId, string content) => new(
+    private static ZaloIncomingMessageEvent Incoming(
+        string messageId,
+        string content,
+        bool mentionedBot = false,
+        ZaloBridgeMessageQuote? quote = null) => new(
         accountId: "bot-account",
         botId: "bot-uid",
         groupId: "g1",
@@ -144,9 +187,10 @@ public sealed class ZaloAmbientParticipationEngineTests
         senderId: "user-1",
         senderName: "Long",
         content: content,
-        mentions: [],
-        mentionedBot: false,
-        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        mentions: mentionedBot ? [new ZaloBridgeMention("bot-uid", 0, 4)] : [],
+        mentionedBot: mentionedBot,
+        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        quote: quote);
 
     private static ZaloAmbientGroupSituation QuietSituation(DateTimeOffset? lastBotMessageAt = null) => new(
         RecentMessageCount: 1,
