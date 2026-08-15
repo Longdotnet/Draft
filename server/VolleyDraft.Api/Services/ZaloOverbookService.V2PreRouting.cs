@@ -193,6 +193,16 @@ public sealed partial class ZaloOverbookService
                 decision.Intent,
                 settings.ShadowMode);
 
+            if (await TryHandleAmbientSocialAsync(
+                    connectionId,
+                    groupId,
+                    senderId,
+                    incoming,
+                    decision,
+                    settings,
+                    cancellationToken))
+                return;
+
             var pilot = ZaloAmbientFactPilotSettings.FromConfiguration(configuration);
             if (settings.ShadowMode || !pilot.Enabled) return;
 
