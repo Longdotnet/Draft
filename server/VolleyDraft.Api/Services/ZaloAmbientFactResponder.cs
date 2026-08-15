@@ -28,6 +28,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         ZaloBotIntent.UpcomingSessions,
         ZaloBotIntent.Roster,
         ZaloBotIntent.WeeklySessionCount,
+        ZaloBotIntent.TeamLineup,
         ZaloBotIntent.ReminderStatus,
         ZaloBotIntent.WaitlistStatus,
         ZaloBotIntent.Help,
@@ -140,6 +141,9 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         var session = ResolveSingleSession(incoming.Content, sessions);
         if (session is null) return null;
 
+        if (intent == ZaloBotIntent.TeamLineup)
+            return await BuildTeamLineupAnswerAsync(session, cancellationToken);
+
         if (intent == ZaloBotIntent.WaitlistStatus)
             return BuildWaitlistStatusAnswer(incoming, session);
 
@@ -173,6 +177,50 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
 
             _ => null
         };
+    }
+
+    private async Task<ZaloAmbientFactReply> BuildTeamLineupAnswerAsync(
+        MatchSession session,
+        CancellationToken cancellationToken)
+    {
+        var teams = await db.Teams
+            .AsNoTracking()
+            .Include(team => team.CaptainSessionPlayer)
+            .Where(team => team.SessionId == session.Id)
+            .OrderBy(team => team.Name)
+            .ToListAsync(cancellationToken);
+
+        var teamIds = teams.Select(team => team.Id).ToList();
+        var slots = teamIds.Count == 0
+            ? []
+            : await db.DraftSlots
+                .AsNoTracking()
+                .Where(slot => slot.AssignedTeamId != null && teamIds.Contains(slot.AssignedTeamId))
+                .OrderByDescending(slot => slot.IsCaptainSlot)
+                .ThenBy(slot => slot.DisplayName)
+                .ToListAsync(cancellationToken);
+
+        var preview = teams
+            .Select(team => new TeamPreviewResponse(
+                team.Id,
+                team.Name,
+                team.CaptainSessionPlayer?.DisplayName,
+                slots
+                    .Where(slot => slot.AssignedTeamId == team.Id)
+                    .Select(slot => new TeamSlotPreviewResponse(
+                        slot.Id,
+                        slot.DisplayName,
+                        slot.Type,
+                        slot.Gender,
+                        slot.IsCaptainSlot,
+                        slot.AverageScore))
+                    .ToList()))
+            .ToList();
+        var formatted = ZaloTeamLineupFormatter.Format(session.Name, preview);
+        return new ZaloAmbientFactReply(
+            ZaloBotIntent.TeamLineup,
+            formatted.Text,
+            session.Id);
     }
 
     private static ZaloAmbientFactReply BuildWeeklySessionCountAnswer(IReadOnlyList<MatchSession> sessions)
