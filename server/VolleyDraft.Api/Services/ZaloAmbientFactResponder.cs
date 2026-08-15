@@ -42,7 +42,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
     {
         if (!decision.WouldReply ||
             decision.Kind != ZaloAmbientParticipationKind.Fact ||
-            decision.Score < Math.Clamp(minimumScore, 65, 100) ||
+            decision.Score < Math.Clamp(minimumScore, 60, 100) ||
             !Enum.TryParse<ZaloBotIntent>(decision.Intent, out var intent) ||
             !AllowedIntents.Contains(intent))
             return null;
