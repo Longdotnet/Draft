@@ -38,10 +38,13 @@ public sealed class ZaloAmbientLeasePendingReplyPromotionTests
             .LoadBotReplyMessageIdAsync("conn-1", "g1", "draft-request-1");
         Assert.Equal("provider-preview-1", providerReplyId);
 
-        var promoted = await new ZaloAmbientLeasePendingReplyPromotion(fixture.Db)
-            .TryPromoteAsync("conn-1", "g1", incoming);
+        var decision = await new ZaloAmbientLeasePendingReplyPromotion(fixture.Db)
+            .EvaluateAsync("conn-1", "g1", incoming);
+        var promoted = decision.Promoted;
 
-        Assert.NotNull(promoted);
+        Assert.True(
+            promoted is not null,
+            $"Expected exact-reply promotion, got reason={decision.Reason}, source={decision.SourceMessageId ?? "null"}, expectedProvider={decision.ExpectedProviderReplyId ?? "null"}");
         Assert.True(promoted!.MentionedBot);
         Assert.Contains(promoted.Mentions, item => item.Uid == "bot-account");
         Assert.Equal("xác nhận", promoted.Content);
