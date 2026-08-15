@@ -160,11 +160,19 @@ public sealed class ZaloDomainEventShadowObserverTests
             var db = new VolleyDraftDbContext(options);
             await db.Database.EnsureCreatedAsync();
 
+            var admin = new User
+            {
+                Id = "admin",
+                DisplayName = "Admin",
+                Email = $"domain-shadow-{suffix}-{Guid.NewGuid():n}@example.test",
+                PasswordHash = "test"
+            };
             var sessionId = $"domain-shadow-{suffix}";
             var session = new MatchSession
             {
                 Id = sessionId,
-                AdminUserId = "admin",
+                AdminUserId = admin.Id,
+                AdminUser = admin,
                 Name = "T6",
                 ZaloGroupId = "group-1",
                 Status = SessionStatus.Setup,
