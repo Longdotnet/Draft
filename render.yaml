@@ -78,9 +78,15 @@ services:
       - key: ZaloBot__Ambient__FactPilot__MinimumScore
         value: "60"
       - key: ZaloBot__Ambient__SocialPilot__Enabled
-        value: "false"
+        value: "true"
       - key: ZaloBot__Ambient__SocialPilot__SendEnabled
-        value: "false"
+        value: "true"
+      - key: ZaloBot__Ambient__SocialPilot__MinimumScore
+        value: "90"
+      - key: ZaloBot__Ambient__SocialPilot__MaxContextMessages
+        value: "8"
+      - key: ZaloBot__Ambient__SocialPilot__MaxReplyChars
+        value: "180"
       - key: ZaloActivitySync__BoardPageSize
         value: "50"
       - key: ZaloActivitySync__MaxBoardPages
