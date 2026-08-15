@@ -6,7 +6,8 @@ namespace VolleyDraft.Api.Services;
 /// <summary>
 /// Infers a short conversational lease from an earlier successful bot reply to the
 /// same sender in the same Zalo group. The lease is addressing context only: it may
-/// keep read-only follow-ups conversational, but it never grants mutation authority.
+/// keep read-only and social follow-ups conversational, but it never grants mutation
+/// authority.
 /// </summary>
 public sealed class ZaloAmbientConversationLeaseResolver(VolleyDraftDbContext db)
 {
@@ -27,7 +28,9 @@ public sealed class ZaloAmbientConversationLeaseResolver(VolleyDraftDbContext db
 
         // Keep DateTimeOffset ordering/comparison in memory for SQLite/PostgreSQL
         // parity. The sender/group scope is already bounded by the recent message
-        // history retained by the bot.
+        // history retained by the bot. A successful Social AI reply opens the same
+        // address-only lease as a deterministic Fact/legacy reply; the lease itself
+        // never authorizes a write.
         var rows = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(item => item.ZaloConnectionId == zaloConnectionId &&
@@ -35,7 +38,9 @@ public sealed class ZaloAmbientConversationLeaseResolver(VolleyDraftDbContext db
                            item.SenderId == senderId &&
                            !item.IsFromBot &&
                            item.BotReplySentAt != null &&
-                           (item.ReplyOutcome == "ambient_sent" || item.ReplyOutcome == "sent"))
+                           (item.ReplyOutcome == "ambient_sent" ||
+                            item.ReplyOutcome == "ambient_social_sent" ||
+                            item.ReplyOutcome == "sent"))
             .Select(item => item.BotReplySentAt)
             .ToListAsync(cancellationToken);
 
