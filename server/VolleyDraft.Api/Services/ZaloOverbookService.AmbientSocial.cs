@@ -15,6 +15,18 @@ public sealed partial class ZaloOverbookService
         ZaloAmbientSettings ambientSettings,
         CancellationToken cancellationToken)
     {
+        // A live same-sender lease may continue a pending preview only when the
+        // pending intent itself is in the narrow draft/rebalance confirmation allowlist.
+        // Generic "ok" acknowledgements are deliberately not confirmation authority.
+        if (await TryHandleAmbientLeasePendingContinuationAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         // A live same-sender conversation lease can promote only preview-first draft
         // operations into the existing deterministic bot router. This happens before
         // Social AI and never treats the lease itself as confirmation authority.
@@ -80,6 +92,52 @@ public sealed partial class ZaloOverbookService
             decision,
             social,
             cancellationToken);
+        return true;
+    }
+
+    private async Task<bool> TryHandleAmbientLeasePendingContinuationAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloIncomingMessageEvent incoming,
+        ZaloAmbientSettings ambientSettings,
+        CancellationToken cancellationToken)
+    {
+        if (ambientSettings.ShadowMode || botService is null || incoming.MentionedBot)
+            return false;
+
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+        if (quote.HasQuote && !quote.RepliesToBot) return false;
+
+        var hasLease = await new ZaloAmbientConversationLeaseResolver(db)
+            .IsActiveAsync(connectionId, groupId, senderId, 180, cancellationToken);
+        if (!hasLease) return false;
+
+        var continuation = await new ZaloAmbientLeasePendingContinuationPolicy(db)
+            .TryResolveAsync(connectionId, groupId, senderId, incoming.Content, cancellationToken);
+        if (continuation is null) return false;
+
+        var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
+        if (botId.Length == 0) return false;
+
+        // Only address metadata is promoted. The existing router still owns pending
+        // resolution, operator authorization, revalidation, mutation, action history
+        // and webhook idempotency. The policy above merely proves this exact sender
+        // has an allowed unexpired pending preview and used a strong confirmation/cancel.
+        var promoted = incoming with
+        {
+            MentionedBot = true,
+            Mentions = [new ZaloBridgeMention(botId, 0, 0)]
+        };
+
+        logger.LogInformation(
+            "Ambient lease continued pending preview Group={GroupId} Sender={SenderId} Message={MessageId} PendingIntent={PendingIntent} Cancel={Cancel}",
+            groupId,
+            senderId,
+            incoming.MessageId,
+            continuation.PendingIntent,
+            continuation.IsCancellation);
+        await botService.HandleIncomingAsync(promoted, cancellationToken);
         return true;
     }
 
