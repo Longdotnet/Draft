@@ -34,6 +34,9 @@ public sealed class ZaloBotTraceStore(VolleyDraftDbContext db)
 {
     private static readonly SemaphoreSlim SchemaGate = new(1, 1);
 
+    public Task EnsureReadyAsync(CancellationToken cancellationToken = default) =>
+        EnsureSchemaAsync(cancellationToken);
+
     public async Task<string> WriteAsync(ZaloBotTraceEntry trace, CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -128,6 +131,7 @@ public sealed class ZaloBotTraceStore(VolleyDraftDbContext db)
                 );
                 CREATE INDEX IF NOT EXISTS "IX_ZaloBotTraces_Message" ON "ZaloBotTraces" ("GroupId", "MessageId");
                 CREATE INDEX IF NOT EXISTS "IX_ZaloBotTraces_CreatedAt" ON "ZaloBotTraces" ("CreatedAt");
+                CREATE INDEX IF NOT EXISTS "IX_ZaloBotTraces_AmbientRollout" ON "ZaloBotTraces" ("GroupId", "IntentSource", "CreatedAt");
                 """, cancellationToken);
         }
         finally
