@@ -24,6 +24,7 @@ public sealed partial class ZaloOverbookService
     private readonly AiAssistantService ai;
     private readonly IConfiguration configuration;
     private readonly ILogger<ZaloOverbookService> logger;
+    private readonly ZaloBotService? botService;
     private readonly ZaloOverbookStateStore store;
 
     public ZaloOverbookService(
@@ -33,7 +34,8 @@ public sealed partial class ZaloOverbookService
         ZaloIntegrationService integration,
         AiAssistantService ai,
         IConfiguration configuration,
-        ILogger<ZaloOverbookService> logger)
+        ILogger<ZaloOverbookService> logger,
+        ZaloBotService? botService = null)
     {
         this.db = db;
         this.bridge = bridge;
@@ -42,6 +44,7 @@ public sealed partial class ZaloOverbookService
         this.ai = ai;
         this.configuration = configuration;
         this.logger = logger;
+        this.botService = botService;
         store = new ZaloOverbookStateStore(db);
     }
 
