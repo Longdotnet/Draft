@@ -25,7 +25,9 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         ZaloBotIntent.LocationParking,
         ZaloBotIntent.MissingSlots,
         ZaloBotIntent.UpcomingSessions,
-        ZaloBotIntent.Roster
+        ZaloBotIntent.Roster,
+        ZaloBotIntent.Help,
+        ZaloBotIntent.TeamPreference
     };
 
     public static bool IsAllowedIntent(ZaloBotIntent intent) => AllowedIntents.Contains(intent);
@@ -48,6 +50,19 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         accountId = NormalizeId(accountId);
         groupId = NormalizeId(groupId);
         if (accountId.Length == 0 || groupId.Length == 0) return null;
+
+        if (intent is ZaloBotIntent.Help or ZaloBotIntent.TeamPreference)
+        {
+            var advisor = await new ZaloConversationalAdvisor(db).TryBuildAsync(
+                accountId,
+                groupId,
+                incoming,
+                proposalTtlMinutes: 5,
+                cancellationToken);
+            return advisor is null
+                ? null
+                : new ZaloAmbientFactReply(intent, advisor.Text, advisor.SessionId);
+        }
 
         // Keep stable scalar predicates in SQL, then evaluate/order DateTimeOffset in
         // memory so SQLite and PostgreSQL follow the same semantics. Group session
@@ -91,7 +106,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         }
 
         var session = ResolveSingleSession(incoming.Content, sessions);
-        if (session is null) return null; // Ambient mode stays silent on ambiguity.
+        if (session is null) return null;
 
         var playerCount = session.Players.Count(player => player.IsPresent);
         var capacity = Capacity(session);
@@ -141,9 +156,6 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
             operational.Select(item => new ZaloSessionReference(item.Id, item.Name, item.StartTime)).ToList());
         var matched = operational.Where(item => matchedIds.Contains(item.Id, StringComparer.Ordinal)).ToList();
         if (matched.Count == 1) return matched[0];
-
-        // A group with exactly one current session can safely answer a generic factual
-        // question. Multiple candidates require an explicit day/date/name; stay silent.
         return matched.Count == 0 && operational.Count == 1 ? operational[0] : null;
     }
 
