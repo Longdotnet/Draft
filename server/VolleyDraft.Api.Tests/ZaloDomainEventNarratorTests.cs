@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using VolleyDraft.Api.Services;
 using Xunit;
@@ -81,8 +82,9 @@ public sealed class ZaloDomainEventNarratorTests
         Assert.Equal("sent", result.Reason);
         Assert.Equal("✅ T6 đã đủ 18/18 người theo poll hiện tại.", result.Message);
         Assert.Equal(1, handler.CallCount);
-        Assert.Contains("domain-event:session:RosterFilled:17-18:18", handler.LastBody);
-        Assert.Contains("✅ T6 đã đủ 18/18 người theo poll hiện tại.", handler.LastBody);
+        using var payload = JsonDocument.Parse(handler.LastBody);
+        Assert.Equal("✅ T6 đã đủ 18/18 người theo poll hiện tại.", payload.RootElement.GetProperty("message").GetString());
+        Assert.Equal("domain-event:session:RosterFilled:17-18:18", payload.RootElement.GetProperty("idempotencyKey").GetString());
     }
 
     [Fact]
