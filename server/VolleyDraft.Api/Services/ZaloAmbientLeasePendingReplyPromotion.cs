@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
