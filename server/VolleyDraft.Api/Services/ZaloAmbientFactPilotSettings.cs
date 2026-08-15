@@ -6,5 +6,5 @@ public sealed record ZaloAmbientFactPilotSettings(
 {
     public static ZaloAmbientFactPilotSettings FromConfiguration(IConfiguration configuration) => new(
         Enabled: configuration.GetValue("ZaloBot:Ambient:FactPilot:Enabled", false),
-        MinimumScore: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:FactPilot:MinimumScore", 85), 65, 100));
+        MinimumScore: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:FactPilot:MinimumScore", 60), 60, 100));
 }

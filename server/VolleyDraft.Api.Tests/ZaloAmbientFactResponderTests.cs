@@ -26,7 +26,7 @@ public sealed class ZaloAmbientFactResponderTests
             "g1",
             Incoming("T6 còn bao nhiêu slot?"),
             Decision(ZaloBotIntent.MissingSlots, 95),
-            minimumScore: 85);
+            minimumScore: 60);
 
         Assert.NotNull(reply);
         Assert.Equal(ZaloBotIntent.MissingSlots, reply!.Intent);
@@ -46,7 +46,7 @@ public sealed class ZaloAmbientFactResponderTests
             "g1",
             Incoming("draft lại T6 đi"),
             Decision(ZaloBotIntent.Redraft, 100),
-            minimumScore: 85);
+            minimumScore: 60);
 
         Assert.Null(reply);
         Assert.False(ZaloAmbientFactResponder.IsAllowedIntent(ZaloBotIntent.Redraft));
@@ -70,7 +70,7 @@ public sealed class ZaloAmbientFactResponderTests
             "g1",
             Incoming("T6 còn slot không?"),
             Decision(ZaloBotIntent.MissingSlots, 95),
-            minimumScore: 85);
+            minimumScore: 60);
 
         Assert.Null(reply);
     }
@@ -97,7 +97,7 @@ public sealed class ZaloAmbientFactResponderTests
             "g1",
             Incoming("có kèo nào sắp tới?"),
             Decision(ZaloBotIntent.UpcomingSessions, 90),
-            minimumScore: 85);
+            minimumScore: 60);
 
         Assert.NotNull(reply);
         Assert.Contains("T6", reply!.Text);
@@ -115,10 +115,28 @@ public sealed class ZaloAmbientFactResponderTests
             "bot-account",
             "g1",
             Incoming("T6 còn bao nhiêu slot?"),
-            Decision(ZaloBotIntent.MissingSlots, 80),
-            minimumScore: 85);
+            Decision(ZaloBotIntent.MissingSlots, 59),
+            minimumScore: 60);
 
         Assert.Null(reply);
+    }
+
+    [Fact]
+    public async Task Reply_at_score_60_is_allowed_for_read_only_fact()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var responder = new ZaloAmbientFactResponder(fixture.Db);
+
+        var reply = await responder.TryBuildAsync(
+            "bot-account",
+            "g1",
+            Incoming("T6 còn bao nhiêu slot?"),
+            Decision(ZaloBotIntent.MissingSlots, 60),
+            minimumScore: 60);
+
+        Assert.NotNull(reply);
+        Assert.Equal(ZaloBotIntent.MissingSlots, reply!.Intent);
+        Assert.Equal("session-t6", reply.SessionId);
     }
 
     [Fact]
@@ -126,7 +144,7 @@ public sealed class ZaloAmbientFactResponderTests
     {
         var defaults = ZaloAmbientFactPilotSettings.FromConfiguration(new ConfigurationBuilder().Build());
         Assert.False(defaults.Enabled);
-        Assert.Equal(85, defaults.MinimumScore);
+        Assert.Equal(60, defaults.MinimumScore);
 
         var configured = ZaloAmbientFactPilotSettings.FromConfiguration(
             new ConfigurationBuilder()
@@ -137,7 +155,7 @@ public sealed class ZaloAmbientFactResponderTests
                 })
                 .Build());
         Assert.True(configured.Enabled);
-        Assert.Equal(65, configured.MinimumScore);
+        Assert.Equal(60, configured.MinimumScore);
     }
 
     private static MatchSession Session(

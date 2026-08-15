@@ -13,7 +13,7 @@ public sealed class ZaloAmbientParticipationEngineTests
     private static readonly ZaloAmbientSettings Settings = new(
         Enabled: true,
         ShadowMode: true,
-        WouldReplyThreshold: 65,
+        WouldReplyThreshold: 60,
         RecentWindowMinutes: 5,
         MaxRecentMessages: 40,
         BotCooldownSeconds: 20,
