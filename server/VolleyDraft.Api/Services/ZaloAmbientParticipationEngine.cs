@@ -203,7 +203,14 @@ public static class ZaloAmbientParticipationEngine
             : leaseFactFollowUp || leaseTeamAdvisor ? .96
             : shorthandTeamFeasibility ? .91
             : address.Confidence;
-        return new(decision: false, score, kind, effectiveIntent.ToString(), conversationalReadOnly ? conversationalConfidence : deterministic.Confidence, signals.Distinct(StringComparer.Ordinal).ToArray(), situation) with { WouldReply = wouldReply };
+        return new ZaloAmbientParticipationDecision(
+            wouldReply,
+            score,
+            kind,
+            effectiveIntent.ToString(),
+            conversationalReadOnly ? conversationalConfidence : deterministic.Confidence,
+            signals.Distinct(StringComparer.Ordinal).ToArray(),
+            situation);
     }
 
     private static ZaloBotIntent InferLeaseFactIntent(string normalized)
