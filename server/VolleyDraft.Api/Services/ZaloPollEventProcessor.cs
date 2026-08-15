@@ -55,6 +55,7 @@ public sealed class ZaloPollEventWorker(
                 var bridgeClient = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
                 var domainEventShadow = new ZaloDomainEventShadowObserver(db);
                 var domainNarrator = new ZaloDomainEventNarrator(configuration, bridgeClient);
+                var domainNarrationTelemetry = new ZaloDomainEventNarrationTelemetry(db);
                 var linkedConnectionId = await db.MatchSessions
                     .AsNoTracking()
                     .Where(session =>
@@ -105,6 +106,12 @@ public sealed class ZaloPollEventWorker(
                                     session.Id,
                                     session.Name,
                                     decision,
+                                    stoppingToken);
+                                await domainNarrationTelemetry.RecordAsync(
+                                    groupId,
+                                    session.Id,
+                                    decision,
+                                    narration,
                                     stoppingToken);
                                 if (narration.Eligible && !narration.Sent)
                                     logger.LogDebug(
