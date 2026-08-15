@@ -36,6 +36,10 @@ public sealed record ZaloAmbientSocialReply(
 public sealed class ZaloAmbientSocialResponder
 {
     private const string NoReply = "__NO_REPLY__";
+    private static readonly Regex HumanVocativePattern = new(
+        @"^[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40}\s+oi\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private readonly VolleyDraftDbContext db;
     private readonly IConfiguration configuration;
     private readonly ILogger logger;
@@ -62,6 +66,10 @@ public sealed class ZaloAmbientSocialResponder
         CancellationToken cancellationToken = default)
     {
         if (!settings.Enabled || !IsAiConfigured()) return null;
+
+        var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
+        if (HumanVocativePattern.IsMatch(normalizedIncoming))
+            return null;
 
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
         if (address.Target != ZaloConversationalTarget.Bot || address.Confidence < .9)
