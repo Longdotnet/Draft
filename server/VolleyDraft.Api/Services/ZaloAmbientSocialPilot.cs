@@ -66,6 +66,8 @@ public sealed class ZaloAmbientSocialResponder
         CancellationToken cancellationToken = default)
     {
         if (!settings.Enabled || !IsAiConfigured()) return null;
+        if (decision.Kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Action)
+            return null;
 
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         if (HumanVocativePattern.IsMatch(normalizedIncoming))
