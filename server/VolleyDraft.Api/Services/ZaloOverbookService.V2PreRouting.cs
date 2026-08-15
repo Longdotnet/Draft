@@ -255,12 +255,13 @@ public sealed partial class ZaloOverbookService
 
         var previousAttemptCount = observed.ReplyAttemptCount;
         var processingToken = $"ambient-fact:{Guid.NewGuid():n}";
+        var claimStartedAt = DateTimeOffset.UtcNow;
         var claimed = await db.ZaloGroupMessages
             .Where(item => item.Id == observed.Id &&
                            item.BotReplySentAt == null &&
                            item.ReplyAttemptCount == previousAttemptCount)
             .ExecuteUpdateAsync(update => update
-                .SetProperty(item => item.ProcessingStartedAt, DateTimeOffset.UtcNow)
+                .SetProperty(item => item.ProcessingStartedAt, claimStartedAt)
                 .SetProperty(item => item.ProcessingToken, processingToken)
                 .SetProperty(item => item.ReplyAttemptCount, item => item.ReplyAttemptCount + 1)
                 .SetProperty(item => item.ReplyOutcome, "ambient_processing"), cancellationToken);
@@ -339,13 +340,15 @@ public sealed partial class ZaloOverbookService
 
         try
         {
+            var replySentAt = DateTimeOffset.UtcNow;
+            var selectedIntent = fact.Intent.ToString();
             await db.ZaloGroupMessages
                 .Where(item => item.ZaloConnectionId == connectionId &&
                                item.MessageId == messageId &&
                                item.ProcessingToken == processingToken)
                 .ExecuteUpdateAsync(update => update
-                    .SetProperty(item => item.BotReplySentAt, DateTimeOffset.UtcNow)
-                    .SetProperty(item => item.SelectedIntent, fact.Intent.ToString())
+                    .SetProperty(item => item.BotReplySentAt, replySentAt)
+                    .SetProperty(item => item.SelectedIntent, selectedIntent)
                     .SetProperty(item => item.AiCalled, false)
                     .SetProperty(item => item.ReplyOutcome, "ambient_sent")
                     .SetProperty(item => item.ProcessingToken, (string?)null), cancellationToken);
