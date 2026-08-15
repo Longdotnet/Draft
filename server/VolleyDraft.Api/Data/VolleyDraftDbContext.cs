@@ -3,7 +3,7 @@ using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Data;
 
-public sealed class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> options)
+public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbContext> options)
     : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
