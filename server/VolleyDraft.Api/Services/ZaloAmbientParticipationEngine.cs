@@ -68,6 +68,10 @@ public static class ZaloAmbientParticipationEngine
         @"(?<![a-z0-9])(?:vote|poll|slot|draft|team|doi|roster|danh\s+sach|san|tran|keo|waitlist|cho\s+slot)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex ConversationalTeamFeasibilityPattern = new(
+        @"(?:ban|bot|npc).*(?:xep|lam).*(?:(?:duoc|dc)\s*(?:khong|ko|k)|co\s+the)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly HashSet<string> Acknowledgements = new(StringComparer.Ordinal)
     {
         "ok", "oke", "okay", "uh", "uhm", "um", "roi", "duoc", "chuan", "ngon",
@@ -103,12 +107,17 @@ public static class ZaloAmbientParticipationEngine
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal);
         var capabilityTurn = address.Target == ZaloConversationalTarget.Bot &&
                              address.SpeechAct == ZaloConversationalSpeechAct.AskCapability;
-        var advisorTurn = address.Target == ZaloConversationalTarget.Bot &&
-                          address.SpeechAct is ZaloConversationalSpeechAct.AskFeasibility or
-                              ZaloConversationalSpeechAct.RequestPreview or
-                              ZaloConversationalSpeechAct.ClarificationAnswer or
-                              ZaloConversationalSpeechAct.Confirm or
-                              ZaloConversationalSpeechAct.Cancel;
+
+        var shorthandTeamFeasibility = address.Target != ZaloConversationalTarget.AnotherMember &&
+                                       ZaloNaturalCommandParser.TryParseTeamPreference(content, out _) &&
+                                       ConversationalTeamFeasibilityPattern.IsMatch(normalized);
+        var advisorTurn = shorthandTeamFeasibility ||
+                          (address.Target == ZaloConversationalTarget.Bot &&
+                           address.SpeechAct is ZaloConversationalSpeechAct.AskFeasibility or
+                               ZaloConversationalSpeechAct.RequestPreview or
+                               ZaloConversationalSpeechAct.ClarificationAnswer or
+                               ZaloConversationalSpeechAct.Confirm or
+                               ZaloConversationalSpeechAct.Cancel);
         var conversationalReadOnly = capabilityTurn || advisorTurn;
 
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(content);
@@ -145,7 +154,7 @@ public static class ZaloAmbientParticipationEngine
         {
             score += 75;
             signals.Add(capabilityTurn ? "bot_capability_inquiry" : "conversational_action_advisor");
-            signals.Add(address.Reason);
+            signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
         }
         else if (factIntent)
         {
@@ -209,12 +218,13 @@ public static class ZaloAmbientParticipationEngine
                          kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Social &&
                          score >= settings.WouldReplyThreshold;
 
+        var conversationalConfidence = shorthandTeamFeasibility ? .91 : address.Confidence;
         return new ZaloAmbientParticipationDecision(
             wouldReply,
             score,
             kind,
             effectiveIntent.ToString(),
-            conversationalReadOnly ? address.Confidence : deterministic.Confidence,
+            conversationalReadOnly ? conversationalConfidence : deterministic.Confidence,
             signals.Distinct(StringComparer.Ordinal).ToArray(),
             situation);
     }
