@@ -3,7 +3,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
@@ -29,9 +29,12 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         var handled = await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
 
         Assert.False(handled); // Ambient participation never claims legacy confirmation routing.
-        Assert.Equal(expectedSends, fixture.Bridge.SendCount);
         var stored = await fixture.Db.ZaloGroupMessages.SingleAsync(item =>
             item.ZaloConnectionId == "conn-1" && item.MessageId == incoming.MessageId);
+        var diagnostics = await fixture.DescribeAsync(incoming.MessageId, stored);
+        Assert.True(
+            fixture.Bridge.SendCount == expectedSends,
+            $"Expected {expectedSends} ambient bridge send(s), got {fixture.Bridge.SendCount}. {diagnostics}");
         if (expectedSends == 0)
         {
             Assert.Null(stored.BotReplySentAt);
@@ -55,12 +58,15 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
         await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
 
-        Assert.Equal(1, fixture.Bridge.SendCount);
+        var inbound = await fixture.Db.ZaloGroupMessages.SingleAsync(item =>
+            item.ZaloConnectionId == "conn-1" && item.MessageId == "duplicate-message");
+        var diagnostics = await fixture.DescribeAsync(incoming.MessageId, inbound);
+        Assert.True(
+            fixture.Bridge.SendCount == 1,
+            $"Expected one ambient bridge send across duplicate webhook delivery, got {fixture.Bridge.SendCount}. {diagnostics}");
         Assert.Single(fixture.Bridge.RequestBodies);
         Assert.Contains("ambient-fact:bot-account:duplicate-message", fixture.Bridge.RequestBodies[0]);
 
-        var inbound = await fixture.Db.ZaloGroupMessages.SingleAsync(item =>
-            item.ZaloConnectionId == "conn-1" && item.MessageId == "duplicate-message");
         Assert.NotNull(inbound.BotReplySentAt);
         Assert.Equal("ambient_sent", inbound.ReplyOutcome);
         Assert.Equal(1, inbound.ReplyAttemptCount);
@@ -88,17 +94,20 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
             SqliteConnection connection,
             VolleyDraftDbContext db,
             RecordingBridgeHandler bridge,
+            RecordingLogger<ZaloOverbookService> logger,
             ZaloOverbookService service)
         {
             Connection = connection;
             Db = db;
             Bridge = bridge;
+            Logger = logger;
             Service = service;
         }
 
         public SqliteConnection Connection { get; }
         public VolleyDraftDbContext Db { get; }
         public RecordingBridgeHandler Bridge { get; }
+        public RecordingLogger<ZaloOverbookService> Logger { get; }
         public ZaloOverbookService Service { get; }
 
         public static async Task<Fixture> CreateAsync(bool shadowMode, bool pilotEnabled)
@@ -175,6 +184,7 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
                 BaseAddress = new Uri("https://bridge.test/")
             };
             var bridge = new ZaloBridgeClient(httpClient);
+            var logger = new RecordingLogger<ZaloOverbookService>();
             var service = new ZaloOverbookService(
                 db,
                 bridge,
@@ -182,8 +192,8 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
                 null!,
                 null!,
                 configuration,
-                NullLogger<ZaloOverbookService>.Instance);
-            return new Fixture(connection, db, bridgeHandler, service);
+                logger);
+            return new Fixture(connection, db, bridgeHandler, logger, service);
         }
 
         public ZaloIncomingMessageEvent Incoming(string messageId) => new(
@@ -197,6 +207,38 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
             mentions: [],
             mentionedBot: false,
             sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        public async Task<string> DescribeAsync(string messageId, ZaloGroupMessage stored)
+        {
+            var traces = new List<string>();
+            await using var command = Connection.CreateCommand();
+            command.CommandText = """
+                SELECT "IntentSource", "AddressReason", "Intent", "Confidence", "FallbackReason"
+                FROM "ZaloBotTraces"
+                WHERE "MessageId" = @messageId
+                ORDER BY "CreatedAt";
+                """;
+            command.Parameters.AddWithValue("@messageId", messageId);
+            try
+            {
+                await using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    traces.Add(
+                        $"source={Nullable(reader, 0)},address={Nullable(reader, 1)},intent={Nullable(reader, 2)},confidence={Nullable(reader, 3)},meta={Nullable(reader, 4)}");
+                }
+            }
+            catch (SqliteException exception)
+            {
+                traces.Add($"trace-read-failed:{exception.Message}");
+            }
+
+            return $"Inbound[outcome={stored.ReplyOutcome ?? "null"},attempts={stored.ReplyAttemptCount},token={stored.ProcessingToken ?? "null"},botReplyAt={(stored.BotReplySentAt?.ToString("O") ?? "null")}]; " +
+                   $"Traces=[{string.Join("; ", traces)}]; Logs=[{string.Join(" || ", Logger.Entries)}]";
+        }
+
+        private static string Nullable(SqliteDataReader reader, int ordinal) =>
+            reader.IsDBNull(ordinal) ? "null" : Convert.ToString(reader.GetValue(ordinal)) ?? "null";
 
         public async ValueTask DisposeAsync()
         {
@@ -227,5 +269,27 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json")
         };
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var message = formatter(state, exception);
+            Entries.Add(exception is null
+                ? $"{logLevel}:{message}"
+                : $"{logLevel}:{message} :: {exception.GetType().Name}: {exception.Message}");
+        }
     }
 }
