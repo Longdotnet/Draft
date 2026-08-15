@@ -24,19 +24,17 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
     /// Validates an exact-reply confirmation and promotes the V2 proposal into the
     /// legacy TeamPreferenceConfirm envelope consumed by ZaloBotService in the same
     /// webhook. Returning true means a trusted handoff envelope was created; the
-    /// caller must still return false from V2 pre-routing so the normal atomic bot
-    /// handler consumes the same inbound message and performs the domain write.
+    /// caller must still let the normal bot handler consume this same inbound message.
     /// </summary>
     public async Task<bool> TryPromoteExactReplyConfirmationAsync(
-        string connectionId,
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        var accountId = Clean(incoming.AccountId, 100);
         var groupId = Clean(incoming.GroupId, 100);
         var senderId = Clean(incoming.SenderId, 100);
         var botId = Clean(incoming.BotId, 100);
-        connectionId = Clean(connectionId, 100);
-        if (groupId.Length == 0 || senderId.Length == 0 || botId.Length == 0 || connectionId.Length == 0)
+        if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0 || botId.Length == 0)
             return false;
 
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content);
@@ -47,6 +45,20 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
         if (quotedMessageId.Length == 0 ||
             !string.Equals(quotedSenderId, botId, StringComparison.Ordinal))
             return false;
+
+        // Match the same active connection selection semantics used by V2 pre-routing,
+        // without pushing DateTimeOffset ORDER BY into SQLite.
+        var connectionRows = await db.ZaloConnections
+            .AsNoTracking()
+            .Where(item => item.AccountZaloId == accountId &&
+                           item.MatchSessions.Any(session => session.BotEnabled && session.ZaloGroupId == groupId))
+            .Select(item => new { item.Id, item.UpdatedAt })
+            .ToListAsync(cancellationToken);
+        var connectionId = connectionRows
+            .OrderByDescending(item => item.UpdatedAt)
+            .Select(item => item.Id)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(connectionId)) return false;
 
         var store = new ZaloConversationStateV2Store(db);
         var state = await store.LoadActiveAsync(groupId, senderId, cancellationToken);
