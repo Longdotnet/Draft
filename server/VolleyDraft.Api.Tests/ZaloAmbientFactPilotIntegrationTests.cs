@@ -175,10 +175,10 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
                     ["Zalo:CredentialEncryptionKey"] = "ambient-fact-pilot-test-key",
                     ["ZaloBot:Ambient:Enabled"] = "true",
                     ["ZaloBot:Ambient:ShadowMode"] = shadowMode.ToString(),
-                    ["ZaloBot:Ambient:WouldReplyThreshold"] = "65",
+                    ["ZaloBot:Ambient:WouldReplyThreshold"] = "60",
                     ["ZaloBot:Ambient:BotCooldownSeconds"] = "20",
                     ["ZaloBot:Ambient:FactPilot:Enabled"] = pilotEnabled.ToString(),
-                    ["ZaloBot:Ambient:FactPilot:MinimumScore"] = "85"
+                    ["ZaloBot:Ambient:FactPilot:MinimumScore"] = "60"
                 })
                 .Build();
             var bridgeHandler = new RecordingBridgeHandler();
