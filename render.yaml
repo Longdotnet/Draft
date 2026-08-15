@@ -65,6 +65,22 @@ services:
         value: "0.72"
       - key: ZaloBot__LearnedRuleSimilarityThreshold
         value: "0.82"
+      - key: ZaloBot__Ambient__Enabled
+        value: "true"
+      - key: ZaloBot__Ambient__ShadowMode
+        value: "false"
+      - key: ZaloBot__Ambient__WouldReplyThreshold
+        value: "60"
+      - key: ZaloBot__Ambient__BotCooldownSeconds
+        value: "2"
+      - key: ZaloBot__Ambient__FactPilot__Enabled
+        value: "true"
+      - key: ZaloBot__Ambient__FactPilot__MinimumScore
+        value: "60"
+      - key: ZaloBot__Ambient__SocialPilot__Enabled
+        value: "false"
+      - key: ZaloBot__Ambient__SocialPilot__SendEnabled
+        value: "false"
       - key: ZaloActivitySync__BoardPageSize
         value: "50"
       - key: ZaloActivitySync__MaxBoardPages
