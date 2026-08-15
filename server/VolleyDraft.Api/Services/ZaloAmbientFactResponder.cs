@@ -51,9 +51,6 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         groupId = NormalizeId(groupId);
         if (accountId.Length == 0 || groupId.Length == 0) return null;
 
-        // A short direct call such as "bot ơi", "bot ơi bot", "ê bot" or
-        // "npc ơi" is a deterministic wake-up turn. It is intentionally handled
-        // as Help/read-only so it can never enter a mutation handler.
         if (intent == ZaloBotIntent.Help && ZaloAmbientWakePhrase.IsMatch(incoming.Content))
         {
             return new ZaloAmbientFactReply(
@@ -63,10 +60,6 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
 
         if (intent is ZaloBotIntent.Help or ZaloBotIntent.TeamPreference)
         {
-            // Participation policy already proved this ambient turn is aimed at the bot.
-            // Preserve that addressing fact while the advisor re-classifies the speech act,
-            // including chat shorthand such as "đc/ko" that should not depend on a second
-            // fragile address heuristic.
             var advisorIncoming = incoming with { MentionedBot = true };
             var advisor = await new ZaloConversationalAdvisor(db).TryBuildAsync(
                 accountId,
@@ -74,14 +67,22 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
                 advisorIncoming,
                 proposalTtlMinutes: 5,
                 cancellationToken);
-            return advisor is null
-                ? null
-                : new ZaloAmbientFactReply(intent, advisor.Text, advisor.SessionId);
+            if (advisor is not null)
+                return new ZaloAmbientFactReply(intent, advisor.Text, advisor.SessionId);
+
+            if (intent == ZaloBotIntent.Help)
+            {
+                var name = string.IsNullOrWhiteSpace(incoming.SenderName)
+                    ? "Bạn"
+                    : incoming.SenderName.Trim();
+                return new ZaloAmbientFactReply(
+                    ZaloBotIntent.Help,
+                    $"{name} ơi, được gì á 😄? Nói rõ giúp tui nha — xếp team, coi slot, lịch/sân hay muốn chơi chung với ai?");
+            }
+
+            return null;
         }
 
-        // Keep stable scalar predicates in SQL, then evaluate/order DateTimeOffset in
-        // memory so SQLite and PostgreSQL follow the same semantics. Group session
-        // cardinality is bounded by the bot-enabled group scope before taking 30.
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
             .Include(item => item.ZaloConnection)
