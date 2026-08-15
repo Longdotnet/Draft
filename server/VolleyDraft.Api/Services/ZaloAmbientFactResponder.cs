@@ -22,10 +22,13 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
     private static readonly HashSet<ZaloBotIntent> AllowedIntents = new()
     {
         ZaloBotIntent.SessionSchedule,
+        ZaloBotIntent.SelfMembership,
         ZaloBotIntent.LocationParking,
         ZaloBotIntent.MissingSlots,
         ZaloBotIntent.UpcomingSessions,
         ZaloBotIntent.Roster,
+        ZaloBotIntent.WeeklySessionCount,
+        ZaloBotIntent.WaitlistStatus,
         ZaloBotIntent.Help,
         ZaloBotIntent.TeamPreference
     };
@@ -87,6 +90,8 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
             .AsNoTracking()
             .Include(item => item.ZaloConnection)
             .Include(item => item.Players)
+                .ThenInclude(player => player.PlayerProfile)
+            .Include(item => item.WaitlistEntries)
             .Where(item => item.BotEnabled &&
                            item.ZaloGroupId == groupId &&
                            item.ZaloConnection != null &&
@@ -121,8 +126,17 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
                 "Các kèo sắp tới:\n" + string.Join("\n", lines));
         }
 
+        if (intent == ZaloBotIntent.WeeklySessionCount)
+            return BuildWeeklySessionCountAnswer(sessions);
+
+        if (intent == ZaloBotIntent.SelfMembership)
+            return BuildSelfMembershipAnswer(incoming, sessions);
+
         var session = ResolveSingleSession(incoming.Content, sessions);
         if (session is null) return null;
+
+        if (intent == ZaloBotIntent.WaitlistStatus)
+            return BuildWaitlistStatusAnswer(incoming, session);
 
         var playerCount = session.Players.Count(player => player.IsPresent);
         var capacity = Capacity(session);
@@ -155,6 +169,108 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
             _ => null
         };
     }
+
+    private static ZaloAmbientFactReply BuildWeeklySessionCountAnswer(IReadOnlyList<MatchSession> sessions)
+    {
+        var now = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
+        var monday = now.Date.AddDays(-(((int)now.DayOfWeek + 6) % 7));
+        var nextMonday = monday.AddDays(7);
+        var thisWeek = sessions
+            .Where(session => session.StartTime is not null)
+            .Where(session =>
+            {
+                var local = session.StartTime!.Value.ToOffset(VietnamOffset);
+                return local.Date >= monday && local.Date < nextMonday;
+            })
+            .OrderBy(session => session.StartTime)
+            .ToList();
+
+        if (thisWeek.Count == 0)
+            return new ZaloAmbientFactReply(
+                ZaloBotIntent.WeeklySessionCount,
+                "Tuần này nhóm chưa có kèo nào được cấu hình.");
+
+        var lines = thisWeek.Select(session => $"- {session.Name}: {FormatVietnamTime(session.StartTime!.Value)}");
+        return new ZaloAmbientFactReply(
+            ZaloBotIntent.WeeklySessionCount,
+            $"Tuần này nhóm có {thisWeek.Count} kèo:\n{string.Join("\n", lines)}");
+    }
+
+    private static ZaloAmbientFactReply? BuildSelfMembershipAnswer(
+        ZaloIncomingMessageEvent incoming,
+        IReadOnlyList<MatchSession> sessions)
+    {
+        var senderId = NormalizeId(incoming.SenderId);
+        if (senderId.Length == 0) return null;
+
+        var selected = ResolveSingleSession(incoming.Content, sessions);
+        if (selected is not null)
+        {
+            return new ZaloAmbientFactReply(
+                ZaloBotIntent.SelfMembership,
+                IsSenderPresent(selected, senderId)
+                    ? $"Bạn đang có tên trong {selected.Name}."
+                    : $"Tui chưa thấy bạn trong danh sách {selected.Name}.",
+                selected.Id);
+        }
+
+        var cutoff = DateTimeOffset.UtcNow.AddHours(-4);
+        var upcoming = sessions
+            .Where(session => session.Status != SessionStatus.Finished &&
+                              (session.StartTime is null || session.StartTime >= cutoff))
+            .Take(4)
+            .ToList();
+        if (upcoming.Count == 0) return null;
+
+        var lines = upcoming.Select(session =>
+            $"- {session.Name}: {(IsSenderPresent(session, senderId) ? "đã có tên" : "chưa có tên")}");
+        return new ZaloAmbientFactReply(
+            ZaloBotIntent.SelfMembership,
+            "Trạng thái của bạn ở các kèo sắp tới:\n" + string.Join("\n", lines));
+    }
+
+    private static ZaloAmbientFactReply BuildWaitlistStatusAnswer(
+        ZaloIncomingMessageEvent incoming,
+        MatchSession session)
+    {
+        var active = session.WaitlistEntries
+            .Where(entry => entry.Status is SessionWaitlistStatus.Waiting or SessionWaitlistStatus.Invited)
+            .OrderBy(entry => entry.Status == SessionWaitlistStatus.Invited ? 0 : 1)
+            .ThenBy(entry => entry.CreatedAt)
+            .ToList();
+        if (active.Count == 0)
+        {
+            return new ZaloAmbientFactReply(
+                ZaloBotIntent.WaitlistStatus,
+                $"{session.Name} hiện không có ai trong waitlist.",
+                session.Id);
+        }
+
+        var senderId = NormalizeId(incoming.SenderId);
+        var senderEntry = senderId.Length == 0
+            ? null
+            : active.FirstOrDefault(entry => string.Equals(entry.ZaloUserId, senderId, StringComparison.Ordinal));
+        var prefix = senderEntry switch
+        {
+            { Status: SessionWaitlistStatus.Invited } => "Bạn đang được mời nhận slot. ",
+            { Status: SessionWaitlistStatus.Waiting } =>
+                $"Bạn đang chờ ở vị trí {active.Where(entry => entry.Status == SessionWaitlistStatus.Waiting).TakeWhile(entry => entry.Id != senderEntry.Id).Count() + 1}. ",
+            _ => string.Empty
+        };
+
+        var lines = active.Take(12).Select((entry, index) =>
+            $"{index + 1}. {entry.DisplayName} — {(entry.Status == SessionWaitlistStatus.Invited ? "đã được mời" : "đang chờ")}");
+        return new ZaloAmbientFactReply(
+            ZaloBotIntent.WaitlistStatus,
+            $"{prefix}Waitlist {session.Name} hiện có {active.Count} người:\n{string.Join("\n", lines)}",
+            session.Id);
+    }
+
+    private static bool IsSenderPresent(MatchSession session, string senderZaloUserId) =>
+        session.Players.Any(player =>
+            player.IsPresent &&
+            player.PlayerProfile is not null &&
+            string.Equals(player.PlayerProfile.ZaloUserId, senderZaloUserId, StringComparison.Ordinal));
 
     private static MatchSession? ResolveSingleSession(string question, IReadOnlyList<MatchSession> sessions)
     {
