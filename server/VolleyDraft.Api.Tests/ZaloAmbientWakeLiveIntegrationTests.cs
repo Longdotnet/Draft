@@ -16,7 +16,7 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloAmbientWakeLiveIntegrationTests
 {
     [Fact]
-    public async Task Plain_text_bot_oi_bot_without_mention_sends_exactly_one_live_reply()
+    public async Task Plain_text_wake_opens_same_sender_fact_conversation_without_more_mentions()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -44,19 +44,48 @@ public sealed class ZaloAmbientWakeLiveIntegrationTests
         };
         db.Users.Add(admin);
         db.ZaloConnections.Add(zalo);
-        db.MatchSessions.Add(new MatchSession
-        {
-            Id = "session-1",
-            AdminUserId = admin.Id,
-            ZaloConnectionId = zalo.Id,
-            ZaloConnection = zalo,
-            ZaloGroupId = "g1",
-            Name = "T6",
-            Status = SessionStatus.Setup,
-            BotEnabled = true,
-            TeamCount = 3,
-            TeamSize = 6
-        });
+        db.MatchSessions.AddRange(
+            new MatchSession
+            {
+                Id = "session-t6",
+                AdminUserId = admin.Id,
+                ZaloConnectionId = zalo.Id,
+                ZaloConnection = zalo,
+                ZaloGroupId = "g1",
+                Name = "T6",
+                Status = SessionStatus.Setup,
+                BotEnabled = true,
+                TeamCount = 3,
+                TeamSize = 6
+            },
+            new MatchSession
+            {
+                Id = "session-cn",
+                AdminUserId = admin.Id,
+                ZaloConnectionId = zalo.Id,
+                ZaloConnection = zalo,
+                ZaloGroupId = "g1",
+                Name = "CN",
+                Status = SessionStatus.Setup,
+                BotEnabled = true,
+                TeamCount = 3,
+                TeamSize = 6,
+                Players =
+                {
+                    new SessionPlayer
+                    {
+                        Id = "cn-p1",
+                        DisplayName = "Long",
+                        IsPresent = true
+                    },
+                    new SessionPlayer
+                    {
+                        Id = "cn-p2",
+                        DisplayName = "Nam",
+                        IsPresent = true
+                    }
+                }
+            });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
@@ -89,39 +118,62 @@ public sealed class ZaloAmbientWakeLiveIntegrationTests
             configuration,
             NullLogger<ZaloOverbookService>.Instance);
 
-        var incoming = new ZaloIncomingMessageEvent(
-            accountId: "bot-account",
-            botId: "bot-account",
-            groupId: "g1",
-            messageId: "wake-live-1",
-            senderId: "user-long",
-            senderName: "Long",
-            content: "Bot ơi bot",
-            mentions: [],
-            mentionedBot: false,
-            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-
-        var firstHandled = await service.TryHandleZaloConfirmationAsync(incoming);
-        var secondHandled = await service.TryHandleZaloConfirmationAsync(incoming);
+        var wake = Incoming("wake-live-1", "Bot ơi bot");
+        var firstHandled = await service.TryHandleZaloConfirmationAsync(wake);
+        var duplicateHandled = await service.TryHandleZaloConfirmationAsync(wake);
 
         Assert.False(firstHandled);
-        Assert.False(secondHandled);
+        Assert.False(duplicateHandled);
         Assert.Equal(1, bridgeHandler.SendCount);
-        Assert.Single(bridgeHandler.RequestBodies);
 
-        using var payload = JsonDocument.Parse(bridgeHandler.RequestBodies[0]);
-        var message = payload.RootElement.GetProperty("message").GetString();
-        Assert.Contains("tui đây", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Long", message, StringComparison.OrdinalIgnoreCase);
+        using (var payload = JsonDocument.Parse(bridgeHandler.RequestBodies[0]))
+        {
+            var message = payload.RootElement.GetProperty("message").GetString();
+            Assert.Contains("tui đây", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Long", message, StringComparison.OrdinalIgnoreCase);
+        }
 
-        var inbound = await db.ZaloGroupMessages
+        // Same sender continues naturally without @Npc, question mark or repeating
+        // "bot". The active wake lease makes this elliptical slot turn explicit
+        // conversation context, while the answer still comes only from DB state.
+        var followUp = Incoming("wake-follow-1", "CN còn nhiều slot");
+        var followHandled = await service.TryHandleZaloConfirmationAsync(followUp);
+
+        Assert.False(followHandled);
+        Assert.Equal(2, bridgeHandler.SendCount);
+        Assert.Equal(2, bridgeHandler.RequestBodies.Count);
+        using (var payload = JsonDocument.Parse(bridgeHandler.RequestBodies[1]))
+        {
+            var message = payload.RootElement.GetProperty("message").GetString();
+            Assert.Contains("CN", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("2/18", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("16 slot", message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var wakeInbound = await db.ZaloGroupMessages
             .AsNoTracking()
-            .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == incoming.MessageId);
-        Assert.NotNull(inbound.BotReplySentAt);
-        Assert.Equal("ambient_sent", inbound.ReplyOutcome);
-        Assert.Equal(ZaloBotIntent.Help.ToString(), inbound.SelectedIntent);
-        Assert.False(inbound.AiCalled);
+            .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == wake.MessageId);
+        var followInbound = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == followUp.MessageId);
+        Assert.Equal("ambient_sent", wakeInbound.ReplyOutcome);
+        Assert.Equal(ZaloBotIntent.Help.ToString(), wakeInbound.SelectedIntent);
+        Assert.Equal("ambient_sent", followInbound.ReplyOutcome);
+        Assert.Equal(ZaloBotIntent.MissingSlots.ToString(), followInbound.SelectedIntent);
+        Assert.False(followInbound.AiCalled);
     }
+
+    private static ZaloIncomingMessageEvent Incoming(string messageId, string content) => new(
+        accountId: "bot-account",
+        botId: "bot-account",
+        groupId: "g1",
+        messageId: messageId,
+        senderId: "user-long",
+        senderName: "Long",
+        content: content,
+        mentions: [],
+        mentionedBot: false,
+        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
     private sealed class RecordingBridgeHandler : HttpMessageHandler
     {
@@ -137,7 +189,9 @@ public sealed class ZaloAmbientWakeLiveIntegrationTests
             {
                 SendCount += 1;
                 RequestBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
-                return Json(HttpStatusCode.OK, "{\"sent\":true,\"mock\":false,\"messageId\":\"provider-wake-1\"}");
+                return Json(
+                    HttpStatusCode.OK,
+                    $"{{\"sent\":true,\"mock\":false,\"messageId\":\"provider-wake-{SendCount}\"}}");
             }
 
             return Json(HttpStatusCode.NotFound, "{\"error\":\"unexpected test request\"}");

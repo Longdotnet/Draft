@@ -21,7 +21,8 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
         string zaloConnectionId,
         ZaloIncomingMessageEvent incoming,
         ZaloAmbientSettings settings,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int conversationLeaseSeconds = 180)
     {
         zaloConnectionId = Clean(zaloConnectionId, 100);
         var groupId = Clean(incoming.GroupId, 100);
@@ -31,18 +32,27 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
         await EnsureIncomingObservedAsync(zaloConnectionId, groupId, incoming, cancellationToken);
         var situation = await LoadSituationAsync(zaloConnectionId, groupId, settings, cancellationToken);
 
+        var senderId = Clean(incoming.SenderId, 100);
         var active = await new ZaloConversationStateV2Store(db)
-            .LoadActiveAsync(groupId, Clean(incoming.SenderId, 100), cancellationToken);
+            .LoadActiveAsync(groupId, senderId, cancellationToken);
         var hasActiveProposal = string.Equals(
             active?.Intent,
             "AmbientTeamPreferenceProposal",
             StringComparison.Ordinal);
+        var hasActiveLease = await new ZaloAmbientConversationLeaseResolver(db)
+            .IsActiveAsync(
+                zaloConnectionId,
+                groupId,
+                senderId,
+                conversationLeaseSeconds,
+                cancellationToken);
 
         var decision = ZaloAmbientParticipationEngine.Evaluate(
             incoming,
             situation,
             settings,
-            hasActiveProposal: hasActiveProposal);
+            hasActiveProposal: hasActiveProposal,
+            hasActiveLease: hasActiveLease);
         await WriteTraceOnceAsync(groupId, incoming, decision, cancellationToken);
         return decision;
     }
