@@ -44,6 +44,26 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         // names / approved aliases to metadata-only mentions before routing.
         await TryEnrichLegacyIdentityAsync(groupId, incoming, cancellationToken);
 
+        // An ambient proposal stays read-only until the requester replies to the
+        // exact provider message that presented the latest ready proposal. When that
+        // deterministic confirmation is present, promote only a short-lived legacy
+        // confirmation envelope; return-path remains unhandled so the same inbound
+        // webhook continues into the existing atomic ZaloBotService apply path.
+        try
+        {
+            await new ZaloAmbientTeamPreferenceHandoff(db)
+                .TryPromoteExactReplyConfirmationAsync(incoming, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Proposal handoff is additive. A malformed/stale proposal or graph
+            // lookup problem must never block the explicit legacy router.
+        }
+
         var store = new ZaloUserConceptStore(db);
         if (TryParseCommand(question, out var command))
         {
