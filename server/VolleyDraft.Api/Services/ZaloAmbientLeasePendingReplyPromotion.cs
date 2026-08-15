@@ -1,14 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
-using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
 /// <summary>
 /// Verifies a no-mention reply before it may enter an existing legacy pending-action
 /// handler. Authorization is derived from stable sender/group identity plus an exact
-/// provider message-id match to the bot preview that created the pending action.
+/// provider message-id match to the latest bot preview for the active pending action.
 /// Quoted text is never trusted as authority.
 /// </summary>
 public sealed class ZaloAmbientLeasePendingReplyPromotion(VolleyDraftDbContext db)
@@ -71,16 +70,16 @@ public sealed class ZaloAmbientLeasePendingReplyPromotion(VolleyDraftDbContext d
             })
             .ToListAsync(cancellationToken);
 
-        // The pending state is saved immediately before the preview is sent. Bind to
-        // the latest matching source message whose bot reply was emitted around that
-        // state update. Temporal checks stay in memory for SQLite/PostgreSQL parity.
-        var earliest = pending.UpdatedAt.AddSeconds(-10);
-        var latest = pending.UpdatedAt.AddMinutes(2);
+        // Pending state and provider send are persisted by separate steps, so a tight
+        // UpdatedAt/BotReplySentAt comparison is brittle across SQLite/PostgreSQL
+        // timestamp precision. Instead, the active pending type restricts the source
+        // intent, then the latest successfully replied source is bound by the exact
+        // provider message id from the message graph. An older preview therefore
+        // cannot authorize the newer pending action.
         var source = sourceRows
-            .Where(item => item.BotReplySentAt is { } repliedAt &&
-                           repliedAt >= earliest && repliedAt <= latest &&
-                           item.SelectedIntent is not null &&
-                           sourceIntents.Contains(item.SelectedIntent))
+            .Where(item => item.SelectedIntent is not null &&
+                           sourceIntents.Contains(item.SelectedIntent) &&
+                           item.BotReplySentAt <= now.AddSeconds(10))
             .OrderByDescending(item => item.BotReplySentAt)
             .FirstOrDefault();
         if (source is null) return null;
