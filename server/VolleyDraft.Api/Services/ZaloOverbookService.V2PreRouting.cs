@@ -56,9 +56,14 @@ public sealed partial class ZaloOverbookService
                 incoming.MessageId);
         }
 
-        // V1 already normalizes a verified direct reply to the bot into MentionedBot=true.
-        // Do not learn personal memory or change pending workflows from unrelated chatter.
-        if (!incoming.MentionedBot) return false;
+        // Ambient phase 1 observes ordinary group chatter and records whether the
+        // future participant would have spoken. It never sends and never enters a
+        // mutation handler. Explicit mentions/replies continue through the existing path.
+        if (!incoming.MentionedBot)
+        {
+            await TryObserveAmbientShadowAsync(connection.Id, groupId, incoming, cancellationToken);
+            return false;
+        }
 
         await ShadowAndApplyPendingTopicSwitchAsync(
             accountId,
@@ -150,6 +155,48 @@ public sealed partial class ZaloOverbookService
             cancellationToken);
 
         return true;
+    }
+
+    private async Task TryObserveAmbientShadowAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        var settings = ZaloAmbientSettings.FromConfiguration(configuration);
+        if (!settings.Enabled || !settings.ShadowMode) return;
+
+        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
+        if (senderId.Length == 0 ||
+            (botId.Length > 0 && string.Equals(senderId, botId, StringComparison.Ordinal)))
+            return;
+
+        try
+        {
+            var decision = await new ZaloAmbientObserver(db)
+                .ObserveAsync(connectionId, incoming, settings, cancellationToken);
+            logger.LogDebug(
+                "Ambient shadow Group={GroupId} Message={MessageId} Sender={SenderId} WouldReply={WouldReply} Score={Score} Kind={Kind} Intent={Intent}",
+                groupId,
+                incoming.MessageId,
+                senderId,
+                decision.WouldReply,
+                decision.Score,
+                decision.Kind,
+                decision.Intent);
+        }
+        catch (Exception exception)
+        {
+            // Ambient observation is additive telemetry. A failure here must never
+            // interrupt normal chat ingestion, poll sync, or explicit bot routing.
+            logger.LogWarning(
+                exception,
+                "Ambient shadow observation failed Group={GroupId} Sender={SenderId} Message={MessageId}",
+                groupId,
+                senderId,
+                incoming.MessageId);
+        }
     }
 
     private async Task ShadowAndApplyPendingTopicSwitchAsync(
