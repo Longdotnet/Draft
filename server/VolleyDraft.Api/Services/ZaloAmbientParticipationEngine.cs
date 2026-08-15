@@ -119,6 +119,10 @@ public static class ZaloAmbientParticipationEngine
         var hasDomainWords = DomainPattern.IsMatch(normalized);
         var acknowledgement = IsAcknowledgementOrEmojiOnly(normalized);
         var quote = ZaloQuotedContextResolver.Resolve(incoming, content);
+        var repliesToMember = quote.HasQuote && !quote.RepliesToBot;
+        var botCooldown = settings.BotCooldownSeconds > 0 &&
+                          situation.LastBotMessageAt is { } lastBot &&
+                          current - lastBot < TimeSpan.FromSeconds(settings.BotCooldownSeconds);
 
         var kind = factIntent
             ? ZaloAmbientParticipationKind.Fact
@@ -158,7 +162,7 @@ public static class ZaloAmbientParticipationEngine
             signals.Add("volley_domain_language");
         }
 
-        if (quote.HasQuote && !quote.RepliesToBot)
+        if (repliesToMember)
         {
             score -= 15;
             signals.Add("reply_to_member");
@@ -170,9 +174,7 @@ public static class ZaloAmbientParticipationEngine
             signals.Add("ack_or_emoji_only");
         }
 
-        if (settings.BotCooldownSeconds > 0 &&
-            situation.LastBotMessageAt is { } lastBot &&
-            current - lastBot < TimeSpan.FromSeconds(settings.BotCooldownSeconds))
+        if (botCooldown)
         {
             score -= 30;
             signals.Add("bot_cooldown");
@@ -190,7 +192,8 @@ public static class ZaloAmbientParticipationEngine
         }
 
         score = Math.Clamp(score, 0, 100);
-        var wouldReply = !acknowledgement &&
+        var hardSuppressed = acknowledgement || repliesToMember || botCooldown || actionIntent;
+        var wouldReply = !hardSuppressed &&
                          kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Social &&
                          score >= settings.WouldReplyThreshold;
 
