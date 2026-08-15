@@ -117,6 +117,9 @@ public static class ZaloAmbientParticipationEngine
                                 ZaloConversationalSpeechAct.Cancel));
 
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(content);
+        var naturalReadOnlyTurn = ZaloAmbientReadOnlyNaturalIntentResolver.TryResolve(
+            content,
+            out var naturalReadOnlyIntent);
         var leaseInferredIntent = leaseEligible && deterministic.Intent == ZaloBotIntent.Unknown
             ? InferLeaseFactIntent(normalized)
             : ZaloBotIntent.Unknown;
@@ -124,12 +127,14 @@ public static class ZaloAmbientParticipationEngine
             ? ZaloBotIntent.Help
             : advisorTurn
                 ? ZaloBotIntent.TeamPreference
-                : leaseInferredIntent != ZaloBotIntent.Unknown
-                    ? leaseInferredIntent
-                    : deterministic.Intent;
+                : naturalReadOnlyTurn
+                    ? naturalReadOnlyIntent
+                    : leaseInferredIntent != ZaloBotIntent.Unknown
+                        ? leaseInferredIntent
+                        : deterministic.Intent;
         var leaseFactFollowUp = leaseEligible && IsFactIntent(effectiveIntent);
         var conversationalReadOnly = wakeTurn || capabilityTurn || genericFeasibilityTurn || advisorTurn || leaseFactFollowUp;
-        var factIntent = conversationalReadOnly || IsFactIntent(effectiveIntent);
+        var factIntent = conversationalReadOnly || naturalReadOnlyTurn || IsFactIntent(effectiveIntent);
         var operationalIntent = effectiveIntent is not ZaloBotIntent.Unknown
             and not ZaloBotIntent.GeneralChat
             and not ZaloBotIntent.Help;
@@ -159,6 +164,13 @@ public static class ZaloAmbientParticipationEngine
                 signals.Add("active_conversation_lease");
             else
                 signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
+        }
+        else if (naturalReadOnlyTurn)
+        {
+            // Natural status language is deterministic and read-only, but unlike a
+            // direct bot address it still obeys human-thread/cooldown suppression.
+            score += 70;
+            signals.Add("natural_readonly_status");
         }
         else if (factIntent)
         {
@@ -203,12 +215,17 @@ public static class ZaloAmbientParticipationEngine
             : leaseFactFollowUp || leaseTeamAdvisor ? .96
             : shorthandTeamFeasibility ? .91
             : address.Confidence;
+        var effectiveConfidence = conversationalReadOnly
+            ? conversationalConfidence
+            : naturalReadOnlyTurn
+                ? .95
+                : deterministic.Confidence;
         return new ZaloAmbientParticipationDecision(
             wouldReply,
             score,
             kind,
             effectiveIntent.ToString(),
-            conversationalReadOnly ? conversationalConfidence : deterministic.Confidence,
+            effectiveConfidence,
             signals.Distinct(StringComparer.Ordinal).ToArray(),
             situation);
     }
