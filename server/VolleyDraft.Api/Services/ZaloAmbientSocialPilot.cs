@@ -38,9 +38,15 @@ public sealed record ZaloAmbientSocialReply(
 public sealed class ZaloAmbientSocialResponder
 {
     private const string NoReply = "__NO_REPLY__";
+    private const string CapabilityOverview =
+        "Tui xem lịch/sân, slot/roster, vote/waitlist, draft/cân team, nhắc lịch và hỗ trợ chơi chung team. Đăng ký vẫn theo vote poll; việc đổi dữ liệu tui sẽ hỏi xác nhận.";
+
     private static readonly Regex HumanVocativePattern = new(
         @"^[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40}\s+oi\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex CapabilityQuestionPattern = new(
+        @"(?:(?<![a-z0-9])(?:bot|npc)(?![a-z0-9]).*(?:kha\s+nang|chuc\s+nang|lam\s+duoc\s+gi|giup\s+duoc\s+gi|co\s+the\s+lam\s+gi))|(?:(?:kha\s+nang|chuc\s+nang).*(?:gi|nao))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> AlwaysHardSuppressionSignals = new(StringComparer.Ordinal)
     {
         "ack_or_emoji_only",
@@ -77,7 +83,7 @@ public sealed class ZaloAmbientSocialResponder
         ZaloAmbientSocialPilotSettings settings,
         CancellationToken cancellationToken = default)
     {
-        if (!settings.Enabled || !IsAiConfigured()) return null;
+        if (!settings.Enabled) return null;
 
         var wakeTurn = ZaloAmbientWakePhrase.IsMatch(incoming.Content);
         var leaseTurn = decision.Signals.Contains("lease_social_followup", StringComparer.Ordinal);
@@ -95,6 +101,7 @@ public sealed class ZaloAmbientSocialResponder
             return null;
 
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
+        var capabilityQuestion = CapabilityQuestionPattern.IsMatch(normalizedIncoming);
         // Human vocatives such as "Nam ơi ..." always move the turn away from the
         // bot, including when a lease exists. Wake phrases are the only exception.
         if (!wakeTurn && HumanVocativePattern.IsMatch(normalizedIncoming))
@@ -126,6 +133,19 @@ public sealed class ZaloAmbientSocialResponder
         if (effectiveScore < settings.MinimumScore)
             return null;
 
+        // Capability discovery is deterministic, short and tied to the real product
+        // boundary. Do not ask the LLM to invent this answer: registration remains
+        // poll-authoritative and this avoids incomplete/over-claimed capability text.
+        if (capabilityQuestion)
+        {
+            return new ZaloAmbientSocialReply(
+                CapabilityOverview,
+                effectiveScore,
+                "deterministic_capability_overview");
+        }
+
+        if (!IsAiConfigured()) return null;
+
         var recent = await LoadRecentContextAsync(
             connectionId,
             groupId,
@@ -156,7 +176,7 @@ public sealed class ZaloAmbientSocialResponder
     {
         var text = candidate?.Trim();
         if (string.IsNullOrWhiteSpace(text) ||
-            string.Equals(text, NoReply, StringComparison.Ordinal) ||
+            LooksLikeNoReplySentinel(text) ||
             text.Length > maxReplyChars ||
             text.Count(ch => ch == '\n') > 1)
             return false;
@@ -175,7 +195,7 @@ public sealed class ZaloAmbientSocialResponder
         // merely being playful.
         var unsafeAuthority = Regex.IsMatch(
             normalized,
-            @"(?:da|vua|moi)\s+(?:them|xoa|dang\s*ky|ghi\s*danh|cap\s*nhat|chuyen|doi|xep|draft|vote|luu|ghi\s*nho)|(?:them|xoa|dang\s*ky|ghi\s*danh|cap\s*nhat)\s+(?:xong|roi)",
+            @"(?:da|vua|moi)\s+(?:them|xoa|dang\s*ky|ghi\s+danh|cap\s+nhat|chuyen|doi|xep|draft|vote|luu|ghi\s+nho)|(?:them|xoa|dang\s*ky|ghi\s+danh|cap\s+nhat)\s+(?:xong|roi)",
             RegexOptions.CultureInvariant);
         if (unsafeAuthority) return false;
 
@@ -184,6 +204,21 @@ public sealed class ZaloAmbientSocialResponder
             return false;
 
         return true;
+    }
+
+    internal static bool LooksLikeNoReplySentinel(string? candidate)
+    {
+        var text = candidate?.Trim();
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        if (string.Equals(text, NoReply, StringComparison.OrdinalIgnoreCase)) return true;
+
+        // Some providers/models occasionally truncate the sentinel itself when a
+        // generation hits a token/transport boundary (e.g. "__NO_RE"). Never leak
+        // any sentinel prefix into the Zalo group.
+        return Regex.IsMatch(
+            text,
+            @"^__NO(?:_|$)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private bool IsAiConfigured() =>
@@ -277,7 +312,7 @@ public sealed class ZaloAmbientSocialResponder
         {
             model,
             temperature = 0.75,
-            max_tokens = 120,
+            max_tokens = 160,
             messages = new object[]
             {
                 new { role = "system", content = prompt },
@@ -304,10 +339,22 @@ public sealed class ZaloAmbientSocialResponder
 
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
-            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0 &&
-                choices[0].TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var content))
-                return content.GetString();
+            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+            {
+                var first = choices[0];
+                if (first.TryGetProperty("finish_reason", out var finishReason) &&
+                    finishReason.ValueKind == JsonValueKind.String &&
+                    IsTruncationFinishReason(finishReason.GetString()))
+                {
+                    logger.LogDebug("Ambient social AI candidate suppressed because generation was truncated.");
+                    return null;
+                }
+
+                if (first.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("content", out var content))
+                    return content.GetString();
+            }
+
             return root.TryGetProperty("output_text", out var outputText)
                 ? outputText.GetString()
                 : null;
@@ -318,6 +365,11 @@ public sealed class ZaloAmbientSocialResponder
             return null;
         }
     }
+
+    private static bool IsTruncationFinishReason(string? reason) =>
+        string.Equals(reason, "length", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(reason, "max_tokens", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(reason, "max_output_tokens", StringComparison.OrdinalIgnoreCase);
 
     private static string Trim(string? value, int maxLength)
     {
