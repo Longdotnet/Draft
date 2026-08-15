@@ -96,7 +96,7 @@ public sealed class ZaloAmbientSocialResponder
             return null;
 
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
-        if (HumanVocativePattern.IsMatch(normalizedIncoming))
+        if (!wakeTurn && HumanVocativePattern.IsMatch(normalizedIncoming))
             return null;
 
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
