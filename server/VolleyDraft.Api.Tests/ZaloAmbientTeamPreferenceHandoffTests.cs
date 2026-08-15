@@ -45,6 +45,57 @@ public sealed class ZaloAmbientTeamPreferenceHandoffTests
     }
 
     [Fact]
+    public async Task Canonical_provider_history_flows_directly_into_exact_reply_handoff_without_reconciliation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        const string sourceMessageId = "proposal-source-live";
+        const string providerReplyMessageId = "provider-proposal-live";
+        const string replyText = "Long + To An đều ở roster T6. Reply đúng tin này và xác nhận để áp dụng.";
+
+        await fixture.SaveReadyProposalThroughCanonicalOutboundAsync(
+            "user-long",
+            sourceMessageId,
+            providerReplyMessageId,
+            replyText);
+
+        var storedBotReply = await fixture.Db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item => item.IsFromBot);
+        Assert.Equal(providerReplyMessageId, storedBotReply.MessageId);
+        Assert.Equal("ProviderIdCanonicalized", storedBotReply.ObservationSource);
+        Assert.False(await fixture.Db.ZaloGroupMessages
+            .AsNoTracking()
+            .AnyAsync(item => item.MessageId.StartsWith("bot:")));
+        Assert.Equal(providerReplyMessageId, await new ZaloMessageGraphQuery(fixture.Db)
+            .LoadBotReplyMessageIdAsync("conn-1", "g1", sourceMessageId));
+
+        // The pre-save path does not consume the migration receipt. Its continued
+        // presence proves this test did not call the legacy reconciliation worker.
+        var receipts = await new ZaloOutboundReceiptStore(fixture.Db).LoadRecentAsync();
+        Assert.Contains(receipts, item =>
+            item.ProviderMessageId == providerReplyMessageId &&
+            item.ParentMessageId == sourceMessageId);
+
+        var confirmation = Confirmation(
+            senderId: "user-long",
+            messageId: "confirm-live-provider",
+            quotedMessageId: providerReplyMessageId);
+        var result = await new ZaloMemoryV2Service(fixture.Db)
+            .ProcessAsync("g1", confirmation, confirmation.Content);
+
+        Assert.False(result.Handled);
+        var pending = await fixture.Db.ZaloBotConversationStates.AsNoTracking().SingleAsync();
+        Assert.Equal(ZaloBotIntent.TeamPreferenceConfirm.ToString(), pending.PendingIntent);
+        Assert.StartsWith(
+            "TeamPreference:ExactReply:confirm-live-provider",
+            pending.PreviousCommand,
+            StringComparison.Ordinal);
+        Assert.Null(await new ZaloConversationStateV2Store(fixture.Db)
+            .LoadActiveAsync("g1", "user-long"));
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task Confirmation_replying_to_another_bot_message_does_not_promote()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -265,6 +316,75 @@ public sealed class ZaloAmbientTeamPreferenceHandoffTests
             string sourceMessageId,
             string providerReplyMessageId)
         {
+            await SaveProposalStateAsync(senderId, sourceMessageId);
+            await new ZaloMessageGraphStore(Db).RememberOutboundAsync(
+                "conn-1",
+                "g1",
+                providerReplyMessageId,
+                sourceMessageId);
+        }
+
+        public async Task SaveReadyProposalThroughCanonicalOutboundAsync(
+            string senderId,
+            string sourceMessageId,
+            string providerReplyMessageId,
+            string replyText)
+        {
+            var now = DateTimeOffset.UtcNow;
+            Db.ZaloGroupMessages.Add(new ZaloGroupMessage
+            {
+                ZaloConnectionId = "conn-1",
+                GroupId = "g1",
+                MessageId = sourceMessageId,
+                SenderId = senderId,
+                SenderName = "Long",
+                Content = "T6",
+                MessageType = "chat",
+                ObservationSource = "Realtime",
+                IsFromBot = false,
+                SentAt = now,
+                ReceivedAt = now,
+                FirstObservedAt = now,
+                LastObservedAt = now
+            });
+            await Db.SaveChangesAsync();
+            await SaveProposalStateAsync(senderId, sourceMessageId);
+
+            // These two writes model the real post-provider-success side effects in
+            // ZaloBridgeClient before the legacy bot history row is constructed.
+            await new ZaloOutboundReceiptStore(Db).RememberAsync(
+                "conn-1",
+                "g1",
+                providerReplyMessageId,
+                sourceMessageId,
+                replyText);
+            await new ZaloMessageGraphStore(Db).RememberOutboundAsync(
+                "conn-1",
+                "g1",
+                providerReplyMessageId,
+                sourceMessageId);
+
+            Db.ZaloGroupMessages.Add(new ZaloGroupMessage
+            {
+                ZaloConnectionId = "conn-1",
+                GroupId = "g1",
+                MessageId = "bot:legacy-proposal-guid",
+                SenderId = "bot-account",
+                SenderName = "Volley Bot",
+                Content = replyText,
+                MessageType = "chat",
+                ObservationSource = "Realtime",
+                IsFromBot = true,
+                SentAt = DateTimeOffset.UtcNow,
+                ReceivedAt = DateTimeOffset.UtcNow,
+                FirstObservedAt = DateTimeOffset.UtcNow,
+                LastObservedAt = DateTimeOffset.UtcNow
+            });
+            await Db.SaveChangesAsync();
+        }
+
+        private async Task SaveProposalStateAsync(string senderId, string sourceMessageId)
+        {
             var collected = JsonSerializer.Serialize(new
             {
                 requesterZaloUserId = senderId,
@@ -290,11 +410,6 @@ public sealed class ZaloAmbientTeamPreferenceHandoffTests
                 sourceMessageId,
                 sourceMessageId,
                 DateTimeOffset.UtcNow.AddMinutes(5));
-            await new ZaloMessageGraphStore(Db).RememberOutboundAsync(
-                "conn-1",
-                "g1",
-                providerReplyMessageId,
-                sourceMessageId);
         }
 
         public async ValueTask DisposeAsync()
