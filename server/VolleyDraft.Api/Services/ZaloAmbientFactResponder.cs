@@ -53,10 +53,15 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
 
         if (intent is ZaloBotIntent.Help or ZaloBotIntent.TeamPreference)
         {
+            // Participation policy already proved this ambient turn is aimed at the bot.
+            // Preserve that addressing fact while the advisor re-classifies the speech act,
+            // including chat shorthand such as "đc/ko" that should not depend on a second
+            // fragile address heuristic.
+            var advisorIncoming = incoming with { MentionedBot = true };
             var advisor = await new ZaloConversationalAdvisor(db).TryBuildAsync(
                 accountId,
                 groupId,
-                incoming,
+                advisorIncoming,
                 proposalTtlMinutes: 5,
                 cancellationToken);
             return advisor is null
