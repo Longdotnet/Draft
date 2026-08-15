@@ -51,7 +51,10 @@ public sealed class ZaloPollEventWorker(
                 var overbook = scope.ServiceProvider.GetRequiredService<ZaloOverbookService>();
                 var waitlist = scope.ServiceProvider.GetRequiredService<SessionWaitlistService>();
                 var activityBackfill = scope.ServiceProvider.GetRequiredService<ZaloActivityBackfillCoordinator>();
+                var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+                var bridgeClient = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
                 var domainEventShadow = new ZaloDomainEventShadowObserver(db);
+                var domainNarrator = new ZaloDomainEventNarrator(configuration, bridgeClient);
                 var linkedConnectionId = await db.MatchSessions
                     .AsNoTracking()
                     .Where(session =>
@@ -73,7 +76,7 @@ public sealed class ZaloPollEventWorker(
                                       session.Status != SessionStatus.Cancelled &&
                                       session.Status != SessionStatus.Drafting && session.Status != SessionStatus.Finished &&
                                       session.PollImports.Any())
-                    .Select(session => new { session.Id, session.AdminUserId })
+                    .Select(session => new { session.Id, session.Name, session.AdminUserId })
                     .ToListAsync(stoppingToken);
                 foreach (var session in sessions)
                 {
@@ -88,16 +91,32 @@ public sealed class ZaloPollEventWorker(
                     {
                         try
                         {
-                            await domainEventShadow.ObserveAfterPollSyncAsync(
+                            var decision = await domainEventShadow.ObserveAfterPollSyncAsync(
                                 before,
                                 incoming.ActorId,
                                 incoming.BoardId,
                                 incoming.OccurredAtUnixMs,
                                 stoppingToken);
+                            if (decision is not null)
+                            {
+                                var narration = await domainNarrator.HandleAsync(
+                                    accountId,
+                                    groupId,
+                                    session.Id,
+                                    session.Name,
+                                    decision,
+                                    stoppingToken);
+                                if (narration.Eligible && !narration.Sent)
+                                    logger.LogDebug(
+                                        "Domain event narration suppressed Session={SessionId} Event={EventKind} Reason={Reason}",
+                                        session.Id,
+                                        decision.EventKind,
+                                        narration.Reason);
+                            }
                         }
                         catch (Exception exception)
                         {
-                            logger.LogDebug(exception, "Domain event shadow observation skipped Session={SessionId}", session.Id);
+                            logger.LogDebug(exception, "Domain event shadow/narration skipped Session={SessionId}", session.Id);
                         }
                     }
                     try
