@@ -242,9 +242,9 @@ public sealed partial class ZaloOverbookService
             .SingleOrDefaultAsync(item => item.ZaloConnectionId == connectionId && item.MessageId == messageId, cancellationToken);
         if (observed is null || observed.BotReplySentAt is not null) return;
 
-        // Evaluate lease staleness in memory for SQLite/PostgreSQL parity. The actual
-        // claim compares the exact previously observed token/outcome so concurrent
-        // requests cannot both win without relying on DateTimeOffset SQL comparison.
+        // Evaluate lease staleness in memory for SQLite/PostgreSQL parity. The atomic
+        // claim uses ReplyAttemptCount as a simple non-null concurrency token so two
+        // webhook deliveries cannot both win without nullable SQL equality semantics.
         if (string.Equals(observed.ReplyOutcome, "ambient_processing", StringComparison.Ordinal) &&
             observed.ProcessingStartedAt is { } startedAt &&
             startedAt >= DateTimeOffset.UtcNow.AddMinutes(-2))
@@ -253,14 +253,12 @@ public sealed partial class ZaloOverbookService
             observed.ReplyOutcome is not "ambient_processing" and not "ambient_send_failed")
             return;
 
-        var previousToken = observed.ProcessingToken;
-        var previousOutcome = observed.ReplyOutcome;
+        var previousAttemptCount = observed.ReplyAttemptCount;
         var processingToken = $"ambient-fact:{Guid.NewGuid():n}";
         var claimed = await db.ZaloGroupMessages
             .Where(item => item.Id == observed.Id &&
                            item.BotReplySentAt == null &&
-                           item.ProcessingToken == previousToken &&
-                           item.ReplyOutcome == previousOutcome)
+                           item.ReplyAttemptCount == previousAttemptCount)
             .ExecuteUpdateAsync(update => update
                 .SetProperty(item => item.ProcessingStartedAt, DateTimeOffset.UtcNow)
                 .SetProperty(item => item.ProcessingToken, processingToken)
