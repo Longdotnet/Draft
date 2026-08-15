@@ -32,10 +32,8 @@ public sealed record ZaloAmbientSocialReply(
 /// AI-only social responder for high-confidence bot-directed conversation. It is
 /// deliberately isolated from AiAssistantService.AnswerAsync so ambient AI cannot
 /// write user concepts, consume pending workflows or call domain handlers.
-/// Plain-text wake phrases are allowed through this responder even though the
-/// deterministic participation layer classifies them as read-only Help/Fact turns;
-/// this makes the visible reply AI-first while preserving the deterministic Fact
-/// responder as a fallback when AI is unavailable.
+/// Plain-text wake phrases and same-sender lease follow-ups are allowed through this
+/// responder while domain Facts remain on the authoritative responder path.
 /// </summary>
 public sealed class ZaloAmbientSocialResponder
 {
@@ -82,6 +80,7 @@ public sealed class ZaloAmbientSocialResponder
         if (!settings.Enabled || !IsAiConfigured()) return null;
 
         var wakeTurn = ZaloAmbientWakePhrase.IsMatch(incoming.Content);
+        var leaseTurn = decision.Signals.Contains("lease_social_followup", StringComparer.Ordinal);
         if (decision.Kind == ZaloAmbientParticipationKind.Action)
             return null;
         if (decision.Kind == ZaloAmbientParticipationKind.Fact && !wakeTurn)
@@ -89,20 +88,22 @@ public sealed class ZaloAmbientSocialResponder
 
         if (decision.Signals.Any(AlwaysHardSuppressionSignals.Contains))
             return null;
-        // A deliberate plain-text call such as "bot ơi" is equivalent to the user
-        // actively addressing the bot. Busy-group/cooldown heuristics must not silence
-        // that direct call. They still suppress unsolicited ambient banter.
-        if (!wakeTurn && decision.Signals.Any(AmbientOnlySuppressionSignals.Contains))
+        // A deliberate wake or a same-sender lease continuation is already strong
+        // addressing context. Busy-group/cooldown heuristics must not silence it;
+        // they still suppress unsolicited ambient banter outside a conversation.
+        if (!wakeTurn && !leaseTurn && decision.Signals.Any(AmbientOnlySuppressionSignals.Contains))
             return null;
 
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
+        // Human vocatives such as "Nam ơi ..." always move the turn away from the
+        // bot, including when a lease exists. Wake phrases are the only exception.
         if (!wakeTurn && HumanVocativePattern.IsMatch(normalizedIncoming))
             return null;
 
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
-        if (address.Target != ZaloConversationalTarget.Bot || address.Confidence < .9)
+        if (!leaseTurn && (address.Target != ZaloConversationalTarget.Bot || address.Confidence < .9))
             return null;
-        if (!wakeTurn && address.SpeechAct != ZaloConversationalSpeechAct.Unknown)
+        if (!wakeTurn && !leaseTurn && address.SpeechAct != ZaloConversationalSpeechAct.Unknown)
             return null;
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content ?? string.Empty);
@@ -110,16 +111,18 @@ public sealed class ZaloAmbientSocialResponder
             return null;
 
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(incoming.Content ?? string.Empty);
-        if (!wakeTurn && deterministic.Intent is not (ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat))
+        if (!wakeTurn && !leaseTurn &&
+            deterministic.Intent is not (ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat))
             return null;
 
-        // The generic ambient score was intentionally tuned for Fact precision, so a
-        // direct high-confidence social address may use its address confidence as the
-        // social score. This never upgrades Action/domain Fact intents because they
-        // were rejected above, and authority safety filtering still runs afterward.
-        var effectiveScore = Math.Max(
-            decision.Score,
-            (int)Math.Round(address.Confidence * 100, MidpointRounding.AwayFromZero));
+        // A lease continuation gets its confidence from the already-proven
+        // same-sender/group reply relationship rather than needing another "bot"
+        // token in the text. The engine only emits this signal for non-Fact,
+        // non-Action content.
+        var addressScore = leaseTurn
+            ? 96
+            : (int)Math.Round(address.Confidence * 100, MidpointRounding.AwayFromZero);
+        var effectiveScore = Math.Max(decision.Score, addressScore);
         if (effectiveScore < settings.MinimumScore)
             return null;
 
@@ -134,6 +137,7 @@ public sealed class ZaloAmbientSocialResponder
             recent,
             settings.MaxReplyChars,
             wakeTurn,
+            leaseTurn,
             cancellationToken);
         if (!IsSafeCandidate(candidate, settings.MaxReplyChars))
             return null;
@@ -141,7 +145,11 @@ public sealed class ZaloAmbientSocialResponder
         return new ZaloAmbientSocialReply(
             candidate!.Trim(),
             effectiveScore,
-            wakeTurn ? "plain_text_wake_ai" : address.Reason);
+            wakeTurn
+                ? "plain_text_wake_ai"
+                : leaseTurn
+                    ? "active_conversation_lease_ai"
+                    : address.Reason);
     }
 
     internal static bool IsSafeCandidate(string? candidate, int maxReplyChars)
@@ -232,6 +240,7 @@ public sealed class ZaloAmbientSocialResponder
         IReadOnlyList<SocialContextMessage> recent,
         int maxReplyChars,
         bool wakeTurn,
+        bool leaseTurn,
         CancellationToken cancellationToken)
     {
         var endpoint = configuration["Ai:Endpoint"]!;
@@ -239,7 +248,9 @@ public sealed class ZaloAmbientSocialResponder
         var model = configuration["Ai:Model"]!;
         var mode = wakeTurn
             ? "Người dùng vừa gọi bot bằng chữ thường (không dùng @mention). Hãy đáp lại tự nhiên như một thành viên trong nhóm và mời họ nói tiếp."
-            : "Người dùng đang nói trực tiếp với bot. Hãy đáp lại tự nhiên như một thành viên trong nhóm.";
+            : leaseTurn
+                ? "Đây là câu tiếp theo của chính người dùng trong một cuộc trò chuyện vừa được bot trả lời. Hãy tiếp tục tự nhiên, không bắt họ gọi lại bot hay @mention."
+                : "Người dùng đang nói trực tiếp với bot. Hãy đáp lại tự nhiên như một thành viên trong nhóm.";
         var prompt = $"""
             Bạn là chế độ SOCIAL-ONLY của bot trong nhóm bóng chuyền. {mode}
 

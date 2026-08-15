@@ -139,6 +139,9 @@ public static class ZaloAmbientParticipationEngine
             and not ZaloBotIntent.GeneralChat
             and not ZaloBotIntent.Help;
         var actionIntent = operationalIntent && !factIntent;
+        var leaseSocialFollowUp = leaseEligible && !actionIntent && !factIntent &&
+                                  effectiveIntent is (ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat);
+        var directConversationalTurn = conversationalReadOnly || leaseSocialFollowUp;
         var question = QuestionPattern.IsMatch(normalized);
         var hasSession = SessionPattern.IsMatch(normalized);
         var hasDomainWords = DomainPattern.IsMatch(normalized);
@@ -148,7 +151,7 @@ public static class ZaloAmbientParticipationEngine
 
         var kind = factIntent ? ZaloAmbientParticipationKind.Fact
             : actionIntent ? ZaloAmbientParticipationKind.Action
-            : question ? ZaloAmbientParticipationKind.Social
+            : leaseSocialFollowUp || question ? ZaloAmbientParticipationKind.Social
             : ZaloAmbientParticipationKind.None;
 
         var score = 0;
@@ -164,6 +167,16 @@ public static class ZaloAmbientParticipationEngine
                 signals.Add("active_conversation_lease");
             else
                 signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
+        }
+        else if (leaseSocialFollowUp)
+        {
+            // A recent successful reply to this exact sender in this exact group is
+            // enough addressing context for natural conversation. It does not grant
+            // domain authority: Action was rejected above and Fact stays on the
+            // authoritative responder path.
+            score += 90;
+            signals.Add("active_conversation_lease");
+            signals.Add("lease_social_followup");
         }
         else if (naturalReadOnlyTurn)
         {
@@ -187,12 +200,12 @@ public static class ZaloAmbientParticipationEngine
         if (question) { score += 25; signals.Add("question"); }
         if (hasSession) { score += 15; signals.Add("session_reference"); }
         if (hasDomainWords) { score += 15; signals.Add("volley_domain_language"); }
-        if (repliesToMember) { score -= conversationalReadOnly ? 0 : 15; signals.Add("reply_to_member"); }
+        if (repliesToMember) { score -= directConversationalTurn ? 0 : 15; signals.Add("reply_to_member"); }
         if (acknowledgement) { score -= 60; signals.Add("ack_or_emoji_only"); }
-        if (botCooldown) { score -= conversationalReadOnly ? 0 : 30; signals.Add("bot_cooldown"); }
+        if (botCooldown) { score -= directConversationalTurn ? 0 : 30; signals.Add("bot_cooldown"); }
         if (situation.RecentTwoMinuteMessageCount >= settings.BusyGroupMessagesPerTwoMinutes)
         {
-            score -= conversationalReadOnly ? 0 : 20;
+            score -= directConversationalTurn ? 0 : 20;
             signals.Add("busy_group");
         }
         else if (situation.RecentTwoMinuteMessageCount <= 2)
@@ -203,8 +216,8 @@ public static class ZaloAmbientParticipationEngine
 
         score = Math.Clamp(score, 0, 100);
         var hardSuppressed = acknowledgement ||
-                             (repliesToMember && !conversationalReadOnly) ||
-                             (botCooldown && !conversationalReadOnly) ||
+                             (repliesToMember && !directConversationalTurn) ||
+                             (botCooldown && !directConversationalTurn) ||
                              actionIntent;
         var wouldReply = !hardSuppressed &&
                          kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Social &&
@@ -212,10 +225,10 @@ public static class ZaloAmbientParticipationEngine
 
         var conversationalConfidence = wakeTurn ? .99
             : genericFeasibilityTurn ? .97
-            : leaseFactFollowUp || leaseTeamAdvisor ? .96
+            : leaseFactFollowUp || leaseTeamAdvisor || leaseSocialFollowUp ? .96
             : shorthandTeamFeasibility ? .91
             : address.Confidence;
-        var effectiveConfidence = conversationalReadOnly
+        var effectiveConfidence = directConversationalTurn
             ? conversationalConfidence
             : naturalReadOnlyTurn
                 ? .95

@@ -59,6 +59,48 @@ public sealed class ZaloAmbientWakeAiTests
     }
 
     [Fact]
+    public async Task Same_sender_lease_continues_social_ai_without_bot_keyword_or_mention()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var handler = new StaticAiHandler("Nói chứ, tui đang nghe nè 😄");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            db,
+            AiConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var incoming = Message("lease-ai-1", "nói chuyện tí coi");
+        var decision = new ZaloAmbientParticipationDecision(
+            WouldReply: true,
+            Score: 90,
+            Kind: ZaloAmbientParticipationKind.Social,
+            Intent: ZaloBotIntent.Unknown.ToString(),
+            IntentConfidence: .96,
+            Signals: ["active_conversation_lease", "lease_social_followup", "bot_cooldown"],
+            Situation: Situation("lease-ai-1"));
+
+        var reply = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            incoming,
+            decision,
+            new ZaloAmbientSocialPilotSettings(true, true, 90, 8, 180));
+
+        Assert.NotNull(reply);
+        Assert.Equal("Nói chứ, tui đang nghe nè 😄", reply!.Text);
+        Assert.Equal("active_conversation_lease_ai", reply.AddressReason);
+        Assert.True(reply.EffectiveScore >= 90);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
     public async Task Real_domain_fact_never_uses_social_ai()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

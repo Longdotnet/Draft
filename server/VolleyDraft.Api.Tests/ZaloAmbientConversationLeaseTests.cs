@@ -31,6 +31,16 @@ public sealed class ZaloAmbientConversationLeaseTests
     }
 
     [Fact]
+    public async Task Social_ai_reply_opens_the_same_sender_conversation_lease()
+    {
+        await using var fixture = await Fixture.CreateAsync(replyOutcome: "ambient_social_sent");
+        var resolver = new ZaloAmbientConversationLeaseResolver(fixture.Db);
+
+        Assert.True(await resolver.IsActiveAsync("conn-1", "g1", "user-long", 180));
+        Assert.False(await resolver.IsActiveAsync("conn-1", "g1", "user-nam", 180));
+    }
+
+    [Fact]
     public async Task Expired_reply_does_not_keep_the_lease_open()
     {
         await using var fixture = await Fixture.CreateAsync(replyAge: TimeSpan.FromMinutes(4));
@@ -55,6 +65,44 @@ public sealed class ZaloAmbientConversationLeaseTests
         Assert.Equal(ZaloBotIntent.MissingSlots.ToString(), decision.Intent);
         Assert.Contains("active_conversation_lease", decision.Signals);
         Assert.Contains("lease_inferred_fact_intent", decision.Signals);
+    }
+
+    [Fact]
+    public void Same_sender_lease_turns_plain_social_followup_into_ai_candidate_without_bot_keyword()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var decision = ZaloAmbientParticipationEngine.Evaluate(
+            Incoming("follow-social", "nói chuyện tí coi"),
+            Situation(now.AddSeconds(-1)),
+            Settings,
+            now,
+            hasActiveLease: true);
+
+        Assert.True(decision.WouldReply);
+        Assert.Equal(ZaloAmbientParticipationKind.Social, decision.Kind);
+        Assert.Contains(decision.Intent, new[]
+        {
+            ZaloBotIntent.Unknown.ToString(),
+            ZaloBotIntent.GeneralChat.ToString()
+        });
+        Assert.Contains("active_conversation_lease", decision.Signals);
+        Assert.Contains("lease_social_followup", decision.Signals);
+        Assert.Contains("bot_cooldown", decision.Signals);
+        Assert.True(decision.Score >= 90);
+    }
+
+    [Fact]
+    public void Same_sender_lease_does_not_steal_a_human_vocative_thread()
+    {
+        var decision = ZaloAmbientParticipationEngine.Evaluate(
+            Incoming("human-follow", "Nam ơi đi ăn không"),
+            Situation(DateTimeOffset.UtcNow.AddSeconds(-1)),
+            Settings,
+            DateTimeOffset.UtcNow,
+            hasActiveLease: true);
+
+        Assert.False(decision.WouldReply);
+        Assert.DoesNotContain("lease_social_followup", decision.Signals);
     }
 
     [Fact]
@@ -114,7 +162,9 @@ public sealed class ZaloAmbientConversationLeaseTests
         public SqliteConnection Connection { get; }
         public VolleyDraftDbContext Db { get; }
 
-        public static async Task<Fixture> CreateAsync(TimeSpan? replyAge = null)
+        public static async Task<Fixture> CreateAsync(
+            TimeSpan? replyAge = null,
+            string replyOutcome = "ambient_sent")
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -154,7 +204,7 @@ public sealed class ZaloAmbientConversationLeaseTests
                 Content = "Bot ơi",
                 SentAt = DateTimeOffset.UtcNow.Subtract(replyAge ?? TimeSpan.FromSeconds(10)),
                 BotReplySentAt = DateTimeOffset.UtcNow.Subtract(replyAge ?? TimeSpan.FromSeconds(10)),
-                ReplyOutcome = "ambient_sent",
+                ReplyOutcome = replyOutcome,
                 IsFromBot = false
             });
             await db.SaveChangesAsync();
