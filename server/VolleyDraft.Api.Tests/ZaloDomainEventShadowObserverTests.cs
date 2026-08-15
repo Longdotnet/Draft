@@ -15,7 +15,9 @@ public sealed class ZaloDomainEventShadowObserverTests
     {
         await using var fixture = await Fixture.CreateAsync("filled", teamSize: 2, presentPlayers: 1);
         var observer = new ZaloDomainEventShadowObserver(fixture.Db);
-        var before = Assert.NotNull(await observer.CaptureAsync(fixture.SessionId));
+        var captured = await observer.CaptureAsync(fixture.SessionId);
+        Assert.NotNull(captured);
+        var before = captured!;
 
         fixture.Db.SessionPlayers.Add(Player("p2", fixture.SessionId, true));
         await fixture.Db.SaveChangesAsync();
@@ -48,7 +50,9 @@ public sealed class ZaloDomainEventShadowObserverTests
     {
         await using var fixture = await Fixture.CreateAsync("unchanged", teamSize: 3, presentPlayers: 2);
         var observer = new ZaloDomainEventShadowObserver(fixture.Db);
-        var before = Assert.NotNull(await observer.CaptureAsync(fixture.SessionId));
+        var captured = await observer.CaptureAsync(fixture.SessionId);
+        Assert.NotNull(captured);
+        var before = captured!;
 
         var result = await observer.ObserveAfterPollSyncAsync(
             before,
@@ -65,7 +69,9 @@ public sealed class ZaloDomainEventShadowObserverTests
     {
         await using var fixture = await Fixture.CreateAsync("reopened", teamSize: 2, presentPlayers: 2);
         var observer = new ZaloDomainEventShadowObserver(fixture.Db);
-        var before = Assert.NotNull(await observer.CaptureAsync(fixture.SessionId));
+        var captured = await observer.CaptureAsync(fixture.SessionId);
+        Assert.NotNull(captured);
+        var before = captured!;
 
         var player = await fixture.Db.SessionPlayers.OrderBy(item => item.Id).FirstAsync();
         player.IsPresent = false;
