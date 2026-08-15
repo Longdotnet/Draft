@@ -49,9 +49,10 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         groupId = NormalizeId(groupId);
         if (accountId.Length == 0 || groupId.Length == 0) return null;
 
-        // Only read current domain state. Do not query conversation pending state,
-        // action history commands, learned rules or AI memory from this path.
-        var sessions = await db.MatchSessions
+        // Keep stable scalar predicates in SQL, then evaluate/order DateTimeOffset in
+        // memory so SQLite and PostgreSQL follow the same semantics. Group session
+        // cardinality is bounded by the bot-enabled group scope before taking 30.
+        var sessionRows = await db.MatchSessions
             .AsNoTracking()
             .Include(item => item.ZaloConnection)
             .Include(item => item.Players)
@@ -60,10 +61,12 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
                            item.ZaloConnection != null &&
                            item.ZaloConnection.AccountZaloId == accountId &&
                            item.Status != SessionStatus.Cancelled)
-            .OrderBy(item => item.StartTime ?? DateTimeOffset.MaxValue)
-            .ThenBy(item => item.Name)
-            .Take(30)
             .ToListAsync(cancellationToken);
+        var sessions = sessionRows
+            .OrderBy(item => item.StartTime ?? DateTimeOffset.MaxValue)
+            .ThenBy(item => item.Name, StringComparer.Ordinal)
+            .Take(30)
+            .ToList();
         if (sessions.Count == 0) return null;
 
         if (intent == ZaloBotIntent.UpcomingSessions)
