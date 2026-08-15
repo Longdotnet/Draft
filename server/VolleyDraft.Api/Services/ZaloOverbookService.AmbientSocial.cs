@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 
@@ -102,29 +101,8 @@ public sealed partial class ZaloOverbookService
             .IsActiveAsync(connectionId, groupId, senderId, 180, cancellationToken);
         if (!hasLease) return false;
 
-        var content = incoming.Content ?? string.Empty;
-        var normalized = ZaloBotIntelligence.Normalize(content);
-        var deterministic = ZaloBotIntelligence.ClassifyDeterministically(content).Intent;
-        var promotedIntent = deterministic;
-        var promotedContent = content;
-
-        // Natural shorthand like "xếp team T6" is an AutoDraft preview request even
-        // though the legacy deterministic parser historically expected "auto draft"
-        // or "chia team tự động". We normalize only inside an already-active lease.
-        if (promotedIntent == ZaloBotIntent.Unknown &&
-            Regex.IsMatch(
-                normalized,
-                @"(?<![a-z0-9])(?:xep|chia)\s+(?:team|doi)(?![a-z0-9])|(?<![a-z0-9])draft(?![a-z0-9])",
-                RegexOptions.CultureInvariant))
-        {
-            promotedIntent = ZaloBotIntent.AutoDraft;
-            promotedContent = $"auto draft {content}";
-        }
-
-        if (promotedIntent is not (ZaloBotIntent.AutoDraft or
-            ZaloBotIntent.Redraft or
-            ZaloBotIntent.RebalanceTeams))
-            return false;
+        var promotion = ZaloAmbientLeaseActionPromotionPolicy.TryCreate(incoming.Content);
+        if (promotion is null) return false;
 
         var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
         if (botId.Length == 0) return false;
@@ -136,7 +114,7 @@ public sealed partial class ZaloOverbookService
         // it does not fabricate a confirmation turn.
         var promoted = incoming with
         {
-            Content = promotedContent,
+            Content = promotion.PromotedContent,
             MentionedBot = true,
             Mentions = [new ZaloBridgeMention(botId, 0, 0)]
         };
@@ -146,7 +124,7 @@ public sealed partial class ZaloOverbookService
             groupId,
             senderId,
             incoming.MessageId,
-            promotedIntent);
+            promotion.Intent);
         await botService.HandleIncomingAsync(promoted, cancellationToken);
         return true;
     }
