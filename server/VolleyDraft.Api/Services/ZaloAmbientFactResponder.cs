@@ -285,20 +285,31 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         string question,
         IReadOnlyList<MatchSession> sessions)
     {
-        var normalized = $" {ZaloBotIntelligence.Normalize(question)} ";
-        if (normalized.Trim().Length == 0) return null;
+        static string NormalizeWords(string value)
+        {
+            var normalized = ZaloBotIntelligence.Normalize(value);
+            return new string(normalized
+                .Select(character => char.IsLetterOrDigit(character) ? character : ' ')
+                .ToArray())
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Aggregate(string.Empty, (current, word) => current.Length == 0 ? word : $"{current} {word}");
+        }
+
+        var normalized = NormalizeWords(question);
+        if (normalized.Length == 0) return null;
+        var padded = $" {normalized} ";
 
         var explicitByName = sessions.Any(session =>
         {
-            var name = ZaloBotIntelligence.Normalize(session.Name);
-            return name.Length > 0 && normalized.Contains($" {name} ", StringComparison.Ordinal);
+            var name = NormalizeWords(session.Name);
+            return name.Length > 0 && padded.Contains($" {name} ", StringComparison.Ordinal);
         });
         var dayTokens = new[]
         {
             "t2", "t3", "t4", "t5", "t6", "t7", "cn",
             "thu 2", "thu 3", "thu 4", "thu 5", "thu 6", "thu 7", "chu nhat"
         };
-        var explicitDay = dayTokens.Any(token => normalized.Contains($" {token} ", StringComparison.Ordinal));
+        var explicitDay = dayTokens.Any(token => padded.Contains($" {token} ", StringComparison.Ordinal));
         if (!explicitByName && !explicitDay) return null;
 
         return ResolveSingleSession(question, sessions);
