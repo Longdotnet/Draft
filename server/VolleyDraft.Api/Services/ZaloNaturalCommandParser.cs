@@ -244,11 +244,46 @@ public static class ZaloNaturalCommandParser
         IReadOnlyList<ZaloMentionedUser> mentionedUsers,
         ZaloTeamPreferenceCommand? currentCommand)
     {
-        if (mentionedUsers.Count is < 2 or > 12) return currentCommand;
-        return new ZaloTeamPreferenceCommand(
-            mentionedUsers.Select(user => user.DisplayName.Trim().TrimStart('@')).ToList(),
-            mentionedUsers.Select(user => user.ZaloUserId).ToList(),
-            currentCommand?.SessionReference);
+        if (mentionedUsers.Count is < 1 or > 12) return currentCommand;
+
+        if (mentionedUsers.Count >= 2)
+        {
+            return new ZaloTeamPreferenceCommand(
+                mentionedUsers.Select(user => user.DisplayName.Trim().TrimStart('@')).ToList(),
+                mentionedUsers.Select(user => user.ZaloUserId).ToList(),
+                currentCommand?.SessionReference);
+        }
+
+        if (currentCommand is null || currentCommand.PlayerReferences.Count < 2)
+            return currentCommand;
+
+        var mention = mentionedUsers[0];
+        var mentionName = mention.DisplayName.Trim().TrimStart('@');
+        if (mentionName.Length == 0 || string.IsNullOrWhiteSpace(mention.ZaloUserId))
+            return currentCommand;
+
+        var matchingIndexes = currentCommand.PlayerReferences
+            .Select((reference, index) => new { Reference = reference, Index = index })
+            .Where(item => SamePersonReference(item.Reference, mentionName))
+            .Select(item => item.Index)
+            .ToList();
+        if (matchingIndexes.Count != 1) return currentCommand;
+
+        var references = currentCommand.PlayerReferences.ToList();
+        references[matchingIndexes[0]] = mentionName;
+        var ids = Enumerable.Repeat<string?>(null, references.Count).ToList();
+        if (currentCommand.PlayerZaloUserIds is { Count: > 0 })
+        {
+            for (var index = 0; index < Math.Min(ids.Count, currentCommand.PlayerZaloUserIds.Count); index += 1)
+                ids[index] = currentCommand.PlayerZaloUserIds[index];
+        }
+        ids[matchingIndexes[0]] = mention.ZaloUserId;
+
+        return currentCommand with
+        {
+            PlayerReferences = references,
+            PlayerZaloUserIds = ids
+        };
     }
 
     public static bool TryParseShareSlot(string question, out ZaloShareSlotCommand command)
