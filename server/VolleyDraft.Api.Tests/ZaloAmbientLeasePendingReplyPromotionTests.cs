@@ -16,6 +16,28 @@ public sealed class ZaloAmbientLeasePendingReplyPromotionTests
         await using var fixture = await Fixture.CreateAsync();
         var incoming = fixture.Incoming("confirm-1", "xác nhận", "provider-preview-1", "user-long");
 
+        Assert.True(ZaloAmbientLeasePendingReplyPromotion.IsExplicitPendingReply(incoming.Content));
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+        Assert.True(quote.RepliesToBot);
+        Assert.Equal("provider-preview-1", quote.MessageId);
+
+        var pending = await fixture.Db.ZaloBotConversationStates
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == "pending-1");
+        Assert.Equal("user-long", pending.SenderZaloUserId);
+        Assert.Equal(ZaloBotIntent.AutoDraftConfirm.ToString(), pending.PendingIntent);
+        Assert.True(pending.ExpiresAt > DateTimeOffset.UtcNow);
+
+        var source = await fixture.Db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == "source-row-1");
+        Assert.Equal(ZaloBotIntent.AutoDraft.ToString(), source.SelectedIntent);
+        Assert.NotNull(source.BotReplySentAt);
+
+        var providerReplyId = await new ZaloMessageGraphQuery(fixture.Db)
+            .LoadBotReplyMessageIdAsync("conn-1", "g1", "draft-request-1");
+        Assert.Equal("provider-preview-1", providerReplyId);
+
         var promoted = await new ZaloAmbientLeasePendingReplyPromotion(fixture.Db)
             .TryPromoteAsync("conn-1", "g1", incoming);
 
