@@ -51,6 +51,7 @@ public sealed class ZaloPollEventWorker(
                 var overbook = scope.ServiceProvider.GetRequiredService<ZaloOverbookService>();
                 var waitlist = scope.ServiceProvider.GetRequiredService<SessionWaitlistService>();
                 var activityBackfill = scope.ServiceProvider.GetRequiredService<ZaloActivityBackfillCoordinator>();
+                var domainEventShadow = new ZaloDomainEventShadowObserver(db);
                 var linkedConnectionId = await db.MatchSessions
                     .AsNoTracking()
                     .Where(session =>
@@ -76,11 +77,28 @@ public sealed class ZaloPollEventWorker(
                     .ToListAsync(stoppingToken);
                 foreach (var session in sessions)
                 {
+                    var before = await domainEventShadow.CaptureAsync(session.Id, stoppingToken);
                     var result = await integration.SyncLatestPollAsync(session.AdminUserId, session.Id);
                     if (!result.IsSuccess)
                     {
                         logger.LogDebug("Poll event sync skipped Session={SessionId}: {Reason}", session.Id, result.Error);
                         continue;
+                    }
+                    if (before is not null)
+                    {
+                        try
+                        {
+                            await domainEventShadow.ObserveAfterPollSyncAsync(
+                                before,
+                                incoming.ActorId,
+                                incoming.BoardId,
+                                incoming.OccurredAtUnixMs,
+                                stoppingToken);
+                        }
+                        catch (Exception exception)
+                        {
+                            logger.LogDebug(exception, "Domain event shadow observation skipped Session={SessionId}", session.Id);
+                        }
                     }
                     try
                     {
