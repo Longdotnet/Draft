@@ -238,7 +238,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         ZaloIncomingMessageEvent incoming,
         IReadOnlyList<MatchSession> sessions)
     {
-        var selected = ResolveSingleSession(incoming.Content, sessions);
+        var selected = ResolveExplicitReminderSession(incoming.Content, sessions);
         if (selected is not null)
         {
             var enabled = selected.ReminderSchedules
@@ -279,6 +279,29 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         return new ZaloAmbientFactReply(
             ZaloBotIntent.ReminderStatus,
             "Các lịch nhắc đang bật:\n" + string.Join("\n", summary));
+    }
+
+    private static MatchSession? ResolveExplicitReminderSession(
+        string question,
+        IReadOnlyList<MatchSession> sessions)
+    {
+        var normalized = $" {ZaloBotIntelligence.Normalize(question)} ";
+        if (normalized.Trim().Length == 0) return null;
+
+        var explicitByName = sessions.Any(session =>
+        {
+            var name = ZaloBotIntelligence.Normalize(session.Name);
+            return name.Length > 0 && normalized.Contains($" {name} ", StringComparison.Ordinal);
+        });
+        var dayTokens = new[]
+        {
+            "t2", "t3", "t4", "t5", "t6", "t7", "cn",
+            "thu 2", "thu 3", "thu 4", "thu 5", "thu 6", "thu 7", "chu nhat"
+        };
+        var explicitDay = dayTokens.Any(token => normalized.Contains($" {token} ", StringComparison.Ordinal));
+        if (!explicitByName && !explicitDay) return null;
+
+        return ResolveSingleSession(question, sessions);
     }
 
     private static string FormatReminderSchedule(ZaloReminderSchedule schedule, bool includeBullet = true)
