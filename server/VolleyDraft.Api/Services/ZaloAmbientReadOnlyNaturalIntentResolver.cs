@@ -13,6 +13,12 @@ public static class ZaloAmbientReadOnlyNaturalIntentResolver
         @"(?:\?|hien\s+sao|ra\s+sao(?:\s+roi)?|sao\s+roi|the\s+nao|xong\s+chua|co\s+chua|con\s+ai|dang\s+sao|dang\s+the\s+nao)[.!?]*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    // A question mark alone must never downgrade an imperative/action into a read-only
+    // status query. These verbs remain owned by the preview/confirmation action path.
+    private static readonly Regex MutationLanguage = new(
+        @"(?<![a-z0-9])(?:xep|draft(?:\s+lai)?|redraft|can\s+bang|rebalance|chia\s+lai)(?![a-z0-9])|(?:chia\s+(?:team|doi).*(?:\bdi\b|\bnha\b|\bnhe\b|\bluon\b))",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex TeamLanguage = new(
         @"(?<![a-z0-9])(?:team|doi|doi\s+hinh|chia\s+doi|chia\s+team)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -29,7 +35,9 @@ public static class ZaloAmbientReadOnlyNaturalIntentResolver
     {
         intent = ZaloBotIntent.Unknown;
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
-        if (normalized.Length == 0 || !ReadOnlyStatusEnding.IsMatch(normalized))
+        if (normalized.Length == 0 ||
+            MutationLanguage.IsMatch(normalized) ||
+            !ReadOnlyStatusEnding.IsMatch(normalized))
             return false;
 
         if (ReminderLanguage.IsMatch(normalized))
