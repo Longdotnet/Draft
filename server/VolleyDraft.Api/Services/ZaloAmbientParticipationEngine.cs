@@ -50,8 +50,9 @@ public sealed record ZaloAmbientParticipationDecision(
 
 /// <summary>
 /// Pure deterministic policy for deciding whether an unaddressed group message is
-/// interesting enough that a future ambient bot would participate. Phase 1 only
-/// records this decision in shadow mode; it never sends a message or mutates domain data.
+/// interesting enough that a future ambient bot would participate. Conversational
+/// turns that explicitly talk about/to the bot may be treated as read-only Fact turns;
+/// mutation requests remain Action and are never ambient-authorized.
 /// </summary>
 public static class ZaloAmbientParticipationEngine
 {
@@ -67,6 +68,10 @@ public static class ZaloAmbientParticipationEngine
         @"(?<![a-z0-9])(?:vote|poll|slot|draft|team|doi|roster|danh\s+sach|san|tran|keo|waitlist|cho\s+slot)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex ConversationalTeamFeasibilityPattern = new(
+        @"(?:ban|bot|npc).*(?:xep|lam).*(?:(?:duoc|dc)\s*(?:khong|ko|k)|co\s+the)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly HashSet<string> Acknowledgements = new(StringComparer.Ordinal)
     {
         "ok", "oke", "okay", "uh", "uhm", "um", "roi", "duoc", "chuan", "ngon",
@@ -77,7 +82,8 @@ public static class ZaloAmbientParticipationEngine
         ZaloIncomingMessageEvent incoming,
         ZaloAmbientGroupSituation situation,
         ZaloAmbientSettings settings,
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        bool hasActiveProposal = false)
     {
         var current = now ?? DateTimeOffset.UtcNow;
         var content = incoming.Content ?? string.Empty;
@@ -87,37 +93,48 @@ public static class ZaloAmbientParticipationEngine
         if (incoming.MentionedBot)
         {
             return new ZaloAmbientParticipationDecision(
-                false,
-                0,
-                ZaloAmbientParticipationKind.None,
-                ZaloBotIntent.Unknown.ToString(),
-                0,
-                ["explicit_address_uses_normal_router"],
-                situation);
+                false, 0, ZaloAmbientParticipationKind.None, ZaloBotIntent.Unknown.ToString(), 0,
+                ["explicit_address_uses_normal_router"], situation);
         }
 
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return new ZaloAmbientParticipationDecision(
-                false,
-                0,
-                ZaloAmbientParticipationKind.None,
-                ZaloBotIntent.Unknown.ToString(),
-                0,
-                ["empty_message"],
-                situation);
+                false, 0, ZaloAmbientParticipationKind.None, ZaloBotIntent.Unknown.ToString(), 0,
+                ["empty_message"], situation);
         }
 
+        var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal);
+        var capabilityTurn = address.Target == ZaloConversationalTarget.Bot &&
+                             address.SpeechAct == ZaloConversationalSpeechAct.AskCapability;
+
+        var shorthandTeamFeasibility = address.Target != ZaloConversationalTarget.AnotherMember &&
+                                       ZaloNaturalCommandParser.TryParseTeamPreference(content, out _) &&
+                                       ConversationalTeamFeasibilityPattern.IsMatch(normalized);
+        var advisorTurn = shorthandTeamFeasibility ||
+                          (address.Target == ZaloConversationalTarget.Bot &&
+                           address.SpeechAct is ZaloConversationalSpeechAct.AskFeasibility or
+                               ZaloConversationalSpeechAct.RequestPreview or
+                               ZaloConversationalSpeechAct.ClarificationAnswer or
+                               ZaloConversationalSpeechAct.Confirm or
+                               ZaloConversationalSpeechAct.Cancel);
+        var conversationalReadOnly = capabilityTurn || advisorTurn;
+
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(content);
-        var factIntent = IsFactIntent(deterministic.Intent);
-        var operationalIntent = deterministic.Intent is not ZaloBotIntent.Unknown
+        var effectiveIntent = capabilityTurn
+            ? ZaloBotIntent.Help
+            : advisorTurn
+                ? ZaloBotIntent.TeamPreference
+                : deterministic.Intent;
+        var factIntent = conversationalReadOnly || IsFactIntent(effectiveIntent);
+        var operationalIntent = effectiveIntent is not ZaloBotIntent.Unknown
             and not ZaloBotIntent.GeneralChat
             and not ZaloBotIntent.Help;
         var actionIntent = operationalIntent && !factIntent;
         var question = QuestionPattern.IsMatch(normalized);
         var hasSession = SessionPattern.IsMatch(normalized);
         var hasDomainWords = DomainPattern.IsMatch(normalized);
-        var acknowledgement = IsAcknowledgementOrEmojiOnly(normalized);
+        var acknowledgement = IsAcknowledgementOrEmojiOnly(normalized) && !hasActiveProposal;
         var quote = ZaloQuotedContextResolver.Resolve(incoming, content);
         var repliesToMember = quote.HasQuote && !quote.RepliesToBot;
         var botCooldown = settings.BotCooldownSeconds > 0 &&
@@ -133,15 +150,22 @@ public static class ZaloAmbientParticipationEngine
                     : ZaloAmbientParticipationKind.None;
 
         var score = 0;
-        if (factIntent)
+        if (conversationalReadOnly)
+        {
+            // Once a turn is deterministically identified as talking to/about the bot,
+            // make it independently pass the high-confidence Fact pilot floor (85).
+            // This does not relax ordinary ambient traffic or write/action requests.
+            score += 90;
+            signals.Add(capabilityTurn ? "bot_capability_inquiry" : "conversational_action_advisor");
+            signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
+        }
+        else if (factIntent)
         {
             score += 55;
             signals.Add("fact_intent");
         }
         else if (actionIntent)
         {
-            // An ambient participant may notice an operational action request, but
-            // action/mutation execution always requires the normal explicitly-addressed path.
             score += 20;
             signals.Add("action_requires_address");
         }
@@ -164,25 +188,22 @@ public static class ZaloAmbientParticipationEngine
 
         if (repliesToMember)
         {
-            score -= 15;
+            score -= conversationalReadOnly ? 0 : 15;
             signals.Add("reply_to_member");
         }
-
         if (acknowledgement)
         {
             score -= 60;
             signals.Add("ack_or_emoji_only");
         }
-
         if (botCooldown)
         {
-            score -= 30;
+            score -= conversationalReadOnly ? 0 : 30;
             signals.Add("bot_cooldown");
         }
-
         if (situation.RecentTwoMinuteMessageCount >= settings.BusyGroupMessagesPerTwoMinutes)
         {
-            score -= 20;
+            score -= conversationalReadOnly ? 0 : 20;
             signals.Add("busy_group");
         }
         else if (situation.RecentTwoMinuteMessageCount <= 2)
@@ -192,17 +213,21 @@ public static class ZaloAmbientParticipationEngine
         }
 
         score = Math.Clamp(score, 0, 100);
-        var hardSuppressed = acknowledgement || repliesToMember || botCooldown || actionIntent;
+        var hardSuppressed = acknowledgement ||
+                             (repliesToMember && !conversationalReadOnly) ||
+                             (botCooldown && !conversationalReadOnly) ||
+                             actionIntent;
         var wouldReply = !hardSuppressed &&
                          kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Social &&
                          score >= settings.WouldReplyThreshold;
 
+        var conversationalConfidence = shorthandTeamFeasibility ? .91 : address.Confidence;
         return new ZaloAmbientParticipationDecision(
             wouldReply,
             score,
             kind,
-            deterministic.Intent.ToString(),
-            deterministic.Confidence,
+            effectiveIntent.ToString(),
+            conversationalReadOnly ? conversationalConfidence : deterministic.Confidence,
             signals.Distinct(StringComparer.Ordinal).ToArray(),
             situation);
     }

@@ -30,7 +30,19 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
 
         await EnsureIncomingObservedAsync(zaloConnectionId, groupId, incoming, cancellationToken);
         var situation = await LoadSituationAsync(zaloConnectionId, groupId, settings, cancellationToken);
-        var decision = ZaloAmbientParticipationEngine.Evaluate(incoming, situation, settings);
+
+        var active = await new ZaloConversationStateV2Store(db)
+            .LoadActiveAsync(groupId, Clean(incoming.SenderId, 100), cancellationToken);
+        var hasActiveProposal = string.Equals(
+            active?.Intent,
+            "AmbientTeamPreferenceProposal",
+            StringComparison.Ordinal);
+
+        var decision = ZaloAmbientParticipationEngine.Evaluate(
+            incoming,
+            situation,
+            settings,
+            hasActiveProposal: hasActiveProposal);
         await WriteTraceOnceAsync(groupId, incoming, decision, cancellationToken);
         return decision;
     }
@@ -73,8 +85,6 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
         }
         catch (DbUpdateException)
         {
-            // Only swallow a genuine duplicate race. Other database failures must
-            // bubble to the caller, where ambient observation fails open with a log.
             db.Entry(message).State = EntityState.Detached;
             var duplicateExists = await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
                 item.ZaloConnectionId == zaloConnectionId && item.MessageId == messageId,
@@ -92,8 +102,6 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
         var connection = db.Database.GetDbConnection();
         if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        // ZaloGroupMessages already has an index on (connection, group, SentAt).
-        // Use that indexed timestamp instead of sorting by ReceivedAt on every chat.
         command.CommandText = """
             SELECT "MessageId", "SenderId", "IsFromBot", "SentAt"
             FROM "ZaloGroupMessages"
@@ -200,14 +208,8 @@ public sealed class ZaloAmbientObserver(VolleyDraftDbContext db)
 
     private static DateTimeOffset SafeTimestamp(long unixMs)
     {
-        try
-        {
-            return DateTimeOffset.FromUnixTimeMilliseconds(unixMs);
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            return DateTimeOffset.UtcNow;
-        }
+        try { return DateTimeOffset.FromUnixTimeMilliseconds(unixMs); }
+        catch (ArgumentOutOfRangeException) { return DateTimeOffset.UtcNow; }
     }
 
     private static DateTimeOffset Timestamp(object value)
