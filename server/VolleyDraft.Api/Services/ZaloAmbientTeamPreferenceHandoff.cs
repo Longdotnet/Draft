@@ -12,19 +12,20 @@ namespace VolleyDraft.Api.Services;
 /// explicitly-confirmed TeamPreference write path.
 ///
 /// The V2 proposal itself never grants write authority. A handoff is allowed only
-/// when the same sender replies to the exact provider message that the message graph
-/// proves was emitted for the latest ready proposal and sends a deterministic
-/// confirmation phrase.
+/// for a deterministic confirmation by the same sender when either:
+/// 1) the user replies to the exact provider message that presented the proposal, or
+/// 2) the turn is explicitly addressed to the bot. The no-mention lease path may
+/// synthesize that address metadata only after its own latest-proposal checks.
 /// </summary>
 public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
 {
     public const string ProposalIntent = "AmbientTeamPreferenceProposal";
 
     /// <summary>
-    /// Validates an exact-reply confirmation and promotes the V2 proposal into the
-    /// legacy TeamPreferenceConfirm envelope consumed by ZaloBotService in the same
-    /// webhook. Returning true means a trusted handoff envelope was created; the
-    /// caller must still let the normal bot handler consume this same inbound message.
+    /// Validates a trusted confirmation and promotes the V2 proposal into the legacy
+    /// TeamPreferenceConfirm envelope consumed by ZaloBotService in the same webhook.
+    /// Returning true means a trusted handoff envelope was created; the caller must
+    /// still let the normal bot handler consume this same inbound message.
     /// </summary>
     public async Task<bool> TryPromoteExactReplyConfirmationAsync(
         ZaloIncomingMessageEvent incoming,
@@ -38,12 +39,17 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
             return false;
 
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content);
-        if (!ZaloBotIntelligence.IsConfirmation(normalized)) return false;
+        if (!ZaloBotIntelligence.IsConfirmation(normalized) &&
+            !ZaloAmbientLeasePendingContinuationPolicy.IsStrongConfirmation(normalized))
+            return false;
 
         var quotedMessageId = Clean(incoming.Quote?.MessageId, 160);
         var quotedSenderId = Clean(incoming.Quote?.SenderId, 100);
-        if (quotedMessageId.Length == 0 ||
-            !string.Equals(quotedSenderId, botId, StringComparison.Ordinal))
+        var exactReply = quotedMessageId.Length > 0 &&
+                         string.Equals(quotedSenderId, botId, StringComparison.Ordinal);
+        var explicitlyAddressed = incoming.MentionedBot && incoming.Mentions.Any(mention =>
+            string.Equals(Clean(mention.Uid, 100), botId, StringComparison.Ordinal));
+        if (!exactReply && !explicitlyAddressed)
             return false;
 
         // Match the same active connection selection semantics used by V2 pre-routing,
@@ -68,18 +74,36 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
         var proposalSourceMessageId = Clean(state.LastMessageId, 160);
         if (proposalSourceMessageId.Length == 0) return false;
 
-        // The provider message id is not trusted from chat text or memory. It must
-        // be the outbound BotReply edge created when this exact proposal source
-        // message was answered by the live send path.
+        // An exact reply must bind to the provider BotReply edge for this exact
+        // proposal source. An explicitly addressed confirmation still has to prove
+        // that the current proposal was actually presented to this sender; its address
+        // authority comes from native mention or the separately verified lease policy.
         var providerProposalReplyId = Clean(await new ZaloMessageGraphQuery(db)
             .LoadBotReplyMessageIdAsync(
                 connectionId,
                 groupId,
                 proposalSourceMessageId,
                 cancellationToken), 160);
-        if (providerProposalReplyId.Length == 0 ||
-            !string.Equals(providerProposalReplyId, quotedMessageId, StringComparison.Ordinal))
-            return false;
+        if (exactReply)
+        {
+            if (providerProposalReplyId.Length == 0 ||
+                !string.Equals(providerProposalReplyId, quotedMessageId, StringComparison.Ordinal))
+                return false;
+        }
+        else
+        {
+            var proposalSource = await db.ZaloGroupMessages
+                .AsNoTracking()
+                .SingleOrDefaultAsync(item =>
+                    item.ZaloConnectionId == connectionId &&
+                    item.GroupId == groupId &&
+                    item.MessageId == proposalSourceMessageId &&
+                    item.SenderId == senderId &&
+                    !item.IsFromBot,
+                    cancellationToken);
+            if (proposalSource?.BotReplySentAt is null)
+                return false;
+        }
 
         var collected = ParseObject(state.CollectedArgumentsJson);
         if (collected is null) return false;
@@ -124,7 +148,7 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
         var pendingExpiry = new[] { state.ExpiresAt, now.AddSeconds(30) }.Min();
         if (pendingExpiry <= now) return false;
 
-        // Never overwrite an unrelated live legacy confirmation. Exact-reply
+        // Never overwrite an unrelated live legacy confirmation. Trusted proposal
         // authorization must not silently destroy another pending domain workflow.
         var legacy = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
             item.ZaloConnectionId == connectionId &&
@@ -154,14 +178,15 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
             Plan = preview.Value,
             SelfService = true
         });
-        legacy.PreviousCommand = $"{ZaloBotIntent.TeamPreference}:ExactReply:{Clean(incoming.MessageId, 160)}";
+        legacy.PreviousCommand = $"{ZaloBotIntent.TeamPreference}:{(exactReply ? "ExactReply" : "Addressed")}:" +
+                                 Clean(incoming.MessageId, 160);
         legacy.ExpiresAt = pendingExpiry;
         legacy.UpdatedAt = now;
         await db.SaveChangesAsync(cancellationToken);
 
-        // The exact-reply authorization token is one-shot. The legacy pending row
-        // above exists only so the already-tested atomic ZaloBotService path can
-        // consume this same webhook and record the normal domain action history.
+        // The authorization token is one-shot. The legacy pending row above exists
+        // only so the already-tested atomic ZaloBotService path can consume this same
+        // webhook and record the normal domain action history.
         await store.CompleteAsync(groupId, senderId, cancellationToken);
 
         await new ZaloBotTraceStore(db).WriteAsync(
@@ -169,11 +194,13 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
                 MessageId: Clean(incoming.MessageId, 160),
                 GroupId: groupId,
                 SenderZaloUserId: senderId,
-                AddressReason: "ExactProposalReplyConfirmation",
+                AddressReason: exactReply
+                    ? "ExactProposalReplyConfirmation"
+                    : "AddressedProposalConfirmation",
                 IntentSource: "AmbientProposalHandoff",
                 Intent: ZaloBotIntent.TeamPreferenceConfirm.ToString(),
                 Confidence: 1,
-                QuotedMessageId: quotedMessageId,
+                QuotedMessageId: exactReply ? quotedMessageId : null,
                 PendingStateBefore: ProposalIntent,
                 PendingStateAfter: ZaloBotIntent.TeamPreferenceConfirm.ToString(),
                 ResolvedSessionId: session.Id,
