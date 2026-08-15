@@ -28,6 +28,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         ZaloBotIntent.UpcomingSessions,
         ZaloBotIntent.Roster,
         ZaloBotIntent.WeeklySessionCount,
+        ZaloBotIntent.ReminderStatus,
         ZaloBotIntent.WaitlistStatus,
         ZaloBotIntent.Help,
         ZaloBotIntent.TeamPreference
@@ -92,6 +93,7 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
             .Include(item => item.Players)
                 .ThenInclude(player => player.PlayerProfile)
             .Include(item => item.WaitlistEntries)
+            .Include(item => item.ReminderSchedules)
             .Where(item => item.BotEnabled &&
                            item.ZaloGroupId == groupId &&
                            item.ZaloConnection != null &&
@@ -131,6 +133,9 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
 
         if (intent == ZaloBotIntent.SelfMembership)
             return BuildSelfMembershipAnswer(incoming, sessions);
+
+        if (intent == ZaloBotIntent.ReminderStatus)
+            return BuildReminderStatusAnswer(incoming, sessions);
 
         var session = ResolveSingleSession(incoming.Content, sessions);
         if (session is null) return null;
@@ -227,6 +232,65 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         return new ZaloAmbientFactReply(
             ZaloBotIntent.SelfMembership,
             "Trạng thái của bạn ở các kèo sắp tới:\n" + string.Join("\n", lines));
+    }
+
+    private static ZaloAmbientFactReply BuildReminderStatusAnswer(
+        ZaloIncomingMessageEvent incoming,
+        IReadOnlyList<MatchSession> sessions)
+    {
+        var selected = ResolveSingleSession(incoming.Content, sessions);
+        if (selected is not null)
+        {
+            var enabled = selected.ReminderSchedules
+                .Where(schedule => schedule.Enabled)
+                .OrderBy(schedule => schedule.NextRunAt)
+                .ToList();
+            if (enabled.Count == 0)
+            {
+                return new ZaloAmbientFactReply(
+                    ZaloBotIntent.ReminderStatus,
+                    $"{selected.Name} hiện không có lịch nhắc đang bật.",
+                    selected.Id);
+            }
+
+            var lines = enabled.Take(8).Select(FormatReminderSchedule);
+            return new ZaloAmbientFactReply(
+                ZaloBotIntent.ReminderStatus,
+                $"Lịch nhắc {selected.Name}:\n{string.Join("\n", lines)}",
+                selected.Id);
+        }
+
+        var schedules = sessions
+            .SelectMany(session => session.ReminderSchedules
+                .Where(schedule => schedule.Enabled)
+                .Select(schedule => new { Session = session, Schedule = schedule }))
+            .OrderBy(item => item.Schedule.NextRunAt)
+            .Take(10)
+            .ToList();
+        if (schedules.Count == 0)
+        {
+            return new ZaloAmbientFactReply(
+                ZaloBotIntent.ReminderStatus,
+                "Nhóm hiện không có lịch nhắc nào đang bật.");
+        }
+
+        var summary = schedules.Select(item =>
+            $"- {item.Session.Name}: {FormatReminderSchedule(item.Schedule, includeBullet: false)}");
+        return new ZaloAmbientFactReply(
+            ZaloBotIntent.ReminderStatus,
+            "Các lịch nhắc đang bật:\n" + string.Join("\n", summary));
+    }
+
+    private static string FormatReminderSchedule(ZaloReminderSchedule schedule, bool includeBullet = true)
+    {
+        var when = schedule.NextRunAt.ToOffset(VietnamOffset).ToString("dd/MM HH:mm");
+        var repeat = schedule.Repeats
+            ? schedule.IntervalMinutes is > 0
+                ? $", lặp mỗi {schedule.IntervalMinutes} phút"
+                : ", có lặp"
+            : ", một lần";
+        var condition = schedule.OnlyIfMissingSlots ? ", chỉ khi còn thiếu slot" : string.Empty;
+        return $"{(includeBullet ? "- " : string.Empty)}{when}{repeat}{condition}";
     }
 
     private static ZaloAmbientFactReply BuildWaitlistStatusAnswer(
