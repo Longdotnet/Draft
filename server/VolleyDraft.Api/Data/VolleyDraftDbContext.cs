@@ -88,6 +88,15 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(connection => connection.DisplayName).HasMaxLength(160);
             entity.Property(connection => connection.AvatarUrl).HasMaxLength(2048);
             entity.Property(connection => connection.Status).HasConversion<string>();
+            if (Database.IsSqlite())
+            {
+                // SQLite cannot translate ORDER BY over DateTimeOffset. Keep the
+                // database TEXT representation but expose a UTC DateTime provider
+                // value so legacy queries and PostgreSQL-parity tests can order it.
+                entity.Property(connection => connection.UpdatedAt).HasConversion(
+                    value => value.UtcDateTime,
+                    value => new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc)));
+            }
             entity.HasIndex(connection => new { connection.AdminUserId, connection.AccountZaloId }).IsUnique();
             entity.HasOne(connection => connection.AdminUser)
                 .WithMany(user => user.ZaloConnections)
