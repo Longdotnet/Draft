@@ -49,6 +49,19 @@ ambient-fact:{accountId}:{messageId}
 
 The inbound `ZaloGroupMessage` is atomically claimed before sending. Successful replies set `ReplyOutcome=ambient_sent` and write an `AmbientFactPilot` trace. Provider reply IDs are linked to the inbound message graph when available.
 
+## Integration checks
+
+`ZaloAmbientFactPilotIntegrationTests` drives the real pre-routing service with an in-memory SQLite database and a recording fake Zalo bridge. It locks these rollout invariants:
+
+- `ShadowMode=true` + pilot enabled => zero outbound sends;
+- `ShadowMode=false` + pilot disabled => zero outbound sends;
+- both live gates enabled => exactly one outbound Fact send;
+- duplicate delivery of the same webhook => still exactly one bridge send;
+- successful send records `ambient_sent`, the selected read-only intent, provider reply identity and one `AmbientFactPilot` terminal trace;
+- the outbound idempotency key remains tied to the source message.
+
+These tests are deliberately below the network boundary but above the responder unit: they exercise observer -> participation policy -> pilot gate -> read-only responder -> atomic claim -> `ZaloBridgeClient` request -> persistence/trace.
+
 ## Production enablement
 
 Do not enable this pilot until the Phase 1 shadow review in `ZALO_AMBIENT_SHADOW_REVIEW.md` meets the precision gate. Start with one low-risk group, keep the minimum score high, and retain the existing bot cooldown/human-thread hard suppressions.
