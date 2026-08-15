@@ -132,6 +132,17 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(message => message.ProcessingToken).HasMaxLength(80);
             entity.Property(message => message.SelectedIntent).HasMaxLength(80);
             entity.Property(message => message.ReplyOutcome).HasMaxLength(80);
+            if (Database.IsSqlite())
+            {
+                // ProcessingStartedAt is lease metadata. SQLite cannot compare
+                // nullable DateTimeOffset values inside ExecuteUpdate predicates,
+                // so use a UTC DateTime provider value while preserving the model API.
+                entity.Property(message => message.ProcessingStartedAt).HasConversion(
+                    value => value.HasValue ? value.Value.UtcDateTime : (DateTime?)null,
+                    value => value.HasValue
+                        ? new DateTimeOffset(DateTime.SpecifyKind(value.Value, DateTimeKind.Utc))
+                        : (DateTimeOffset?)null);
+            }
             entity.HasIndex(message => new { message.ZaloConnectionId, message.MessageId }).IsUnique();
             entity.HasIndex(message => new { message.ZaloConnectionId, message.GroupId, message.SentAt });
             entity.HasOne(message => message.ZaloConnection)
