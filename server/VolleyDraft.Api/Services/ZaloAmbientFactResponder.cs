@@ -51,6 +51,16 @@ public sealed class ZaloAmbientFactResponder(VolleyDraftDbContext db)
         groupId = NormalizeId(groupId);
         if (accountId.Length == 0 || groupId.Length == 0) return null;
 
+        // A short direct call such as "bot ơi", "bot ơi bot", "ê bot" or
+        // "npc ơi" is a deterministic wake-up turn. It is intentionally handled
+        // as Help/read-only so it can never enter a mutation handler.
+        if (intent == ZaloBotIntent.Help && ZaloAmbientWakePhrase.IsMatch(incoming.Content))
+        {
+            return new ZaloAmbientFactReply(
+                ZaloBotIntent.Help,
+                ZaloAmbientWakePhrase.BuildReply(incoming.SenderName));
+        }
+
         if (intent is ZaloBotIntent.Help or ZaloBotIntent.TeamPreference)
         {
             // Participation policy already proved this ambient turn is aimed at the bot.

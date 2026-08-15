@@ -27,7 +27,7 @@ public sealed record ZaloAmbientSettings(
         WouldReplyThreshold: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:WouldReplyThreshold", 60), 40, 95),
         RecentWindowMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:RecentWindowMinutes", 5), 1, 30),
         MaxRecentMessages: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:MaxRecentMessages", 40), 5, 100),
-        BotCooldownSeconds: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:BotCooldownSeconds", 20), 0, 300),
+        BotCooldownSeconds: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:BotCooldownSeconds", 2), 0, 300),
         BusyGroupMessagesPerTwoMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:BusyGroupMessagesPerTwoMinutes", 8), 3, 50));
 }
 
@@ -105,6 +105,8 @@ public static class ZaloAmbientParticipationEngine
         }
 
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal);
+        var wakeTurn = address.Target == ZaloConversationalTarget.Bot &&
+                       ZaloAmbientWakePhrase.IsMatch(content);
         var capabilityTurn = address.Target == ZaloConversationalTarget.Bot &&
                              address.SpeechAct == ZaloConversationalSpeechAct.AskCapability;
 
@@ -118,10 +120,10 @@ public static class ZaloAmbientParticipationEngine
                                ZaloConversationalSpeechAct.ClarificationAnswer or
                                ZaloConversationalSpeechAct.Confirm or
                                ZaloConversationalSpeechAct.Cancel);
-        var conversationalReadOnly = capabilityTurn || advisorTurn;
+        var conversationalReadOnly = wakeTurn || capabilityTurn || advisorTurn;
 
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(content);
-        var effectiveIntent = capabilityTurn
+        var effectiveIntent = wakeTurn || capabilityTurn
             ? ZaloBotIntent.Help
             : advisorTurn
                 ? ZaloBotIntent.TeamPreference
@@ -153,10 +155,14 @@ public static class ZaloAmbientParticipationEngine
         if (conversationalReadOnly)
         {
             // Deterministically bot-directed read-only turns stay comfortably above
-            // the Fact pilot floor. Lowering the floor to 60 broadens ordinary Fact
-            // coverage without weakening the action/reply/cooldown hard suppressions.
+            // the Fact pilot floor. Plain-text wake phrases are treated like an
+            // explicit read-only address but never grant mutation authority.
             score += 90;
-            signals.Add(capabilityTurn ? "bot_capability_inquiry" : "conversational_action_advisor");
+            signals.Add(wakeTurn
+                ? "bot_plain_text_wake"
+                : capabilityTurn
+                    ? "bot_capability_inquiry"
+                    : "conversational_action_advisor");
             signals.Add(shorthandTeamFeasibility ? "team_preference_bot_question_shorthand" : address.Reason);
         }
         else if (factIntent)
@@ -221,7 +227,11 @@ public static class ZaloAmbientParticipationEngine
                          kind is ZaloAmbientParticipationKind.Fact or ZaloAmbientParticipationKind.Social &&
                          score >= settings.WouldReplyThreshold;
 
-        var conversationalConfidence = shorthandTeamFeasibility ? .91 : address.Confidence;
+        var conversationalConfidence = wakeTurn
+            ? .99
+            : shorthandTeamFeasibility
+                ? .91
+                : address.Confidence;
         return new ZaloAmbientParticipationDecision(
             wouldReply,
             score,
