@@ -29,8 +29,9 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         var handled = await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
 
         Assert.False(handled); // Ambient participation never claims legacy confirmation routing.
-        var stored = await fixture.Db.ZaloGroupMessages.SingleAsync(item =>
-            item.ZaloConnectionId == "conn-1" && item.MessageId == incoming.MessageId);
+        var stored = await fixture.Db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == incoming.MessageId);
         var diagnostics = await fixture.DescribeAsync(incoming.MessageId, stored);
         Assert.True(
             fixture.Bridge.SendCount == expectedSends,
@@ -58,8 +59,9 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
         await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
 
-        var inbound = await fixture.Db.ZaloGroupMessages.SingleAsync(item =>
-            item.ZaloConnectionId == "conn-1" && item.MessageId == "duplicate-message");
+        var inbound = await fixture.Db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == "duplicate-message");
         var diagnostics = await fixture.DescribeAsync(incoming.MessageId, inbound);
         Assert.True(
             fixture.Bridge.SendCount == 1,
@@ -71,8 +73,9 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         Assert.Equal("ambient_sent", inbound.ReplyOutcome);
         Assert.Equal(1, inbound.ReplyAttemptCount);
 
-        var outbound = await fixture.Db.ZaloGroupMessages.SingleAsync(item =>
-            item.ZaloConnectionId == "conn-1" && item.MessageId == "provider-ambient-1");
+        var outbound = await fixture.Db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == "provider-ambient-1");
         Assert.True(outbound.IsFromBot);
         Assert.Equal("sent", outbound.ReplyOutcome);
 
