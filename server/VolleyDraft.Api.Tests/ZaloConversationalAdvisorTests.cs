@@ -54,14 +54,16 @@ public sealed class ZaloConversationalAdvisorTests
     [Fact]
     public void Conversation_addressed_to_another_member_does_not_wake_the_bot()
     {
+        var incoming = Incoming("human-thread", "Nam ơi bạn chơi chung với To An không");
+        var address = ZaloConversationalAddressResolver.Resolve(incoming);
         var decision = ZaloAmbientParticipationEngine.Evaluate(
-            Incoming("human-thread", "Nam ơi bạn chơi chung với To An không"),
+            incoming,
             QuietSituation(),
             Settings,
             DateTimeOffset.UtcNow);
 
+        Assert.Equal(ZaloConversationalTarget.AnotherMember, address.Target);
         Assert.False(decision.WouldReply);
-        Assert.NotEqual(ZaloBotIntent.TeamPreference.ToString(), decision.Intent);
     }
 
     [Fact]
