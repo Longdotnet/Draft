@@ -21,7 +21,7 @@ public sealed record ZaloOpenSlotOfferHandleResult(
 public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
 {
     private static readonly Regex BareClaimPattern = new(
-        @"^(?:(?:tui|toi|minh|em|anh|chi|tao)\s+(?:nhan|lay|hot|giu)|(?:de|cho)\s+(?:tui|toi|minh|em)(?:\s+(?:nhan|lay|hot|giu))?)(?:\s+(?:nha|nhe|di|a|aa|voi|luon|hen|he))?[!?.]*$",
+        @"^(?:(?:tui|toi|minh|em|anh|chi|tao)\s+(?:nhan|lay|hot|giu)|de\s+(?:tui|toi|minh|em)(?:\s+(?:nhan|lay|hot|giu))?)(?:\s+(?:nha|nhe|di|a|aa|voi|luon|hen|he))?[!?.]*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex QualifiedClaimPattern = new(
@@ -117,6 +117,14 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         if (string.Equals(offer.OwnerZaloUserId, senderId, StringComparison.Ordinal))
             return new(true, "Slot của chính ông mà 😆 Muốn huỷ pass thì nói ‘huỷ pass’ nha.");
 
+        if (session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection &&
+            IsSenderAlreadyPresent(session, senderId, incoming.SenderName))
+        {
+            return new(
+                true,
+                $"Ông đang có slot {session.Name} rồi á 😆 Poll chỉ tính một suất/người nên tui không cho hốt thêm slot này. Nếu muốn share/chơi chung thì nói riêng nha.");
+        }
+
         if (session.Status == SessionStatus.Finished)
         {
             var preview = await draftService.PreviewPostDraftSlotTransferAsync(
@@ -180,8 +188,7 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         if (session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection)
         {
             var ownerStillPresent = ResolveOwner(session, offer) is not null;
-            var claimantPresent = session.Players.Any(player =>
-                player.IsPresent && CleanId(player.PlayerProfile?.ZaloUserId) == claimantId);
+            var claimantPresent = IsSenderAlreadyPresent(session, claimantId, incoming.SenderName);
             if (!ownerStillPresent && claimantPresent)
             {
                 if (await store.TryBeginApplyAsync(offer.Id, claimantId, cancellationToken))
@@ -306,6 +313,23 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             .Take(2)
             .ToList();
         return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private static bool IsSenderAlreadyPresent(MatchSession session, string senderId, string? senderName)
+    {
+        if (session.Players.Any(player =>
+                player.IsPresent && CleanId(player.PlayerProfile?.ZaloUserId) == senderId))
+            return true;
+
+        var normalizedName = ZaloBotIntelligence.Normalize(senderName ?? string.Empty);
+        if (normalizedName.Length == 0) return false;
+        var blankUidMatches = session.Players
+            .Where(player => player.IsPresent &&
+                             string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId) &&
+                             ZaloBotIntelligence.Normalize(player.DisplayName) == normalizedName)
+            .Take(2)
+            .Count();
+        return blankUidMatches == 1;
     }
 
     private static bool MatchesOfferReference(string? content, ZaloOpenSlotOfferSnapshot offer)
