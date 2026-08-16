@@ -42,9 +42,12 @@ public sealed class ZaloSelfServiceIdentityLinkerTests
     [Fact]
     public async Task Duplicate_same_display_names_are_ambiguous_and_never_guessed()
     {
+        // PlayerProfile.ZaloUserId is unique in the relational schema. Use two
+        // distinct whitespace-only legacy values so both are still semantically
+        // blank to the linker without violating the database constraint.
         await using var fixture = await Fixture.CreateAsync([
             new ProfileSeed("p1", "Đặng Thế Nguyễn", string.Empty),
-            new ProfileSeed("p2", "Đặng Thế Nguyễn", string.Empty)
+            new ProfileSeed("p2", "Đặng Thế Nguyễn", " ")
         ]);
 
         var result = await new ZaloSelfServiceIdentityLinker(fixture.Db)
