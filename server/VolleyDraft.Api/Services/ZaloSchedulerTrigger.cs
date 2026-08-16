@@ -48,11 +48,18 @@ public sealed class ZaloSchedulerWorker(
             await coordinator.EnsureAllAsync(cancellationToken);
             var result = await scope.ServiceProvider.GetRequiredService<ZaloReminderService>()
                 .SendDueRemindersAsync(cancellationToken);
+            var rescue = await scope.ServiceProvider.GetRequiredService<ZaloOpenSlotRescueService>()
+                .RunDueAsync(cancellationToken);
             logger.LogInformation(
-                "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed}",
+                "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed}",
                 result.GroupCount,
                 result.SentCount,
-                result.FailedCount);
+                result.FailedCount,
+                rescue.CandidateCount,
+                rescue.NudgedCount,
+                rescue.ClaimReleasedCount,
+                rescue.ClosedCount,
+                rescue.FailedCount);
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
