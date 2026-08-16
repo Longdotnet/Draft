@@ -62,6 +62,34 @@ public sealed partial class ZaloOverbookService
                 incoming.MessageId);
         }
 
+        // Reconcile only a unique exact sender-name match whose player profile does
+        // not have a Zalo UID yet. This is deliberately before the legacy snapshot
+        // loader so self-service intents such as "xếp tui chung team..." are not
+        // mistaken for delegated operator actions merely because an old poll import
+        // created the player before we knew their UID.
+        try
+        {
+            var identityResult = await new ZaloSelfServiceIdentityLinker(db)
+                .TryLinkAsync(connection.Id, groupId, incoming, cancellationToken);
+            if (identityResult == ZaloSelfServiceIdentityLinkResult.Linked)
+            {
+                logger.LogInformation(
+                    "Linked realtime Zalo sender to unique player profile Group={GroupId} Sender={SenderId}",
+                    groupId,
+                    incoming.SenderId);
+            }
+        }
+        catch (Exception exception)
+        {
+            // Identity reconciliation is additive. Never block ordinary routing if
+            // the safe-link path cannot complete in this turn.
+            logger.LogWarning(
+                exception,
+                "Could not reconcile realtime Zalo sender identity Group={GroupId} Sender={SenderId}",
+                groupId,
+                incoming.SenderId);
+        }
+
         // Ambient observation always runs before the legacy address gate. A live
         // Fact pilot requires two independent gates: ShadowMode=false AND
         // FactPilot.Enabled=true. Explicit mentions/replies continue through V1.
@@ -69,6 +97,63 @@ public sealed partial class ZaloOverbookService
         {
             await TryObserveAmbientShadowAsync(connection.Id, groupId, incoming, cancellationToken);
             return false;
+        }
+
+        // Permission management is intentionally deterministic and happens before
+        // general AI/domain routing. It reuses BotOperatorZaloUserIdsJson, so website
+        // and Zalo commands always see the same source of truth. Only a live Zalo
+        // owner/deputy role may grant/revoke; ordinary operators cannot fan out power.
+        var permissionCommand = ZaloOperatorPermissionCommandService.TryParse(incoming);
+        if (permissionCommand is not null)
+        {
+            bool? canManagePermissions = true;
+            if (permissionCommand.Kind is not ZaloOperatorPermissionCommandKind.List)
+            {
+                var authoritySession = await db.MatchSessions
+                    .AsNoTracking()
+                    .Where(session => session.ZaloConnectionId == connection.Id &&
+                                      session.ZaloGroupId == groupId &&
+                                      session.BotEnabled)
+                    .OrderByDescending(session => session.UpdatedAt)
+                    .Select(session => new { session.Id, session.AdminUserId })
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (authoritySession is null)
+                {
+                    canManagePermissions = false;
+                }
+                else
+                {
+                    var role = await integration.GetGroupRoleAuthorizationAsync(
+                        authoritySession.AdminUserId,
+                        authoritySession.Id,
+                        incoming.SenderId);
+                    canManagePermissions = role.IsSuccess
+                        ? role.Value?.CanOperateBot == true
+                        : null;
+                }
+            }
+
+            var permissionResult = await new ZaloOperatorPermissionCommandService(db)
+                .ApplyAsync(
+                    connection.Id,
+                    groupId,
+                    incoming,
+                    permissionCommand,
+                    canManagePermissions,
+                    cancellationToken);
+            if (permissionResult.Handled && !string.IsNullOrWhiteSpace(permissionResult.Response))
+            {
+                await SendDeterministicPreRouteResponseAsync(
+                    connection.Id,
+                    connection.AccountZaloId,
+                    connection.DisplayName,
+                    groupId,
+                    incoming,
+                    permissionResult.Response!,
+                    permissionResult.Intent,
+                    cancellationToken);
+                return true;
+            }
         }
 
         await ShadowAndApplyPendingTopicSwitchAsync(
@@ -193,6 +278,73 @@ public sealed partial class ZaloOverbookService
                 decision.Intent,
                 settings.ShadowMode);
 
+            var pilot = ZaloAmbientFactPilotSettings.FromConfiguration(configuration);
+
+            // A clear pass-slot statement is a help opportunity, not banter. NPC may
+            // proactively offer the next step but must not mutate a slot here.
+            var memberAssistSettings = ZaloMemberAssistSettings.FromConfiguration(configuration);
+            if (!settings.ShadowMode && memberAssistSettings.Enabled)
+            {
+                var assist = await new ZaloMemberAssistService(db).TryBuildAsync(
+                    connectionId,
+                    groupId,
+                    incoming,
+                    cancellationToken);
+                if (assist is not null)
+                {
+                    var assistDecision = decision with
+                    {
+                        WouldReply = true,
+                        Score = Math.Max(decision.Score, 98),
+                        Kind = ZaloAmbientParticipationKind.Fact,
+                        Intent = ZaloBotIntent.SlotTransfer.ToString(),
+                        IntentConfidence = 1,
+                        Signals = decision.Signals
+                            .Append("member_assist_pass_slot")
+                            .Distinct(StringComparer.Ordinal)
+                            .ToArray()
+                    };
+                    await TrySendAmbientFactAsync(
+                        connectionId,
+                        groupId,
+                        senderId,
+                        incoming,
+                        assistDecision,
+                        new ZaloAmbientFactReply(
+                            ZaloBotIntent.SlotTransfer,
+                            assist.Text,
+                            assist.SessionId),
+                        cancellationToken);
+                    return;
+                }
+            }
+
+            // Short calls such as "Bot ơi" should sound like a teammate, not a
+            // customer-service agent. Prefer the deterministic casual wake response
+            // before Social AI so the model cannot drift into "Dạ, em đây ạ...".
+            if (!settings.ShadowMode && pilot.Enabled && ZaloAmbientWakePhrase.IsMatch(incoming.Content))
+            {
+                var wakeFact = await new ZaloAmbientFactResponder(db).TryBuildAsync(
+                    incoming.AccountId,
+                    groupId,
+                    incoming,
+                    decision,
+                    pilot.MinimumScore,
+                    cancellationToken);
+                if (wakeFact is not null)
+                {
+                    await TrySendAmbientFactAsync(
+                        connectionId,
+                        groupId,
+                        senderId,
+                        incoming,
+                        decision,
+                        wakeFact,
+                        cancellationToken);
+                    return;
+                }
+            }
+
             if (await TryHandleAmbientSocialAsync(
                     connectionId,
                     groupId,
@@ -203,7 +355,6 @@ public sealed partial class ZaloOverbookService
                     cancellationToken))
                 return;
 
-            var pilot = ZaloAmbientFactPilotSettings.FromConfiguration(configuration);
             if (settings.ShadowMode || !pilot.Enabled) return;
 
             var fact = await new ZaloAmbientFactResponder(db).TryBuildAsync(
@@ -399,6 +550,75 @@ public sealed partial class ZaloOverbookService
                 groupId,
                 messageId);
         }
+    }
+
+    private async Task SendDeterministicPreRouteResponseAsync(
+        string connectionId,
+        string accountId,
+        string botName,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        string response,
+        string intent,
+        CancellationToken cancellationToken)
+    {
+        var storedIncoming = await EnsureV2IncomingMessageAsync(
+            connectionId,
+            groupId,
+            incoming,
+            cancellationToken);
+        if (storedIncoming.BotReplySentAt is not null) return;
+
+        var idempotencyKey = $"pre-route:{intent}:{accountId}:{incoming.MessageId}";
+        var send = await bridge.SendGroupMessageAsync(
+            accountId,
+            groupId,
+            response,
+            [],
+            idempotencyKey: idempotencyKey);
+        var providerReplyId = NormalizeProviderMessageId(send.MessageId);
+        var persistedReplyId = providerReplyId ?? $"local:{idempotencyKey}";
+
+        await EnsureV2OutboundMessageAsync(
+            connectionId,
+            groupId,
+            persistedReplyId,
+            accountId,
+            botName,
+            response,
+            cancellationToken);
+        if (providerReplyId is not null)
+        {
+            await new ZaloMessageGraphStore(db).RememberOutboundAsync(
+                connectionId,
+                groupId,
+                providerReplyId,
+                incoming.MessageId,
+                cancellationToken);
+        }
+
+        storedIncoming.BotReplySentAt = DateTimeOffset.UtcNow;
+        storedIncoming.SelectedIntent = intent;
+        storedIncoming.AiCalled = false;
+        storedIncoming.ReplyOutcome = "sent";
+        storedIncoming.ProcessingStartedAt = storedIncoming.ProcessingStartedAt ?? DateTimeOffset.UtcNow;
+        storedIncoming.ProcessingToken = null;
+        await db.SaveChangesAsync(cancellationToken);
+
+        var quote = ZaloQuotedContextResolver.Resolve(incoming);
+        await new ZaloBotTraceStore(db).WriteAsync(
+            new ZaloBotTraceEntry(
+                incoming.MessageId,
+                groupId,
+                ZaloOverbookLogic.NormalizeId(incoming.SenderId),
+                quote.RepliesToBot ? "ReplyToBot" : "ExplicitMention",
+                IntentSource: "DeterministicPreRouting",
+                Intent: intent,
+                Confidence: 1,
+                QuotedMessageId: quote.MessageId,
+                AiCalled: false,
+                ReplyMessageId: providerReplyId ?? persistedReplyId),
+            cancellationToken);
     }
 
     private async Task ShadowAndApplyPendingTopicSwitchAsync(
