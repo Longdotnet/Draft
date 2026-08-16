@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -45,7 +46,7 @@ public sealed class ZaloOpenSlotRescueLifecycleTests
 
         Assert.Equal(1, result.NudgedCount);
         Assert.Equal(1, handler.SendCount);
-        Assert.Contains("trôi", handler.LastBody ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("trôi", handler.LastMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
         var offer = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
         Assert.Equal(1, offer.NudgeCount);
@@ -112,7 +113,7 @@ public sealed class ZaloOpenSlotRescueLifecycleTests
         Assert.Equal(ZaloOpenSlotOfferStatus.Open, reopened.Status);
         Assert.Null(reopened.ClaimantZaloUserId);
         Assert.Equal(1, handler.SendCount);
-        Assert.Contains("mở lại", handler.LastBody ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mở lại", handler.LastMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -163,14 +164,20 @@ public sealed class ZaloOpenSlotRescueLifecycleTests
     private sealed class RecordingHandler : HttpMessageHandler
     {
         public int SendCount { get; private set; }
-        public string? LastBody { get; private set; }
+        public string? LastMessage { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             SendCount += 1;
-            LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            if (request.Content is not null)
+            {
+                var body = await request.Content.ReadAsStringAsync(cancellationToken);
+                using var json = JsonDocument.Parse(body);
+                if (json.RootElement.TryGetProperty("message", out var message))
+                    LastMessage = message.GetString();
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
