@@ -41,6 +41,18 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         @"(?<![a-z0-9])(?:pass|nhuong|tra|bo)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex NegatedPassPattern = new(
+        @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|nhuong|bo\s+(?:slot|suat|cho))(?![a-z0-9])|(?<![a-z0-9])(?:khong|ko|k)\s+(?:pass|nhuong)\s+nua(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // This is only a cheap performance gate. The open-offer service remains the
+    // authority for claim/cancel/confirmation parsing. Keep this deliberately broad
+    // so an ordinary unrelated group message avoids a state-store query, while any
+    // plausible slot-coordination turn still reaches the authoritative parser.
+    private static readonly Regex PossibleOpenSlotTurnPattern = new(
+        @"(?<![a-z0-9])(?:pass|nhuong|slot|suat|keo|nhan|lay|hot|giu|chot|xong|done|huy|cancel)(?![a-z0-9])|(?<![a-z0-9])xac\s+nhan(?![a-z0-9])|(?<![a-z0-9])(?:de|cho)\s+(?:tui|toi|minh|em)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex ExplicitDatePattern = new(
         @"(?<!\d)(?<day>\d{1,2})[/-](?<month>\d{1,2})(?:[/-](?<year>\d{2,4}))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -48,7 +60,9 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     public static bool IsPassSlotHelpOpportunity(string? content)
     {
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
-        return normalized.Length > 0 && PassSlotPattern.IsMatch(normalized);
+        return normalized.Length > 0 &&
+               PassSlotPattern.IsMatch(normalized) &&
+               !NegatedPassPattern.IsMatch(normalized);
     }
 
     public async Task<ZaloMemberAssistReply?> TryBuildAsync(
@@ -57,19 +71,24 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
+
         // Continue an already-open group offer before looking for a new pass phrase.
-        // This is how another member can simply say "tui nhận" / "chốt" without a
-        // fresh @mention. The offer service owns all revalidation and write safety.
-        var offerTurn = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
-            connectionId,
-            groupId,
-            incoming,
-            cancellationToken);
-        if (offerTurn.Handled && !string.IsNullOrWhiteSpace(offerTurn.Response))
+        // The broad lexical gate prevents a DB/state lookup for ordinary group chat;
+        // ZaloOpenSlotOfferService still decides whether the turn is truly relevant.
+        if (PossibleOpenSlotTurnPattern.IsMatch(normalizedIncoming))
         {
-            return new ZaloMemberAssistReply(
-                ZaloMemberAssistKind.OpenSlotClaim,
-                offerTurn.Response!);
+            var offerTurn = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken);
+            if (offerTurn.Handled && !string.IsNullOrWhiteSpace(offerTurn.Response))
+            {
+                return new ZaloMemberAssistReply(
+                    ZaloMemberAssistKind.OpenSlotClaim,
+                    offerTurn.Response!);
+            }
         }
 
         if (!IsPassSlotHelpOpportunity(incoming.Content)) return null;
