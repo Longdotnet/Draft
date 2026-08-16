@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
 
@@ -48,8 +49,14 @@ public sealed class ZaloSchedulerWorker(
             await coordinator.EnsureAllAsync(cancellationToken);
             var result = await scope.ServiceProvider.GetRequiredService<ZaloReminderService>()
                 .SendDueRemindersAsync(cancellationToken);
-            var rescue = await scope.ServiceProvider.GetRequiredService<ZaloOpenSlotRescueService>()
-                .RunDueAsync(cancellationToken);
+
+            var rescueService = new ZaloOpenSlotRescueService(
+                scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>(),
+                scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>(),
+                scope.ServiceProvider.GetRequiredService<IConfiguration>(),
+                scope.ServiceProvider.GetRequiredService<ILogger<ZaloOpenSlotRescueService>>());
+            var rescue = await rescueService.RunDueAsync(cancellationToken);
+
             logger.LogInformation(
                 "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed}",
                 result.GroupCount,
