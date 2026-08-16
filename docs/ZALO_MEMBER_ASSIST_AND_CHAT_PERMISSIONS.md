@@ -12,21 +12,27 @@ The ambient helper may:
 - ask which session when more than one is possible;
 - open a group-scoped coordination offer for a verified member-owned slot;
 - let another member naturally say `tui nhận`, `tui lấy`, `để tui`, or `tui nhận T6`;
-- reserve that offer for one claimant and ask for the next safe step.
+- reserve that offer for one claimant and ask for the next safe step;
+- resurface a forgotten open offer through the existing scheduler when nobody responds.
 
-The ambient helper may write **coordination state only**. Opening or reserving an offer does not change roster, team, draft slot, preference, waitlist, profile, reminder, or poll state.
+The ambient helper may write **coordination state only**. Opening, reserving, nudging or releasing an offer does not directly change roster, team, draft slot, preference, waitlist, profile, reminder, or poll state.
 
 ### Open-slot coordination
 
 A typical conversation is:
 
 1. Hoàng says `em pass slot T6 nha` without mentioning NPC.
-2. NPC verifies Hoàng currently owns that participation and opens an `OpenSlotOffer` with a short TTL capped by session start.
-3. Vivian says `tui nhận` without mentioning NPC.
-4. NPC reserves the offer for Vivian. A second claimant cannot steal the same pending offer.
-5. If the session is pre-draft (`Setup` / `CaptainSelection`), NPC does **not** modify registration. Hoàng must leave the linked poll option and Vivian must vote it; NPC only verifies the resulting authoritative roster after the sync.
-6. If the session is already `Finished` but has not started, NPC previews the existing safe post-draft transfer and asks Vivian to say `chốt`.
-7. Only that claimant confirmation may call the existing post-draft transfer service; the service revalidates source slot, target, session state, start time and action lease.
+2. NPC verifies Hoàng currently owns that participation and opens an `OpenSlotOffer`. The offer is scoped by Zalo connection + group and remains valid until the session starts, capped at 24 hours.
+3. If nobody responds, the existing 15-minute scheduler may resurface the offer. The default policy starts around 45 minutes after opening and sends at most three nudges, with later nudges biased toward the final hour before the session.
+4. A group-level recent-bot-message cooldown defers rescue when NPC has just sent another reminder, preventing multiple proactive systems from piling messages into the group.
+5. Vivian says `tui nhận` without mentioning NPC.
+6. NPC reserves the offer for Vivian. A second claimant cannot steal the same pending offer. Vivian must finish the handoff within the reservation window: 20 minutes pre-draft or 10 minutes post-draft by default.
+7. If Vivian disappears, the scheduler releases the timed-out claim back to `Open` so another member can take it. A claimant who is already holding a pending offer is told to cancel it before switching to another one; the conversation path never silently abandons the old owner.
+8. If the session is pre-draft (`Setup` / `CaptainSelection`), NPC does **not** modify registration. Hoàng must leave the linked poll option and Vivian must vote it; NPC only verifies the resulting authoritative roster after the sync.
+9. If the session is already `Finished` but has not started, NPC previews the existing safe post-draft transfer and asks Vivian to say `chốt`.
+10. Only that claimant confirmation may call the existing post-draft transfer service; the service revalidates source slot, target, session state, start time and action lease.
+
+Before every scheduled rescue, NPC revalidates authoritative state. Cancelled/started sessions, disabled bots, disconnected connections, expired offers, or owners who no longer hold the participation are closed or deferred instead of advertising stale information. Rescue sends use an offer-scoped lease and idempotency key so multiple scheduler/web instances cannot intentionally send the same nudge twice.
 
 A member who already owns a pre-draft slot in that session cannot claim another open slot because poll membership represents one participation per member. They should use `ShareSlot` or a team-preference workflow instead if that is what they mean.
 
@@ -70,7 +76,12 @@ Short plain-text wake turns such as `Bot ơi` are answered by the deterministic 
 - Ambient assistance may persist coordination state, but it does not directly mutate domain roster/team/slot data.
 - Pre-draft registration remains poll-authoritative.
 - Post-draft open-slot transfer requires the reserved claimant to confirm and then goes through the existing safe transfer service.
+- Open offers are scoped by Zalo connection + group; stale legacy offers without a connection are resolved conservatively.
+- Rescue revalidates session and owner state before every scheduled message.
+- Rescue has a per-offer nudge cap plus a recent-bot-message group cooldown; proactive systems should not compete for chat attention.
+- Claim reservations expire independently from offer validity so a silent claimant cannot monopolize a slot until game time.
 - Offer claim uses version/status transitions so the first valid claimant wins and duplicate apply attempts do not perform duplicate domain writes.
+- Scheduler rescue sends use a database lease and a deterministic idempotency key.
 - Self-service requires stable sender identity; name-only ambiguity never authorizes mutation.
 - A different stored UID is never replaced silently.
 - Delegated member changes still require authorization.

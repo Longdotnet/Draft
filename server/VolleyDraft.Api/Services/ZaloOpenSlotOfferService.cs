@@ -58,7 +58,13 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         if (connectionId.Length == 0 || groupId.Length == 0 || senderId.Length == 0)
             return new(false, null);
 
-        var pending = await store.LoadPendingClaimAsync(groupId, senderId, cancellationToken);
+        var pending = await store.LoadPendingClaimAsync(connectionId, groupId, senderId, cancellationToken);
+        if (pending?.ClaimExpiresAt is { } existingClaimExpiresAt && existingClaimExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            await store.ReleaseClaimAsync(pending.Id, senderId, cancellationToken);
+            pending = null;
+        }
+
         if (pending is not null)
         {
             if (ZaloBotIntelligence.IsCancel(incoming.Content ?? string.Empty))
@@ -70,19 +76,23 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             var normalized = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
             if (ZaloBotIntelligence.IsConfirmation(normalized) || PreDraftDonePattern.IsMatch(normalized))
                 return await ConfirmClaimAsync(connectionId, groupId, incoming, pending, cancellationToken);
+
+            if (IsClaimPhrase(incoming.Content))
+            {
+                return new(
+                    true,
+                    $"Ông đang giữ slot {FriendlyName(pending.OwnerDisplayName)} ở {pending.SessionName} rồi á 😆 Muốn đổi sang slot khác thì huỷ nhận kèo này trước nha.");
+            }
         }
 
         if (CancelOfferPattern.IsMatch(ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty)))
-            return await CancelOwnedOfferAsync(groupId, senderId, incoming.Content, cancellationToken);
+            return await CancelOwnedOfferAsync(connectionId, groupId, senderId, incoming.Content, cancellationToken);
 
         if (!IsClaimPhrase(incoming.Content)) return new(false, null);
 
-        var offers = await store.ListClaimableAsync(groupId, senderId, cancellationToken);
+        var offers = await store.ListClaimableAsync(connectionId, groupId, senderId, cancellationToken);
         if (offers.Count == 0) return new(false, null);
 
-        // If the claimant explicitly mentions a human, only that human may be the
-        // source owner. A side conversation such as "@Nam tui nhận xét..." must not
-        // accidentally consume somebody else's open offer.
         var humanMentionIds = incoming.Mentions
             .Select(mention => CleanId(mention.Uid))
             .Where(id => id.Length > 0 && !string.Equals(id, CleanId(incoming.BotId), StringComparison.Ordinal))
@@ -141,11 +151,15 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             return new(true, $"{offer.SessionName} đang draft dở á 😅 Chờ draft xong rồi nhận slot này giúp tui nha.");
         }
 
+        var claimMinutes = session.Status == SessionStatus.Finished ? 10 : 20;
+        var reservationExpiresAt = DateTimeOffset.UtcNow.AddMinutes(claimMinutes);
+        if (reservationExpiresAt > offer.ExpiresAt) reservationExpiresAt = offer.ExpiresAt;
         var claimed = await store.TryClaimAsync(
             offer,
             senderId,
             CleanName(incoming.SenderName),
             incoming.MessageId,
+            reservationExpiresAt,
             cancellationToken);
         if (!claimed)
             return new(true, "Slot vừa có người chạm trước rồi 😭 Tui refresh lại kèo nha.");
@@ -156,13 +170,13 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         {
             return new(
                 true,
-                $"{claimant} hốt slot {ownerName} ở {session.Name} nha 😆 Chốt thì nói ‘chốt’ cái tui chuyển luôn.",
+                $"{claimant} hốt slot {ownerName} ở {session.Name} nha 😆 Chốt trong khoảng {claimMinutes} phút thì nói ‘chốt’ cái tui chuyển luôn.",
                 ZaloBotIntent.SlotTransfer.ToString());
         }
 
         return new(
             true,
-            $"{claimant} nhận slot {ownerName} ở {session.Name} nha 👌 Kèo chưa draft nên roster vẫn theo poll: {ownerName} bỏ vote, {claimant} vote {session.Name}. Xong nói ‘xong’ để tui check, tui không tự sửa poll đâu.",
+            $"{claimant} nhận slot {ownerName} ở {session.Name} nha 👌 Kèo chưa draft nên roster vẫn theo poll: {ownerName} bỏ vote, {claimant} vote {session.Name}. Xong nói ‘xong’ trong khoảng {claimMinutes} phút để tui check, tui không tự sửa poll đâu.",
             "OpenSlotOfferPreDraftClaim");
     }
 
@@ -174,6 +188,12 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         CancellationToken cancellationToken)
     {
         var claimantId = CleanId(incoming.SenderId);
+        if (offer.ClaimExpiresAt is { } claimExpiresAt && claimExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            await store.ReleaseClaimAsync(offer.Id, claimantId, cancellationToken);
+            return new(true, $"Claim slot {offer.SessionName} vừa hết thời gian giữ rồi 😅 Tui mở lại cho cả nhóm nha.");
+        }
+
         if (offer.Status == ZaloOpenSlotOfferStatus.Applying)
             return new(true, "Tui đang chốt slot này rồi, đợi xíu nha 😆", ZaloBotIntent.SlotTransfer.ToString());
 
@@ -263,12 +283,13 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
     }
 
     private async Task<ZaloOpenSlotOfferHandleResult> CancelOwnedOfferAsync(
+        string connectionId,
         string groupId,
         string senderId,
         string? content,
         CancellationToken cancellationToken)
     {
-        var offers = await store.ListOwnedActiveAsync(groupId, senderId, cancellationToken);
+        var offers = await store.ListOwnedActiveAsync(connectionId, groupId, senderId, cancellationToken);
         if (offers.Count == 0) return new(false, null);
         var referenced = offers.Where(offer => MatchesOfferReference(content, offer)).ToList();
         if (referenced.Count > 0) offers = referenced;
@@ -299,7 +320,7 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
                 session.BotEnabled,
                 cancellationToken);
 
-    private static SessionPlayer? ResolveOwner(MatchSession session, ZaloOpenSlotOfferSnapshot offer)
+    internal static SessionPlayer? ResolveOwner(MatchSession session, ZaloOpenSlotOfferSnapshot offer)
     {
         var byUid = session.Players.FirstOrDefault(player =>
             player.IsPresent && CleanId(player.PlayerProfile?.ZaloUserId) == offer.OwnerZaloUserId);
@@ -345,7 +366,7 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
     private static bool ContainsPhrase(string value, string phrase) =>
         Regex.IsMatch(value, $@"(?<![a-z0-9]){Regex.Escape(phrase)}(?![a-z0-9])", RegexOptions.CultureInvariant);
 
-    private static string FriendlyName(string? value)
+    internal static string FriendlyName(string? value)
     {
         var parts = CleanName(value).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return parts.Length == 0 ? "bạn" : parts[^1];

@@ -35,7 +35,8 @@ public sealed record ZaloMemberAssistReply(
 public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
-    private static readonly TimeSpan OfferTtl = TimeSpan.FromHours(3);
+    private static readonly TimeSpan OfferTtl = TimeSpan.FromHours(24);
+    private static readonly TimeSpan FirstNudgeDelay = TimeSpan.FromMinutes(45);
 
     private static readonly Regex PassSlotPattern = new(
         @"(?<![a-z0-9])(?:pass|nhuong|tra|bo)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
@@ -45,10 +46,6 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|nhuong|bo\s+(?:slot|suat|cho))(?![a-z0-9])|(?<![a-z0-9])(?:khong|ko|k)\s+(?:pass|nhuong)\s+nua(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    // This is only a cheap performance gate. The open-offer service remains the
-    // authority for claim/cancel/confirmation parsing. Keep this deliberately broad
-    // so an ordinary unrelated group message avoids a state-store query, while any
-    // plausible slot-coordination turn still reaches the authoritative parser.
     private static readonly Regex PossibleOpenSlotTurnPattern = new(
         @"(?<![a-z0-9])(?:pass|nhuong|slot|suat|keo|nhan|lay|hot|giu|chot|xong|done|huy|cancel)(?![a-z0-9])|(?<![a-z0-9])xac\s+nhan(?![a-z0-9])|(?<![a-z0-9])(?:de|cho)\s+(?:tui|toi|minh|em)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -72,10 +69,6 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
-
-        // Continue an already-open group offer before looking for a new pass phrase.
-        // The broad lexical gate prevents a DB/state lookup for ordinary group chat;
-        // ZaloOpenSlotOfferService still decides whether the turn is truly relevant.
         if (PossibleOpenSlotTurnPattern.IsMatch(normalizedIncoming))
         {
             var offerTurn = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
@@ -93,8 +86,6 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 
         if (!IsPassSlotHelpOpportunity(incoming.Content)) return null;
 
-        // If the message explicitly points at another human, do not guess that the
-        // sender is offering their own slot. Delegated actions stay explicit.
         if (incoming.Mentions.Any(mention =>
                 CleanId(mention.Uid).Length > 0 &&
                 !string.Equals(CleanId(mention.Uid), CleanId(incoming.BotId), StringComparison.Ordinal)))
@@ -128,12 +119,12 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 
         var explicitMatches = owned.Where(session => MatchesExplicitSession(incoming.Content, session)).ToList();
         if (explicitMatches.Count == 1)
-            return await BuildSingleAsync(groupId, senderId, senderName, incoming.MessageId, explicitMatches[0], cancellationToken);
+            return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, explicitMatches[0], cancellationToken);
         if (explicitMatches.Count > 1)
             owned = explicitMatches;
 
         if (owned.Count == 1)
-            return await BuildSingleAsync(groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
+            return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
 
         var choices = string.Join(" với ", owned.Take(4).Select(session => session.Name));
         var who = FriendlyName(incoming.SenderName);
@@ -143,6 +134,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     }
 
     private async Task<ZaloMemberAssistReply?> BuildSingleAsync(
+        string connectionId,
         string groupId,
         string senderId,
         string senderName,
@@ -158,7 +150,16 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         if (session.StartTime is { } start && start < expiresAt) expiresAt = start;
         if (expiresAt <= now) return null;
 
+        DateTimeOffset? nextNudgeAt = now.Add(FirstNudgeDelay);
+        if (session.StartTime is { } sessionStart)
+        {
+            var urgentNudge = sessionStart.AddMinutes(-30);
+            if (urgentNudge > now.AddMinutes(5) && urgentNudge < nextNudgeAt) nextNudgeAt = urgentNudge;
+        }
+        if (nextNudgeAt >= expiresAt) nextNudgeAt = null;
+
         await new ZaloOpenSlotOfferStore(db).OpenAsync(
+            connectionId,
             groupId,
             senderId,
             owner.DisplayName,
@@ -166,12 +167,13 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             session.Name,
             sourceMessageId,
             expiresAt,
+            nextNudgeAt,
             cancellationToken);
 
         var who = FriendlyName(owner.DisplayName);
         return new ZaloMemberAssistReply(
             ZaloMemberAssistKind.PassSlotHelp,
-            $"{who} pass slot {session.Name} nha 🥲 Tui mở rồi, ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp.",
+            $"{who} pass slot {session.Name} nha 🥲 Tui mở rồi, ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp. Nếu tin bị trôi tui sẽ nhắc lại có chừng mực.",
             session.Id);
     }
 
