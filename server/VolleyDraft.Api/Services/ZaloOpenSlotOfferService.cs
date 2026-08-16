@@ -59,7 +59,7 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             return new(false, null);
 
         var pending = await store.LoadPendingClaimAsync(connectionId, groupId, senderId, cancellationToken);
-        if (pending?.ClaimExpiresAt is { } claimExpiresAt && claimExpiresAt <= DateTimeOffset.UtcNow)
+        if (pending?.ClaimExpiresAt is { } existingClaimExpiresAt && existingClaimExpiresAt <= DateTimeOffset.UtcNow)
         {
             await store.ReleaseClaimAsync(pending.Id, senderId, cancellationToken);
             pending = null;
@@ -152,14 +152,14 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         }
 
         var claimMinutes = session.Status == SessionStatus.Finished ? 10 : 20;
-        var claimExpiresAt = DateTimeOffset.UtcNow.AddMinutes(claimMinutes);
-        if (claimExpiresAt > offer.ExpiresAt) claimExpiresAt = offer.ExpiresAt;
+        var reservationExpiresAt = DateTimeOffset.UtcNow.AddMinutes(claimMinutes);
+        if (reservationExpiresAt > offer.ExpiresAt) reservationExpiresAt = offer.ExpiresAt;
         var claimed = await store.TryClaimAsync(
             offer,
             senderId,
             CleanName(incoming.SenderName),
             incoming.MessageId,
-            claimExpiresAt,
+            reservationExpiresAt,
             cancellationToken);
         if (!claimed)
             return new(true, "Slot vừa có người chạm trước rồi 😭 Tui refresh lại kèo nha.");
