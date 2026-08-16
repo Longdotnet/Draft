@@ -54,6 +54,26 @@ public sealed class ZaloOpenSlotOfferPreDraftTests
     }
 
     [Fact]
+    public async Task Member_who_already_has_pre_draft_slot_cannot_claim_another_offer()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var assist = new ZaloMemberAssistService(fixture.Db);
+        Assert.NotNull(await assist.TryBuildAsync("conn", "g1", Message("m1", "owner", "Hoàng Nguyên", "pass slot T6")));
+
+        await fixture.Db.SessionPlayers.Where(item => item.Id == "claimant-player")
+            .ExecuteUpdateAsync(update => update.SetProperty(item => item.IsPresent, true));
+        fixture.Db.ChangeTracker.Clear();
+
+        var result = await assist.TryBuildAsync("conn", "g1", Message("m2", "claimant", "Vivian", "tui nhận"));
+
+        Assert.NotNull(result);
+        Assert.Contains("đang có slot", result!.Text, StringComparison.OrdinalIgnoreCase);
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        Assert.Null(await store.LoadPendingClaimAsync("g1", "claimant"));
+        Assert.Single(await store.ListClaimableAsync("g1", "another"));
+    }
+
+    [Fact]
     public async Task Claim_that_mentions_unrelated_human_does_not_consume_offer()
     {
         await using var fixture = await Fixture.CreateAsync();
