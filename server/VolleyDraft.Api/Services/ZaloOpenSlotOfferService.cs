@@ -20,8 +20,12 @@ public sealed record ZaloOpenSlotOfferHandleResult(
 /// </summary>
 public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
 {
-    private static readonly Regex ClaimPattern = new(
-        @"^(?:(?:tui|toi|minh|em|anh|chi|tao)\s+(?:nhan|lay|hot|giu)|(?:de|cho)\s+(?:tui|toi|minh|em)(?:\s+(?:nhan|lay|hot|giu))?)(?:\s+(?:slot|suat|keo))?(?:\s+.{0,60})?[!?.]*$",
+    private static readonly Regex BareClaimPattern = new(
+        @"^(?:(?:tui|toi|minh|em|anh|chi|tao)\s+(?:nhan|lay|hot|giu)|(?:de|cho)\s+(?:tui|toi|minh|em)(?:\s+(?:nhan|lay|hot|giu))?)(?:\s+(?:nha|nhe|di|a|aa|voi|luon|hen|he))?[!?.]*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex QualifiedClaimPattern = new(
+        @"^(?:(?:tui|toi|minh|em|anh|chi|tao)\s+(?:nhan|lay|hot|giu)|(?:de|cho)\s+(?:tui|toi|minh|em)(?:\s+(?:nhan|lay|hot|giu))?)\s+(?:(?:slot|suat|keo)(?:\s+.{0,40})?|(?:t[2-7]|cn|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chu\s+nhat)(?:\s+.{0,20})?|cua\s+[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40})[!?.]*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex CancelOfferPattern = new(
@@ -38,7 +42,8 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
     public static bool IsClaimPhrase(string? content)
     {
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
-        return normalized.Length > 0 && ClaimPattern.IsMatch(normalized);
+        return normalized.Length > 0 &&
+               (BareClaimPattern.IsMatch(normalized) || QualifiedClaimPattern.IsMatch(normalized));
     }
 
     public async Task<ZaloOpenSlotOfferHandleResult> TryHandleAsync(
@@ -74,6 +79,22 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
 
         var offers = await store.ListClaimableAsync(groupId, senderId, cancellationToken);
         if (offers.Count == 0) return new(false, null);
+
+        // If the claimant explicitly mentions a human, only that human may be the
+        // source owner. A side conversation such as "@Nam tui nhận xét..." must not
+        // accidentally consume somebody else's open offer.
+        var humanMentionIds = incoming.Mentions
+            .Select(mention => CleanId(mention.Uid))
+            .Where(id => id.Length > 0 && !string.Equals(id, CleanId(incoming.BotId), StringComparison.Ordinal))
+            .ToHashSet(StringComparer.Ordinal);
+        if (humanMentionIds.Count > 0)
+        {
+            var mentionedOffers = offers
+                .Where(offer => humanMentionIds.Contains(offer.OwnerZaloUserId))
+                .ToList();
+            if (mentionedOffers.Count == 0) return new(false, null);
+            offers = mentionedOffers;
+        }
 
         var referenced = offers.Where(offer => MatchesOfferReference(incoming.Content, offer)).ToList();
         if (referenced.Count > 0) offers = referenced;
