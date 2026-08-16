@@ -26,14 +26,15 @@ public sealed record ZaloMemberAssistReply(
     string? SessionId = null);
 
 /// <summary>
-/// High-precision, read-only helper for ordinary group chatter where a member is
-/// clearly asking for help even though they did not address the bot. It never writes
-/// roster/team/slot state; it only offers the next useful step. Domain mutation keeps
-/// using the normal explicit/self-service confirmation path.
+/// High-precision helper for ordinary group chatter where a member is clearly
+/// offering their own slot even though they did not address the bot. The helper may
+/// open durable coordination state, but it never mutates roster/team/slot domain
+/// data. Actual transfer remains on a separate confirmed path.
 /// </summary>
 public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+    private static readonly TimeSpan OfferTtl = TimeSpan.FromHours(3);
 
     private static readonly Regex PassSlotPattern = new(
         @"(?<![a-z0-9])(?:pass|nhuong|tra|bo)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
@@ -70,7 +71,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         var senderName = (incoming.SenderName ?? string.Empty).Trim();
         if (connectionId.Length == 0 || groupId.Length == 0 || senderId.Length == 0) return null;
 
-        var cutoff = DateTimeOffset.UtcNow.AddHours(-4);
+        var now = DateTimeOffset.UtcNow;
         var sessions = await db.MatchSessions
             .AsNoTracking()
             .Include(session => session.Players)
@@ -78,28 +79,26 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             .Where(session => session.ZaloConnectionId == connectionId &&
                               session.ZaloGroupId == groupId &&
                               session.BotEnabled &&
-                              session.Status != SessionStatus.Cancelled &&
-                              (session.StartTime == null || session.StartTime >= cutoff))
+                              (session.Status == SessionStatus.Setup ||
+                               session.Status == SessionStatus.CaptainSelection ||
+                               session.Status == SessionStatus.Finished) &&
+                              (session.StartTime == null || session.StartTime > now))
             .ToListAsync(cancellationToken);
 
         var owned = sessions
-            .Where(session => session.Players.Any(player =>
-                player.IsPresent &&
-                ((player.PlayerProfile != null && CleanId(player.PlayerProfile.ZaloUserId) == senderId) ||
-                 (CleanId(player.PlayerProfile?.ZaloUserId).Length == 0 &&
-                  SameName(player.DisplayName, senderName)))))
+            .Where(session => ResolveOwner(session, senderId, senderName) is not null)
             .OrderBy(session => session.StartTime ?? DateTimeOffset.MaxValue)
             .ToList();
         if (owned.Count == 0) return null;
 
         var explicitMatches = owned.Where(session => MatchesExplicitSession(incoming.Content, session)).ToList();
         if (explicitMatches.Count == 1)
-            return BuildSingle(incoming.SenderName, explicitMatches[0]);
+            return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, explicitMatches[0], cancellationToken);
         if (explicitMatches.Count > 1)
             owned = explicitMatches;
 
         if (owned.Count == 1)
-            return BuildSingle(incoming.SenderName, owned[0]);
+            return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
 
         var choices = string.Join(" với ", owned.Take(4).Select(session => session.Name));
         var who = FriendlyName(incoming.SenderName);
@@ -108,13 +107,53 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             $"Pass kèo nào á {who} 😆 Tui thấy bạn có slot {choices}; nói T6/CN hoặc tên kèo là tui phụ tiếp nha.");
     }
 
-    private static ZaloMemberAssistReply BuildSingle(string? senderName, MatchSession session)
+    private async Task<ZaloMemberAssistReply?> BuildSingleAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string senderName,
+        string sourceMessageId,
+        MatchSession session,
+        CancellationToken cancellationToken)
     {
-        var who = FriendlyName(senderName);
+        var owner = ResolveOwner(session, senderId, senderName);
+        if (owner is null) return null;
+
+        var now = DateTimeOffset.UtcNow;
+        var expiresAt = now.Add(OfferTtl);
+        if (session.StartTime is { } start && start < expiresAt) expiresAt = start;
+        if (expiresAt <= now) return null;
+
+        await new ZaloOpenSlotOfferStore(db).OpenAsync(
+            groupId,
+            senderId,
+            owner.DisplayName,
+            session.Id,
+            session.Name,
+            sourceMessageId,
+            expiresAt,
+            cancellationToken);
+
+        var who = FriendlyName(owner.DisplayName);
         return new ZaloMemberAssistReply(
             ZaloMemberAssistKind.PassSlotHelp,
-            $"{who} pass slot {session.Name} hả 🥲 Ai nhận thì nói tên người nhận, tui phụ chuyển slot tiếp nha.",
+            $"{who} pass slot {session.Name} nha 🥲 Tui mở rồi, ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp.",
             session.Id);
+    }
+
+    private static SessionPlayer? ResolveOwner(MatchSession session, string senderId, string senderName)
+    {
+        var byUid = session.Players.FirstOrDefault(player =>
+            player.IsPresent && player.PlayerProfile != null && CleanId(player.PlayerProfile.ZaloUserId) == senderId);
+        if (byUid is not null) return byUid;
+
+        var matches = session.Players
+            .Where(player => player.IsPresent &&
+                             CleanId(player.PlayerProfile?.ZaloUserId).Length == 0 &&
+                             SameName(player.DisplayName, senderName))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
     }
 
     private static bool MatchesExplicitSession(string? content, MatchSession session)
