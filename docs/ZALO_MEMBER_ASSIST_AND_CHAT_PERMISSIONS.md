@@ -4,15 +4,35 @@ This rollout moves NPC from a command-only bot toward a useful group member whil
 
 ## Member-assist rule
 
-An ordinary unmentioned group message may trigger a **read-only help offer** when the meaning is high-confidence and useful. The first supported opportunity is a member clearly offering to pass their own slot, including common chat variants such as `pass slot` and `pass sỉ lót`.
+An ordinary unmentioned group message may trigger a **high-confidence help opportunity** when the meaning is useful. The first supported opportunity is a member clearly offering to pass their own slot, including common chat variants such as `pass slot` and `pass sỉ lót`.
 
 The ambient helper may:
 
 - identify the sender's current/upcoming session from authoritative roster data;
 - ask which session when more than one is possible;
-- tell the member how to continue the transfer flow naturally.
+- open a group-scoped coordination offer for a verified member-owned slot;
+- let another member naturally say `tui nhận`, `tui lấy`, `để tui`, or `tui nhận T6`;
+- reserve that offer for one claimant and ask for the next safe step.
 
-The ambient helper may **not** mutate roster, slot, team, preference, waitlist, profile or reminder state. Actual changes stay on the existing explicit/confirmed domain path.
+The ambient helper may write **coordination state only**. Opening or reserving an offer does not change roster, team, draft slot, preference, waitlist, profile, reminder, or poll state.
+
+### Open-slot coordination
+
+A typical conversation is:
+
+1. Hoàng says `em pass slot T6 nha` without mentioning NPC.
+2. NPC verifies Hoàng currently owns that participation and opens an `OpenSlotOffer` with a short TTL capped by session start.
+3. Vivian says `tui nhận` without mentioning NPC.
+4. NPC reserves the offer for Vivian. A second claimant cannot steal the same pending offer.
+5. If the session is pre-draft (`Setup` / `CaptainSelection`), NPC does **not** modify registration. Hoàng must leave the linked poll option and Vivian must vote it; NPC only verifies the resulting authoritative roster after the sync.
+6. If the session is already `Finished` but has not started, NPC previews the existing safe post-draft transfer and asks Vivian to say `chốt`.
+7. Only that claimant confirmation may call the existing post-draft transfer service; the service revalidates source slot, target, session state, start time and action lease.
+
+A member who already owns a pre-draft slot in that session cannot claim another open slot because poll membership represents one participation per member. They should use `ShareSlot` or a team-preference workflow instead if that is what they mean.
+
+Claims are intentionally narrow. Generic chat such as `tui nhận xét team này đẹp` is not treated as a slot claim. When a claimant explicitly mentions a human, only an open offer owned by that mentioned user is eligible.
+
+The owner may cancel an open pass before completion. A pending claimant may also cancel and release the offer for somebody else.
 
 ## Self-service boundary
 
@@ -47,9 +67,12 @@ Short plain-text wake turns such as `Bot ơi` are answered by the deterministic 
 ## Safety invariants
 
 - Database/poll state remains authoritative.
-- Ambient assistance never performs a write.
+- Ambient assistance may persist coordination state, but it does not directly mutate domain roster/team/slot data.
+- Pre-draft registration remains poll-authoritative.
+- Post-draft open-slot transfer requires the reserved claimant to confirm and then goes through the existing safe transfer service.
+- Offer claim uses version/status transitions so the first valid claimant wins and duplicate apply attempts do not perform duplicate domain writes.
 - Self-service requires stable sender identity; name-only ambiguity never authorizes mutation.
 - A different stored UID is never replaced silently.
 - Delegated member changes still require authorization.
 - Only live Zalo group-role authority can grant or revoke configured operators.
-- Duplicate webhook delivery remains protected by the existing message/idempotency infrastructure.
+- Duplicate webhook delivery remains protected by the existing message/idempotency infrastructure plus offer/apply state transitions.
