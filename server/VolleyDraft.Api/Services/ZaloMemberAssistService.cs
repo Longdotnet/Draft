@@ -17,7 +17,8 @@ public sealed record ZaloMemberAssistSettings(bool Enabled)
 public enum ZaloMemberAssistKind
 {
     None,
-    PassSlotHelp
+    PassSlotHelp,
+    OpenSlotClaim
 }
 
 public sealed record ZaloMemberAssistReply(
@@ -26,10 +27,10 @@ public sealed record ZaloMemberAssistReply(
     string? SessionId = null);
 
 /// <summary>
-/// High-precision helper for ordinary group chatter where a member is clearly
-/// offering their own slot even though they did not address the bot. The helper may
-/// open durable coordination state, but it never mutates roster/team/slot domain
-/// data. Actual transfer remains on a separate confirmed path.
+/// High-precision helper for ordinary group chatter where members are coordinating
+/// a slot without explicitly addressing the bot. Opening/claiming an offer writes
+/// only coordination state. A real post-draft slot transfer is delegated to the
+/// existing confirmed domain service and pre-draft registration remains poll-owned.
 /// </summary>
 public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 {
@@ -56,6 +57,21 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        // Continue an already-open group offer before looking for a new pass phrase.
+        // This is how another member can simply say "tui nhận" / "chốt" without a
+        // fresh @mention. The offer service owns all revalidation and write safety.
+        var offerTurn = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
+            connectionId,
+            groupId,
+            incoming,
+            cancellationToken);
+        if (offerTurn.Handled && !string.IsNullOrWhiteSpace(offerTurn.Response))
+        {
+            return new ZaloMemberAssistReply(
+                ZaloMemberAssistKind.OpenSlotClaim,
+                offerTurn.Response!);
+        }
+
         if (!IsPassSlotHelpOpportunity(incoming.Content)) return null;
 
         // If the message explicitly points at another human, do not guess that the
@@ -93,12 +109,12 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 
         var explicitMatches = owned.Where(session => MatchesExplicitSession(incoming.Content, session)).ToList();
         if (explicitMatches.Count == 1)
-            return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, explicitMatches[0], cancellationToken);
+            return await BuildSingleAsync(groupId, senderId, senderName, incoming.MessageId, explicitMatches[0], cancellationToken);
         if (explicitMatches.Count > 1)
             owned = explicitMatches;
 
         if (owned.Count == 1)
-            return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
+            return await BuildSingleAsync(groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
 
         var choices = string.Join(" với ", owned.Take(4).Select(session => session.Name));
         var who = FriendlyName(incoming.SenderName);
@@ -108,7 +124,6 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     }
 
     private async Task<ZaloMemberAssistReply?> BuildSingleAsync(
-        string connectionId,
         string groupId,
         string senderId,
         string senderName,
