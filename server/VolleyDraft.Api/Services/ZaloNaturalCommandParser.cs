@@ -202,7 +202,7 @@ public static class ZaloNaturalCommandParser
         {
             match = Regex.Match(
                 value,
-                @"^(?<first>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:chung|cùng|cung)\s+(?:team|đội|doi)\s+(?:với|voi)\s+(?<second>.+)$",
+                @"^(?:(?:xếp|xep|cho)\s+)?(?<first>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:chung|cùng|cung)\s+(?:team|đội|doi)\s+(?:với|voi)\s+(?<second>.+)$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
         if (!match.Success)
@@ -298,7 +298,7 @@ public static class ZaloNaturalCommandParser
         {
             match = Regex.Match(
                 value,
-                @"^(?<anchor>.+?)\s+(?:muốn\s+|muon\s+)?(?:(?:share|chung|đánh\s+chung|danh\s+chung|chơi\s+chung|choi\s+chung)\s+(?:một\s+|mot\s+)?slot|thay\s+phiên|thay\s+phien)\s+(?:với|voi)\s+(?<partners>.+)$",
+                @"^(?<anchor>.+?)\s+(?:muốn\s+|muon\s+)?(?:(?:share|chung|đánh\s+chung|danh\s+chung|chơi\s+chung|choi\s+chung)\s+(?:một\s+|mot\s+)?slot|thay\s+phiên|thay\s+phien)\s+(?:với|voi|cho)\s+(?<partners>.+)$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
         if (!match.Success)
