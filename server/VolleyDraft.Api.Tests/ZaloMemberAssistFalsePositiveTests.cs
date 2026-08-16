@@ -11,17 +11,12 @@ public sealed class ZaloMemberAssistFalsePositiveTests
     [InlineData("slot còn mấy chỗ")]
     [InlineData("ai share slot với tui")]
     [InlineData("đừng pass kèo nha")]
-    public void Common_group_chat_does_not_accidentally_open_pass_slot_help(string text)
+    [InlineData("thôi pass slot")]
+    [InlineData("huỷ pass T6")]
+    [InlineData("không pass nữa")]
+    [InlineData("đừng bỏ slot nha")]
+    public void Common_or_negated_group_chat_does_not_accidentally_open_pass_slot_help(string text)
     {
-        var detected = ZaloMemberAssistService.IsPassSlotHelpOpportunity(text);
-        if (text == "đừng pass kèo nha")
-        {
-            // Negation is intentionally conservative: the lexical detector may see
-            // the phrase, but ambient production still requires the sender to own a
-            // matching session. Keep this documented rather than pretending the
-            // parser understands every social negation deterministically.
-            return;
-        }
-        Assert.False(detected);
+        Assert.False(ZaloMemberAssistService.IsPassSlotHelpOpportunity(text));
     }
 }
