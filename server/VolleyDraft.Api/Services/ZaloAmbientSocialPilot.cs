@@ -102,12 +102,15 @@ public sealed class ZaloAmbientSocialResponder
 
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         var capabilityQuestion = CapabilityQuestionPattern.IsMatch(normalizedIncoming);
+        var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
         // Human vocatives such as "Nam ơi ..." always move the turn away from the
-        // bot, including when a lease exists. Wake phrases are the only exception.
-        if (!wakeTurn && HumanVocativePattern.IsMatch(normalizedIncoming))
+        // bot, including when a lease exists. Resolve address first so "Bot ơi ..."
+        // and "Npc ơi ..." are not mistaken for member vocatives.
+        if (!wakeTurn &&
+            address.Target == ZaloConversationalTarget.AnotherMember &&
+            HumanVocativePattern.IsMatch(normalizedIncoming))
             return null;
 
-        var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
         var directlyAddressed = address.Target == ZaloConversationalTarget.Bot && address.Confidence >= .9;
         if (!leaseTurn && !directlyAddressed)
             return null;
