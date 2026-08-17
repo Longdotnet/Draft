@@ -44,6 +44,9 @@ public sealed class ZaloAmbientSocialResponder
     private static readonly Regex HumanVocativePattern = new(
         @"^[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40}\s+oi\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex BotVocativePattern = new(
+        @"^(?:bot|npc|con\s+bot|thang\s+bot|cai\s+bot)\s+oi\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex CapabilityQuestionPattern = new(
         @"(?:(?<![a-z0-9])(?:bot|npc)(?![a-z0-9]).*(?:kha\s+nang|chuc\s+nang|lam\s+duoc\s+gi|giup\s+duoc\s+gi|co\s+the\s+lam\s+gi))|(?:(?:kha\s+nang|chuc\s+nang).*(?:gi|nao))",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -103,12 +106,12 @@ public sealed class ZaloAmbientSocialResponder
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         var capabilityQuestion = CapabilityQuestionPattern.IsMatch(normalizedIncoming);
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
-        // Human vocatives such as "Nam ơi ..." always move the turn away from the
-        // bot, including when a lease exists. Resolve address first so "Bot ơi ..."
-        // and "Npc ơi ..." are not mistaken for member vocatives.
+        // "Nam ơi con bot..." is still a human-thread message even though the text
+        // later contains "bot". Only a vocative whose subject itself is Bot/NPC is
+        // allowed to continue as a direct bot address.
         if (!wakeTurn &&
-            address.Target == ZaloConversationalTarget.AnotherMember &&
-            HumanVocativePattern.IsMatch(normalizedIncoming))
+            HumanVocativePattern.IsMatch(normalizedIncoming) &&
+            !BotVocativePattern.IsMatch(normalizedIncoming))
             return null;
 
         var directlyAddressed = address.Target == ZaloConversationalTarget.Bot && address.Confidence >= .9;
