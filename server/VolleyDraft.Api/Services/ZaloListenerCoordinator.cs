@@ -157,15 +157,15 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
-                var autoSessions = ZaloAutoSessionService.Create(scope.ServiceProvider);
-                await autoSessions.EnsureTrackedGroupsAsync(stoppingToken);
+                var autoSessions = ZaloAutoSessionV2Service.Create(scope.ServiceProvider);
+                await autoSessions.EnsureAsync(stoppingToken);
                 await scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>()
                     .EnsureAllAsync(stoppingToken);
                 await autoSessions.ReconcileAsync(stoppingToken);
             }
             catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
             {
-                logger.LogError(exception, "Zalo listener/auto-session reconciliation failed");
+                logger.LogError(exception, "Zalo listener/auto-session v2 reconciliation failed");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken);

@@ -49,21 +49,20 @@ public sealed class ZaloPollEventWorker(
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
                 var integration = scope.ServiceProvider.GetRequiredService<ZaloIntegrationService>();
                 var overbook = scope.ServiceProvider.GetRequiredService<ZaloOverbookService>();
-                var waitlist = scope.ServiceProvider.GetRequiredService<SessionWaitlistService>();
                 var activityBackfill = scope.ServiceProvider.GetRequiredService<ZaloActivityBackfillCoordinator>();
                 var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
                 var bridgeClient = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
 
                 try
                 {
-                    await ZaloAutoSessionService.Create(scope.ServiceProvider)
+                    await ZaloAutoSessionV2Service.Create(scope.ServiceProvider)
                         .ObservePollBoardEventAsync(incoming, stoppingToken);
                 }
                 catch (Exception exception)
                 {
                     logger.LogWarning(
                         exception,
-                        "Auto-session poll discovery skipped Account={AccountId} Group={GroupId}",
+                        "Auto-session organizer preview skipped Account={AccountId} Group={GroupId}",
                         accountId,
                         groupId);
                 }
@@ -149,7 +148,9 @@ public sealed class ZaloPollEventWorker(
                     {
                         logger.LogDebug(exception, "Overbook observation skipped Session={SessionId}", session.Id);
                     }
-                    await waitlist.ProcessVacanciesAsync(session.Id, stoppingToken);
+                    // Intentionally no automatic waitlist vacancy processing here.
+                    // When a voter leaves, the freed slot stays open on Zalo and whoever
+                    // votes first takes it. This matches the group's real-world rule.
                 }
                 if (sessions.Count > 0)
                     logger.LogInformation("Processed Zalo poll board event Account={AccountId} Group={GroupId} Sessions={Count}", accountId, groupId, sessions.Count);
