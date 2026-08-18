@@ -30,11 +30,14 @@ public sealed class ZaloAutoSessionObservabilityService(VolleyDraftDbContext db)
 
         var sessionFacts = await LoadSessionFactsAsync(adminUserId, sessionIds, cancellationToken);
         var lastSyncs = await LoadLastSyncsAsync(sessionIds, pollIds.ToList(), cancellationToken);
+        var overbookStates = await LoadOverbookStatesAsync(sessionIds, cancellationToken);
         var linkMap = links
             .GroupBy(item => Key(item.PollId, item.OptionId), StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.CreatedAt).First(), StringComparer.Ordinal);
 
-        var items = proposals.Select(proposal => ToProposal(proposal, linkMap, sessionFacts, lastSyncs)).ToList();
+        var items = proposals
+            .Select(proposal => ToProposal(proposal, linkMap, sessionFacts, lastSyncs, overbookStates))
+            .ToList();
         return ServiceResult<ZaloAutoSessionActivityResponse>.Success(new ZaloAutoSessionActivityResponse(
             tracked.Id,
             tracked.GroupId,
@@ -82,14 +85,36 @@ public sealed class ZaloAutoSessionObservabilityService(VolleyDraftDbContext db)
             .ToDictionary(group => group.Key, group => group.Max(item => item.ImportedAt), StringComparer.Ordinal);
     }
 
+    private async Task<Dictionary<string, ZaloOverbookStateData>> LoadOverbookStatesAsync(
+        IReadOnlyList<string> sessionIds,
+        CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<string, ZaloOverbookStateData>(StringComparer.Ordinal);
+        if (sessionIds.Count == 0) return result;
+        var stateStore = new ZaloOverbookStateStore(db);
+        foreach (var sessionId in sessionIds.Distinct(StringComparer.Ordinal))
+        {
+            var state = await stateStore.GetAsync(sessionId, cancellationToken);
+            if (state is not null) result[sessionId] = state;
+        }
+        return result;
+    }
+
     private static ZaloAutoSessionProposalActivityResponse ToProposal(
         ZaloPollSessionProposalData proposal,
         IReadOnlyDictionary<string, ZaloAutoSessionLinkData> linkMap,
         IReadOnlyDictionary<string, SessionFact> sessionFacts,
-        IReadOnlyDictionary<string, DateTimeOffset> lastSyncs)
+        IReadOnlyDictionary<string, DateTimeOffset> lastSyncs,
+        IReadOnlyDictionary<string, ZaloOverbookStateData> overbookStates)
     {
         var candidates = DeserializeCandidates(proposal.CandidatesJson)
-            .Select(candidate => ToCandidate(proposal.PollId, candidate, linkMap, sessionFacts, lastSyncs))
+            .Select(candidate => ToCandidate(
+                proposal.PollId,
+                candidate,
+                linkMap,
+                sessionFacts,
+                lastSyncs,
+                overbookStates))
             .OrderBy(item => item.StartTime)
             .ToList();
         return new ZaloAutoSessionProposalActivityResponse(
@@ -114,14 +139,17 @@ public sealed class ZaloAutoSessionObservabilityService(VolleyDraftDbContext db)
         ZaloAutoSessionCandidate candidate,
         IReadOnlyDictionary<string, ZaloAutoSessionLinkData> linkMap,
         IReadOnlyDictionary<string, SessionFact> sessionFacts,
-        IReadOnlyDictionary<string, DateTimeOffset> lastSyncs)
+        IReadOnlyDictionary<string, DateTimeOffset> lastSyncs,
+        IReadOnlyDictionary<string, ZaloOverbookStateData> overbookStates)
     {
         linkMap.TryGetValue(Key(pollId, candidate.OptionId), out var link);
         SessionFact? session = null;
+        ZaloOverbookStateData? overbook = null;
         DateTimeOffset? lastSync = null;
         if (link is not null)
         {
             sessionFacts.TryGetValue(link.SessionId, out session);
+            overbookStates.TryGetValue(link.SessionId, out overbook);
             if (lastSyncs.TryGetValue(Key(link.SessionId, pollId), out var value)) lastSync = value;
         }
         return new ZaloAutoSessionCandidateActivityResponse(
@@ -135,7 +163,10 @@ public sealed class ZaloAutoSessionObservabilityService(VolleyDraftDbContext db)
             session?.Status,
             session?.PresentPlayerCount,
             session?.Capacity,
-            lastSync);
+            lastSync,
+            overbook?.EffectiveSlotCount,
+            overbook?.ExcessSlotCount,
+            overbook?.NeedsConfirmation);
     }
 
     private static IReadOnlyList<ZaloAutoSessionCandidate> DeserializeCandidates(string json)
