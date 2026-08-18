@@ -210,15 +210,17 @@ internal sealed class ZaloAutoSessionService(
 
                 var selected = ZaloPollScheduleParser.SelectFromApproval(confirmation.Content, candidates);
                 if (selected.Count == 0) continue;
+
+                // Approved is deliberately transient. We only persist Created in the same
+                // transaction as the sessions. A crash before CreateSessionsAsync therefore
+                // leaves AwaitingApproval intact, so the exact reply can be replayed safely.
                 proposal.Status = ZaloPollSessionProposalStatus.Approved;
                 proposal.ApprovedByZaloUserId = NormalizeId(confirmation.SenderId);
                 proposal.ApprovedAt = DateTimeOffset.UtcNow;
                 proposal.LastError = null;
-                await store.UpsertProposalAsync(proposal, cancellationToken);
                 await CreateSessionsAsync(
                     tracked,
                     connection,
-                    credentials,
                     currentPoll,
                     proposal,
                     selected,
@@ -243,12 +245,29 @@ internal sealed class ZaloAutoSessionService(
         var existing = await store.GetProposalAsync(tracked.Id, poll.Id, cancellationToken);
         if (existing is not null && string.Equals(existing.PollStructureHash, structureHash, StringComparison.Ordinal))
         {
-            if (existing.Status != ZaloPollSessionProposalStatus.Failed ||
-                DateTimeOffset.UtcNow - existing.UpdatedAt < TimeSpan.FromMinutes(10))
+            if (existing.Status == ZaloPollSessionProposalStatus.Failed)
+            {
+                if (DateTimeOffset.UtcNow - existing.UpdatedAt < TimeSpan.FromMinutes(10)) return;
+            }
+            else if (existing.Status == ZaloPollSessionProposalStatus.AwaitingApproval &&
+                     string.IsNullOrWhiteSpace(existing.ProposalMessageId))
+            {
+                // The process may have died after persisting AwaitingApproval but before the
+                // provider message id was stored. Re-send using the same idempotency key.
+            }
+            else if (existing.Status == ZaloPollSessionProposalStatus.Approved)
+            {
+                // Recover legacy/interrupted transient state by rebuilding a fresh proposal.
+                existing.Status = ZaloPollSessionProposalStatus.Failed;
+                existing.LastError = "recovering_approved_without_created";
+            }
+            else
+            {
                 return;
+            }
         }
 
-        var candidates = ZaloPollScheduleParser.ExtractCandidates(poll, tracked);
+        var parsedCandidates = ZaloPollScheduleParser.ExtractCandidates(poll, tracked);
         var proposal = existing ?? new ZaloPollSessionProposalData
         {
             Id = Guid.NewGuid().ToString("n"),
@@ -260,21 +279,37 @@ internal sealed class ZaloAutoSessionService(
         proposal.PollCreatorId = NormalizeId(poll.CreatorId);
         proposal.PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs;
         proposal.PollStructureHash = structureHash;
-        proposal.CandidatesJson = JsonSerializer.Serialize(candidates, JsonOptions);
         proposal.ProposalMessageId = null;
         proposal.ApprovedByZaloUserId = null;
         proposal.ApprovedAt = null;
         proposal.LastError = null;
 
-        if (poll.IsAnonymous || poll.IsClosed || candidates.Count == 0)
+        if (poll.IsAnonymous || poll.IsClosed || parsedCandidates.Count == 0)
         {
+            proposal.CandidatesJson = JsonSerializer.Serialize(parsedCandidates, JsonOptions);
             proposal.Status = ZaloPollSessionProposalStatus.Ignored;
             proposal.ClassifierConfidence = 0;
             proposal.ClassifierReason = poll.IsAnonymous
                 ? "anonymous_poll"
                 : poll.IsClosed
                     ? "closed_poll"
-                    : "no_schedule_option";
+                    : "no_current_schedule_option";
+            await store.UpsertProposalAsync(proposal, cancellationToken);
+            return;
+        }
+
+        var candidates = new List<ZaloAutoSessionCandidate>();
+        foreach (var candidate in parsedCandidates)
+        {
+            var linked = await store.GetLinkAsync(tracked.Id, poll.Id, candidate.OptionId, cancellationToken);
+            if (linked is null) candidates.Add(candidate);
+        }
+        proposal.CandidatesJson = JsonSerializer.Serialize(candidates, JsonOptions);
+        if (candidates.Count == 0)
+        {
+            proposal.Status = ZaloPollSessionProposalStatus.Created;
+            proposal.ClassifierConfidence = 1;
+            proposal.ClassifierReason = "all_schedule_options_already_linked";
             await store.UpsertProposalAsync(proposal, cancellationToken);
             return;
         }
@@ -305,11 +340,9 @@ internal sealed class ZaloAutoSessionService(
             proposal.Status = ZaloPollSessionProposalStatus.Approved;
             proposal.ApprovedByZaloUserId = NormalizeId(poll.CreatorId);
             proposal.ApprovedAt = DateTimeOffset.UtcNow;
-            proposal = await store.UpsertProposalAsync(proposal, cancellationToken);
             await CreateSessionsAsync(
                 tracked,
                 connection,
-                credentials,
                 poll,
                 proposal,
                 candidates,
@@ -321,7 +354,7 @@ internal sealed class ZaloAutoSessionService(
         proposal.Status = ZaloPollSessionProposalStatus.AwaitingApproval;
         proposal = await store.UpsertProposalAsync(proposal, cancellationToken);
         var memberNames = await ResolveNamesAsync(credentials, organizerIds);
-        var body = BuildProposalBody(poll, candidates, tracked.DefaultTeamCount * tracked.DefaultTeamSize);
+        var body = BuildProposalBody(poll, candidates, 3 * Math.Max(2, tracked.DefaultTeamSize));
         var outgoing = BuildMentionMessage(organizerIds, memberNames, body);
         try
         {
@@ -355,7 +388,6 @@ internal sealed class ZaloAutoSessionService(
     private async Task CreateSessionsAsync(
         ZaloTrackedGroupData tracked,
         ZaloConnection connection,
-        JsonElement credentials,
         BridgePoll poll,
         ZaloPollSessionProposalData proposal,
         IReadOnlyList<ZaloAutoSessionCandidate> selected,
