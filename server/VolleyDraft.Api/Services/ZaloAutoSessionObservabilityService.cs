@@ -29,7 +29,7 @@ public sealed class ZaloAutoSessionObservabilityService(VolleyDraftDbContext db)
         var sessionIds = links.Select(item => item.SessionId).Distinct(StringComparer.Ordinal).ToList();
 
         var sessionFacts = await LoadSessionFactsAsync(adminUserId, sessionIds, cancellationToken);
-        var lastSyncs = await LoadLastSyncsAsync(sessionIds, pollIds, cancellationToken);
+        var lastSyncs = await LoadLastSyncsAsync(sessionIds, pollIds.ToList(), cancellationToken);
         var linkMap = links
             .GroupBy(item => Key(item.PollId, item.OptionId), StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.CreatedAt).First(), StringComparer.Ordinal);
@@ -68,7 +68,7 @@ public sealed class ZaloAutoSessionObservabilityService(VolleyDraftDbContext db)
 
     private async Task<Dictionary<string, DateTimeOffset>> LoadLastSyncsAsync(
         IReadOnlyList<string> sessionIds,
-        IReadOnlySet<string> pollIds,
+        IReadOnlyList<string> pollIds,
         CancellationToken cancellationToken)
     {
         if (sessionIds.Count == 0 || pollIds.Count == 0) return new(StringComparer.Ordinal);
