@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -89,6 +90,73 @@ public sealed class ZaloAutoSessionStoreTests
         }
 
         Assert.Null(await store.GetLinkAsync("tracked-1", "poll-1", "option-cn"));
+    }
+
+    [Fact]
+    public async Task SeedFromExistingSessions_BackfillsManualPollImportsAsClaims()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var admin = new User
+        {
+            Id = "admin-1",
+            DisplayName = "Admin",
+            Email = "admin@example.test",
+            PasswordHash = "hash"
+        };
+        var zalo = new ZaloConnection
+        {
+            Id = "connection-1",
+            AdminUserId = admin.Id,
+            AccountZaloId = "zalo-account-1",
+            DisplayName = "Zalo Admin",
+            EncryptedCredentials = "encrypted"
+        };
+        var session = new MatchSession
+        {
+            Id = "session-existing",
+            Name = "T6 existing",
+            AdminUserId = admin.Id,
+            ZaloConnectionId = zalo.Id,
+            ZaloGroupId = "group-1",
+            ZaloGroupName = "Volley Group"
+        };
+        var import = new PollImport
+        {
+            Id = "import-1",
+            SessionId = session.Id,
+            ImportedByUserId = admin.Id,
+            ZaloGroupId = "group-1",
+            PollId = "poll-existing",
+            PollQuestion = "Bóng tuần này",
+            SelectedOptionIdsJson = "[\"option-t6\",\"option-cn\"]",
+            ImportedAt = DateTimeOffset.UtcNow
+        };
+        db.Users.Add(admin);
+        db.ZaloConnections.Add(zalo);
+        db.MatchSessions.Add(session);
+        db.PollImports.Add(import);
+        await db.SaveChangesAsync();
+
+        var store = new ZaloAutoSessionStore(db);
+        await store.SeedFromExistingSessionsAsync();
+
+        await using var trackedCommand = connection.CreateCommand();
+        trackedCommand.CommandText = "SELECT \"Id\" FROM \"ZaloTrackedGroups\" WHERE \"ZaloConnectionId\"='connection-1' AND \"GroupId\"='group-1';";
+        var trackedGroupId = Convert.ToString(await trackedCommand.ExecuteScalarAsync());
+        Assert.False(string.IsNullOrWhiteSpace(trackedGroupId));
+        Assert.Equal(
+            session.Id,
+            (await store.GetLinkAsync(trackedGroupId!, "poll-existing", "option-t6"))?.SessionId);
+        Assert.Equal(
+            session.Id,
+            (await store.GetLinkAsync(trackedGroupId!, "poll-existing", "option-cn"))?.SessionId);
     }
 
     [Fact]
