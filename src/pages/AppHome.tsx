@@ -3,6 +3,7 @@ import { Volleyball } from "lucide-react";
 import { DbDraftFlow } from "../components/DbDraftFlow";
 import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
 import { ZaloAutoSessionAdminPanel } from "../components/ZaloAutoSessionAdminPanel";
+import { ZaloAutoSessionAuditPanel } from "../components/ZaloAutoSessionAuditPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
 function getIsMobileViewport() {
@@ -44,6 +45,7 @@ export function AppHome() {
         <>
           <DbDraftFlow />
           <ZaloAutoSessionAdminPanel />
+          <ZaloAutoSessionAuditPanel />
           <ZaloOverbookAdminPanel />
         </>
       )}
