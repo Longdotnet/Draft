@@ -64,6 +64,34 @@ public sealed class ZaloAutoSessionStoreTests
     }
 
     [Fact]
+    public async Task AddLinkAsync_ParticipatesInCurrentEfTransaction()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloAutoSessionStore(db);
+        await store.EnsureAsync();
+
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            await store.AddLinkAsync(new ZaloAutoSessionLinkData(
+                "link-rollback",
+                "tracked-1",
+                "poll-1",
+                "option-cn",
+                "session-rollback",
+                DateTimeOffset.UtcNow));
+            Assert.NotNull(await store.GetLinkAsync("tracked-1", "poll-1", "option-cn"));
+            await transaction.RollbackAsync();
+        }
+
+        Assert.Null(await store.GetLinkAsync("tracked-1", "poll-1", "option-cn"));
+    }
+
+    [Fact]
     public async Task UpsertProposal_StructureChangeReplacesPendingProposalFacts()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
