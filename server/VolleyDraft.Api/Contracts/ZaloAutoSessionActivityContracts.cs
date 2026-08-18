@@ -13,7 +13,10 @@ public sealed record ZaloAutoSessionCandidateActivityResponse(
     SessionStatus? SessionStatus,
     int? PresentPlayerCount,
     int? Capacity,
-    DateTimeOffset? LastRosterSyncAt);
+    DateTimeOffset? LastRosterSyncAt,
+    int? EffectiveSlotCount,
+    int? ExcessSlotCount,
+    bool? OverbookNeedsConfirmation);
 
 public sealed record ZaloAutoSessionProposalActivityResponse(
     string Id,
