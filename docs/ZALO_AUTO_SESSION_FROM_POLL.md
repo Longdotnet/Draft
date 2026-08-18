@@ -57,7 +57,7 @@ AI never authorizes a write. The write path requires all of these:
 
 The structure hash intentionally excludes voter ids/counts. A normal 18 -> 19 vote update must not invalidate a pending organizer proposal. It changes only when the poll question/options or relevant poll structure changes.
 
-## Tracking bootstrap
+## Tracking bootstrap and admin UI
 
 The first rollout seeds `ZaloTrackedGroups` from groups that have already been linked to at least one `MatchSession`. Once seeded, the listener keeps the group subscribed independently of active sessions, which removes the old circular dependency:
 
@@ -65,7 +65,22 @@ The first rollout seeds `ZaloTrackedGroups` from groups that have already been l
 need session -> to listen group -> to discover poll -> to create session
 ```
 
-A future admin UI can expose tracked-group settings directly. Until then, an existing linked group is the bootstrap signal.
+The desktop admin UI also allows selecting any group from an owned connected Zalo account and enabling Auto Session before that group has ever had a MatchSession. The backend validates that the group is still visible to that Zalo connection and reconciles the listener immediately after enable/disable changes.
+
+## Per-group settings
+
+The admin panel exposes these persisted settings:
+
+- enable/disable Auto Session;
+- require current group creator/admin approval before session creation;
+- player count per team (team count remains fixed at 3 for the MVP);
+- total sets;
+- default start time used when a poll option has a weekday but no explicit time;
+- whether hours `1..11` should be interpreted as PM for weekly volleyball polls;
+- default location;
+- whether auto-created sessions start with the Zalo bot enabled.
+
+Disabling organizer approval is explicit in the UI because it changes the authorization boundary: an accepted organizer-created poll can then create sessions without a second confirmation message.
 
 ## Default schedule behavior
 
@@ -116,7 +131,3 @@ TrackedGroupId + PollId + OptionId
 ```
 
 The link is claimed before the session is inserted inside the same database transaction. Multiple event deliveries or multiple reconciliation passes therefore converge on the same session instead of duplicating it.
-
-## Current rollout limitation
-
-The feature does not yet add a frontend screen to enable/disable tracked groups or change per-group defaults. The backend store already preserves those fields so the UI can be added without changing the poll/session orchestration contract.

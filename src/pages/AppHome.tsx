@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Volleyball } from "lucide-react";
 import { DbDraftFlow } from "../components/DbDraftFlow";
 import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
+import { ZaloAutoSessionAdminPanel } from "../components/ZaloAutoSessionAdminPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
 function getIsMobileViewport() {
@@ -42,6 +43,7 @@ export function AppHome() {
       ) : (
         <>
           <DbDraftFlow />
+          <ZaloAutoSessionAdminPanel />
           <ZaloOverbookAdminPanel />
         </>
       )}
