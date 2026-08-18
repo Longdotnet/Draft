@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
@@ -187,7 +188,59 @@ internal sealed class ZaloAutoSessionStore(VolleyDraftDbContext db)
             AddParameter(command, "@UpdatedAt", FormatDate(now));
             seeded += await command.ExecuteNonQueryAsync(cancellationToken) > 0 ? 1 : 0;
         }
+
+        await SeedLinksFromExistingPollImportsAsync(cancellationToken);
         return seeded;
+    }
+
+    private async Task SeedLinksFromExistingPollImportsAsync(CancellationToken cancellationToken)
+    {
+        var imports = await db.PollImports
+            .AsNoTracking()
+            .Where(import => import.Session.ZaloConnectionId != null && import.Session.ZaloGroupId != null)
+            .Select(import => new
+            {
+                import.SessionId,
+                import.PollId,
+                import.SelectedOptionIdsJson,
+                import.ImportedAt,
+                ZaloConnectionId = import.Session.ZaloConnectionId!,
+                GroupId = import.Session.ZaloGroupId!
+            })
+            .ToListAsync(cancellationToken);
+
+        foreach (var import in imports.OrderByDescending(item => item.ImportedAt))
+        {
+            var trackedGroupId = await GetTrackedGroupIdAsync(
+                import.ZaloConnectionId,
+                import.GroupId,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(trackedGroupId)) continue;
+            foreach (var optionId in ParseStringList(import.SelectedOptionIdsJson))
+            {
+                await AddLinkAsync(new ZaloAutoSessionLinkData(
+                    Guid.NewGuid().ToString("n"),
+                    trackedGroupId,
+                    import.PollId,
+                    optionId,
+                    import.SessionId,
+                    import.ImportedAt),
+                    cancellationToken);
+            }
+        }
+    }
+
+    private async Task<string?> GetTrackedGroupIdAsync(
+        string connectionId,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = await CreateCommandAsync(
+            "SELECT \"Id\" FROM \"ZaloTrackedGroups\" WHERE \"ZaloConnectionId\" = @ConnectionId AND \"GroupId\" = @GroupId LIMIT 1;",
+            cancellationToken);
+        AddParameter(command, "@ConnectionId", connectionId);
+        AddParameter(command, "@GroupId", groupId);
+        return Convert.ToString(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
     public async Task<IReadOnlyList<string>> GetActiveGroupIdsAsync(
@@ -454,6 +507,23 @@ internal sealed class ZaloAutoSessionStore(VolleyDraftDbContext db)
         CreatedAt = ReadDate(reader, "CreatedAt") ?? DateTimeOffset.MinValue,
         UpdatedAt = ReadDate(reader, "UpdatedAt") ?? DateTimeOffset.MinValue
     };
+
+    private static IReadOnlyList<string> ParseStringList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return (JsonSerializer.Deserialize<List<string>>(json) ?? [])
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
 
     private static string? ReadString(DbDataReader reader, string name)
     {
