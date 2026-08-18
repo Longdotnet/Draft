@@ -15,6 +15,7 @@ public sealed class ZaloAutoSessionSettingsService(
 {
     private readonly ZaloAutoSessionSettingsStore store = new(db);
     private readonly ZaloAutoSessionStore bootstrapStore = new(db);
+    private readonly ZaloAutoSessionObservabilityService observability = new(db);
 
     public async Task<ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>> GetGroupsAsync(
         string adminUserId,
@@ -52,6 +53,17 @@ public sealed class ZaloAutoSessionSettingsService(
             .OrderByDescending(item => item.AutoSessionEnabled)
             .ThenBy(item => item.GroupName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+
+        for (var index = 0; index < response.Count; index += 1)
+        {
+            var activity = await observability.GetActivityAsync(
+                adminUserId,
+                response[index].Id,
+                10,
+                cancellationToken);
+            if (activity.IsSuccess)
+                response[index] = response[index] with { Activity = activity.Value };
+        }
         return ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>.Success(response);
     }
 
@@ -115,8 +127,9 @@ public sealed class ZaloAutoSessionSettingsService(
 
             await listenerCoordinator.EnsureConnectionAsync(connection.Id, cancellationToken);
             var sessionCount = await CountSessionsAsync(tracked, cancellationToken);
+            var response = ToResponse(tracked, connection, sessionCount);
             return ServiceResult<ZaloAutoSessionGroupResponse>.Created(
-                ToResponse(tracked, connection, sessionCount));
+                await WithActivityAsync(adminUserId, response, cancellationToken));
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -167,8 +180,9 @@ public sealed class ZaloAutoSessionSettingsService(
         if (connection is not null)
             await listenerCoordinator.EnsureConnectionAsync(connection.Id, cancellationToken);
         var sessionCount = await CountSessionsAsync(tracked, cancellationToken);
+        var response = ToResponse(tracked, connection, sessionCount);
         return ServiceResult<ZaloAutoSessionGroupResponse>.Success(
-            ToResponse(tracked, connection, sessionCount));
+            await WithActivityAsync(adminUserId, response, cancellationToken));
     }
 
     internal static bool TryParseStartTime(string? value, out int minutes)
@@ -184,6 +198,15 @@ public sealed class ZaloAutoSessionSettingsService(
             return false;
         minutes = parsed.Hour * 60 + parsed.Minute;
         return true;
+    }
+
+    private async Task<ZaloAutoSessionGroupResponse> WithActivityAsync(
+        string adminUserId,
+        ZaloAutoSessionGroupResponse response,
+        CancellationToken cancellationToken)
+    {
+        var activity = await observability.GetActivityAsync(adminUserId, response.Id, 10, cancellationToken);
+        return activity.IsSuccess ? response with { Activity = activity.Value } : response;
     }
 
     private async Task<int> CountSessionsAsync(
