@@ -82,6 +82,23 @@ The admin panel exposes these persisted settings:
 
 Disabling organizer approval is explicit in the UI because it changes the authorization boundary: an accepted organizer-created poll can then create sessions without a second confirmation message.
 
+## Audit and observability
+
+The authenticated group-settings response includes a read-only activity snapshot for recent proposals. The desktop audit panel renders the same facts the backend used, rather than asking AI to explain what happened.
+
+For each poll the audit includes:
+
+- proposal status (`AwaitingApproval`, `Created`, `Rejected`, `Failed`, `Superseded`, or `Ignored`);
+- classifier confidence and reason;
+- poll creator and approving Zalo user when available;
+- last error without creating a retry/write action from the audit screen;
+- parsed weekday/options and their extracted start times;
+- the exact option-to-session link;
+- current session status and roster `present/capacity`;
+- latest `PollImport.ImportedAt` as the last successful roster-sync timestamp.
+
+This view is intentionally read-only. Operational writes still go through the existing organizer confirmation, settings, poll-sync, and overbook paths.
+
 ## Default schedule behavior
 
 - timezone: Vietnam (`UTC+07:00`)
