@@ -129,7 +129,12 @@ internal static class ZaloPollScheduleParser
             normalized.Contains("ok tao", StringComparison.Ordinal))
             return true;
 
-        return candidates.Any(candidate => ContainsDayReference(normalized, candidate.DayKey));
+        var hasDayReference = candidates.Any(candidate => ContainsDayReference(normalized, candidate.DayKey));
+        if (!hasDayReference) return false;
+        return Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])(chi|tao|doi|chon|lam)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
     }
 
     public static string ComputeStructureHash(BridgePoll poll)
