@@ -35,11 +35,15 @@ internal static class ZaloPollScheduleParser
 
     public static IReadOnlyList<ZaloAutoSessionCandidate> ExtractCandidates(
         BridgePoll poll,
-        ZaloTrackedGroupData trackedGroup)
+        ZaloTrackedGroupData trackedGroup,
+        DateTimeOffset? currentTime = null)
     {
         var result = new List<ZaloAutoSessionCandidate>();
+        var vietnamOffset = TimeSpan.FromHours(7);
         var pollLocal = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, poll.CreatedAtUnixMs))
-            .ToOffset(TimeSpan.FromHours(7));
+            .ToOffset(vietnamOffset);
+        var nowLocal = (currentTime ?? DateTimeOffset.UtcNow).ToOffset(vietnamOffset);
+        var staleBefore = nowLocal.AddHours(-6);
 
         foreach (var option in poll.Options)
         {
@@ -61,6 +65,7 @@ internal static class ZaloPollScheduleParser
             }
 
             var start = ResolveUpcoming(pollLocal, dayOfWeek, minutes);
+            if (start < staleBefore) continue;
             result.Add(new ZaloAutoSessionCandidate(
                 option.Id,
                 option.Content.Trim(),
