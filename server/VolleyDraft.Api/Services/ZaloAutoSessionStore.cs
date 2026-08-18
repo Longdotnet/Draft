@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
@@ -398,6 +399,8 @@ internal sealed class ZaloAutoSessionStore(VolleyDraftDbContext db)
         if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
         command.CommandText = sql;
+        if (db.Database.CurrentTransaction is { } transaction)
+            command.Transaction = transaction.GetDbTransaction();
         return command;
     }
 
