@@ -5,6 +5,9 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloAutoSessionParserTests
 {
+    private static readonly DateTimeOffset CurrentVietnamTime =
+        new(2026, 8, 18, 12, 0, 0, TimeSpan.FromHours(7));
+
     [Fact]
     public void ExtractCandidates_ParsesVietnameseWeekdaysAndAssumesEvening()
     {
@@ -15,7 +18,7 @@ public sealed class ZaloAutoSessionParserTests
             new BridgePollOption("o3", "CN 16h", 10, []));
         var tracked = new ZaloTrackedGroupData();
 
-        var result = ZaloPollScheduleParser.ExtractCandidates(poll, tracked);
+        var result = ZaloPollScheduleParser.ExtractCandidates(poll, tracked, CurrentVietnamTime);
 
         Assert.Equal(3, result.Count);
         Assert.Equal("T4", result[0].DayKey);
@@ -23,6 +26,20 @@ public sealed class ZaloAutoSessionParserTests
         Assert.Equal(30, result[0].StartTime.ToOffset(TimeSpan.FromHours(7)).Minute);
         Assert.Equal("T6", result[1].DayKey);
         Assert.Equal("CN", result[2].DayKey);
+    }
+
+    [Fact]
+    public void ExtractCandidates_DropsOldScheduleOptionsDuringReconciliation()
+    {
+        var poll = BuildPoll(
+            "Bóng tuần này",
+            new BridgePollOption("o1", "T4 17h30", 8, []),
+            new BridgePollOption("o2", "T6 17h30", 12, []));
+        var muchLater = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.FromHours(7));
+
+        var result = ZaloPollScheduleParser.ExtractCandidates(poll, new ZaloTrackedGroupData(), muchLater);
+
+        Assert.Empty(result);
     }
 
     [Fact]
@@ -72,7 +89,10 @@ public sealed class ZaloAutoSessionParserTests
             new BridgePollOption("o1", "T4 17h30", 5, []),
             new BridgePollOption("o2", "T6 17h30", 5, []),
             new BridgePollOption("o3", "CN 17h30", 5, []));
-        var candidates = ZaloPollScheduleParser.ExtractCandidates(poll, new ZaloTrackedGroupData());
+        var candidates = ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            CurrentVietnamTime);
 
         var selected = ZaloPollScheduleParser.SelectFromApproval("chỉ T4 đổi 18h và CN", candidates);
 
@@ -92,7 +112,10 @@ public sealed class ZaloAutoSessionParserTests
             "Bóng tuần này",
             new BridgePollOption("o1", "T6 17h30", 5, []),
             new BridgePollOption("o2", "CN 17h30", 5, []));
-        var candidates = ZaloPollScheduleParser.ExtractCandidates(poll, new ZaloTrackedGroupData());
+        var candidates = ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            CurrentVietnamTime);
 
         Assert.True(ZaloPollScheduleParser.IsApproval(text, candidates));
     }
