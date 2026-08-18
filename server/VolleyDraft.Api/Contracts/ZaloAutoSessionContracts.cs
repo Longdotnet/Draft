@@ -34,4 +34,5 @@ public sealed record ZaloAutoSessionGroupResponse(
     bool BotEnabledForCreatedSessions,
     int ExistingSessionCount,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    ZaloAutoSessionActivityResponse? Activity = null);
