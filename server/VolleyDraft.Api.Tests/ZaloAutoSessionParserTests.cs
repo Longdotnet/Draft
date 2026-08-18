@@ -106,6 +106,7 @@ public sealed class ZaloAutoSessionParserTests
     [InlineData("tạo cả 3")]
     [InlineData("xác nhận")]
     [InlineData("chỉ T6 CN")]
+    [InlineData("T6 đổi 18h")]
     public void IsApproval_AcceptsExpectedOrganizerReplies(string text)
     {
         var poll = BuildPoll(
@@ -118,6 +119,21 @@ public sealed class ZaloAutoSessionParserTests
             CurrentVietnamTime);
 
         Assert.True(ZaloPollScheduleParser.IsApproval(text, candidates));
+    }
+
+    [Fact]
+    public void IsApproval_DoesNotTreatDayMentionAsConfirmationWithoutActionSignal()
+    {
+        var poll = BuildPoll(
+            "Bóng tuần này",
+            new BridgePollOption("o1", "T6 17h30", 5, []),
+            new BridgePollOption("o2", "CN 17h30", 5, []));
+        var candidates = ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            CurrentVietnamTime);
+
+        Assert.False(ZaloPollScheduleParser.IsApproval("T6 đông quá", candidates));
     }
 
     [Theory]
