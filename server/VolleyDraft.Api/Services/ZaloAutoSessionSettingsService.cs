@@ -16,6 +16,7 @@ public sealed class ZaloAutoSessionSettingsService(
     private readonly ZaloAutoSessionSettingsStore store = new(db);
     private readonly ZaloAutoSessionStore bootstrapStore = new(db);
     private readonly ZaloAutoSessionObservabilityService observability = new(db);
+    private readonly ZaloAutoSessionV2Store v2Store = new(db);
 
     public async Task<ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>> GetGroupsAsync(
         string adminUserId,
@@ -25,6 +26,8 @@ public sealed class ZaloAutoSessionSettingsService(
             return Unauthorized<IReadOnlyList<ZaloAutoSessionGroupResponse>>();
 
         await bootstrapStore.SeedFromExistingSessionsAsync(cancellationToken);
+        await v2Store.EnsureAsync(cancellationToken);
+        var runtime = await v2Store.GetRuntimeAsync(cancellationToken);
         var trackedGroups = await store.GetForAdminAsync(adminUserId, cancellationToken);
         var connections = await db.ZaloConnections
             .AsNoTracking()
@@ -56,13 +59,13 @@ public sealed class ZaloAutoSessionSettingsService(
 
         for (var index = 0; index < response.Count; index += 1)
         {
-            var activity = await observability.GetActivityAsync(
+            connections.TryGetValue(response[index].ZaloConnectionId, out var connection);
+            response[index] = await WithOperationalDataAsync(
                 adminUserId,
-                response[index].Id,
-                10,
+                response[index],
+                connection,
+                runtime.GlobalEnabled,
                 cancellationToken);
-            if (activity.IsSuccess)
-                response[index] = response[index] with { Activity = activity.Value };
         }
         return ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>.Success(response);
     }
@@ -125,11 +128,18 @@ public sealed class ZaloAutoSessionSettingsService(
                 tracked = await store.UpdateAsync(tracked, cancellationToken) ?? tracked;
             }
 
+            await v2Store.EnsureAsync(cancellationToken);
             await listenerCoordinator.EnsureConnectionAsync(connection.Id, cancellationToken);
             var sessionCount = await CountSessionsAsync(tracked, cancellationToken);
             var response = ToResponse(tracked, connection, sessionCount);
+            var runtime = await v2Store.GetRuntimeAsync(cancellationToken);
             return ServiceResult<ZaloAutoSessionGroupResponse>.Created(
-                await WithActivityAsync(adminUserId, response, cancellationToken));
+                await WithOperationalDataAsync(
+                    adminUserId,
+                    response,
+                    connection,
+                    runtime.GlobalEnabled,
+                    cancellationToken));
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -160,6 +170,24 @@ public sealed class ZaloAutoSessionSettingsService(
         if (location is { Length: > 500 })
             return BadRequest<ZaloAutoSessionGroupResponse>("Tên sân/địa điểm tối đa 500 ký tự.");
 
+        ZaloAutoSessionRolloutMode? rollout = null;
+        if (!string.IsNullOrWhiteSpace(request.RolloutMode))
+        {
+            if (!Enum.TryParse<ZaloAutoSessionRolloutMode>(request.RolloutMode.Trim(), true, out var parsed))
+                return BadRequest<ZaloAutoSessionGroupResponse>("RolloutMode chỉ nhận Disabled, PreviewOnly hoặc Live.");
+            rollout = parsed;
+        }
+
+        ZaloAutoSessionLearningStatus? learningDecision = null;
+        if (!string.IsNullOrWhiteSpace(request.LearningSignalId) || !string.IsNullOrWhiteSpace(request.LearningDecision))
+        {
+            if (string.IsNullOrWhiteSpace(request.LearningSignalId) ||
+                !Enum.TryParse<ZaloAutoSessionLearningStatus>(request.LearningDecision?.Trim(), true, out var parsed) ||
+                parsed == ZaloAutoSessionLearningStatus.Pending)
+                return BadRequest<ZaloAutoSessionGroupResponse>("Learning decision cần signal id và Approved hoặc Rejected.");
+            learningDecision = parsed;
+        }
+
         tracked.AutoSessionEnabled = request.AutoSessionEnabled;
         tracked.RequireOrganizerApproval = request.RequireOrganizerApproval;
         tracked.DefaultTeamCount = 3;
@@ -174,6 +202,24 @@ public sealed class ZaloAutoSessionSettingsService(
         if (tracked is null)
             return NotFound<ZaloAutoSessionGroupResponse>("Group Auto Session vừa bị thay đổi hoặc không còn tồn tại.");
 
+        await v2Store.EnsureAsync(cancellationToken);
+        if (request.GlobalEnabled is not null)
+            await v2Store.SetGlobalEnabledAsync(request.GlobalEnabled.Value, adminUserId, cancellationToken);
+        if (rollout is not null)
+            await v2Store.SetRolloutModeAsync(tracked.Id, rollout.Value, adminUserId, cancellationToken);
+        if (learningDecision is not null)
+        {
+            var reviewed = await v2Store.ReviewLearningSignalAsync(
+                tracked.Id,
+                request.LearningSignalId!.Trim(),
+                learningDecision.Value,
+                adminUserId,
+                request.LearningReviewNote,
+                cancellationToken);
+            if (reviewed is null)
+                return NotFound<ZaloAutoSessionGroupResponse>("Không tìm thấy learning signal cần duyệt trong group này.");
+        }
+
         var connection = await db.ZaloConnections
             .AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == tracked.ZaloConnectionId && item.AdminUserId == adminUserId, cancellationToken);
@@ -181,8 +227,14 @@ public sealed class ZaloAutoSessionSettingsService(
             await listenerCoordinator.EnsureConnectionAsync(connection.Id, cancellationToken);
         var sessionCount = await CountSessionsAsync(tracked, cancellationToken);
         var response = ToResponse(tracked, connection, sessionCount);
+        var runtime = await v2Store.GetRuntimeAsync(cancellationToken);
         return ServiceResult<ZaloAutoSessionGroupResponse>.Success(
-            await WithActivityAsync(adminUserId, response, cancellationToken));
+            await WithOperationalDataAsync(
+                adminUserId,
+                response,
+                connection,
+                runtime.GlobalEnabled,
+                cancellationToken));
     }
 
     internal static bool TryParseStartTime(string? value, out int minutes)
@@ -200,14 +252,50 @@ public sealed class ZaloAutoSessionSettingsService(
         return true;
     }
 
-    private async Task<ZaloAutoSessionGroupResponse> WithActivityAsync(
+    private async Task<ZaloAutoSessionGroupResponse> WithOperationalDataAsync(
         string adminUserId,
         ZaloAutoSessionGroupResponse response,
+        ZaloConnection? connection,
+        bool globalEnabled,
         CancellationToken cancellationToken)
     {
         var activity = await observability.GetActivityAsync(adminUserId, response.Id, 10, cancellationToken);
-        return activity.IsSuccess ? response with { Activity = activity.Value } : response;
+        var rollout = await v2Store.GetRolloutModeAsync(response.Id, cancellationToken);
+        var health = await v2Store.GetHealthAsync(response.Id, cancellationToken);
+        var learning = await v2Store.GetLearningSignalsAsync(response.Id, 100, cancellationToken);
+        var visibleLearning = learning.Take(20).Select(ToLearningResponse).ToList();
+        return response with
+        {
+            Activity = activity.IsSuccess ? activity.Value : response.Activity,
+            GlobalEnabled = globalEnabled,
+            RolloutMode = rollout.ToString(),
+            Health = new ZaloAutoSessionHealthResponse(
+                connection?.Status.ToString() ?? "Missing",
+                health.LastPollEventAt,
+                health.LastReconcileAt,
+                health.LastSuccessAt,
+                health.LastErrorAt,
+                health.LastError,
+                health.ConsecutiveFailures,
+                health.NextRetryAt),
+            LearningSignals = visibleLearning,
+            PendingLearningCount = learning.Count(item => item.Status == ZaloAutoSessionLearningStatus.Pending)
+        };
     }
+
+    private static ZaloAutoSessionLearningSignalResponse ToLearningResponse(ZaloAutoSessionLearningSignalData item) => new(
+        item.Id,
+        item.PollId,
+        item.SignalType,
+        item.DayKey,
+        item.OriginalStartTime,
+        item.ActualStartTime,
+        item.SuggestedRuleType,
+        item.SuggestedMinutes,
+        item.Status.ToString(),
+        item.ReviewNote,
+        item.CreatedAt,
+        item.UpdatedAt);
 
     private async Task<int> CountSessionsAsync(
         ZaloTrackedGroupData tracked,
