@@ -51,7 +51,7 @@ public sealed class ZaloListenerCoordinator(
         }
         var connectionIds = connections.Select(item => item.Id).ToList();
 
-        var groupIds = await db.MatchSessions
+        var sessionGroupIds = await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.ZaloConnectionId != null &&
                               connectionIds.Contains(session.ZaloConnectionId) &&
@@ -60,6 +60,13 @@ public sealed class ZaloListenerCoordinator(
             .Select(session => session.ZaloGroupId!)
             .Distinct()
             .ToListAsync(cancellationToken);
+        var trackedGroupIds = await new ZaloAutoSessionStore(db)
+            .GetActiveGroupIdsAsync(connectionIds, cancellationToken);
+        var groupIds = sessionGroupIds
+            .Concat(trackedGroupIds)
+            .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         try
         {
             if (groupIds.Count == 0)
@@ -150,12 +157,15 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
+                var autoSessions = ZaloAutoSessionService.Create(scope.ServiceProvider);
+                await autoSessions.EnsureTrackedGroupsAsync(stoppingToken);
                 await scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>()
                     .EnsureAllAsync(stoppingToken);
+                await autoSessions.ReconcileAsync(stoppingToken);
             }
             catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
             {
-                logger.LogError(exception, "Zalo listener reconciliation failed");
+                logger.LogError(exception, "Zalo listener/auto-session reconciliation failed");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken);
