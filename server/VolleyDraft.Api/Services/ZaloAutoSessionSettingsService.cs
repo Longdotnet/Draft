@@ -203,10 +203,38 @@ public sealed class ZaloAutoSessionSettingsService(
             return NotFound<ZaloAutoSessionGroupResponse>("Group Auto Session vừa bị thay đổi hoặc không còn tồn tại.");
 
         await v2Store.EnsureAsync(cancellationToken);
+        if (!tracked.AutoSessionEnabled)
+        {
+            await ZaloAutoSessionRolloutGuard.SupersedePendingAsync(
+                db,
+                tracked.Id,
+                "auto_session_group_disabled",
+                cancellationToken);
+        }
         if (request.GlobalEnabled is not null)
+        {
             await v2Store.SetGlobalEnabledAsync(request.GlobalEnabled.Value, adminUserId, cancellationToken);
+            if (!request.GlobalEnabled.Value)
+            {
+                await ZaloAutoSessionRolloutGuard.SupersedePendingAsync(
+                    db,
+                    null,
+                    "global_kill_switch_disabled",
+                    cancellationToken);
+            }
+        }
         if (rollout is not null)
+        {
             await v2Store.SetRolloutModeAsync(tracked.Id, rollout.Value, adminUserId, cancellationToken);
+            if (rollout.Value != ZaloAutoSessionRolloutMode.Live)
+            {
+                await ZaloAutoSessionRolloutGuard.SupersedePendingAsync(
+                    db,
+                    tracked.Id,
+                    $"rollout_changed_to_{rollout.Value.ToString().ToLowerInvariant()}",
+                    cancellationToken);
+            }
+        }
         if (learningDecision is not null)
         {
             var reviewed = await v2Store.ReviewLearningSignalAsync(
