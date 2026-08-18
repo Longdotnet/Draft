@@ -7,6 +7,12 @@ using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
 
+internal sealed record ZaloAutoSessionOverbookAuditData(
+    string SessionId,
+    int EffectiveSlotCount,
+    int ExcessSlotCount,
+    bool NeedsConfirmation);
+
 internal sealed class ZaloAutoSessionObservabilityStore(VolleyDraftDbContext db)
 {
     private readonly ZaloAutoSessionStore baseStore = new(db);
@@ -70,6 +76,45 @@ internal sealed class ZaloAutoSessionObservabilityStore(VolleyDraftDbContext db)
         return result;
     }
 
+    public async Task<IReadOnlyList<ZaloAutoSessionOverbookAuditData>> GetOverbookStatesAsync(
+        string adminUserId,
+        string trackedGroupId,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT o."SessionId", o."EffectiveSlotCount", o."ExcessSlotCount", o."NeedsConfirmation"
+            FROM "ZaloOverbookStates" o
+            INNER JOIN "ZaloAutoSessionLinks" l ON l."SessionId" = o."SessionId"
+            INNER JOIN "ZaloTrackedGroups" g ON g."Id" = l."TrackedGroupId"
+            WHERE l."TrackedGroupId" = @TrackedGroupId
+              AND g."AdminUserId" = @AdminUserId
+            GROUP BY o."SessionId", o."EffectiveSlotCount", o."ExcessSlotCount", o."NeedsConfirmation";
+            """;
+        try
+        {
+            await using var command = await CreateCommandAsync(sql, cancellationToken);
+            AddParameter(command, "@TrackedGroupId", trackedGroupId);
+            AddParameter(command, "@AdminUserId", adminUserId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            var result = new List<ZaloAutoSessionOverbookAuditData>();
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                result.Add(new ZaloAutoSessionOverbookAuditData(
+                    ReadString(reader, "SessionId") ?? string.Empty,
+                    ReadInt(reader, "EffectiveSlotCount"),
+                    ReadInt(reader, "ExcessSlotCount"),
+                    ReadInt(reader, "NeedsConfirmation") != 0));
+            }
+            return result;
+        }
+        catch (DbException)
+        {
+            // Audit is read-only. If the overbook table has not been initialized yet,
+            // return no state instead of creating/upgrading schema from a GET request.
+            return [];
+        }
+    }
+
     private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
     {
         var connection = db.Database.GetDbConnection();
@@ -118,6 +163,14 @@ internal sealed class ZaloAutoSessionObservabilityStore(VolleyDraftDbContext db)
         return reader.IsDBNull(ordinal)
             ? null
             : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+    }
+
+    private static int ReadInt(DbDataReader reader, string name, int fallback = 0)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal)
+            ? fallback
+            : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
     }
 
     private static long ReadLong(DbDataReader reader, string name, long fallback = 0)
