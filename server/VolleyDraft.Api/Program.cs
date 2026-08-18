@@ -59,6 +59,7 @@ builder.Services.AddScoped<PasswordService>();
 builder.Services.AddScoped<SessionDraftService>();
 builder.Services.AddScoped<DraftBoardService>();
 builder.Services.AddScoped<ZaloIntegrationService>();
+builder.Services.AddScoped<ZaloAutoSessionSettingsService>();
 builder.Services.AddScoped<ZaloBotService>();
 builder.Services.AddScoped<ZaloBotImageService>();
 builder.Services.AddScoped<ZaloTeamCardService>();
@@ -251,6 +252,39 @@ zalo.MapGet("/connections/{connectionId}/groups", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.GetGroupsAsync(userId, connectionId)).ToHttpResult();
+});
+zalo.MapGet("/auto-session-groups", async (
+    HttpContext httpContext,
+    ZaloAutoSessionSettingsService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetGroupsAsync(userId, cancellationToken)).ToHttpResult();
+});
+zalo.MapPost("/auto-session-groups", async (
+    HttpContext httpContext,
+    CreateZaloAutoSessionGroupRequest request,
+    ZaloAutoSessionSettingsService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.CreateGroupAsync(userId, request, cancellationToken)).ToHttpResult();
+});
+zalo.MapPut("/auto-session-groups/{trackedGroupId}", async (
+    HttpContext httpContext,
+    string trackedGroupId,
+    UpdateZaloAutoSessionGroupRequest request,
+    ZaloAutoSessionSettingsService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateGroupAsync(userId, trackedGroupId, request, cancellationToken)).ToHttpResult();
 });
 
 zalo.MapGet("/bot-images", async (
