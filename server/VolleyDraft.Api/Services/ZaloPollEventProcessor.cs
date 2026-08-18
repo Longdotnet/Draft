@@ -53,6 +53,21 @@ public sealed class ZaloPollEventWorker(
                 var activityBackfill = scope.ServiceProvider.GetRequiredService<ZaloActivityBackfillCoordinator>();
                 var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
                 var bridgeClient = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
+
+                try
+                {
+                    await ZaloAutoSessionService.Create(scope.ServiceProvider)
+                        .ObservePollBoardEventAsync(incoming, stoppingToken);
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Auto-session poll discovery skipped Account={AccountId} Group={GroupId}",
+                        accountId,
+                        groupId);
+                }
+
                 var domainEventShadow = new ZaloDomainEventShadowObserver(db);
                 var domainNarrator = new ZaloDomainEventNarrator(configuration, bridgeClient);
                 var domainNarrationTelemetry = new ZaloDomainEventNarrationTelemetry(db);
