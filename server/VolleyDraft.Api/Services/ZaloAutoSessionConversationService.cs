@@ -38,6 +38,7 @@ internal sealed class ZaloAutoSessionConversationService(
     private readonly ZaloAutoSessionConversationStore conversations = new(db);
     private readonly ZaloAutoSessionStore autoSessions = new(db);
     private readonly ZaloAutoSessionV2Store runtimeStore = new(db);
+    private readonly ZaloAutoSessionTrustedOrganizerStore trustedOrganizers = new(db);
 
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
@@ -133,10 +134,10 @@ internal sealed class ZaloAutoSessionConversationService(
             NormalizeId(conversation.ActiveOrganizerId),
             StringComparer.Ordinal);
         var trustedFallbackId = NormalizeId(roles.CreatorId);
-        var senderTrustedForTakeover = string.Equals(
-            senderId,
-            trustedFallbackId,
-            StringComparison.Ordinal);
+        var trustedBackupIds = await trustedOrganizers.GetEnabledIdsAsync(tracked.Id, cancellationToken);
+        var senderTrustedForTakeover =
+            string.Equals(senderId, trustedFallbackId, StringComparison.Ordinal) ||
+            trustedBackupIds.Contains(senderId);
         var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
             senderId,
             NormalizeId(conversation.ActiveOrganizerId),
@@ -511,6 +512,14 @@ internal sealed class ZaloAutoSessionConversationService(
                 var organizers = GetOrganizerIds(roles);
                 if (organizers.Count == 0) continue;
                 var trustedFallbackId = NormalizeId(roles.CreatorId);
+                var trustedBackupIds = await trustedOrganizers.GetEnabledIdsAsync(tracked.Id, cancellationToken);
+                var trustedFallbackTargets = new[] { trustedFallbackId }
+                    .Concat(trustedBackupIds)
+                    .Where(id => id.Length > 0)
+                    .Where(id => organizers.Contains(id, StringComparer.Ordinal))
+                    .Where(id => !string.Equals(id, NormalizeId(conversation.ActiveOrganizerId), StringComparison.Ordinal))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
 
                 IReadOnlyList<string> targets;
                 string text;
@@ -529,13 +538,7 @@ internal sealed class ZaloAutoSessionConversationService(
                     // Interim trusted-operator policy: Zalo admin alone is not enough to
                     // receive/take over Auto Session. Until the explicit Trusted Backup UI
                     // exists, only the current Zalo group creator is a fallback operator.
-                    var fallbackAvailable =
-                        trustedFallbackId.Length > 0 &&
-                        organizers.Contains(trustedFallbackId, StringComparer.Ordinal) &&
-                        !string.Equals(
-                            trustedFallbackId,
-                            NormalizeId(conversation.ActiveOrganizerId),
-                            StringComparison.Ordinal);
+                    var fallbackAvailable = trustedFallbackTargets.Count > 0;
 
                     conversation.ReminderCount = 2;
                     conversation.NextFollowUpAt = null;
@@ -545,10 +548,10 @@ internal sealed class ZaloAutoSessionConversationService(
                         continue;
                     }
 
-                    targets = [trustedFallbackId];
+                    targets = trustedFallbackTargets;
                     text =
                         "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
-                        "Bạn là trưởng nhóm fallback cho Auto Session. Nếu muốn xử lý thay, hãy bấm Trả lời tin này rồi nói “nhận xử lý” hoặc nói rõ lịch cần chỉnh. " +
+                        "Bạn được cấu hình là người fallback đáng tin cậy cho Auto Session. Nếu muốn xử lý thay, hãy bấm Trả lời tin này rồi nói “nhận xử lý” hoặc nói rõ lịch cần chỉnh. " +
                         "Bot vẫn sẽ chốt lại trước khi tạo website.";
                 }
 
@@ -632,6 +635,29 @@ internal sealed class ZaloAutoSessionConversationService(
                 "Quyền trưởng/phó của bạn đã thay đổi nên tui chưa thể tạo lịch. Website vẫn chưa được tạo.",
                 cancellationToken);
             return true;
+        }
+
+        var isOriginalOrganizer = string.Equals(
+            organizerId,
+            NormalizeId(conversation.OriginalOrganizerId),
+            StringComparison.Ordinal);
+        if (!isOriginalOrganizer)
+        {
+            var currentCreatorId = NormalizeId(roles.CreatorId);
+            var trustedBackupIds = await trustedOrganizers.GetEnabledIdsAsync(tracked.Id, cancellationToken);
+            var stillTrusted =
+                string.Equals(organizerId, currentCreatorId, StringComparison.Ordinal) ||
+                trustedBackupIds.Contains(organizerId);
+            if (!stillTrusted)
+            {
+                await SendConversationTextAsync(
+                    conversation,
+                    organizerId,
+                    organizerName,
+                    "Quyền Auto Session operator của bạn đã thay đổi nên tui chưa tạo website. Bản nháp vẫn được giữ an toàn.",
+                    cancellationToken);
+                return true;
+            }
         }
 
         var proposal = await autoSessions.GetProposalAsync(tracked.Id, conversation.PollId, cancellationToken);
