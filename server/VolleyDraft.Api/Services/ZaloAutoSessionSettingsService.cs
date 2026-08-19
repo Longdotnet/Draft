@@ -17,6 +17,7 @@ public sealed class ZaloAutoSessionSettingsService(
     private readonly ZaloAutoSessionStore bootstrapStore = new(db);
     private readonly ZaloAutoSessionObservabilityService observability = new(db);
     private readonly ZaloAutoSessionV2Store v2Store = new(db);
+    private readonly ZaloAutoSessionTrustedOrganizerStore trustedOrganizerStore = new(db);
 
     public async Task<ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>> GetGroupsAsync(
         string adminUserId,
@@ -188,6 +189,14 @@ public sealed class ZaloAutoSessionSettingsService(
             learningDecision = parsed;
         }
 
+        var trustedOrganizerId = NormalizeId(request.TrustedOrganizerZaloUserId);
+        var trustedOrganizerChange =
+            request.TrustedOrganizerEnabled is not null ||
+            trustedOrganizerId.Length > 0;
+        if (trustedOrganizerChange &&
+            (trustedOrganizerId.Length == 0 || request.TrustedOrganizerEnabled is null))
+            return BadRequest<ZaloAutoSessionGroupResponse>("Trusted Backup cần Zalo user id và trạng thái bật/tắt.");
+
         tracked.AutoSessionEnabled = request.AutoSessionEnabled;
         tracked.RequireOrganizerApproval = request.RequireOrganizerApproval;
         tracked.DefaultTeamCount = 3;
@@ -203,6 +212,7 @@ public sealed class ZaloAutoSessionSettingsService(
             return NotFound<ZaloAutoSessionGroupResponse>("Group Auto Session vừa bị thay đổi hoặc không còn tồn tại.");
 
         await v2Store.EnsureAsync(cancellationToken);
+        await trustedOrganizerStore.EnsureAsync(cancellationToken);
         if (!tracked.AutoSessionEnabled)
         {
             await ZaloAutoSessionRolloutGuard.SupersedePendingAsync(
@@ -246,6 +256,55 @@ public sealed class ZaloAutoSessionSettingsService(
                 cancellationToken);
             if (reviewed is null)
                 return NotFound<ZaloAutoSessionGroupResponse>("Không tìm thấy learning signal cần duyệt trong group này.");
+        }
+
+        if (trustedOrganizerChange)
+        {
+            var enabled = request.TrustedOrganizerEnabled!.Value;
+            var displayName = string.IsNullOrWhiteSpace(request.TrustedOrganizerDisplayName)
+                ? trustedOrganizerId
+                : request.TrustedOrganizerDisplayName.Trim();
+
+            if (enabled)
+            {
+                var trustedConnection = await db.ZaloConnections
+                    .AsNoTracking()
+                    .SingleOrDefaultAsync(item =>
+                        item.Id == tracked.ZaloConnectionId &&
+                        item.AdminUserId == adminUserId,
+                        cancellationToken);
+                if (trustedConnection is null || trustedConnection.Status != ZaloConnectionStatus.Connected)
+                    return BadRequest<ZaloAutoSessionGroupResponse>("Cần Zalo connection đang Connected để bật Trusted Backup.");
+
+                try
+                {
+                    using var trustedDocument = JsonDocument.Parse(
+                        credentialProtector.Unprotect(trustedConnection.EncryptedCredentials));
+                    var roles = await bridge.GetGroupRolesAsync(trustedDocument.RootElement.Clone(), tracked.GroupId);
+                    var creatorId = NormalizeId(roles.CreatorId);
+                    if (string.Equals(trustedOrganizerId, creatorId, StringComparison.Ordinal))
+                        return BadRequest<ZaloAutoSessionGroupResponse>("Trưởng nhóm đã là fallback mặc định, không cần thêm Trusted Backup.");
+
+                    var currentOrganizerIds = new[] { creatorId }
+                        .Concat(roles.AdminIds.Select(NormalizeId))
+                        .Where(id => id.Length > 0)
+                        .ToHashSet(StringComparer.Ordinal);
+                    if (!currentOrganizerIds.Contains(trustedOrganizerId))
+                        return BadRequest<ZaloAutoSessionGroupResponse>("Chỉ trưởng/phó nhóm Zalo hiện tại mới được bật Trusted Backup.");
+                }
+                catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+                {
+                    return BridgeFailure<ZaloAutoSessionGroupResponse>(exception);
+                }
+            }
+
+            await trustedOrganizerStore.SetAsync(
+                tracked.Id,
+                trustedOrganizerId,
+                displayName,
+                enabled,
+                adminUserId,
+                cancellationToken);
         }
 
         var connection = await db.ZaloConnections
@@ -292,6 +351,13 @@ public sealed class ZaloAutoSessionSettingsService(
         var health = await v2Store.GetHealthAsync(response.Id, cancellationToken);
         var learning = await v2Store.GetLearningSignalsAsync(response.Id, 100, cancellationToken);
         var visibleLearning = learning.Take(20).Select(ToLearningResponse).ToList();
+        await trustedOrganizerStore.EnsureAsync(cancellationToken);
+        var trustedOrganizers = await trustedOrganizerStore.GetAsync(response.Id, cancellationToken);
+        var organizerCandidates = await GetOrganizerCandidatesAsync(
+            response,
+            connection,
+            trustedOrganizers,
+            cancellationToken);
         return response with
         {
             Activity = activity.IsSuccess ? activity.Value : response.Activity,
@@ -307,7 +373,8 @@ public sealed class ZaloAutoSessionSettingsService(
                 health.ConsecutiveFailures,
                 health.NextRetryAt),
             LearningSignals = visibleLearning,
-            PendingLearningCount = learning.Count(item => item.Status == ZaloAutoSessionLearningStatus.Pending)
+            PendingLearningCount = learning.Count(item => item.Status == ZaloAutoSessionLearningStatus.Pending),
+            OrganizerCandidates = organizerCandidates
         };
     }
 
@@ -324,6 +391,89 @@ public sealed class ZaloAutoSessionSettingsService(
         item.ReviewNote,
         item.CreatedAt,
         item.UpdatedAt);
+
+    private async Task<IReadOnlyList<ZaloAutoSessionOrganizerCandidateResponse>> GetOrganizerCandidatesAsync(
+        ZaloAutoSessionGroupResponse response,
+        ZaloConnection? connection,
+        IReadOnlyList<ZaloAutoSessionTrustedOrganizerData> trusted,
+        CancellationToken cancellationToken)
+    {
+        var trustedById = trusted
+            .GroupBy(item => NormalizeId(item.ZaloUserId), StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var current = new Dictionary<string, (string Name, string Role, bool DefaultFallback)>(StringComparer.Ordinal);
+
+        if (connection is not null && connection.Status == ZaloConnectionStatus.Connected)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(
+                    credentialProtector.Unprotect(connection.EncryptedCredentials));
+                var credentials = document.RootElement.Clone();
+                var roles = await bridge.GetGroupRolesAsync(credentials, response.GroupId);
+                var creatorId = NormalizeId(roles.CreatorId);
+                var ids = new[] { creatorId }
+                    .Concat(roles.AdminIds.Select(NormalizeId))
+                    .Where(id => id.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                var members = ids.Count == 0 ? [] : await bridge.GetMembersAsync(credentials, ids);
+                var names = members
+                    .GroupBy(item => NormalizeId(item.ZaloUserId), StringComparer.Ordinal)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.First().DisplayName,
+                        StringComparer.Ordinal);
+
+                foreach (var id in ids)
+                {
+                    trustedById.TryGetValue(id, out var saved);
+                    var name = names.GetValueOrDefault(id);
+                    if (string.IsNullOrWhiteSpace(name)) name = saved?.DisplayName;
+                    if (string.IsNullOrWhiteSpace(name)) name = id;
+                    current[id] = (
+                        name,
+                        string.Equals(id, creatorId, StringComparison.Ordinal) ? "Creator" : "Admin",
+                        string.Equals(id, creatorId, StringComparison.Ordinal));
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                // Keep Operations usable even when Zalo role lookup is temporarily unavailable.
+            }
+        }
+
+        var result = current.Select(item =>
+        {
+            trustedById.TryGetValue(item.Key, out var saved);
+            return new ZaloAutoSessionOrganizerCandidateResponse(
+                item.Key,
+                item.Value.Name,
+                item.Value.Role,
+                true,
+                !item.Value.DefaultFallback && saved?.Enabled == true,
+                item.Value.DefaultFallback);
+        }).ToList();
+
+        foreach (var saved in trusted.Where(item => item.Enabled))
+        {
+            var id = NormalizeId(saved.ZaloUserId);
+            if (id.Length == 0 || current.ContainsKey(id)) continue;
+            result.Add(new ZaloAutoSessionOrganizerCandidateResponse(
+                id,
+                string.IsNullOrWhiteSpace(saved.DisplayName) ? id : saved.DisplayName,
+                "NoLongerAdmin",
+                false,
+                true,
+                false));
+        }
+
+        return result
+            .OrderByDescending(item => item.IsFallbackByDefault)
+            .ThenByDescending(item => item.IsCurrentOrganizer)
+            .ThenBy(item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
 
     private async Task<int> CountSessionsAsync(
         ZaloTrackedGroupData tracked,

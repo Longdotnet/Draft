@@ -17,7 +17,10 @@ public sealed record UpdateZaloAutoSessionGroupRequest(
     string? RolloutMode = null,
     string? LearningSignalId = null,
     string? LearningDecision = null,
-    string? LearningReviewNote = null);
+    string? LearningReviewNote = null,
+    string? TrustedOrganizerZaloUserId = null,
+    string? TrustedOrganizerDisplayName = null,
+    bool? TrustedOrganizerEnabled = null);
 
 public sealed record ZaloAutoSessionHealthResponse(
     string ConnectionStatus,
@@ -42,6 +45,14 @@ public sealed record ZaloAutoSessionLearningSignalResponse(
     string? ReviewNote,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+public sealed record ZaloAutoSessionOrganizerCandidateResponse(
+    string ZaloUserId,
+    string DisplayName,
+    string ZaloRole,
+    bool IsCurrentOrganizer,
+    bool TrustedBackup,
+    bool IsFallbackByDefault);
 
 public sealed record ZaloAutoSessionGroupResponse(
     string Id,
@@ -69,4 +80,5 @@ public sealed record ZaloAutoSessionGroupResponse(
     string RolloutMode = "Live",
     ZaloAutoSessionHealthResponse? Health = null,
     IReadOnlyList<ZaloAutoSessionLearningSignalResponse>? LearningSignals = null,
-    int PendingLearningCount = 0);
+    int PendingLearningCount = 0,
+    IReadOnlyList<ZaloAutoSessionOrganizerCandidateResponse>? OrganizerCandidates = null);

@@ -253,15 +253,23 @@ public sealed class ZaloConversationalAdvisorTests
                         IsCurrentMember = true
                     });
 
+                var now = DateTimeOffset.UtcNow;
                 db.MatchSessions.AddRange(
-                    Session("session-t6", "T6", DateTimeOffset.UtcNow.AddDays(1), zalo, longProfile, toAnProfile),
-                    Session("session-cn", "CN", DateTimeOffset.UtcNow.AddDays(2), zalo, longProfile, toAnProfile));
+                    Session("session-t6", "T6", NextWeekday(now, DayOfWeek.Friday), zalo, longProfile, toAnProfile),
+                    Session("session-cn", "CN", NextWeekday(now, DayOfWeek.Sunday), zalo, longProfile, toAnProfile));
             }
 
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
             return new Fixture(connection, db);
         }
+
+        private static DateTimeOffset NextWeekday(DateTimeOffset from, DayOfWeek target)
+{
+    var days = ((int)target - (int)from.DayOfWeek + 7) % 7;
+    if (days == 0) days = 7;
+    return from.AddDays(days);
+}
 
         private static MatchSession Session(
             string id,

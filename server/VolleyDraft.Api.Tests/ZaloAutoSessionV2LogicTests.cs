@@ -32,9 +32,11 @@ public sealed class ZaloAutoSessionV2LogicTests
             ZaloAutoSessionRolloutMode.PreviewOnly);
 
         Assert.Contains("PREVIEW WEBSITE", live);
-        Assert.Contains("xác nhận tạo website", live);
-        Assert.Contains("3 đội × 6 = 18 slot", live);
-        Assert.Contains("Chưa tạo website", live);
+        Assert.Contains("Bạn không cần nhớ câu lệnh", live);
+        Assert.Contains("8/18 người", live);
+        Assert.DoesNotContain("4 set", live);
+        Assert.DoesNotContain("đội ×", live);
+        Assert.Contains("Website CHƯA được tạo", live);
         Assert.Contains("CANARY PREVIEW", previewOnly);
         Assert.Contains("KHÔNG tạo website", previewOnly);
     }
