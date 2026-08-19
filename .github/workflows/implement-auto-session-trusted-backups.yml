@@ -1,15 +1,16 @@
 name: Implement Auto Session trusted backups
 
 on:
-  push:
-    branches:
-      - agent/auto-session-conversation-v3
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   trusted-backups:
+    if: ${{ github.head_ref == 'agent/auto-session-conversation-v3' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
