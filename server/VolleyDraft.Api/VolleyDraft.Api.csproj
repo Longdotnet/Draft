@@ -23,15 +23,15 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.jpg"
                       LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg" />
-    <EmbeddedResource Include="Assets/SocialCards/social-card-01.b64"
+    <EmbeddedResource Include="Assets/SocialCards/social-card-01.jpg"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard01.jpg" />
-    <EmbeddedResource Include="Assets/SocialCards/social-card-02.b64"
+    <EmbeddedResource Include="Assets/SocialCards/social-card-02.jpg"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard02.jpg" />
-    <EmbeddedResource Include="Assets/SocialCards/social-card-03.b64"
+    <EmbeddedResource Include="Assets/SocialCards/social-card-03.jpg"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard03.jpg" />
-    <EmbeddedResource Include="Assets/SocialCards/social-card-04.b64"
+    <EmbeddedResource Include="Assets/SocialCards/social-card-04.jpg"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard04.jpg" />
-    <EmbeddedResource Include="Assets/SocialCards/social-card-05.b64"
+    <EmbeddedResource Include="Assets/SocialCards/social-card-05.jpg"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard05.jpg" />
   </ItemGroup>
 
