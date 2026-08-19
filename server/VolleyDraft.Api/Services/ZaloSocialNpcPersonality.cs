@@ -110,7 +110,7 @@ internal static class ZaloSocialSituationEngine
 internal static class ZaloTrashTalkPolicy
 {
     private static readonly Regex ProfanityOrInsult = new(
-        @"(?<![a-z0-9])(?:dm|dmm|vcl|vl|clm|cc|deo|dit|lon|loz|ngu|ga|phe|cut|mom|oc\s+cho|thang\s+bot|con\s+bot)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:dm|dmm|vcl|vl|clm|cc|deo|dit|lon|loz|ngu|ga|phe|cut|mom|oc\s+cho)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex StrongProfanity = new(
