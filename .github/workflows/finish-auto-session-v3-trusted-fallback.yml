@@ -24,99 +24,78 @@ jobs:
           from pathlib import Path
 
           path = Path('server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs')
-          text = path.read_text()
+          lines = path.read_text().splitlines()
 
-          old = '''        var activeOrganizerStillAuthorized = organizerIds.Contains(
-              NormalizeId(conversation.ActiveOrganizerId),
-              StringComparer.Ordinal);
-          var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
-              senderId,
-              NormalizeId(conversation.ActiveOrganizerId),
-              activeOrganizerStillAuthorized,
-              stronglyAddressed,
-              conversation.ReminderCount >= 2,
-              incoming.Content);'''
-          new = '''        var activeOrganizerStillAuthorized = organizerIds.Contains(
-              NormalizeId(conversation.ActiveOrganizerId),
-              StringComparer.Ordinal);
-          var trustedFallbackId = NormalizeId(roles.CreatorId);
-          var senderTrustedForTakeover = string.Equals(
-              senderId,
-              trustedFallbackId,
-              StringComparison.Ordinal);
-          var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
-              senderId,
-              NormalizeId(conversation.ActiveOrganizerId),
-              activeOrganizerStillAuthorized,
-              senderTrustedForTakeover,
-              stronglyAddressed,
-              conversation.ReminderCount >= 2,
-              incoming.Content);'''
-          if old not in text:
-              raise SystemExit('organizer routing call block not found')
-          text = text.replace(old, new, 1)
+          # Add group-creator trust to the incoming-message organizer routing call.
+          route_i = next(i for i, line in enumerate(lines)
+                         if 'var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(' in line)
+          indent = lines[route_i][:len(lines[route_i]) - len(lines[route_i].lstrip())]
+          if not any('senderTrustedForTakeover' in line for line in lines[max(0, route_i - 8):route_i + 12]):
+              lines[route_i:route_i] = [
+                  indent + 'var trustedFallbackId = NormalizeId(roles.CreatorId);',
+                  indent + 'var senderTrustedForTakeover = string.Equals(',
+                  indent + '    senderId,',
+                  indent + '    trustedFallbackId,',
+                  indent + '    StringComparison.Ordinal);'
+              ]
+              route_i += 5
 
-          old = '''                var roles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
-                  var organizers = GetOrganizerIds(roles);
-                  if (organizers.Count == 0) continue;
+              active_arg_i = next(i for i in range(route_i + 1, min(len(lines), route_i + 12))
+                                  if lines[i].strip() == 'activeOrganizerStillAuthorized,')
+              lines.insert(active_arg_i + 1, indent + '    senderTrustedForTakeover,')
 
-                  IReadOnlyList<string> targets;'''
-          new = '''                var roles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
-                  var organizers = GetOrganizerIds(roles);
-                  if (organizers.Count == 0) continue;
-                  var trustedFallbackId = NormalizeId(roles.CreatorId);
+          # In follow-ups, establish a single interim trusted fallback: Zalo group creator.
+          follow_method_i = next(i for i, line in enumerate(lines)
+                                 if 'private async Task ProcessFollowUpsAsync' in line)
+          organizers_i = next(i for i in range(follow_method_i, len(lines))
+                              if 'var organizers = GetOrganizerIds(roles);' in lines[i])
+          if not any('trustedFallbackId = NormalizeId(roles.CreatorId)' in line
+                     for line in lines[organizers_i:organizers_i + 8]):
+              count_i = next(i for i in range(organizers_i + 1, organizers_i + 6)
+                             if 'if (organizers.Count == 0) continue;' in lines[i])
+              follow_indent = lines[organizers_i][:len(lines[organizers_i]) - len(lines[organizers_i].lstrip())]
+              lines.insert(count_i + 1, follow_indent + 'var trustedFallbackId = NormalizeId(roles.CreatorId);')
 
-                  IReadOnlyList<string> targets;'''
-          if old not in text:
-              raise SystemExit('follow-up roles block not found')
-          text = text.replace(old, new, 1)
+          # Replace mention-all-admins escalation with creator-only fallback, or silence if
+          # there is no distinct trusted fallback. Expiry remains active independently.
+          targets_i = next(i for i in range(follow_method_i, len(lines)) if lines[i].strip() == 'targets = organizers;')
+          else_i = next(i for i in range(targets_i - 1, follow_method_i, -1) if lines[i].strip() == 'else')
+          next_follow_i = next(i for i in range(targets_i, targets_i + 20)
+                              if 'conversation.NextFollowUpAt = null;' in lines[i])
+          close_i = next(i for i in range(next_follow_i + 1, next_follow_i + 5) if lines[i].strip() == '}')
+          indent = lines[else_i][:len(lines[else_i]) - len(lines[else_i].lstrip())]
+          body = indent + '    '
+          lines[else_i:close_i + 1] = [
+              indent + 'else',
+              indent + '{',
+              body + '// Interim trusted-operator policy: Zalo admin alone is not enough to',
+              body + '// receive/take over Auto Session. Until the explicit Trusted Backup UI',
+              body + '// exists, only the current Zalo group creator is a fallback operator.',
+              body + 'var fallbackAvailable =',
+              body + '    trustedFallbackId.Length > 0 &&',
+              body + '    organizers.Contains(trustedFallbackId, StringComparer.Ordinal) &&',
+              body + '    !string.Equals(',
+              body + '        trustedFallbackId,',
+              body + '        NormalizeId(conversation.ActiveOrganizerId),',
+              body + '        StringComparison.Ordinal);',
+              '',
+              body + 'conversation.ReminderCount = 2;',
+              body + 'conversation.NextFollowUpAt = null;',
+              body + 'if (!fallbackAvailable)',
+              body + '{',
+              body + '    await conversations.SaveAsync(conversation, cancellationToken);',
+              body + '    continue;',
+              body + '}',
+              '',
+              body + 'targets = [trustedFallbackId];',
+              body + 'text =',
+              body + '    "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +',
+              body + '    "Bạn là trưởng nhóm fallback cho Auto Session. Nếu muốn xử lý thay, hãy bấm Trả lời tin này rồi nói “nhận xử lý” hoặc nói rõ lịch cần chỉnh. " +',
+              body + '    "Bot vẫn sẽ chốt lại trước khi tạo website.";',
+              indent + '}'
+          ]
 
-          old = '''                else
-                  {
-                      targets = organizers;
-                      text =
-                          "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
-                          "Nếu người tạo poll đang bận/quên, một trưởng hoặc phó nhóm hiện tại có thể bấm Trả lời tin này để xử lý thay. " +
-                          "Bot sẽ vẫn hỏi/xác nhận trước khi tạo.";
-                      conversation.ReminderCount = 2;
-                      conversation.NextFollowUpAt = null;
-                  }
-
-                  await SendConversationTextAsync('''
-          new = '''                else
-                  {
-                      // Interim trusted-operator policy: Zalo admin alone is not enough to
-                      // receive/take over Auto Session. Until the explicit Trusted Backup UI
-                      // exists, only the current Zalo group creator is a fallback operator.
-                      var fallbackAvailable =
-                          trustedFallbackId.Length > 0 &&
-                          organizers.Contains(trustedFallbackId, StringComparer.Ordinal) &&
-                          !string.Equals(
-                              trustedFallbackId,
-                              NormalizeId(conversation.ActiveOrganizerId),
-                              StringComparison.Ordinal);
-
-                      conversation.ReminderCount = 2;
-                      conversation.NextFollowUpAt = null;
-                      if (!fallbackAvailable)
-                      {
-                          await conversations.SaveAsync(conversation, cancellationToken);
-                          continue;
-                      }
-
-                      targets = [trustedFallbackId];
-                      text =
-                          "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
-                          "Bạn là trưởng nhóm fallback cho Auto Session. Nếu muốn xử lý thay, hãy bấm Trả lời tin này rồi nói “nhận xử lý” hoặc nói rõ lịch cần chỉnh. " +
-                          "Bot vẫn sẽ chốt lại trước khi tạo website.";
-                  }
-
-                  await SendConversationTextAsync('''
-          if old not in text:
-              raise SystemExit('follow-up escalation block not found')
-          text = text.replace(old, new, 1)
-
-          path.write_text(text)
+          path.write_text('\n'.join(lines) + '\n')
           PY
 
       - name: Build backend
