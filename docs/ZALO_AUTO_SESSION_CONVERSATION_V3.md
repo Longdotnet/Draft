@@ -117,6 +117,8 @@ Safe write rules:
 - optimistic version claim must succeed
 - existing `(TrackedGroupId, PollId, OptionId)` idempotency remains the second duplicate guard
 
+A quote counts as explicit addressing **only when the quoted message belongs to this Auto Session bot conversation**. Quoting another member's message never upgrades an implicit group-chat message into an executable confirmation.
+
 Examples:
 
 ```text
@@ -175,12 +177,13 @@ V3 uses a dedicated typed `ZaloAutoSessionActionExecutor`. It preserves the same
 
 Set `AutoSession:ConversationV3Enabled=false` to fall back to the old exact-preview reply confirmation path.
 
+The global Auto Session kill switch also stops Conversation V3 reconciliation/follow-ups; it does not keep reminding organizers while the feature is globally disabled.
+
 ## Waitlist
 
 Conversation V3 does not add or promote a waitlist.
 
 If someone removes a vote, the slot is simply open in the Zalo poll and whoever votes first can take it. Existing poll sync continues to mirror current voters to the website.
-
 
 ## Reminder reset rule
 
