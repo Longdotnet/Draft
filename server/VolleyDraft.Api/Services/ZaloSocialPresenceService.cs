@@ -20,8 +20,8 @@ public sealed record ZaloSocialPresenceSettings(
         QuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:QuietMinutes", 90), 20, 720),
         MinBotIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:MinBotIntervalMinutes", 60), 15, 720),
         MaxProactivePerDay: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:MaxProactivePerDay", 4), 1, 10),
-        StartHour: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:StartHour", 8), 0, 23),
-        EndHour: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:EndHour", 23), 1, 24),
+        StartHour: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:StartHour", 6), 0, 23),
+        EndHour: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:EndHour", 1), 1, 24),
         TrashTalkLevel: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:TrashTalkLevel", 3), 0, 3));
 }
 
@@ -81,7 +81,7 @@ internal static class ZaloGroupEngagementDirector
                 BuildPostgame(snapshot.GroupId, settings.TrashTalkLevel));
 
         var selector = StableSelector(snapshot.GroupId, localNow.Date);
-        return selector % 2 == 0
+        return Positive(selector) % 2 == 0
             ? new(ZaloEngagementMoveKind.QuietWake, BuildQuietWake(selector, settings.TrashTalkLevel))
             : new(ZaloEngagementMoveKind.HotTake, BuildHotTake(selector, settings.TrashTalkLevel));
     }
@@ -108,7 +108,7 @@ internal static class ZaloGroupEngagementDirector
             "đm im gì dữ vậy, ai quăng miếng content coi chứ NPC buồn ngủ rồi =))"
         ];
         var pool = level >= 3 ? street : mild;
-        return pool[Math.Abs(selector) % pool.Length];
+        return pool[Positive(selector) % pool.Length];
     }
 
     private static string BuildHotTake(int selector, int level)
@@ -126,7 +126,7 @@ internal static class ZaloGroupEngagementDirector
             "vl mở debate coi: draft ngon cứu được mấy ông vào sân mất não không =))"
         ];
         var pool = level >= 3 ? street : mild;
-        return pool[Math.Abs(selector) % pool.Length];
+        return pool[Positive(selector) % pool.Length];
     }
 
     private static string BuildPregame(string groupId, int level) =>
@@ -141,6 +141,8 @@ internal static class ZaloGroupEngagementDirector
 
     private static int StableSelector(string groupId, DateTime date) =>
         StringComparer.Ordinal.GetHashCode($"{groupId}:{date:yyyyMMdd}");
+
+    private static int Positive(int value) => value & int.MaxValue;
 }
 
 public sealed class ZaloSocialPresenceService(
@@ -158,9 +160,11 @@ public sealed class ZaloSocialPresenceService(
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
         var settings = ZaloSocialPresenceSettings.FromConfiguration(configuration);
+        var dailySettings = ZaloDailySocialSettings.FromConfiguration(configuration);
         if (!settings.Enabled) return;
 
         var now = DateTimeOffset.UtcNow;
+        var socialMedia = new ZaloSocialMediaAssetService(db, configuration);
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.BotEnabled &&
@@ -173,6 +177,7 @@ public sealed class ZaloSocialPresenceService(
                 GroupId = session.ZaloGroupId!,
                 ConnectionId = session.ZaloConnectionId!,
                 AccountId = session.ZaloConnection!.AccountZaloId,
+                AdminUserId = session.ZaloConnection!.AdminUserId,
                 session.Name,
                 session.StartTime,
                 session.Status
@@ -180,7 +185,7 @@ public sealed class ZaloSocialPresenceService(
             .ToListAsync(cancellationToken);
 
         foreach (var group in sessionRows
-                     .GroupBy(item => new { item.GroupId, item.ConnectionId, item.AccountId })
+                     .GroupBy(item => new { item.GroupId, item.ConnectionId, item.AccountId, item.AdminUserId })
                      .Take(100))
         {
             var messages = await db.ZaloGroupMessages
@@ -204,6 +209,94 @@ public sealed class ZaloSocialPresenceService(
             var botToday = messages.Count(item =>
                 item.IsFromBot && item.SentAt.ToOffset(TimeSpan.FromHours(7)).Date == vietnamNow.Date);
             var recentTwoMinutes = messages.Count(item => now - item.SentAt <= TimeSpan.FromMinutes(2));
+
+            var greetingHistory = Array.Empty<ZaloSocialHistoryMessage>();
+            if (dailySettings.Enabled && ZaloDailyGreetingEngine.IsSoftGreetingZone(now))
+            {
+                greetingHistory = await db.ZaloGroupMessages
+                    .AsNoTracking()
+                    .Where(item => item.ZaloConnectionId == group.Key.ConnectionId &&
+                                   item.GroupId == group.Key.GroupId &&
+                                   item.IsFromBot &&
+                                   item.SentAt >= now.AddDays(-dailySettings.GreetingRepeatDays))
+                    .OrderByDescending(item => item.SentAt)
+                    .Take(500)
+                    .Select(item => new ZaloSocialHistoryMessage(item.Content, item.SentAt))
+                    .ToArrayAsync(cancellationToken);
+            }
+
+            var greeting = ZaloDailyGreetingEngine.Plan(
+                new ZaloDailyGreetingSnapshot(
+                    group.Key.GroupId,
+                    now,
+                    lastBot,
+                    recentTwoMinutes,
+                    greetingHistory),
+                dailySettings,
+                settings.MinBotIntervalMinutes);
+            if (greeting is not null)
+            {
+                if (!settings.SendEnabled)
+                {
+                    logger.LogInformation(
+                        "Daily greeting shadow Group={GroupId} Kind={Kind} Mood={Mood} Image={Image} Message={Message}",
+                        group.Key.GroupId,
+                        greeting.Kind,
+                        greeting.Mood,
+                        greeting.UseImage,
+                        greeting.Message);
+                    continue;
+                }
+
+                string? imageUrl = null;
+                if (greeting.UseImage)
+                {
+                    try
+                    {
+                        imageUrl = await socialMedia.GetOrCreateGreetingCardUrlAsync(
+                            group.Key.AdminUserId,
+                            greeting.Kind,
+                            greeting.Mood,
+                            cancellationToken);
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        logger.LogWarning(
+                            exception,
+                            "Daily greeting image failed; falling back to text Group={GroupId} Kind={Kind}",
+                            group.Key.GroupId,
+                            greeting.Kind);
+                    }
+                }
+
+                try
+                {
+                    await bridge.SendGroupMessageAsync(
+                        group.Key.AccountId,
+                        group.Key.GroupId,
+                        greeting.Message,
+                        [],
+                        imageUrl: imageUrl,
+                        idempotencyKey: $"social-greeting:{group.Key.GroupId}:{greeting.ServiceDate:yyyyMMdd}:{greeting.Kind}");
+                    logger.LogInformation(
+                        "Daily greeting sent Group={GroupId} Kind={Kind} Mood={Mood} Image={Image}",
+                        group.Key.GroupId,
+                        greeting.Kind,
+                        greeting.Mood,
+                        imageUrl is not null);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(exception, "Daily greeting send failed Group={GroupId}", group.Key.GroupId);
+                }
+                continue;
+            }
+
+            // Morning and bedtime should feel warm, not like the street-trash persona.
+            // If today is not a greeting day we stay quiet in these soft zones instead
+            // of sending a trashy QuietWake/HotTake. Direct mentions are handled by the
+            // normal realtime bot pipeline and remain available at any hour.
+            if (ZaloDailyGreetingEngine.IsSoftGreetingZone(now)) continue;
 
             var upcoming = group
                 .Where(item => item.StartTime is not null &&
