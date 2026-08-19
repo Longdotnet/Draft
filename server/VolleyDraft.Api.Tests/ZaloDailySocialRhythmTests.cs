@@ -1,4 +1,6 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -164,22 +166,116 @@ public sealed class ZaloDailySocialRhythmTests
     }
 
     [Fact]
-    public void Greeting_card_renderer_returns_real_png()
+    public void Dynamic_card_renderer_uses_each_embedded_background_and_returns_real_jpeg()
     {
-        var cases = new[]
-        {
-            (ZaloDailyGreetingKind.Morning, ZaloDailyGreetingMood.Warm),
-            (ZaloDailyGreetingKind.Morning, ZaloDailyGreetingMood.PlayfulRomantic),
-            (ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.Warm),
-            (ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.MenlySupportive)
-        };
+        var copy = new ZaloSocialCardCopy(
+            "CHÀO NGÀY MỚI",
+            "Đủ năng lượng để làm việc ngon lành, tối còn sức ra sân.",
+            "Hôm nay cứ vui trước đã");
 
-        foreach (var (kind, mood) in cases)
+        foreach (var backgroundId in ZaloSocialCardBackgroundCatalog.ActiveIds)
         {
-            var png = ZaloSocialGreetingCardRenderer.Render(kind, mood);
-            Assert.True(png.Length > 10_000);
-            Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, png.Take(8).ToArray());
+            var image = ZaloSocialGreetingCardRenderer.Render(
+                backgroundId,
+                "CLB Bóng Chuyền Sài Gòn",
+                copy);
+
+            Assert.True(image.Length > 100_000);
+            Assert.Equal(new byte[] { 0xFF, 0xD8, 0xFF }, image.Take(3).ToArray());
         }
+    }
+
+    [Fact]
+    public void Background_deck_uses_all_five_before_repeating_and_avoids_cycle_boundary_repeat()
+    {
+        var firstCycle = ZaloSocialCardDeckLogic.BuildShuffledDeck(null);
+        Assert.Equal(5, firstCycle.Count);
+        Assert.Equal(5, firstCycle.Distinct().Count());
+        Assert.All(firstCycle, id => Assert.InRange(id, 1, 5));
+
+        var secondCycle = ZaloSocialCardDeckLogic.BuildShuffledDeck(firstCycle[^1]);
+        Assert.Equal(5, secondCycle.Distinct().Count());
+        Assert.NotEqual(firstCycle[^1], secondCycle[0]);
+    }
+
+    [Fact]
+    public async Task Social_card_memory_is_idempotent_and_rotates_without_repeat_for_first_five()
+    {
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await db.Database.OpenConnectionAsync();
+
+        var assigned = new List<ZaloSocialCardMemory>();
+        for (var index = 1; index <= 5; index++)
+        {
+            assigned.Add(await ZaloSocialCardMemoryStore.RememberAsync(
+                db,
+                $"occurrence-{index}",
+                "connection-1",
+                "group-1",
+                "CLB Test",
+                new ZaloSocialCardCopy(
+                    $"Headline {index}",
+                    $"Body copy number {index} đủ dài để hợp lệ.",
+                    $"Ribbon {index}")));
+        }
+
+        Assert.Equal(5, assigned.Select(item => item.BackgroundId).Distinct().Count());
+        Assert.All(assigned, item => Assert.Equal(1, item.CycleNumber));
+
+        var retry = await ZaloSocialCardMemoryStore.RememberAsync(
+            db,
+            "occurrence-1",
+            "connection-1",
+            "group-1",
+            "Tên group đã đổi",
+            new ZaloSocialCardCopy(
+                "Headline khác",
+                "Body copy khác nhưng retry không được ghi đè.",
+                "Ribbon khác"));
+
+        Assert.Equal(assigned[0].BackgroundId, retry.BackgroundId);
+        Assert.Equal(assigned[0].Headline, retry.Headline);
+        Assert.Equal("CLB Test", retry.GroupName);
+
+        var sixth = await ZaloSocialCardMemoryStore.RememberAsync(
+            db,
+            "occurrence-6",
+            "connection-1",
+            "group-1",
+            "CLB Test",
+            new ZaloSocialCardCopy(
+                "Headline 6",
+                "Body copy number 6 đủ dài để hợp lệ.",
+                "Ribbon 6"));
+
+        Assert.Equal(2, sixth.CycleNumber);
+        Assert.NotEqual(assigned[^1].BackgroundId, sixth.BackgroundId);
+
+        var recent = await ZaloSocialCardMemoryStore.GetRecentAsync(
+            db,
+            "connection-1",
+            "group-1",
+            take: 6);
+        Assert.Equal(6, recent.Count);
+    }
+
+    [Theory]
+    [InlineData("Sáng lên mood", "Uống nước rồi chiến một ngày thật gọn nha.", "Tối còn sức ra sân", true)]
+    [InlineData("Hi", "Uống nước rồi chiến một ngày thật gọn nha.", "Tối còn sức ra sân", false)]
+    [InlineData("Sáng lên mood", "Xem https://example.com để biết thêm thông tin.", "Tối còn sức ra sân", false)]
+    [InlineData("Sáng lên mood", "đm hôm nay chiến cho đã nha.", "Tối còn sức ra sân", false)]
+    public void Ai_card_copy_is_validated_before_rendering(
+        string headline,
+        string body,
+        string ribbon,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            ZaloSocialCardCopyGenerator.IsValid(new ZaloSocialCardCopy(headline, body, ribbon)));
     }
 
     [Fact]

@@ -23,7 +23,7 @@ public sealed class ZaloAmbientReadOnlyFactResponderTests
     public async Task Untagged_self_membership_uses_stable_zalo_uid()
     {
         await using var fixture = await Fixture.CreateAsync();
-        var incoming = Incoming("membership-1", "tui có tên T6 chưa?", "user-long", "Long");
+        var incoming = Incoming("membership-1", "tui có tên Kèo Alpha chưa?", "user-long", "Long");
         var decision = Decide(incoming);
 
         Assert.True(decision.WouldReply);
@@ -53,7 +53,7 @@ public sealed class ZaloAmbientReadOnlyFactResponderTests
 
         Assert.NotNull(reply);
         Assert.Contains("2 kèo", reply!.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("T6", reply.Text);
+        Assert.Contains("Kèo Alpha", reply.Text);
         Assert.Contains("CN", reply.Text);
         Assert.DoesNotContain("NEXT", reply.Text, StringComparison.OrdinalIgnoreCase);
     }
@@ -62,7 +62,7 @@ public sealed class ZaloAmbientReadOnlyFactResponderTests
     public async Task Untagged_waitlist_status_reports_sender_position_from_database()
     {
         await using var fixture = await Fixture.CreateAsync();
-        var incoming = Incoming("waitlist-1", "T6 ai đang chờ waitlist?", "user-wait", "Wait User");
+        var incoming = Incoming("waitlist-1", "Kèo Alpha ai đang chờ waitlist?", "user-wait", "Wait User");
         var decision = Decide(incoming);
 
         Assert.True(decision.WouldReply);
@@ -82,7 +82,7 @@ public sealed class ZaloAmbientReadOnlyFactResponderTests
     public async Task Membership_never_falls_back_to_same_display_name_with_different_uid()
     {
         await using var fixture = await Fixture.CreateAsync();
-        var incoming = Incoming("membership-spoof", "tui có tên T6 chưa?", "different-uid", "Long");
+        var incoming = Incoming("membership-spoof", "tui có tên Kèo Alpha chưa?", "different-uid", "Long");
         var decision = Decide(incoming);
 
         var reply = await new ZaloAmbientFactResponder(fixture.Db).TryBuildAsync(
@@ -163,7 +163,14 @@ public sealed class ZaloAmbientReadOnlyFactResponderTests
             db.PlayerProfiles.Add(longProfile);
 
             var now = DateTimeOffset.UtcNow;
-            var t6 = Session("session-t6", "T6", now.AddHours(2), zalo);
+            var vietnamOffset = TimeSpan.FromHours(7);
+            var localNow = now.ToOffset(vietnamOffset);
+            var monday = localNow.Date.AddDays(-(((int)localNow.DayOfWeek + 6) % 7));
+            var t6Start = new DateTimeOffset(monday.AddDays(4).AddHours(19), vietnamOffset);
+            var cnStart = new DateTimeOffset(monday.AddDays(6).AddHours(16), vietnamOffset);
+            var nextStart = new DateTimeOffset(monday.AddDays(11).AddHours(19), vietnamOffset);
+
+            var t6 = Session("session-t6", "Kèo Alpha", t6Start, zalo);
             t6.Players.Add(new SessionPlayer
             {
                 Id = "t6-long",
@@ -192,8 +199,8 @@ public sealed class ZaloAmbientReadOnlyFactResponderTests
                 CreatedAt = now.AddMinutes(-1)
             });
 
-            var cn = Session("session-cn", "CN", now.AddHours(3), zalo);
-            var next = Session("session-next", "NEXT", now.AddDays(8), zalo);
+            var cn = Session("session-cn", "CN", cnStart, zalo);
+            var next = Session("session-next", "NEXT", nextStart, zalo);
             db.MatchSessions.AddRange(t6, cn, next);
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
