@@ -42,6 +42,7 @@ internal sealed class ZaloAutoSessionConversationService(
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
         if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true)) return;
+        if (!(await runtimeStore.GetRuntimeAsync(cancellationToken)).GlobalEnabled) return;
         await EnsurePendingConversationsAsync(cancellationToken);
         await ProcessConversationHistoryAsync(cancellationToken);
         await ProcessFollowUpsAsync(cancellationToken);
@@ -64,9 +65,10 @@ internal sealed class ZaloAutoSessionConversationService(
 
         ZaloAutoSessionConversationData? conversation = null;
         var quotedMessageId = incoming.Quote?.MessageId?.Trim();
-        var stronglyAddressed = incoming.MentionedBot || !string.IsNullOrWhiteSpace(quotedMessageId);
+        var stronglyAddressed = incoming.MentionedBot;
         if (!string.IsNullOrWhiteSpace(quotedMessageId))
             conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);
+            stronglyAddressed = stronglyAddressed || conversation is not null;
 
         var active = conversation is null
             ? await conversations.GetActiveForGroupAsync(groupId, cancellationToken)
