@@ -2916,23 +2916,40 @@ public sealed partial class ZaloBotService(
                 aiCalled,
                 ProtectedTerms: [rawAnchor, session.Name]);
         }
-        var participantInputs = partners.Select((partnerName, index) =>
+        var participantInputs = new List<ShareSlotParticipantInput>();
+        for (var index = 0; index < partners.Count; index += 1)
         {
+            var partnerName = partners[index];
             var commandPartnerId = command.PartnerZaloUserIds is { Count: > 0 } && index < command.PartnerZaloUserIds.Count
                 ? command.PartnerZaloUserIds[index]
                 : null;
             var mention = FindMentionedUser(partnerName, mentionedUsers);
             var mentionId = commandPartnerId ?? mention?.ZaloUserId;
             var normalizedMentionId = NormalizeId(mentionId ?? string.Empty);
-            var existing = normalizedMentionId.Length > 0 && session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
+            var identityLabel = !string.IsNullOrWhiteSpace(mention?.DisplayName)
+                ? mention!.DisplayName
+                : partnerName;
+            var existingByUid = normalizedMentionId.Length > 0 &&
+                                session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
                 ? mentionedPartnerName
-                : ResolvePlayerReference(partnerName, session.PlayerNames);
-            mentionedMembers.TryGetValue(NormalizeId(mentionId ?? string.Empty), out var member);
+                : null;
+            if (existingByUid is not null && NormalizeText(identityLabel) != NormalizeText(existingByUid))
+            {
+                return new BotAnswer(
+                    $"Mình không ghép vì @mention '{identityLabel}' đang mang UID đã gắn với '{existingByUid}' trong {session.Name}. Dữ liệu chưa thay đổi; hãy mention lại đúng người hoặc nhờ admin sửa identity trước.",
+                    null,
+                    decision.Intent,
+                    aiCalled,
+                    ProtectedTerms: [identityLabel, existingByUid, session.Name]);
+            }
+
+            var existing = existingByUid ?? ResolvePlayerReference(partnerName, session.PlayerNames);
+            mentionedMembers.TryGetValue(normalizedMentionId, out var member);
             var displayName = existing ?? (NormalizeText(partnerName) == "ban"
                 ? NextExternalShareName(anchor, session.PlayerNames)
                 : partnerName);
-            return new ShareSlotParticipantInput(displayName, mentionId, member?.AvatarUrl);
-        }).ToList();
+            participantInputs.Add(new ShareSlotParticipantInput(displayName, mentionId, member?.AvatarUrl));
+        }
         var preview = await draftService.PreviewShareSlotAsync(
             session.AdminUserId,
             session.Id,
