@@ -132,10 +132,16 @@ internal sealed class ZaloAutoSessionConversationService(
         var activeOrganizerStillAuthorized = organizerIds.Contains(
             NormalizeId(conversation.ActiveOrganizerId),
             StringComparer.Ordinal);
+        var trustedFallbackId = NormalizeId(roles.CreatorId);
+        var senderTrustedForTakeover = string.Equals(
+            senderId,
+            trustedFallbackId,
+            StringComparison.Ordinal);
         var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
             senderId,
             NormalizeId(conversation.ActiveOrganizerId),
             activeOrganizerStillAuthorized,
+            senderTrustedForTakeover,
             stronglyAddressed,
             conversation.ReminderCount >= 2,
             incoming.Content);
@@ -504,6 +510,7 @@ internal sealed class ZaloAutoSessionConversationService(
                 var roles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
                 var organizers = GetOrganizerIds(roles);
                 if (organizers.Count == 0) continue;
+                var trustedFallbackId = NormalizeId(roles.CreatorId);
 
                 IReadOnlyList<string> targets;
                 string text;
@@ -519,13 +526,30 @@ internal sealed class ZaloAutoSessionConversationService(
                 }
                 else
                 {
-                    targets = organizers;
-                    text =
-                        "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
-                        "Nếu người tạo poll đang bận/quên, một trưởng hoặc phó nhóm hiện tại có thể bấm Trả lời tin này để xử lý thay. " +
-                        "Bot sẽ vẫn hỏi/xác nhận trước khi tạo.";
+                    // Interim trusted-operator policy: Zalo admin alone is not enough to
+                    // receive/take over Auto Session. Until the explicit Trusted Backup UI
+                    // exists, only the current Zalo group creator is a fallback operator.
+                    var fallbackAvailable =
+                        trustedFallbackId.Length > 0 &&
+                        organizers.Contains(trustedFallbackId, StringComparer.Ordinal) &&
+                        !string.Equals(
+                            trustedFallbackId,
+                            NormalizeId(conversation.ActiveOrganizerId),
+                            StringComparison.Ordinal);
+
                     conversation.ReminderCount = 2;
                     conversation.NextFollowUpAt = null;
+                    if (!fallbackAvailable)
+                    {
+                        await conversations.SaveAsync(conversation, cancellationToken);
+                        continue;
+                    }
+
+                    targets = [trustedFallbackId];
+                    text =
+                        "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
+                        "Bạn là trưởng nhóm fallback cho Auto Session. Nếu muốn xử lý thay, hãy bấm Trả lời tin này rồi nói “nhận xử lý” hoặc nói rõ lịch cần chỉnh. " +
+                        "Bot vẫn sẽ chốt lại trước khi tạo website.";
                 }
 
                 await SendConversationTextAsync(
