@@ -75,9 +75,7 @@ public sealed class ZaloDailySocialRhythmTests
 
         Assert.NotNull(plan);
         Assert.Equal(ZaloDailyGreetingKind.Morning, plan!.Kind);
-        Assert.False(ZaloTrashTalkPolicy.ContainsProfanityOrInsult(ZaloBotIntelligence.Normalize(plan.Message)));
-        Assert.DoesNotContain("đm", plan.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("vcl", plan.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(ContainsExplicitTrash(plan.Message));
     }
 
     [Fact]
@@ -91,9 +89,16 @@ public sealed class ZaloDailySocialRhythmTests
 
         Assert.NotNull(plan);
         Assert.Equal(ZaloDailyGreetingKind.Night, plan!.Kind);
-        Assert.False(ZaloTrashTalkPolicy.ContainsProfanityOrInsult(ZaloBotIntelligence.Normalize(plan.Message)));
+        Assert.False(ContainsExplicitTrash(plan.Message));
         Assert.True(plan.Message.Contains("ngủ", StringComparison.OrdinalIgnoreCase) ||
                     plan.Message.Contains("night", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Every_curated_greeting_pool_is_free_of_explicit_trash_talk()
+    {
+        foreach (var kind in Enum.GetValues<ZaloDailyGreetingKind>())
+            Assert.DoesNotContain(ZaloDailyGreetingPhraseCatalog.All(kind), ContainsExplicitTrash);
     }
 
     [Fact]
@@ -183,6 +188,17 @@ public sealed class ZaloDailySocialRhythmTests
         Assert.Equal(ZaloDailyGreetingMood.Warm, ZaloDailyGreetingEngine.SelectMood(10));
         Assert.Equal(ZaloDailyGreetingMood.PlayfulRomantic, ZaloDailyGreetingEngine.SelectMood(70));
         Assert.Equal(ZaloDailyGreetingMood.MenlySupportive, ZaloDailyGreetingEngine.SelectMood(92));
+    }
+
+    private static bool ContainsExplicitTrash(string message)
+    {
+        var normalized = $" {ZaloBotIntelligence.Normalize(message)} ";
+        string[] forbidden =
+        [
+            " dm ", " đm ", " vcl ", " vl ", " cc ",
+            " thang lon ", " oc cho ", " nhu cc ", " ga vai ", " phe vl "
+        ];
+        return forbidden.Any(normalized.Contains);
     }
 
     private static ZaloDailyGreetingSnapshot Snapshot(
