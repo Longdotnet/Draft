@@ -2096,8 +2096,22 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 }
                 else if (exactPartner.Count == 1)
                 {
-                    return Conflict<PostDraftSharedSlotResult>(
-                        $"'{partnerReference}' đã tồn tại theo tên nhưng chưa khớp UID mention này. Bot không tự attach PlayerProfile theo UID vào SessionPlayer chỉ vì trùng tên.");
+                    var exactPlayer = exactPartner[0];
+                    var exactPlayerUid = NormalizeZaloId(exactPlayer.PlayerProfile?.ZaloUserId);
+                    if (exactPlayerUid.Length > 0 && exactPlayerUid != partnerZaloId)
+                    {
+                        return Conflict<PostDraftSharedSlotResult>(
+                            $"Xung đột định danh: '{partnerReference}' đang gắn với UID khác. Đã chặn ghi share slot.");
+                    }
+                    if (profileByUid is not null &&
+                        exactPlayer.PlayerProfileId is not null &&
+                        exactPlayer.PlayerProfileId != profileByUid.Id)
+                    {
+                        return Conflict<PostDraftSharedSlotResult>(
+                            $"Xung đột định danh: label/UID/profile của '{partnerReference}' không cùng một identity. Đã chặn ghi share slot.");
+                    }
+                    // Exact label/player match plus no conflicting UID/profile is a verified
+                    // backfill case. The existing write path may create or enrich that profile.
                 }
             }
             var isExternalGuestLabel = normalizedPartnerReference.StartsWith("ban cua ", StringComparison.Ordinal) ||
