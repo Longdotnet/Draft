@@ -1,0 +1,135 @@
+name: Finish Auto Session V3 trusted fallback
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  trusted-fallback:
+    if: ${{ github.head_ref == 'agent/auto-session-conversation-v3' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/auto-session-conversation-v3
+          fetch-depth: 0
+
+      - name: Apply creator-only fallback routing
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs')
+          text = path.read_text()
+
+          old = '''        var activeOrganizerStillAuthorized = organizerIds.Contains(
+              NormalizeId(conversation.ActiveOrganizerId),
+              StringComparer.Ordinal);
+          var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
+              senderId,
+              NormalizeId(conversation.ActiveOrganizerId),
+              activeOrganizerStillAuthorized,
+              stronglyAddressed,
+              conversation.ReminderCount >= 2,
+              incoming.Content);'''
+          new = '''        var activeOrganizerStillAuthorized = organizerIds.Contains(
+              NormalizeId(conversation.ActiveOrganizerId),
+              StringComparer.Ordinal);
+          var trustedFallbackId = NormalizeId(roles.CreatorId);
+          var senderTrustedForTakeover = string.Equals(
+              senderId,
+              trustedFallbackId,
+              StringComparison.Ordinal);
+          var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
+              senderId,
+              NormalizeId(conversation.ActiveOrganizerId),
+              activeOrganizerStillAuthorized,
+              senderTrustedForTakeover,
+              stronglyAddressed,
+              conversation.ReminderCount >= 2,
+              incoming.Content);'''
+          if old not in text:
+              raise SystemExit('organizer routing call block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''                var roles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
+                  var organizers = GetOrganizerIds(roles);
+                  if (organizers.Count == 0) continue;
+
+                  IReadOnlyList<string> targets;'''
+          new = '''                var roles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
+                  var organizers = GetOrganizerIds(roles);
+                  if (organizers.Count == 0) continue;
+                  var trustedFallbackId = NormalizeId(roles.CreatorId);
+
+                  IReadOnlyList<string> targets;'''
+          if old not in text:
+              raise SystemExit('follow-up roles block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''                else
+                  {
+                      targets = organizers;
+                      text =
+                          "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
+                          "Nếu người tạo poll đang bận/quên, một trưởng hoặc phó nhóm hiện tại có thể bấm Trả lời tin này để xử lý thay. " +
+                          "Bot sẽ vẫn hỏi/xác nhận trước khi tạo.";
+                      conversation.ReminderCount = 2;
+                      conversation.NextFollowUpAt = null;
+                  }
+
+                  await SendConversationTextAsync('''
+          new = '''                else
+                  {
+                      // Interim trusted-operator policy: Zalo admin alone is not enough to
+                      // receive/take over Auto Session. Until the explicit Trusted Backup UI
+                      // exists, only the current Zalo group creator is a fallback operator.
+                      var fallbackAvailable =
+                          trustedFallbackId.Length > 0 &&
+                          organizers.Contains(trustedFallbackId, StringComparer.Ordinal) &&
+                          !string.Equals(
+                              trustedFallbackId,
+                              NormalizeId(conversation.ActiveOrganizerId),
+                              StringComparison.Ordinal);
+
+                      conversation.ReminderCount = 2;
+                      conversation.NextFollowUpAt = null;
+                      if (!fallbackAvailable)
+                      {
+                          await conversations.SaveAsync(conversation, cancellationToken);
+                          continue;
+                      }
+
+                      targets = [trustedFallbackId];
+                      text =
+                          "Poll này vẫn chưa được xử lý nên website CHƯA được tạo. " +
+                          "Bạn là trưởng nhóm fallback cho Auto Session. Nếu muốn xử lý thay, hãy bấm Trả lời tin này rồi nói “nhận xử lý” hoặc nói rõ lịch cần chỉnh. " +
+                          "Bot vẫn sẽ chốt lại trước khi tạo website.";
+                  }
+
+                  await SendConversationTextAsync('''
+          if old not in text:
+              raise SystemExit('follow-up escalation block not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Build backend
+        run: dotnet build server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+
+      - name: Run full backend tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-build
+
+      - name: Commit source and remove temporary workflow
+        run: |
+          git config user.name "Longdotnet"
+          git config user.email "longspin0220@gmail.com"
+          git rm .github/workflows/finish-auto-session-v3-trusted-fallback.yml
+          git add server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs
+          git commit -m "Restrict Auto Session fallback to group creator"
+          git push origin HEAD:agent/auto-session-conversation-v3
