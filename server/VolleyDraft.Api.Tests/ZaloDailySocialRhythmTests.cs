@@ -158,19 +158,23 @@ public sealed class ZaloDailySocialRhythmTests
         Assert.Contains(plans, plan => !plan.UseImage);
     }
 
-    [Theory]
-    [InlineData(ZaloDailyGreetingKind.Morning, ZaloDailyGreetingMood.Warm)]
-    [InlineData(ZaloDailyGreetingKind.Morning, ZaloDailyGreetingMood.PlayfulRomantic)]
-    [InlineData(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.Warm)]
-    [InlineData(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.MenlySupportive)]
-    public void Greeting_card_renderer_returns_real_png(
-        ZaloDailyGreetingKind kind,
-        ZaloDailyGreetingMood mood)
+    [Fact]
+    public void Greeting_card_renderer_returns_real_png()
     {
-        var png = ZaloSocialGreetingCardRenderer.Render(kind, mood);
+        var cases = new[]
+        {
+            (ZaloDailyGreetingKind.Morning, ZaloDailyGreetingMood.Warm),
+            (ZaloDailyGreetingKind.Morning, ZaloDailyGreetingMood.PlayfulRomantic),
+            (ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.Warm),
+            (ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.MenlySupportive)
+        };
 
-        Assert.True(png.Length > 10_000);
-        Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, png.Take(8).ToArray());
+        foreach (var (kind, mood) in cases)
+        {
+            var png = ZaloSocialGreetingCardRenderer.Render(kind, mood);
+            Assert.True(png.Length > 10_000);
+            Assert.Equal(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }, png.Take(8).ToArray());
+        }
     }
 
     [Fact]
