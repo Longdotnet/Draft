@@ -1,0 +1,66 @@
+name: Harden Auto Session V3 safety
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  harden-v3:
+    if: ${{ github.head_ref == 'agent/auto-session-conversation-v3' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/auto-session-conversation-v3
+          fetch-depth: 0
+      - name: Apply safety fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs')
+          text = path.read_text()
+          old = '''        if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true)) return;
+          await EnsurePendingConversationsAsync(cancellationToken);'''
+          new = '''        if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true)) return;
+          if (!(await runtimeStore.GetRuntimeAsync(cancellationToken)).GlobalEnabled) return;
+          await EnsurePendingConversationsAsync(cancellationToken);'''
+          if old not in text:
+              raise SystemExit('Global runtime hook not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        var quotedMessageId = incoming.Quote?.MessageId?.Trim();
+          var stronglyAddressed = incoming.MentionedBot || !string.IsNullOrWhiteSpace(quotedMessageId);
+          if (!string.IsNullOrWhiteSpace(quotedMessageId))
+              conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);'''
+          new = '''        var quotedMessageId = incoming.Quote?.MessageId?.Trim();
+          var quotedConversationMessage = false;
+          if (!string.IsNullOrWhiteSpace(quotedMessageId))
+          {
+              conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);
+              quotedConversationMessage = conversation is not null;
+          }
+          var stronglyAddressed = incoming.MentionedBot || quotedConversationMessage;'''
+          if old not in text:
+              raise SystemExit('Strong-address hook not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+      - name: Build backend
+        run: dotnet build server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+      - name: Run Auto Session V2/V3 tests
+        run: >-
+          dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj
+          -c Release --no-build
+          --filter "FullyQualifiedName~ZaloAutoSession"
+      - name: Commit and remove temporary workflow
+        run: |
+          git config user.name "Longdotnet"
+          git config user.email "longspin0220@gmail.com"
+          git rm .github/workflows/fix-auto-session-v3-safety.yml
+          git add server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs
+          git commit -m "Harden Auto Session V3 confirmation safety"
+          git push origin HEAD:agent/auto-session-conversation-v3
