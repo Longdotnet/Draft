@@ -457,7 +457,19 @@ internal static class ZaloSocialGreetingCardRenderer
         var assembly = typeof(ZaloSocialGreetingCardRenderer).Assembly;
         using var stream = assembly.GetManifestResourceStream(resourceName)
             ?? throw new InvalidOperationException($"Missing embedded social-card background: {resourceName}");
-        return SKBitmap.Decode(stream)
+        using var reader = new StreamReader(stream, Encoding.ASCII, detectEncodingFromByteOrderMarks: false);
+        var encoded = reader.ReadToEnd().Trim();
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(encoded);
+        }
+        catch (FormatException exception)
+        {
+            throw new InvalidOperationException($"Invalid embedded social-card background: {resourceName}", exception);
+        }
+
+        return SKBitmap.Decode(bytes)
             ?? throw new InvalidOperationException($"Could not decode social-card background: {resourceName}");
     }
 
