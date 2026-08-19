@@ -15,8 +15,8 @@ public sealed record ZaloSocialPresenceSettings(
     int TrashTalkLevel)
 {
     public static ZaloSocialPresenceSettings FromConfiguration(IConfiguration configuration) => new(
-        Enabled: configuration.GetValue("ZaloBot:Ambient:Presence:Enabled", false),
-        SendEnabled: configuration.GetValue("ZaloBot:Ambient:Presence:SendEnabled", false),
+        Enabled: configuration.GetValue("ZaloBot:Ambient:Presence:Enabled", true),
+        SendEnabled: configuration.GetValue("ZaloBot:Ambient:Presence:SendEnabled", true),
         QuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:QuietMinutes", 90), 20, 720),
         MinBotIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:MinBotIntervalMinutes", 60), 15, 720),
         MaxProactivePerDay: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Presence:MaxProactivePerDay", 4), 1, 10),
