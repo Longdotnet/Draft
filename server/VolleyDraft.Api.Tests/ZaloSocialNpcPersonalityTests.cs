@@ -152,13 +152,13 @@ public sealed class ZaloSocialNpcPersonalityTests
     }
 
     [Fact]
-    public void Presence_is_disabled_for_send_by_default()
+    public void Presence_is_enabled_for_send_by_default()
     {
         var settings = ZaloSocialPresenceSettings.FromConfiguration(
             new ConfigurationBuilder().Build());
 
-        Assert.False(settings.Enabled);
-        Assert.False(settings.SendEnabled);
+        Assert.True(settings.Enabled);
+        Assert.True(settings.SendEnabled);
         Assert.Equal(4, settings.MaxProactivePerDay);
         Assert.Equal(90, settings.QuietMinutes);
         Assert.Equal(60, settings.MinBotIntervalMinutes);
@@ -237,7 +237,7 @@ public sealed class ZaloSocialNpcPersonalityTests
 
     private static ZaloSocialPresenceSettings EnabledPresence() => new(
         Enabled: true,
-        SendEnabled: false,
+        SendEnabled: true,
         QuietMinutes: 90,
         MinBotIntervalMinutes: 60,
         MaxProactivePerDay: 4,
