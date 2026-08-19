@@ -164,7 +164,12 @@ public sealed class ZaloSocialPresenceService(
         if (!settings.Enabled) return;
 
         var now = DateTimeOffset.UtcNow;
-        var socialMedia = new ZaloSocialMediaAssetService(db, configuration);
+        var socialMedia = new ZaloSocialMediaAssetService(
+            db,
+            bridge,
+            configuration,
+            new ZaloCredentialProtector(configuration),
+            logger);
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.BotEnabled &&
@@ -178,6 +183,7 @@ public sealed class ZaloSocialPresenceService(
                 ConnectionId = session.ZaloConnectionId!,
                 AccountId = session.ZaloConnection!.AccountZaloId,
                 AdminUserId = session.ZaloConnection!.AdminUserId,
+                GroupName = session.ZaloGroupName,
                 session.Name,
                 session.StartTime,
                 session.Status
@@ -253,17 +259,25 @@ public sealed class ZaloSocialPresenceService(
                 {
                     try
                     {
+                        var persistedGroupName = group
+                            .Select(item => item.GroupName)
+                            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
                         imageUrl = await socialMedia.GetOrCreateGreetingCardUrlAsync(
                             group.Key.AdminUserId,
+                            group.Key.ConnectionId,
+                            group.Key.AccountId,
+                            group.Key.GroupId,
+                            persistedGroupName,
                             greeting.Kind,
                             greeting.Mood,
+                            greeting.ServiceDate,
                             cancellationToken);
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
                     {
                         logger.LogWarning(
                             exception,
-                            "Daily greeting image failed; falling back to text Group={GroupId} Kind={Kind}",
+                            "Daily greeting dynamic card failed; falling back to text Group={GroupId} Kind={Kind}",
                             group.Key.GroupId,
                             greeting.Kind);
                     }
