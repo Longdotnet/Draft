@@ -546,6 +546,18 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var resolvedPartners = new List<(ShareSlotParticipantInput Input, SessionPlayer? Player, DraftSlot? Slot)>();
         foreach (var input in inputs)
         {
+            if (input.ZaloUserId is not null)
+            {
+                var storedProfile = await db.PlayerProfiles.AsNoTracking()
+                    .SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId, cancellationToken);
+                if (storedProfile is not null &&
+                    NormalizePlayerLookup(storedProfile.DisplayName) != NormalizePlayerLookup(input.DisplayName))
+                {
+                    return Conflict<ShareSlotPreview>(
+                        $"Xung đột định danh: @mention '{input.DisplayName}' mang UID đang thuộc hồ sơ '{storedProfile.DisplayName}'. Bot không tự ghép hoặc đổi hồ sơ.");
+                }
+            }
+
             var normalizedInputName = ZaloBotIntelligence.Normalize(input.DisplayName);
             var isExternalGuestLabel = normalizedInputName.StartsWith("ban cua ", StringComparison.Ordinal) ||
                                        normalizedInputName.StartsWith("ban share cung ", StringComparison.Ordinal);
@@ -795,6 +807,69 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var newlyAddedNames = new List<string>();
         foreach (var input in inputs)
         {
+            if (input.ZaloUserId is not null)
+            {
+                var uidPlayers = sessionPlayers.Where(player =>
+                        NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == input.ZaloUserId)
+                    .ToList();
+                if (uidPlayers.Count > 1)
+                    return Conflict<PreDraftSharedSlotResult>("UID Zalo này đang gắn với nhiều người trong cùng trận; đã chặn ghi share slot.");
+
+                var uidPlayer = uidPlayers.SingleOrDefault();
+                var namePlayers = sessionPlayers.Where(player =>
+                        NormalizePlayerLookup(player.DisplayName) == NormalizePlayerLookup(input.DisplayName))
+                    .ToList();
+                if (namePlayers.Count > 1)
+                    return Conflict<PreDraftSharedSlotResult>($"Tên '{input.DisplayName}' đang trùng nhiều player; đã chặn ghi share slot.");
+                var namePlayer = namePlayers.SingleOrDefault();
+                var profileByUid = await db.PlayerProfiles.SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId);
+
+                if (uidPlayer is not null)
+                {
+                    var labelMatchesPlayer = NormalizePlayerLookup(uidPlayer.DisplayName) == NormalizePlayerLookup(input.DisplayName);
+                    var labelMatchesProfile = uidPlayer.PlayerProfile is null ||
+                                              NormalizePlayerLookup(uidPlayer.PlayerProfile.DisplayName) == NormalizePlayerLookup(input.DisplayName);
+                    if (!labelMatchesPlayer || !labelMatchesProfile)
+                    {
+                        return Conflict<PreDraftSharedSlotResult>(
+                            $"Xung đột định danh: @mention '{input.DisplayName}' mang UID đang gắn với '{uidPlayer.DisplayName}'. Đã chặn ghi share slot.");
+                    }
+                    if (namePlayer is not null && namePlayer.Id != uidPlayer.Id)
+                    {
+                        return Conflict<PreDraftSharedSlotResult>(
+                            $"Xung đột định danh: label '{input.DisplayName}' và UID đang trỏ tới hai player khác nhau. Đã chặn ghi share slot.");
+                    }
+                }
+                else
+                {
+                    if (profileByUid is not null &&
+                        NormalizePlayerLookup(profileByUid.DisplayName) != NormalizePlayerLookup(input.DisplayName))
+                    {
+                        return Conflict<PreDraftSharedSlotResult>(
+                            $"Xung đột định danh: @mention '{input.DisplayName}' mang UID thuộc hồ sơ '{profileByUid.DisplayName}'. Đã chặn ghi và giữ nguyên hồ sơ.");
+                    }
+                    if (namePlayer is not null)
+                    {
+                        var namePlayerUid = NormalizeZaloId(namePlayer.PlayerProfile?.ZaloUserId);
+                        if (namePlayerUid.Length == 0)
+                        {
+                            return Conflict<PreDraftSharedSlotResult>(
+                                $"'{input.DisplayName}' đã tồn tại theo tên nhưng chưa có UID đã xác minh. Bot không tự gắn UID/profile chỉ vì trùng tên.");
+                        }
+                        if (namePlayerUid != input.ZaloUserId)
+                        {
+                            return Conflict<PreDraftSharedSlotResult>(
+                                $"Xung đột định danh: '{input.DisplayName}' đang gắn với UID khác. Đã chặn ghi share slot.");
+                        }
+                        if (profileByUid is not null && namePlayer.PlayerProfileId != profileByUid.Id)
+                        {
+                            return Conflict<PreDraftSharedSlotResult>(
+                                $"Xung đột định danh: label/UID/profile của '{input.DisplayName}' không cùng một identity. Đã chặn ghi share slot.");
+                        }
+                    }
+                }
+            }
+
             SessionPlayer? partner = null;
             if (input.ZaloUserId is not null)
             {
@@ -824,7 +899,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     }
                     else
                     {
-                        profile.DisplayName = input.DisplayName;
+                        // Keep the canonical profile label after identity validation.
                         if (!string.IsNullOrWhiteSpace(input.AvatarUrl))
                             profile.AvatarUrl = input.AvatarUrl;
                         profile.DefaultRole ??= PlayerRole.New;
@@ -1994,6 +2069,37 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var exactPartner = sessionPlayers
                 .Where(player => ZaloBotIntelligence.Normalize(player.DisplayName) == normalizedPartnerReference)
                 .ToList();
+            if (partnerZaloId is not null)
+            {
+                var profileByUid = await db.PlayerProfiles.SingleOrDefaultAsync(profile => profile.ZaloUserId == partnerZaloId);
+                if (profileByUid is not null &&
+                    NormalizePlayerLookup(profileByUid.DisplayName) != NormalizePlayerLookup(partnerReference))
+                {
+                    return Conflict<PostDraftSharedSlotResult>(
+                        $"Xung đột định danh: @mention '{partnerReference}' mang UID thuộc hồ sơ '{profileByUid.DisplayName}'. Đã chặn ghi share slot.");
+                }
+                if (partnerByZaloId is not null)
+                {
+                    var matchesPlayer = NormalizePlayerLookup(partnerByZaloId.DisplayName) == NormalizePlayerLookup(partnerReference);
+                    var matchesProfile = partnerByZaloId.PlayerProfile is null ||
+                                         NormalizePlayerLookup(partnerByZaloId.PlayerProfile.DisplayName) == NormalizePlayerLookup(partnerReference);
+                    if (!matchesPlayer || !matchesProfile)
+                    {
+                        return Conflict<PostDraftSharedSlotResult>(
+                            $"Xung đột định danh: @mention '{partnerReference}' mang UID đang gắn với '{partnerByZaloId.DisplayName}'. Đã chặn ghi share slot.");
+                    }
+                    if (exactPartner.Count == 1 && exactPartner[0].Id != partnerByZaloId.Id)
+                    {
+                        return Conflict<PostDraftSharedSlotResult>(
+                            $"Xung đột định danh: label '{partnerReference}' và UID đang trỏ tới hai player khác nhau. Đã chặn ghi share slot.");
+                    }
+                }
+                else if (exactPartner.Count == 1)
+                {
+                    return Conflict<PostDraftSharedSlotResult>(
+                        $"'{partnerReference}' đã tồn tại theo tên nhưng chưa khớp UID mention này. Bot không tự attach PlayerProfile theo UID vào SessionPlayer chỉ vì trùng tên.");
+                }
+            }
             var isExternalGuestLabel = normalizedPartnerReference.StartsWith("ban cua ", StringComparison.Ordinal) ||
                                        normalizedPartnerReference.StartsWith("ban share cung ", StringComparison.Ordinal);
             var partnerResolution = partnerByZaloId is not null
@@ -2031,7 +2137,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     }
                     else
                     {
-                        profile.DisplayName = partnerReference;
+                        // Keep the canonical profile label after identity validation.
                         if (!string.IsNullOrWhiteSpace(partnerInput.AvatarUrl))
                             profile.AvatarUrl = partnerInput.AvatarUrl;
                         profile.DefaultRole ??= PlayerRole.New;
@@ -3915,12 +4021,41 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var byZaloId = players.Where(player =>
                     NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == normalizedZaloId)
                 .ToList();
-            if (byZaloId.Count == 1) return new(byZaloId[0], null, false);
-            return byZaloId.Count > 1
-                ? new(null, "UID Zalo này đang gắn với nhiều người trong cùng trận. Admin cần kiểm tra dữ liệu trước khi cập nhật.", false)
-                : allowCreateFromZaloMention
-                    ? new(null, "Người được @mention chưa có trong danh sách trận này và sẽ được thêm sau khi xác nhận.", true)
-                    : new(null, "Người được @mention chưa có trong danh sách trận này.", false);
+            if (byZaloId.Count == 1)
+            {
+                var matched = byZaloId[0];
+                var requestedName = NormalizePlayerLookup(playerReference);
+                var playerName = NormalizePlayerLookup(matched.DisplayName);
+                var profileName = NormalizePlayerLookup(matched.PlayerProfile?.DisplayName);
+                if (requestedName.Length == 0 ||
+                    requestedName != playerName ||
+                    profileName.Length > 0 && requestedName != profileName)
+                {
+                    return new(
+                        null,
+                        $"Xung đột định danh: @mention '{playerReference}' mang UID đang gắn với '{matched.DisplayName}'. Bot không tự ghép hoặc ghi dữ liệu.",
+                        false);
+                }
+                return new(matched, null, false);
+            }
+            if (byZaloId.Count > 1)
+                return new(null, "UID Zalo này đang gắn với nhiều người trong cùng trận. Admin cần kiểm tra dữ liệu trước khi cập nhật.", false);
+
+            var requestedReference = NormalizePlayerLookup(playerReference);
+            var sameNamePlayers = players.Where(player =>
+                    NormalizePlayerLookup(player.DisplayName) == requestedReference)
+                .ToList();
+            if (sameNamePlayers.Count > 0)
+            {
+                return new(
+                    null,
+                    $"Xung đột định danh: '{playerReference}' đã có trong trận nhưng chưa được xác minh bằng UID mention này. Bot không tự gắn UID/profile vào player chỉ vì trùng tên.",
+                    false);
+            }
+
+            return allowCreateFromZaloMention
+                ? new(null, "Người được @mention chưa có trong danh sách trận này và sẽ được thêm sau khi xác nhận.", true)
+                : new(null, "Người được @mention chưa có trong danh sách trận này.", false);
         }
 
         var reference = NormalizePlayerLookup(playerReference);
