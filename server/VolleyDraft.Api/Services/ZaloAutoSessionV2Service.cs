@@ -138,7 +138,8 @@ internal sealed class ZaloAutoSessionV2Service(
         // V2 owns discovery/preview. The proven legacy confirmation path still owns the
         // transaction that creates sessions, but only Live proposals are left in
         // AwaitingApproval, so PreviewOnly can never create a website session.
-        if (hasLiveGroup)
+        if (hasLiveGroup &&
+            !configuration.GetValue("AutoSession:ConversationV3Enabled", true))
             await legacyAutoSession.ProcessPendingConfirmationsAsync(cancellationToken);
 
         await CaptureLearningSignalsAsync(trackedGroups, cancellationToken);
@@ -312,6 +313,16 @@ internal sealed class ZaloAutoSessionV2Service(
             proposal.ProposalMessageId = sent.MessageId.Trim();
             proposal.LastError = null;
             await store.UpsertProposalAsync(proposal, cancellationToken);
+            if (configuration.GetValue("AutoSession:ConversationV3Enabled", true))
+            {
+                await new ZaloAutoSessionConversationStore(db).CreateFromPreviewAsync(
+                    proposal,
+                    tracked,
+                    candidates,
+                    sent.MessageId.Trim(),
+                    configuration,
+                    cancellationToken);
+            }
             logger.LogInformation(
                 "Auto-session organizer preview sent Group={GroupId} Poll={PollId} Creator={CreatorId} Mode={Mode} Confidence={Confidence}",
                 tracked.GroupId,
@@ -445,21 +456,20 @@ internal sealed class ZaloAutoSessionV2Service(
     {
         var capacity = Math.Max(1, teamCount) * Math.Max(1, teamSize);
         var lines = candidates.Select(candidate =>
-            $"• {candidate.DayKey} {candidate.StartTime.ToOffset(TimeSpan.FromHours(7)):dd/MM HH:mm} — hiện {candidate.VoteCount} vote");
+            $"• {candidate.DayKey} {candidate.StartTime.ToOffset(TimeSpan.FromHours(7)):dd/MM HH:mm} — hiện {candidate.VoteCount}/{capacity} người");
         var locationText = string.IsNullOrWhiteSpace(location) ? "chưa đặt sân mặc định" : location.Trim();
         var modeLine = rollout == ZaloAutoSessionRolloutMode.PreviewOnly
             ? "🧪 CANARY PREVIEW: hiện chỉ xem trước, reply sẽ KHÔNG tạo website. Khi test ổn, admin chuyển group sang Live."
-            : "✅ Chưa tạo website. Chỉ sau khi bạn reply đúng tin preview này thì hệ thống mới tạo.";
+            : "✅ Website CHƯA được tạo. Bạn cứ reply tin này và nói tự nhiên phần muốn tạo/sửa; bot sẽ chốt lại trước khi ghi website.";
         return $"Tui hiểu poll “{Truncate(poll.Question, 180)}” là poll đăng ký lịch bóng chuyền.\n\n" +
                $"PREVIEW WEBSITE\n{string.Join("\n", lines)}\n" +
-               $"• Cấu hình: {teamCount} đội × {teamSize} = {capacity} slot · {totalSets} set\n" +
                $"• Địa điểm: {locationText}\n\n" +
                $"{modeLine}\n\n" +
-               "Nếu thông tin đúng, reply ĐÚNG tin này:\n" +
-               "• “xác nhận tạo website” → tạo tất cả lịch trên\n" +
-               "• “tạo T6 CN” → chỉ tạo các ngày đó\n" +
-               "• “T4 18h rồi tạo” → đổi giờ T4 trước khi tạo\n" +
-               "• “bỏ qua” → không tạo website từ poll này.";
+               "Bạn không cần nhớ câu lệnh. Cứ reply tin này và nói tự nhiên, ví dụ:\n" +
+               "• “T6 thôi” hoặc “à thêm CN”\n" +
+               "• “T6 6h”, “sân A”, “21 người”\n" +
+               "• “tạo đi” khi bản nháp đã đúng\n" +
+               "• “bỏ qua” nếu không muốn tạo.";
     }
 
     private async Task<ZaloConnection?> GetConnectionAsync(string connectionId, CancellationToken cancellationToken) =>
