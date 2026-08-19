@@ -1,0 +1,181 @@
+name: Harden Auto Session V3 multi-admin routing
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  harden-routing:
+    if: ${{ github.head_ref == 'agent/auto-session-conversation-v3' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/auto-session-conversation-v3
+          fetch-depth: 0
+
+      - name: Apply multi-admin ownership routing and baseline test fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          service = Path('server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs')
+          text = service.read_text()
+
+          old = '''        var quotedMessageId = incoming.Quote?.MessageId?.Trim();
+          var stronglyAddressed = incoming.MentionedBot;
+          if (!string.IsNullOrWhiteSpace(quotedMessageId))
+              conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);
+              stronglyAddressed = stronglyAddressed || conversation is not null;
+          '''
+          new = '''        var quotedMessageId = incoming.Quote?.MessageId?.Trim();
+          var stronglyAddressed = incoming.MentionedBot;
+          if (!string.IsNullOrWhiteSpace(quotedMessageId))
+          {
+              conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);
+              stronglyAddressed = stronglyAddressed || conversation is not null;
+          }
+          '''
+          if old not in text:
+              raise SystemExit('quoted-message routing block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        var organizerIds = GetOrganizerIds(roles);
+          if (!organizerIds.Contains(senderId, StringComparer.Ordinal))
+          {
+              await SendConversationTextAsync(
+                  conversation,
+                  incoming.SenderId,
+                  incoming.SenderName,
+                  "Tui chỉ nhận thay đổi/tạo lịch từ trưởng hoặc phó nhóm hiện tại. Website vẫn chưa được tạo.",
+                  cancellationToken);
+              return true;
+          }
+
+          var draft = DeserializeDraft(conversation.DraftJson);
+          '''
+          new = '''        var organizerIds = GetOrganizerIds(roles);
+          if (!organizerIds.Contains(senderId, StringComparer.Ordinal))
+          {
+              // Non-organizers are bystanders for Auto Session. Do not create extra bot
+              // chatter in a busy group merely because somebody replied to the preview.
+              return stronglyAddressed;
+          }
+
+          var activeOrganizerStillAuthorized = organizerIds.Contains(
+              NormalizeId(conversation.ActiveOrganizerId),
+              StringComparer.Ordinal);
+          var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
+              senderId,
+              NormalizeId(conversation.ActiveOrganizerId),
+              activeOrganizerStillAuthorized,
+              stronglyAddressed,
+              conversation.ReminderCount >= 2,
+              incoming.Content);
+
+          if (organizerRoute == ZaloAutoSessionOrganizerRoute.IgnoreBystander)
+              return stronglyAddressed;
+
+          if (organizerRoute == ZaloAutoSessionOrganizerRoute.RejectEarlyTakeover)
+          {
+              await SendConversationTextAsync(
+                  conversation,
+                  incoming.SenderId,
+                  incoming.SenderName,
+                  "Poll này đang có một trưởng/phó xử lý. Tui chưa chuyển quyền hội thoại để tránh hai người sửa chồng nhau. Nếu người đó im lặng, bot sẽ tự escalation; lúc đó bạn có thể reply “nhận xử lý”.",
+                  cancellationToken);
+              return true;
+          }
+
+          var draft = DeserializeDraft(conversation.DraftJson);
+          '''
+          if old not in text:
+              raise SystemExit('organizer authorization block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        conversation.Version += 1;
+
+          if (interpretation.Intent == ZaloAutoSessionConversationIntent.Cancel &&
+          '''
+          new = '''        conversation.Version += 1;
+
+          if (organizerRoute == ZaloAutoSessionOrganizerRoute.AllowTakeover &&
+              ZaloAutoSessionOrganizerRouting.IsExplicitTakeover(incoming.Content) &&
+              interpretation.Intent is ZaloAutoSessionConversationIntent.None or ZaloAutoSessionConversationIntent.Uncertain)
+          {
+              conversation.State = ZaloAutoSessionConversationState.Discussing;
+              conversation.LastQuestionType = null;
+              await conversations.SaveAsync(conversation, cancellationToken);
+              await SendConversationTextAsync(
+                  conversation,
+                  incoming.SenderId,
+                  incoming.SenderName,
+                  BuildDraftSummary(
+                      draft,
+                      tracked,
+                      "Ok, từ giờ tui giữ poll này cho bạn xử lý. Bản nháp hiện tại như dưới đây."),
+                  cancellationToken);
+              return true;
+          }
+
+          if (interpretation.Intent == ZaloAutoSessionConversationIntent.Cancel &&
+          '''
+          if old not in text:
+              raise SystemExit('organizer activity block not found')
+          text = text.replace(old, new, 1)
+          service.write_text(text)
+
+          test = Path('server/VolleyDraft.Api.Tests/ZaloConversationalAdvisorTests.cs')
+          text = test.read_text()
+          old = '''                db.MatchSessions.AddRange(
+                      Session("session-t6", "T6", DateTimeOffset.UtcNow.AddDays(1), zalo, longProfile, toAnProfile),
+                      Session("session-cn", "CN", DateTimeOffset.UtcNow.AddDays(2), zalo, longProfile, toAnProfile));
+                  }
+          '''
+          new = '''                var now = DateTimeOffset.UtcNow;
+                  db.MatchSessions.AddRange(
+                      Session("session-t6", "T6", NextWeekday(now, DayOfWeek.Friday), zalo, longProfile, toAnProfile),
+                      Session("session-cn", "CN", NextWeekday(now, DayOfWeek.Sunday), zalo, longProfile, toAnProfile));
+                  }
+          '''
+          if old not in text:
+              raise SystemExit('advisor fixture session block not found')
+          text = text.replace(old, new, 1)
+
+          marker = '''        private static MatchSession Session(
+          '''
+          helper = '''        private static DateTimeOffset NextWeekday(DateTimeOffset from, DayOfWeek target)
+              {
+                  var days = ((int)target - (int)from.DayOfWeek + 7) % 7;
+                  if (days == 0) days = 7;
+                  return from.AddDays(days);
+              }
+
+          '''
+          if marker not in text:
+              raise SystemExit('advisor fixture helper marker not found')
+          text = text.replace(marker, helper + marker, 1)
+          test.write_text(text)
+          PY
+
+      - name: Build backend
+        run: dotnet build server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+
+      - name: Run full backend tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-build
+
+      - name: Commit source and remove temporary workflow
+        run: |
+          git config user.name "Longdotnet"
+          git config user.email "longspin0220@gmail.com"
+          git rm .github/workflows/harden-auto-session-v3-multi-admin.yml
+          git add server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs \
+                  server/VolleyDraft.Api/Services/ZaloAutoSessionOrganizerRouting.cs \
+                  server/VolleyDraft.Api.Tests/ZaloAutoSessionOrganizerRoutingTests.cs \
+                  server/VolleyDraft.Api.Tests/ZaloConversationalAdvisorTests.cs
+          git commit -m "Harden Auto Session V3 multi-admin ownership"
+          git push origin HEAD:agent/auto-session-conversation-v3
