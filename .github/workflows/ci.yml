@@ -36,34 +36,44 @@ jobs:
           from pathlib import Path
           path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
           text = path.read_text(encoding='utf-8')
-          old = '''                else if (exactPartner.Count == 1)
-                {
-                    return Conflict<PostDraftSharedSlotResult>(
-                        $"'{partnerReference}' đã tồn tại theo tên nhưng chưa khớp UID mention này. Bot không tự attach PlayerProfile theo UID vào SessionPlayer chỉ vì trùng tên.");
-                }'''
-          new = '''                else if (exactPartner.Count == 1)
-                {
-                    var exactPlayer = exactPartner[0];
-                    var exactPlayerUid = NormalizeZaloId(exactPlayer.PlayerProfile?.ZaloUserId);
-                    if (exactPlayerUid.Length > 0 && exactPlayerUid != partnerZaloId)
-                    {
-                        return Conflict<PostDraftSharedSlotResult>(
-                            $"Xung đột định danh: '{partnerReference}' đang gắn với UID khác. Đã chặn ghi share slot.");
-                    }
-                    if (profileByUid is not null &&
-                        exactPlayer.PlayerProfileId is not null &&
-                        exactPlayer.PlayerProfileId != profileByUid.Id)
-                    {
-                        return Conflict<PostDraftSharedSlotResult>(
-                            $"Xung đột định danh: label/UID/profile của '{partnerReference}' không cùng một identity. Đã chặn ghi share slot.");
-                    }
-                    // Exact label/player match plus no conflicting UID/profile is a verified
-                    // backfill case. The existing write path may create or enrich that profile.
-                }'''
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected one post-draft guard block, found {count}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          message = "Bot không tự attach PlayerProfile theo UID vào SessionPlayer chỉ vì trùng tên."
+          message_pos = text.find(message)
+          if message_pos < 0:
+              raise SystemExit('post-draft guard message not found')
+          start_token = 'else if (exactPartner.Count == 1)'
+          start = text.rfind(start_token, 0, message_pos)
+          if start < 0:
+              raise SystemExit('post-draft guard start not found')
+          line_start = text.rfind('\n', 0, start) + 1
+          indent = text[line_start:start]
+          block_end_token = '\n' + indent + '}'
+          end = text.find(block_end_token, message_pos)
+          if end < 0:
+              raise SystemExit('post-draft guard end not found')
+          end += len(block_end_token)
+          replacement = f'''{start_token}
+          {{
+              var exactPlayer = exactPartner[0];
+              var exactPlayerUid = NormalizeZaloId(exactPlayer.PlayerProfile?.ZaloUserId);
+              if (exactPlayerUid.Length > 0 && exactPlayerUid != partnerZaloId)
+              {{
+                  return Conflict<PostDraftSharedSlotResult>(
+                      $"Xung đột định danh: '{{partnerReference}}' đang gắn với UID khác. Đã chặn ghi share slot.");
+              }}
+              if (profileByUid is not null &&
+                  exactPlayer.PlayerProfileId is not null &&
+                  exactPlayer.PlayerProfileId != profileByUid.Id)
+              {{
+                  return Conflict<PostDraftSharedSlotResult>(
+                      $"Xung đột định danh: label/UID/profile của '{{partnerReference}}' không cùng một identity. Đã chặn ghi share slot.");
+              }}
+              // Exact label/player match plus no conflicting UID/profile is a verified
+              // backfill case. The existing write path may create or enrich that profile.
+          }}'''
+          replacement = '\n'.join(indent + line if index > 0 else indent + line
+                                  for index, line in enumerate(replacement.splitlines()))
+          text = text[:line_start] + replacement + text[end:]
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Run full backend tests on final source
