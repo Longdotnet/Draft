@@ -67,8 +67,7 @@ internal sealed class ZaloSocialCardCopyGenerator
             3. Không nói như thể bot đã đăng ký/xóa/đổi roster/team/slot/vote/draft/waitlist.
             4. Không chửi tục, không công kích cá nhân, không @all, không URL, không markdown.
             5. Không lặp gần nguyên văn headline/body/ribbon trong RecentCards.
-            6. Chỉ trả về đúng một JSON object, không code fence, không giải thích:
-               {{"headline":"...","body":"...","ribbon":"..."}}
+            6. Chỉ trả về đúng một JSON object có ba field headline, body, ribbon; không code fence, không giải thích.
             7. headline: 3-48 ký tự, mạnh và dễ đọc.
                body: 8-110 ký tự, tối đa một câu ngắn.
                ribbon: 3-55 ký tự, như một câu chốt/callout ngắn.
@@ -307,8 +306,6 @@ internal sealed class ZaloSocialMediaAssetService(
         if (copy is null)
             return null;
 
-        // The immutable occurrence memory is written before rendering. A retry reuses the
-        // same copy/background rather than consuming another background or calling AI again.
         var memory = await ZaloSocialCardMemoryStore.RememberAsync(
             db,
             occurrenceKey,
@@ -323,8 +320,6 @@ internal sealed class ZaloSocialMediaAssetService(
             memory.GroupName,
             new ZaloSocialCardCopy(memory.Headline, memory.Body, memory.Ribbon));
 
-        // Re-check after the potentially slower AI/render path to reduce duplicate assets
-        // when two worker instances race on the same greeting occurrence.
         existing = await db.ZaloBotImageAssets
             .AsNoTracking()
             .Where(item => item.AdminUserId == adminUserId && item.FileName == fileName)
@@ -512,8 +507,6 @@ internal static class ZaloSocialGreetingCardRenderer
             maxLines: 3,
             bodyColor);
 
-        // Four source backgrounds already contain an orange ribbon. Background 4 uses
-        // a clean lower-left area instead, so add a light translucent rail underneath.
         var ribbonRect = backgroundId == 4
             ? new SKRect(86, 710, 790, 790)
             : new SKRect(96, 716, 805, 806);
