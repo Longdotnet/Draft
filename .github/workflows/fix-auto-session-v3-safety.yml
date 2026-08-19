@@ -23,30 +23,24 @@ jobs:
           from pathlib import Path
           path = Path('server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs')
           text = path.read_text()
-          old = '''        if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true)) return;
-          await EnsurePendingConversationsAsync(cancellationToken);'''
-          new = '''        if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true)) return;
-          if (!(await runtimeStore.GetRuntimeAsync(cancellationToken)).GlobalEnabled) return;
-          await EnsurePendingConversationsAsync(cancellationToken);'''
-          if old not in text:
-              raise SystemExit('Global runtime hook not found')
-          text = text.replace(old, new, 1)
 
-          old = '''        var quotedMessageId = incoming.Quote?.MessageId?.Trim();
-          var stronglyAddressed = incoming.MentionedBot || !string.IsNullOrWhiteSpace(quotedMessageId);
-          if (!string.IsNullOrWhiteSpace(quotedMessageId))
-              conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);'''
-          new = '''        var quotedMessageId = incoming.Quote?.MessageId?.Trim();
-          var quotedConversationMessage = false;
-          if (!string.IsNullOrWhiteSpace(quotedMessageId))
-          {
-              conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);
-              quotedConversationMessage = conversation is not null;
-          }
-          var stronglyAddressed = incoming.MentionedBot || quotedConversationMessage;'''
-          if old not in text:
-              raise SystemExit('Strong-address hook not found')
-          text = text.replace(old, new, 1)
+          flag = 'if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true)) return;'
+          runtime = 'if (!(await runtimeStore.GetRuntimeAsync(cancellationToken)).GlobalEnabled) return;'
+          if runtime not in text:
+              if flag not in text:
+                  raise SystemExit('Conversation V3 flag hook not found')
+              text = text.replace(flag, flag + '\n        ' + runtime, 1)
+
+          old_address = 'var stronglyAddressed = incoming.MentionedBot || !string.IsNullOrWhiteSpace(quotedMessageId);'
+          if old_address in text:
+              text = text.replace(old_address, 'var stronglyAddressed = incoming.MentionedBot;', 1)
+          lookup = 'conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);'
+          routed = lookup + '\n            stronglyAddressed = stronglyAddressed || conversation is not null;'
+          if routed not in text:
+              if lookup not in text:
+                  raise SystemExit('Quoted conversation lookup hook not found')
+              text = text.replace(lookup, routed, 1)
+
           path.write_text(text)
           PY
       - name: Build backend
