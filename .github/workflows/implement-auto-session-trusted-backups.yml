@@ -18,8 +18,19 @@ jobs:
           ref: agent/auto-session-conversation-v3
           fetch-depth: 0
 
-      - name: Apply trusted backup backend integration
-        run: python patches/implement_trusted_backups.py
+      - name: Fix helper detection and apply trusted backup backend integration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('patches/implement_trusted_backups.py')
+          text = path.read_text()
+          old = "if 'GetOrganizerCandidatesAsync(' not in text:"
+          new = "if 'private async Task<IReadOnlyList<ZaloAutoSessionOrganizerCandidateResponse>> GetOrganizerCandidatesAsync(' not in text:"
+          if old not in text:
+              raise SystemExit('helper detection condition not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python patches/implement_trusted_backups.py
 
       - name: Build backend
         run: dotnet build server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
