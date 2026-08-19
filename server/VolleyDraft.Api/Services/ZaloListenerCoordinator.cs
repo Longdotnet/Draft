@@ -164,10 +164,12 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
                 await autoSessions.ReconcileAsync(stoppingToken);
                 await ZaloAutoSessionConversationService.Create(scope.ServiceProvider)
                     .ReconcileAsync(stoppingToken);
+                await ZaloSocialPresenceService.Create(scope.ServiceProvider)
+                    .ReconcileAsync(stoppingToken);
             }
             catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
             {
-                logger.LogError(exception, "Zalo listener/auto-session v2 reconciliation failed");
+                logger.LogError(exception, "Zalo listener/auto-session/social-presence reconciliation failed");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken);
