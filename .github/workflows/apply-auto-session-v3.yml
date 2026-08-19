@@ -18,11 +18,13 @@ jobs:
         with:
           ref: agent/auto-session-conversation-v3
           fetch-depth: 0
-      - name: Unpack V3 source package
+      - name: Rebuild V3 source package
         run: |
-          rm -rf /tmp/auto-session-v3
+          rm -rf /tmp/auto-session-v3 /tmp/auto-session-v3.zip
           mkdir -p /tmp/auto-session-v3
-          unzip -q patches/auto-session-v3-ci.zip -d /tmp/auto-session-v3
+          cat patches/v3parts/*.b64 | tr -d '\n\r' | base64 -d > /tmp/auto-session-v3.zip
+          unzip -t /tmp/auto-session-v3.zip
+          unzip -q /tmp/auto-session-v3.zip -d /tmp/auto-session-v3
       - name: Apply V3
         run: python /tmp/auto-session-v3/auto-session-v3-package/apply-v3.py --repo-root .
       - name: Backend tests
@@ -32,6 +34,7 @@ jobs:
           git config user.name "Longdotnet"
           git config user.email "longspin0220@gmail.com"
           git rm .github/workflows/apply-auto-session-v3.yml patches/auto-session-v3-ci.zip
+          git rm -r patches/v3parts
           git add server docs
           git commit -m "Implement Auto Session conversation V3 [v3-generated]"
           git push origin HEAD:agent/auto-session-conversation-v3
