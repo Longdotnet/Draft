@@ -67,8 +67,10 @@ internal sealed class ZaloAutoSessionConversationService(
         var quotedMessageId = incoming.Quote?.MessageId?.Trim();
         var stronglyAddressed = incoming.MentionedBot;
         if (!string.IsNullOrWhiteSpace(quotedMessageId))
+        {
             conversation = await conversations.FindByQuotedBotMessageAsync(groupId, quotedMessageId, cancellationToken);
             stronglyAddressed = stronglyAddressed || conversation is not null;
+        }
 
         var active = conversation is null
             ? await conversations.GetActiveForGroupAsync(groupId, cancellationToken)
@@ -122,11 +124,32 @@ internal sealed class ZaloAutoSessionConversationService(
         var organizerIds = GetOrganizerIds(roles);
         if (!organizerIds.Contains(senderId, StringComparer.Ordinal))
         {
+            // Non-organizers are bystanders for Auto Session. Do not create extra bot
+            // chatter in a busy group merely because somebody replied to the preview.
+            return stronglyAddressed;
+        }
+
+        var activeOrganizerStillAuthorized = organizerIds.Contains(
+            NormalizeId(conversation.ActiveOrganizerId),
+            StringComparer.Ordinal);
+        var organizerRoute = ZaloAutoSessionOrganizerRouting.Evaluate(
+            senderId,
+            NormalizeId(conversation.ActiveOrganizerId),
+            activeOrganizerStillAuthorized,
+            stronglyAddressed,
+            conversation.ReminderCount >= 2,
+            incoming.Content);
+
+        if (organizerRoute == ZaloAutoSessionOrganizerRoute.IgnoreBystander)
+            return stronglyAddressed;
+
+        if (organizerRoute == ZaloAutoSessionOrganizerRoute.RejectEarlyTakeover)
+        {
             await SendConversationTextAsync(
                 conversation,
                 incoming.SenderId,
                 incoming.SenderName,
-                "Tui chỉ nhận thay đổi/tạo lịch từ trưởng hoặc phó nhóm hiện tại. Website vẫn chưa được tạo.",
+                "Poll này đang có một trưởng/phó xử lý. Tui chưa chuyển quyền hội thoại để tránh hai người sửa chồng nhau. Nếu người đó im lặng, bot sẽ tự escalation; lúc đó bạn có thể reply “nhận xử lý”.",
                 cancellationToken);
             return true;
         }
@@ -162,6 +185,25 @@ internal sealed class ZaloAutoSessionConversationService(
         conversation.NextFollowUpAt = DateTimeOffset.UtcNow.AddMinutes(GetFirstReminderMinutes());
         conversation.LastError = null;
         conversation.Version += 1;
+
+        if (organizerRoute == ZaloAutoSessionOrganizerRoute.AllowTakeover &&
+            ZaloAutoSessionOrganizerRouting.IsExplicitTakeover(incoming.Content) &&
+            interpretation.Intent is ZaloAutoSessionConversationIntent.None or ZaloAutoSessionConversationIntent.Uncertain)
+        {
+            conversation.State = ZaloAutoSessionConversationState.Discussing;
+            conversation.LastQuestionType = null;
+            await conversations.SaveAsync(conversation, cancellationToken);
+            await SendConversationTextAsync(
+                conversation,
+                incoming.SenderId,
+                incoming.SenderName,
+                BuildDraftSummary(
+                    draft,
+                    tracked,
+                    "Ok, từ giờ tui giữ poll này cho bạn xử lý. Bản nháp hiện tại như dưới đây."),
+                cancellationToken);
+            return true;
+        }
 
         if (interpretation.Intent == ZaloAutoSessionConversationIntent.Cancel &&
             !string.Equals(interpretation.Interpreter, "rules", StringComparison.Ordinal))
