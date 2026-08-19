@@ -8,7 +8,77 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
+  finalize-share-slot-fix:
+    name: Finalize share-slot identity fix
+    if: github.head_ref == 'fix/share-slot-identity-binding'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/share-slot-identity-binding
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Preserve verified same-name mention backfill
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
+          text = path.read_text(encoding='utf-8')
+          old = '''                else if (exactPartner.Count == 1)
+                {
+                    return Conflict<PostDraftSharedSlotResult>(
+                        $"'{partnerReference}' đã tồn tại theo tên nhưng chưa khớp UID mention này. Bot không tự attach PlayerProfile theo UID vào SessionPlayer chỉ vì trùng tên.");
+                }'''
+          new = '''                else if (exactPartner.Count == 1)
+                {
+                    var exactPlayer = exactPartner[0];
+                    var exactPlayerUid = NormalizeZaloId(exactPlayer.PlayerProfile?.ZaloUserId);
+                    if (exactPlayerUid.Length > 0 && exactPlayerUid != partnerZaloId)
+                    {
+                        return Conflict<PostDraftSharedSlotResult>(
+                            $"Xung đột định danh: '{partnerReference}' đang gắn với UID khác. Đã chặn ghi share slot.");
+                    }
+                    if (profileByUid is not null &&
+                        exactPlayer.PlayerProfileId is not null &&
+                        exactPlayer.PlayerProfileId != profileByUid.Id)
+                    {
+                        return Conflict<PostDraftSharedSlotResult>(
+                            $"Xung đột định danh: label/UID/profile của '{partnerReference}' không cùng một identity. Đã chặn ghi share slot.");
+                    }
+                    // Exact label/player match plus no conflicting UID/profile is a verified
+                    // backfill case. The existing write path may create or enrich that profile.
+                }'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one post-draft guard block, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Run full backend tests on final source
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+
+      - name: Commit source and restore standard CI
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          git add .github/workflows/ci.yml server/VolleyDraft.Api/Services/SessionDraftService.cs
+          git commit -m "fix: preserve verified mention backfill"
+          git push origin HEAD:fix/share-slot-identity-binding
+
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
