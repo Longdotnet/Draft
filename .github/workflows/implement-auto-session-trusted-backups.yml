@@ -42,7 +42,7 @@ jobs:
         run: |
           git config user.name "Longdotnet"
           git config user.email "longspin0220@gmail.com"
-          git rm .github/workflows/implement-auto-session-trusted-backups.yml patches/implement_trusted_backups.py
+          git rm -f .github/workflows/implement-auto-session-trusted-backups.yml patches/implement_trusted_backups.py
           git add server/VolleyDraft.Api/Services/ZaloAutoSessionConversationService.cs \
                   server/VolleyDraft.Api/Services/ZaloAutoSessionSettingsService.cs
           git commit -m "Integrate trusted Auto Session backup operators"
