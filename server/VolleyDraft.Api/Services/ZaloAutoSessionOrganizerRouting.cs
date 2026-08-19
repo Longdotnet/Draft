@@ -12,8 +12,8 @@ internal enum ZaloAutoSessionOrganizerRoute
 
 /// <summary>
 /// Keeps one human owner on an Auto Session conversation at a time.
-/// Other current Zalo admins are treated as bystanders until takeover is explicitly safe.
-/// This prevents random admin chatter from stealing the draft or resetting reminders.
+/// A Zalo admin is not automatically an Auto Session operator: non-owner admins are
+/// bystanders unless they are explicitly trusted for takeover.
 /// </summary>
 internal static class ZaloAutoSessionOrganizerRouting
 {
@@ -29,6 +29,7 @@ internal static class ZaloAutoSessionOrganizerRouting
         string senderId,
         string activeOrganizerId,
         bool activeOrganizerStillAuthorized,
+        bool senderTrustedForTakeover,
         bool stronglyAddressed,
         bool takeoverEscalated,
         string? content)
@@ -39,27 +40,29 @@ internal static class ZaloAutoSessionOrganizerRouting
         if (!stronglyAddressed)
             return ZaloAutoSessionOrganizerRoute.IgnoreBystander;
 
+        // Being a current Zalo admin is necessary for authorization, but not sufficient
+        // to become the Auto Session operator. Until the explicit trusted-operator UI is
+        // implemented, the service supplies only the group creator as the trusted fallback.
+        if (!senderTrustedForTakeover)
+            return ZaloAutoSessionOrganizerRoute.IgnoreBystander;
+
         var explicitTakeover = IsExplicitTakeover(content);
         var substantiveAction = LooksLikeSubstantiveAction(content);
 
-        // If the previous owner is no longer a current creator/admin, another current
-        // organizer may take over immediately, but only through a deliberate bot-addressed action.
+        // If the previous owner lost creator/admin rights, a trusted fallback may take over
+        // immediately, but only through a deliberate bot-addressed action.
         if (!activeOrganizerStillAuthorized)
             return explicitTakeover || substantiveAction
                 ? ZaloAutoSessionOrganizerRoute.AllowTakeover
                 : ZaloAutoSessionOrganizerRoute.IgnoreBystander;
 
-        // Before escalation, another admin must not mutate the draft just because they
-        // happen to reply to the bot. An explicit takeover request gets one deterministic
-        // explanation; ordinary chatter/action-like comments are silently ignored.
+        // Before escalation, even a trusted fallback must not edit the owner's draft.
         if (!takeoverEscalated)
             return explicitTakeover
                 ? ZaloAutoSessionOrganizerRoute.RejectEarlyTakeover
                 : ZaloAutoSessionOrganizerRoute.IgnoreBystander;
 
-        // After escalation, "ok", "ừ", jokes, and other short chatter still do not claim
-        // ownership. A takeover needs either explicit ownership language or a concrete
-        // schedule/location/create/cancel action addressed to the bot.
+        // After escalation, short chatter still does not claim ownership.
         return explicitTakeover || substantiveAction
             ? ZaloAutoSessionOrganizerRoute.AllowTakeover
             : ZaloAutoSessionOrganizerRoute.IgnoreBystander;
