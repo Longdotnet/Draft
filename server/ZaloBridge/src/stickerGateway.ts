@@ -80,6 +80,7 @@ async function findSticker(api: MinimalStickerApi, request: SendGroupStickerRequ
       if (!Array.isArray(ids) || ids.length === 0) continue;
       const seed = request.idempotencyKey || `${request.accountId}:${request.groupId}:${request.reaction}`;
       const stickerId = ids[stableIndex(seed, ids.length)];
+      if (stickerId === undefined) continue;
       const details = await api.getStickersDetail(stickerId);
       const sticker = Array.isArray(details) ? details.find(isSendableSticker) : null;
       if (sticker) return sticker;
