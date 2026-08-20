@@ -187,13 +187,14 @@ public sealed class ZaloDailySocialRhythmTests
     }
 
     [Fact]
-    public void Night_cards_remain_optional()
+    public void Night_cards_can_still_be_optional_when_card_first_is_disabled()
     {
         var now = DateTimeOffset.Parse("2026-08-19T17:19:00+00:00"); // 00:19 VN
+        var settings = AlwaysGreeting() with { NightGreetingCardFirst = false };
         var plans = Enumerable.Range(1, 80)
             .Select(index => ZaloDailyGreetingEngine.Plan(
                 Snapshot($"night-{index}", now),
-                AlwaysGreeting(),
+                settings,
                 60))
             .Where(plan => plan is not null)
             .Cast<ZaloDailyGreetingPlan>()
