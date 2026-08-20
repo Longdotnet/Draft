@@ -16,6 +16,7 @@ type GreetingPreview = {
   groupName: string;
   groupAvatarUrl: string | null;
   message: string;
+  testSendMessage: string;
   imageUrl: string;
   backgroundId: number;
   mood: string;
@@ -156,6 +157,13 @@ export function ZaloGreetingTestPanel() {
 
   async function sendPreview() {
     if (!token || !connectionId || !groupId || !preview) return;
+
+    const confirmed = window.confirm(
+      `Gửi THẬT ${preview.kind} greeting test vào group “${preview.groupName}”?\n\n` +
+        "Ảnh dùng đúng production renderer. Tin nhắn sẽ có nhãn 🧪 TEST để không bị scheduler tính là lời chúc thật.",
+    );
+    if (!confirmed) return;
+
     setBusy(true);
     try {
       const result = await apiFetch<GreetingSendResponse>("/zalo/greeting-tests/send", {
@@ -173,7 +181,7 @@ export function ZaloGreetingTestPanel() {
         result.mock
           ? `Bridge đang mock; request ${result.kind} đã chạy nhưng chưa gửi provider thật.`
           : result.sent
-            ? `Đã gửi ${result.kind} test vào ${result.groupName}. Lịch chúc thật không bị đánh dấu đã gửi.`
+            ? `Đã gửi ${result.kind} test vào ${result.groupName}. Production schedule/rotation không bị đánh dấu đã gửi.`
             : `Bridge không xác nhận đã gửi ${result.kind} test.`,
       );
     } catch (error) {
@@ -226,7 +234,7 @@ export function ZaloGreetingTestPanel() {
             <h2 style={{ margin: 0 }}>Test lời chúc Zalo thật</h2>
           </div>
           <p style={{ margin: "8px 0 0", color: "#94a3b8", maxWidth: 780 }}>
-            Tạo bằng đúng renderer/copy production và tên group Zalo live. Preview test dùng asset riêng, không đánh dấu đã chúc hôm nay và không tiêu rotation Morning/Night thật.
+            Tạo bằng đúng renderer/copy production và tên group Zalo live. Preview dùng asset riêng, không đánh dấu đã chúc hôm nay và không tiêu rotation Morning/Night thật.
           </p>
         </div>
         <button
@@ -311,7 +319,7 @@ export function ZaloGreetingTestPanel() {
           onClick={() => void sendPreview()}
           style={{ ...buttonStyle, background: preview ? "#16a34a" : "#334155", color: "white" }}
         >
-          <Send size={16} /> Gửi đúng preview này vào Zalo
+          <Send size={16} /> Gửi preview này vào Zalo thật
         </button>
       </div>
 
@@ -327,8 +335,12 @@ export function ZaloGreetingTestPanel() {
               {preview.kind.toUpperCase()} · BG {preview.backgroundId} · {preview.mood}
             </div>
             <p style={{ margin: "12px 0 0", fontSize: 18, lineHeight: 1.55 }}>{preview.message}</p>
+            <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: "rgba(2, 6, 23, 0.52)" }}>
+              <div style={{ fontSize: 12, color: "#fbbf24", fontWeight: 800 }}>TIN NHẮN KHI GỬI TEST THẬT</div>
+              <div style={{ marginTop: 5, color: "#cbd5e1", lineHeight: 1.5 }}>{preview.testSendMessage}</div>
+            </div>
             <p style={{ margin: "14px 0 0", color: "#86efac", fontSize: 14 }}>
-              ✓ Preview riêng. Không thay đổi daily greeting history hay production rotation.
+              ✓ Card/copy đúng production. Prefix 🧪 TEST chỉ bảo vệ scheduler khỏi tính test là lời chúc thật.
             </p>
           </div>
         </div>
