@@ -302,7 +302,7 @@ internal sealed class ZaloNightGreetingMediaAssetService(
             return null;
 
         var occurrenceKey = $"night:{connectionId}:{groupId}:{serviceDate:yyyyMMdd}";
-        var fileName = $"social-card-{StableToken(connectionId, groupId)}-{serviceDate:yyyyMMdd}-night-v1.jpg";
+        var fileName = $"social-card-{StableToken(connectionId, groupId)}-{serviceDate:yyyyMMdd}-night-v2.png";
         var existing = await db.ZaloBotImageAssets
             .AsNoTracking()
             .Where(item => item.AdminUserId == adminUserId && item.FileName == fileName)
@@ -360,7 +360,7 @@ internal sealed class ZaloNightGreetingMediaAssetService(
         {
             AdminUserId = adminUserId,
             FileName = fileName,
-            ContentType = "image/jpeg",
+            ContentType = "image/png",
             Size = rendered.LongLength,
             Data = rendered,
             CreatedAt = DateTimeOffset.UtcNow
@@ -464,13 +464,13 @@ internal static class ZaloNightGreetingCardRenderer
             ?? throw new InvalidOperationException("Could not create Night greeting canvas.");
         var canvas = surface.Canvas;
         canvas.Clear(SKColors.Black);
-        canvas.DrawBitmap(background, new SKRect(0, 0, Width, Height));
+        ZaloGreetingCardRenderQuality.DrawBackground(canvas, background, Width, Height);
 
         DrawHeader(canvas, groupName);
         DrawCopy(canvas, copy);
 
         using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Jpeg, 94);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
         return data.ToArray();
     }
 
@@ -555,6 +555,7 @@ internal static class ZaloNightGreetingCardRenderer
         int maxLines,
         SKColor color)
     {
+        text = ZaloGreetingCardRenderQuality.PrepareText(text, out _);
         using var paint = new SKPaint
         {
             Color = color,
@@ -609,6 +610,7 @@ internal static class ZaloNightGreetingCardRenderer
         bool bold,
         bool centered)
     {
+        text = ZaloGreetingCardRenderQuality.PrepareText(text, out var icon);
         using var paint = new SKPaint
         {
             Color = color,
@@ -617,18 +619,34 @@ internal static class ZaloNightGreetingCardRenderer
             IsAntialias = true,
             SubpixelText = true
         };
-        while (paint.TextSize > minimumSize && paint.MeasureText(text) > bounds.Width)
+        var iconReserve = icon == ZaloGreetingCardIcon.None ? 0f : preferredSize * 0.95f;
+        while (paint.TextSize > minimumSize && paint.MeasureText(text) + iconReserve > bounds.Width)
+        {
             paint.TextSize -= 1;
+            iconReserve = icon == ZaloGreetingCardIcon.None ? 0f : paint.TextSize * 0.95f;
+        }
         var fitted = text;
-        while (fitted.Length > 1 && paint.MeasureText(fitted) > bounds.Width)
+        while (fitted.Length > 1 && paint.MeasureText(fitted) + iconReserve > bounds.Width)
             fitted = fitted[..^1].TrimEnd();
         if (fitted.Length < text.Length)
             fitted += "…";
         var metrics = paint.FontMetrics;
         var textHeight = metrics.Descent - metrics.Ascent;
         var baseline = bounds.MidY - textHeight / 2f - metrics.Ascent;
-        var x = centered ? bounds.MidX - paint.MeasureText(fitted) / 2f : bounds.Left;
+        var totalWidth = paint.MeasureText(fitted) + iconReserve;
+        var x = centered ? bounds.MidX - totalWidth / 2f : bounds.Left;
         canvas.DrawText(fitted, x, baseline, paint);
+
+        if (icon != ZaloGreetingCardIcon.None)
+        {
+            ZaloGreetingCardRenderQuality.DrawIcon(
+                canvas,
+                icon,
+                x + paint.MeasureText(fitted) + paint.TextSize * 0.08f,
+                bounds.MidY,
+                paint.TextSize * 0.78f,
+                color);
+        }
     }
 
     private static SKTypeface FindTypeface(SKFontStyle style) =>
