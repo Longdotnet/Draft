@@ -41,18 +41,24 @@ public sealed class ZaloGreetingTestPolicyTests
     [Theory]
     [InlineData("Morning", "greeting-test-morning-")]
     [InlineData("Night", "greeting-test-night-")]
-    public void Greeting_test_assets_are_scoped_to_kind_and_target(string kindName, string expectedStart)
+    public void Greeting_test_assets_are_scoped_to_kind_target_and_exact_message(string kindName, string expectedStart)
     {
         Assert.True(ZaloGreetingTestPolicy.TryParseKind(kindName, out var kind));
+        var allowed = ZaloDailyGreetingPhraseCatalog.All(kind);
+        Assert.True(allowed.Count >= 2);
 
-        var groupA = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a");
-        var groupB = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-b");
-        var otherConnection = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-b", "group-a");
+        var groupA = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a", allowed[0]);
+        var groupB = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-b", allowed[0]);
+        var otherConnection = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-b", "group-a", allowed[0]);
+        var otherMessage = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a", allowed[1]);
 
-        Assert.StartsWith(expectedStart, groupA, StringComparison.Ordinal);
+        Assert.True(groupA.StartsWith(expectedStart, StringComparison.Ordinal));
         Assert.NotEqual(groupA, groupB);
         Assert.NotEqual(groupA, otherConnection);
-        Assert.Equal(groupA, ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a"));
+        Assert.NotEqual(groupA, otherMessage);
+        Assert.Equal(
+            groupA,
+            ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a", allowed[0]));
     }
 
     [Theory]
@@ -65,7 +71,8 @@ public sealed class ZaloGreetingTestPolicyTests
         var outboundTest = ZaloGreetingTestPolicy.BuildOutboundTestMessage(kind, production);
 
         Assert.True(ZaloGreetingTestPolicy.IsProductionGreetingMessage(production, kind));
-        Assert.StartsWith($"🧪 TEST {kindName.ToUpperInvariant()} · ", outboundTest, StringComparison.Ordinal);
+        Assert.True(
+            outboundTest.StartsWith($"🧪 TEST {kindName.ToUpperInvariant()} · ", StringComparison.Ordinal));
         Assert.False(ZaloGreetingTestPolicy.IsProductionGreetingMessage(outboundTest, kind));
     }
 }
