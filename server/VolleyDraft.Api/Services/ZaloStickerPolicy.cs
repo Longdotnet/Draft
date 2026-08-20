@@ -71,25 +71,29 @@ internal static class ZaloStickerPolicy
         if (raw.Length == 0) return null;
         var normalized = ZaloBotIntelligence.Normalize(raw);
 
-        if (raw.Contains('🙏') || HasAny(normalized, "xin loi", "sorry", "tha loi"))
+        if (raw.Contains("🙏", StringComparison.Ordinal) || HasAny(normalized, "xin loi", "sorry", "tha loi"))
             return ZaloStickerReaction.Sorry;
-        if (raw.Contains('🤦') || HasAny(normalized, "bo tay", "chiu luon", "facepalm"))
+        if (raw.Contains("🤦", StringComparison.Ordinal) || HasAny(normalized, "bo tay", "chiu luon", "facepalm"))
             return ZaloStickerReaction.Facepalm;
-        if (raw.Contains('😂') || raw.Contains('🤣') || raw.Contains('😆') ||
+        if (raw.Contains("😂", StringComparison.Ordinal) || raw.Contains("🤣", StringComparison.Ordinal) || raw.Contains("😆", StringComparison.Ordinal) ||
             raw.Contains("=))", StringComparison.Ordinal) || HasAny(normalized, "haha", "hehe", "cuoi"))
             return ZaloStickerReaction.Laugh;
-        if (raw.Contains('🥳') || raw.Contains('🎉') || raw.Contains('🔥') ||
+        if (raw.Contains("🥳", StringComparison.Ordinal) || raw.Contains("🎉", StringComparison.Ordinal) || raw.Contains("🔥", StringComparison.Ordinal) ||
             HasAny(normalized, "qua dinh", "chay qua", "yay", "an mung"))
             return ZaloStickerReaction.Cheer;
-        if (raw.Contains('❤') || raw.Contains('🫶') || raw.Contains('🥰') || HasAny(normalized, "thuong", "love", "yeu qua"))
+        if (raw.Contains("❤", StringComparison.Ordinal) || raw.Contains("🫶", StringComparison.Ordinal) || raw.Contains("🥰", StringComparison.Ordinal) ||
+            HasAny(normalized, "thuong", "love", "yeu qua"))
             return ZaloStickerReaction.Love;
-        if (raw.Contains('😱') || raw.Contains('🤯') || raw.Contains('😮') || HasAny(normalized, "wow", "ghe vay", "ao vay"))
+        if (raw.Contains("😱", StringComparison.Ordinal) || raw.Contains("🤯", StringComparison.Ordinal) || raw.Contains("😮", StringComparison.Ordinal) ||
+            HasAny(normalized, "wow", "ghe vay", "ao vay"))
             return ZaloStickerReaction.Wow;
-        if (raw.Contains('😭') || raw.Contains('🥲') || raw.Contains('😢') || HasAny(normalized, "buon", "khoc"))
+        if (raw.Contains("😭", StringComparison.Ordinal) || raw.Contains("🥲", StringComparison.Ordinal) || raw.Contains("😢", StringComparison.Ordinal) ||
+            HasAny(normalized, "buon", "khoc"))
             return ZaloStickerReaction.Sad;
-        if (raw.Contains('👏') || raw.Contains('💪') || HasAny(normalized, "good job", "hay lam", "danh ngon", "lam ngon"))
+        if (raw.Contains("👏", StringComparison.Ordinal) || raw.Contains("💪", StringComparison.Ordinal) ||
+            HasAny(normalized, "good job", "hay lam", "danh ngon", "lam ngon"))
             return ZaloStickerReaction.GoodJob;
-        if (raw.Contains('👋') || HasAny(normalized, "bye", "tam biet", "ngu ngon", "good night"))
+        if (raw.Contains("👋", StringComparison.Ordinal) || HasAny(normalized, "bye", "tam biet", "ngu ngon", "good night"))
             return ZaloStickerReaction.Bye;
 
         return null;
@@ -118,11 +122,11 @@ internal static class ZaloStickerPolicy
             "thanh toan", "danh sach", "lich nhac", "gui xe", "dia diem",
             "con thieu", "da du", "doi hinh", "dong bo"
         ];
-        return markers.Any(normalized.Contains);
+        return markers.Any(marker => normalized.Contains(marker, StringComparison.Ordinal));
     }
 
     private static bool HasAny(string value, params string[] candidates) =>
-        candidates.Any(value.Contains);
+        candidates.Any(candidate => value.Contains(candidate, StringComparison.Ordinal));
 
     private static int StableBucket(string idempotencyKey, ZaloStickerReaction reaction)
     {
