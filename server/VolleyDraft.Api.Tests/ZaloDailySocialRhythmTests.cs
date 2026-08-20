@@ -149,7 +149,7 @@ public sealed class ZaloDailySocialRhythmTests
     }
 
     [Fact]
-    public void Greeting_cards_are_occasional_not_every_greeting()
+    public void Morning_greetings_always_require_cards_when_images_are_enabled()
     {
         var now = DateTimeOffset.Parse("2026-08-19T01:44:00+00:00");
         var plans = Enumerable.Range(1, 40)
@@ -161,6 +161,46 @@ public sealed class ZaloDailySocialRhythmTests
             .Cast<ZaloDailyGreetingPlan>()
             .ToArray();
 
+        Assert.NotEmpty(plans);
+        Assert.All(plans, plan =>
+        {
+            Assert.Equal(ZaloDailyGreetingKind.Morning, plan.Kind);
+            Assert.True(plan.RequiresImage);
+            Assert.True(plan.UseImage);
+        });
+    }
+
+    [Fact]
+    public void Morning_still_requires_a_card_when_greeting_images_are_disabled()
+    {
+        var now = DateTimeOffset.Parse("2026-08-19T01:44:00+00:00");
+        var settings = AlwaysGreeting() with { GreetingImagesEnabled = false };
+        var plan = ZaloDailyGreetingEngine.Plan(
+            Snapshot("morning-no-media", now),
+            settings,
+            60);
+
+        Assert.NotNull(plan);
+        Assert.Equal(ZaloDailyGreetingKind.Morning, plan!.Kind);
+        Assert.True(plan.RequiresImage);
+        Assert.False(plan.UseImage);
+    }
+
+    [Fact]
+    public void Night_cards_remain_optional()
+    {
+        var now = DateTimeOffset.Parse("2026-08-19T17:19:00+00:00"); // 00:19 VN
+        var plans = Enumerable.Range(1, 80)
+            .Select(index => ZaloDailyGreetingEngine.Plan(
+                Snapshot($"night-{index}", now),
+                AlwaysGreeting(),
+                60))
+            .Where(plan => plan is not null)
+            .Cast<ZaloDailyGreetingPlan>()
+            .ToArray();
+
+        Assert.NotEmpty(plans);
+        Assert.All(plans, plan => Assert.False(plan.RequiresImage));
         Assert.Contains(plans, plan => plan.UseImage);
         Assert.Contains(plans, plan => !plan.UseImage);
     }
