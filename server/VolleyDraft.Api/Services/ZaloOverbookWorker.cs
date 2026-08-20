@@ -15,9 +15,13 @@ public sealed class ZaloOverbookWorker(
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
-                var sent = await scope.ServiceProvider.GetRequiredService<ZaloOverbookService>()
-                    .ProcessDueAsync(stoppingToken);
+                var overbook = scope.ServiceProvider.GetRequiredService<ZaloOverbookService>();
+                var sent = await overbook.ProcessDueAsync(stoppingToken);
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
+
+                var draftSent = await overbook.ProcessDraftAutopilotDueAsync(stoppingToken);
+                if (draftSent > 0)
+                    logger.LogInformation("Draft autopilot cycle sent {SentCount} message(s)", draftSent);
 
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
 
@@ -90,7 +94,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/draft-autopilot/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
