@@ -20,6 +20,10 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
   </ItemGroup>
 
+  <Target Name="PrepareHdMorningBackground1" BeforeTargets="BeforeBuild" Condition="Exists('Assets/SocialCards/social-card-01-hd.png') AND '$(OS)' != 'Windows_NT'">
+    <Exec Command="base64 -w 0 Assets/SocialCards/social-card-01-hd.png &gt; Assets/SocialCards/social-card-01.b64" />
+  </Target>
+
   <ItemGroup>
     <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.jpg"
                       LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg" />
