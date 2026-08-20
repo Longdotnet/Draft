@@ -33,6 +33,16 @@
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard04.jpg" />
     <EmbeddedResource Include="Assets/SocialCards/social-card-05.b64"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard05.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-01.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard01.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-02.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard02.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-03.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard03.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-04.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard04.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-05.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard05.jpg" />
   </ItemGroup>
 
 </Project>
