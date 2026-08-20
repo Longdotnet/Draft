@@ -130,6 +130,25 @@ export type SendGroupMessageRequest = {
   idempotencyKey?: string | null;
 };
 
+export type StickerReaction =
+  | "laugh"
+  | "cheer"
+  | "love"
+  | "wow"
+  | "sad"
+  | "sorry"
+  | "facepalm"
+  | "good_job"
+  | "bye";
+
+export type SendGroupStickerRequest = {
+  accountId: string;
+  groupId: string;
+  credentials: ZaloCredentials;
+  reaction: StickerReaction;
+  idempotencyKey?: string | null;
+};
+
 export type IncomingGroupMessageEvent = {
   accountId: string;
   botId: string;
