@@ -41,9 +41,31 @@ public sealed class ZaloGreetingTestPolicyTests
     [Theory]
     [InlineData("Morning", "greeting-test-morning-")]
     [InlineData("Night", "greeting-test-night-")]
-    public void Greeting_test_assets_have_isolated_prefix(string kindName, string expectedPrefix)
+    public void Greeting_test_assets_are_scoped_to_kind_and_target(string kindName, string expectedStart)
     {
         Assert.True(ZaloGreetingTestPolicy.TryParseKind(kindName, out var kind));
-        Assert.Equal(expectedPrefix, ZaloGreetingTestPolicy.AssetPrefix(kind));
+
+        var groupA = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a");
+        var groupB = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-b");
+        var otherConnection = ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-b", "group-a");
+
+        Assert.StartsWith(expectedStart, groupA, StringComparison.Ordinal);
+        Assert.NotEqual(groupA, groupB);
+        Assert.NotEqual(groupA, otherConnection);
+        Assert.Equal(groupA, ZaloGreetingTestPolicy.AssetPrefix(kind, "connection-a", "group-a"));
+    }
+
+    [Theory]
+    [InlineData("Morning")]
+    [InlineData("Night")]
+    public void Greeting_test_outbound_marker_cannot_count_as_production_greeting(string kindName)
+    {
+        Assert.True(ZaloGreetingTestPolicy.TryParseKind(kindName, out var kind));
+        var production = ZaloDailyGreetingPhraseCatalog.All(kind).First();
+        var outboundTest = ZaloGreetingTestPolicy.BuildOutboundTestMessage(kind, production);
+
+        Assert.True(ZaloGreetingTestPolicy.IsProductionGreetingMessage(production, kind));
+        Assert.StartsWith($"🧪 TEST {kindName.ToUpperInvariant()} · ", outboundTest, StringComparison.Ordinal);
+        Assert.False(ZaloGreetingTestPolicy.IsProductionGreetingMessage(outboundTest, kind));
     }
 }
