@@ -195,7 +195,6 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
         if (operationalMarkers.Any(normalized.Contains))
             return false;
 
-        // Guard against the most common heteronormative/group-awkward formulations.
         string[] relationshipAssumptions =
         [
             " ai co nguoi yeu ", " ban trai ", " ban gai ", " cac ban nu ",
@@ -288,9 +287,6 @@ internal sealed class ZaloNightGreetingMediaAssetService(
         if (string.IsNullOrWhiteSpace(groupName))
             return null;
 
-        // Deliberately scope night memory separately. The existing store rotates by
-        // connection+group, so the synthetic suffix gives Night its own five-card deck
-        // without migrating or resetting Morning's live rotation row.
         var memoryGroupId = $"{groupId}:night";
         var recentCards = await ZaloSocialCardMemoryStore.GetRecentAsync(
             db,
@@ -428,7 +424,7 @@ internal static class ZaloNightGreetingCardRenderer
         if (!ZaloNightGreetingCardCopyGenerator.IsNightSafe(copy))
             throw new ArgumentException("Night greeting copy is outside renderer safety bounds.", nameof(copy));
 
-        using var background = ReadBackground(backgroundId);
+        using var background = ZaloNightGreetingProceduralBackground.Render(backgroundId);
         using var surface = SKSurface.Create(
             new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul))
             ?? throw new InvalidOperationException("Could not create Night greeting canvas.");
@@ -436,7 +432,6 @@ internal static class ZaloNightGreetingCardRenderer
         canvas.Clear(SKColors.Black);
         canvas.DrawBitmap(background, new SKRect(0, 0, Width, Height));
 
-        // A translucent glass panel keeps generated text readable across all five scenes.
         using (var panel = new SKPaint
         {
             Color = new SKColor(12, 18, 39, 190),
