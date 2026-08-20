@@ -48,7 +48,7 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
         CancellationToken cancellationToken = default)
     {
         if (!IsAiConfigured())
-            return null;
+            return Fallback(mood, "ai_not_configured");
 
         var endpoint = configuration["Ai:Endpoint"]!;
         var apiKey = configuration["Ai:ApiKey"]!;
@@ -132,9 +132,9 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
             if (!response.IsSuccessStatusCode)
             {
                 logger.LogWarning(
-                    "Night greeting card copy AI returned {StatusCode}; card deferred.",
+                    "Night greeting card copy AI returned {StatusCode}; using deterministic fallback.",
                     (int)response.StatusCode);
-                return null;
+                return Fallback(mood, $"http_{(int)response.StatusCode}");
             }
 
             using var document = JsonDocument.Parse(body);
@@ -146,7 +146,10 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
                 if (first.TryGetProperty("finish_reason", out var finishReason) &&
                     finishReason.ValueKind == JsonValueKind.String &&
                     IsTruncationFinishReason(finishReason.GetString()))
-                    return null;
+                {
+                    logger.LogWarning("Night greeting card AI output was truncated; using deterministic fallback.");
+                    return Fallback(mood, "truncated");
+                }
 
                 if (first.TryGetProperty("message", out var message) &&
                     message.TryGetProperty("content", out var content))
@@ -160,8 +163,8 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
             var copy = ParseCandidate(candidate);
             if (!IsNightSafe(copy))
             {
-                logger.LogDebug("Night greeting card AI returned invalid or unsafe copy; card deferred.");
-                return null;
+                logger.LogWarning("Night greeting card AI returned invalid or unsafe copy; using deterministic fallback.");
+                return Fallback(mood, "invalid_copy");
             }
 
             return new ZaloSocialCardCopy(
@@ -171,13 +174,13 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
         }
         catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(exception, "Night greeting card copy AI timed out; card deferred.");
-            return null;
+            logger.LogWarning(exception, "Night greeting card copy AI timed out; using deterministic fallback.");
+            return Fallback(mood, "timeout");
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidOperationException)
         {
-            logger.LogWarning(exception, "Night greeting card copy AI failed; card deferred.");
-            return null;
+            logger.LogWarning(exception, "Night greeting card copy AI failed; using deterministic fallback.");
+            return Fallback(mood, exception.GetType().Name);
         }
     }
 
@@ -201,6 +204,37 @@ internal sealed class ZaloNightGreetingCardCopyGenerator
             " may anh ", " co doi thi ", " chua co doi "
         ];
         return !relationshipAssumptions.Any(normalized.Contains);
+    }
+
+    internal static ZaloSocialCardCopy CreateFallback(ZaloDailyGreetingMood mood) =>
+        mood switch
+        {
+            ZaloDailyGreetingMood.LonelyComfort => new ZaloSocialCardCopy(
+                "Đêm nay cứ nghỉ nhé 🌙",
+                "Không cần phải mạnh thêm nữa, giờ là lúc cho mình một khoảng yên thật mềm.",
+                "Bạn xứng đáng được nghỉ"),
+            ZaloDailyGreetingMood.CozyGroupLove => new ZaloSocialCardCopy(
+                "Cả nhà ngủ ngon 🌙",
+                "Một ngày đủ rồi, mong cả nhóm khép tối nay bằng chút bình yên và nhẹ lòng.",
+                "Mai mình lại gặp nhau"),
+            ZaloDailyGreetingMood.LightPlayfulSweet => new ZaloSocialCardCopy(
+                "Khuya rồi, ngủ thôi 😌",
+                "Chuyện dễ thương để mai tính tiếp, tối nay ưu tiên một giấc ngủ thật ngon nha.",
+                "Cất điện thoại xuống nè"),
+            _ => new ZaloSocialCardCopy(
+                "Ngủ ngoan nhé 🌙",
+                "Khép ngày lại thật nhẹ, phần còn lại cứ để mai mình từ từ tính tiếp.",
+                "Đêm nay nghỉ cho tử tế")
+        };
+
+    private ZaloSocialCardCopy Fallback(ZaloDailyGreetingMood mood, string reason)
+    {
+        var copy = CreateFallback(mood);
+        logger.LogWarning(
+            "Night greeting card copy is using deterministic fallback Mood={Mood} Reason={Reason}",
+            mood,
+            reason);
+        return copy;
     }
 
     private bool IsAiConfigured() =>
