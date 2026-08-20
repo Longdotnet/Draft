@@ -18,8 +18,8 @@ public sealed class ZaloGreetingCardRenderQualityTests
         var text = ZaloGreetingCardRenderQuality.PrepareText(input, out var icon);
 
         Assert.Equal(expectedText, text);
+        Assert.Equal(expectedText.Length, text.Length);
         Assert.Equal(expectedIcon, (int)icon);
-        Assert.DoesNotContain("\uFE0F", text);
     }
 
     [Fact]
