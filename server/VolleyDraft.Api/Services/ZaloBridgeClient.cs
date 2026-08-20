@@ -162,6 +162,19 @@ public sealed class ZaloBridgeClient
                 message,
                 ParseParentMessageId(accountId, idempotencyKey));
         }
+
+        // Expressive stickers are intentionally best-effort and happen only after the
+        // text send has succeeded. A sticker lookup/provider failure must never turn a
+        // successful conversational reply into a retryable send failure.
+        if (result.Sent && !result.Mock)
+        {
+            await TrySendExpressiveStickerAsync(
+                accountId,
+                groupId,
+                message,
+                imageUrl,
+                idempotencyKey);
+        }
         return result;
     }
 
@@ -207,6 +220,76 @@ public sealed class ZaloBridgeClient
                 accountId,
                 groupId,
                 providerMessageId);
+        }
+    }
+
+    private async Task TrySendExpressiveStickerAsync(
+        string accountId,
+        string groupId,
+        string message,
+        string? imageUrl,
+        string? idempotencyKey)
+    {
+        if (scopeFactory is null) return;
+
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+            if (!ZaloStickerPolicy.TryPlan(
+                    accountId,
+                    groupId,
+                    message,
+                    imageUrl,
+                    idempotencyKey,
+                    configuration,
+                    DateTimeOffset.UtcNow,
+                    out var reaction))
+                return;
+
+            var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+            var encryptedCredentials = await db.ZaloConnections
+                .AsNoTracking()
+                .Where(item => item.AccountZaloId == accountId &&
+                               item.MatchSessions.Any(session => session.ZaloGroupId == groupId && session.BotEnabled))
+                .OrderByDescending(item => item.UpdatedAt)
+                .Select(item => item.EncryptedCredentials)
+                .FirstOrDefaultAsync();
+            if (string.IsNullOrWhiteSpace(encryptedCredentials)) return;
+
+            var plaintext = new ZaloCredentialProtector(configuration).Unprotect(encryptedCredentials);
+            using var credentialsDocument = JsonDocument.Parse(plaintext);
+            var credentials = credentialsDocument.RootElement.Clone();
+            var stickerIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
+                ? null
+                : $"{idempotencyKey}:sticker";
+            using var stickerResponse = await httpClient.PostAsJsonAsync(
+                "v1/group-stickers",
+                new
+                {
+                    accountId,
+                    groupId,
+                    credentials,
+                    reaction = ZaloStickerPolicy.ToWireValue(reaction),
+                    idempotencyKey = stickerIdempotencyKey
+                });
+            var stickerResult = await ReadAsync<BridgeSendStickerResponse>(stickerResponse);
+            if (stickerResult.Sent)
+            {
+                logger.LogInformation(
+                    "Zalo expressive sticker sent Account={AccountId} Group={GroupId} Reaction={Reaction}",
+                    accountId,
+                    groupId,
+                    reaction);
+            }
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Zalo expressive sticker failed after text send Account={AccountId} Group={GroupId}",
+                accountId,
+                groupId);
         }
     }
 
@@ -349,4 +432,5 @@ public sealed record BridgeListenerResponse(string AccountId, string BotId, long
 public sealed record BridgeStopListenerResponse(bool Stopped);
 public sealed record BridgeOutgoingMention(string Uid, int Pos, int Len);
 public sealed record BridgeSendMessageResponse(bool Sent, bool Mock, string? MessageId = null);
+public sealed record BridgeSendStickerResponse(bool Sent, bool Mock, string? MessageId = null);
 public sealed record BridgeErrorResponse(string? Error);
