@@ -115,6 +115,31 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        // Draft-autopilot owns only its narrow natural-readiness/escalation turns and
+        // must run before Ambient, otherwise one unmentioned question can receive two
+        // replies. All other messages fall through unchanged to V2 and legacy routing.
+        var draftAccountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+        var draftGroupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
+        if (draftAccountId.Length > 0 && draftGroupId.Length > 0)
+        {
+            var draftConnectionRows = await db.ZaloConnections
+                .AsNoTracking()
+                .Where(item => item.AccountZaloId == draftAccountId &&
+                               item.MatchSessions.Any(session => session.BotEnabled && session.ZaloGroupId == draftGroupId))
+                .Select(item => new { item.Id, item.AccountZaloId, item.DisplayName, item.UpdatedAt })
+                .ToListAsync(cancellationToken);
+            var draftConnection = draftConnectionRows.OrderByDescending(item => item.UpdatedAt).FirstOrDefault();
+            if (draftConnection is not null &&
+                await TryHandleDraftAutopilotAsync(
+                    draftConnection.Id,
+                    draftConnection.AccountZaloId,
+                    draftConnection.DisplayName,
+                    draftGroupId,
+                    incoming,
+                    cancellationToken))
+                return true;
+        }
+
         if (await TryHandleV2PreRoutingAsync(incoming, cancellationToken)) return true;
         if (!incoming.MentionedBot) return false;
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content);
@@ -213,8 +238,6 @@ public sealed partial class ZaloOverbookService
         string tierPrefix;
         if (useAdminPool && ZaloOverbookMessageCatalog.TryGetAdvancedExactBank(state.ReminderMessageBanks, reminderNumber, out var exactBank))
         {
-            // New advanced override uses a separate storage range so legacy #1-#100
-            // data from the previous UI cannot silently override the staged system.
             pool = exactBank;
             tierPrefix = $"advanced-reminder-{reminderNumber}:";
         }
@@ -225,9 +248,6 @@ public sealed partial class ZaloOverbookService
         }
         else if (useAdminPool && state.ReminderMessageBanks.TryGetValue(reminderNumber, out var legacyBank) && legacyBank.Count > 0)
         {
-            // Before an old session is saved in the new UI, keep its previous
-            // per-reminder content working. Once all four stage banks are saved,
-            // stage banks take priority and these legacy rows become inert.
             pool = legacyBank;
             tierPrefix = $"legacy-reminder-{reminderNumber}:";
         }
@@ -247,9 +267,6 @@ public sealed partial class ZaloOverbookService
             tierPrefix = $"system-{stage}:";
         }
 
-        // Shuffle-bag is stage-scoped, not reminder-number-scoped. That means #1 and #2
-        // share one used-message history, #3-#5 share another, etc., so the bot naturally
-        // rotates through the large pool instead of repeating the same sentence each hour.
         var used = state.UsedMessageKeys.Where(key => key.StartsWith(tierPrefix, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
         var available = Enumerable.Range(0, pool.Count)
             .Where(index => !used.Contains($"{tierPrefix}{index}"))
