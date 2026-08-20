@@ -164,11 +164,18 @@ public sealed class ZaloSocialPresenceService(
         if (!settings.Enabled) return;
 
         var now = DateTimeOffset.UtcNow;
+        var credentialProtector = new ZaloCredentialProtector(configuration);
         var socialMedia = new ZaloSocialMediaAssetService(
             db,
             bridge,
             configuration,
-            new ZaloCredentialProtector(configuration),
+            credentialProtector,
+            logger);
+        var nightSocialMedia = new ZaloNightGreetingMediaAssetService(
+            db,
+            bridge,
+            configuration,
+            credentialProtector,
             logger);
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
@@ -263,21 +270,36 @@ public sealed class ZaloSocialPresenceService(
                         var persistedGroupName = group
                             .Select(item => item.GroupName)
                             .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-                        var hasMatchToday = greeting.Kind == ZaloDailyGreetingKind.Morning && group.Any(item =>
-                            item.StartTime is { } startTime &&
-                            DateOnly.FromDateTime(startTime.ToOffset(TimeSpan.FromHours(7)).Date) == greeting.ServiceDate &&
-                            item.Status != SessionStatus.Cancelled);
-                        imageUrl = await socialMedia.GetOrCreateGreetingCardUrlAsync(
-                            group.Key.AdminUserId,
-                            group.Key.ConnectionId,
-                            group.Key.AccountId,
-                            group.Key.GroupId,
-                            persistedGroupName,
-                            greeting.Kind,
-                            greeting.Mood,
-                            greeting.ServiceDate,
-                            hasMatchToday,
-                            cancellationToken);
+                        if (greeting.Kind == ZaloDailyGreetingKind.Night)
+                        {
+                            imageUrl = await nightSocialMedia.GetOrCreateGreetingCardUrlAsync(
+                                group.Key.AdminUserId,
+                                group.Key.ConnectionId,
+                                group.Key.AccountId,
+                                group.Key.GroupId,
+                                persistedGroupName,
+                                greeting.Mood,
+                                greeting.ServiceDate,
+                                cancellationToken);
+                        }
+                        else
+                        {
+                            var hasMatchToday = group.Any(item =>
+                                item.StartTime is { } startTime &&
+                                DateOnly.FromDateTime(startTime.ToOffset(TimeSpan.FromHours(7)).Date) == greeting.ServiceDate &&
+                                item.Status != SessionStatus.Cancelled);
+                            imageUrl = await socialMedia.GetOrCreateGreetingCardUrlAsync(
+                                group.Key.AdminUserId,
+                                group.Key.ConnectionId,
+                                group.Key.AccountId,
+                                group.Key.GroupId,
+                                persistedGroupName,
+                                greeting.Kind,
+                                greeting.Mood,
+                                greeting.ServiceDate,
+                                hasMatchToday,
+                                cancellationToken);
+                        }
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
                     {
@@ -292,8 +314,9 @@ public sealed class ZaloSocialPresenceService(
                 if (greeting.RequiresImage && string.IsNullOrWhiteSpace(imageUrl))
                 {
                     logger.LogInformation(
-                        "Morning greeting deferred because required card is unavailable; a later reconcile will retry Group={GroupId} ServiceDate={ServiceDate}",
+                        "Daily greeting deferred because required card is unavailable; a later reconcile will retry Group={GroupId} Kind={Kind} ServiceDate={ServiceDate}",
                         group.Key.GroupId,
+                        greeting.Kind,
                         greeting.ServiceDate);
                     continue;
                 }

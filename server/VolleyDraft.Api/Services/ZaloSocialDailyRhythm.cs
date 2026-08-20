@@ -10,7 +10,11 @@ internal enum ZaloDailyGreetingMood
 {
     Warm,
     PlayfulRomantic,
-    MenlySupportive
+    MenlySupportive,
+    TenderRomantic,
+    LonelyComfort,
+    CozyGroupLove,
+    LightPlayfulSweet
 }
 
 internal sealed record ZaloDailySocialSettings(
@@ -21,13 +25,49 @@ internal sealed record ZaloDailySocialSettings(
     int GreetingRepeatDays,
     bool GreetingImagesEnabled)
 {
-    public static ZaloDailySocialSettings FromConfiguration(IConfiguration configuration) => new(
-        Enabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:Enabled", true),
-        MorningGreetingEnabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:MorningGreetingEnabled", true),
-        NightGreetingEnabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:NightGreetingEnabled", true),
-        GreetingDaysPerWeek: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:DailyRhythm:GreetingDaysPerWeek", 5), 1, 7),
-        GreetingRepeatDays: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:DailyRhythm:GreetingRepeatDays", 14), 3, 30),
-        GreetingImagesEnabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:GreetingImagesEnabled", true));
+    // Zero keeps old manually-created settings backwards compatible: callers that do
+    // not know about the per-kind knobs inherit GreetingDaysPerWeek.
+    public int MorningGreetingDaysPerWeek { get; init; }
+    public int NightGreetingDaysPerWeek { get; init; }
+    public bool NightGreetingCardFirst { get; init; } = true;
+
+    public int DaysPerWeek(ZaloDailyGreetingKind kind)
+    {
+        var configured = kind == ZaloDailyGreetingKind.Morning
+            ? MorningGreetingDaysPerWeek
+            : NightGreetingDaysPerWeek;
+        return configured is >= 1 and <= 7
+            ? configured
+            : Math.Clamp(GreetingDaysPerWeek, 1, 7);
+    }
+
+    public static ZaloDailySocialSettings FromConfiguration(IConfiguration configuration)
+    {
+        var sharedDays = Math.Clamp(
+            configuration.GetValue("ZaloBot:Ambient:DailyRhythm:GreetingDaysPerWeek", 5),
+            1,
+            7);
+        return new(
+            Enabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:Enabled", true),
+            MorningGreetingEnabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:MorningGreetingEnabled", true),
+            NightGreetingEnabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:NightGreetingEnabled", true),
+            GreetingDaysPerWeek: sharedDays,
+            GreetingRepeatDays: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:DailyRhythm:GreetingRepeatDays", 14), 3, 30),
+            GreetingImagesEnabled: configuration.GetValue("ZaloBot:Ambient:DailyRhythm:GreetingImagesEnabled", true))
+        {
+            MorningGreetingDaysPerWeek = Math.Clamp(
+                configuration.GetValue("ZaloBot:Ambient:DailyRhythm:MorningGreetingDaysPerWeek", sharedDays),
+                1,
+                7),
+            NightGreetingDaysPerWeek = Math.Clamp(
+                configuration.GetValue("ZaloBot:Ambient:DailyRhythm:NightGreetingDaysPerWeek", sharedDays),
+                1,
+                7),
+            NightGreetingCardFirst = configuration.GetValue(
+                "ZaloBot:Ambient:DailyRhythm:NightGreetingCardFirst",
+                true)
+        };
+    }
 }
 
 internal sealed record ZaloDailyGreetingSnapshot(
@@ -42,9 +82,10 @@ internal sealed record ZaloDailyGreetingPlan(
     ZaloDailyGreetingMood Mood,
     string Message,
     bool UseImage,
-    DateOnly ServiceDate)
+    DateOnly ServiceDate,
+    bool CardRequired = false)
 {
-    public bool RequiresImage => Kind == ZaloDailyGreetingKind.Morning;
+    public bool RequiresImage => Kind == ZaloDailyGreetingKind.Morning || CardRequired;
 }
 
 internal static class ZaloDailyGreetingEngine
@@ -73,11 +114,13 @@ internal static class ZaloDailyGreetingEngine
 
         var serviceDate = ServiceDate(localNow, kind.Value);
         var selector = Positive(StableSelector(snapshot.GroupId, serviceDate, kind.Value));
-        if (selector % 7 >= settings.GreetingDaysPerWeek) return null;
+        if (selector % 7 >= settings.DaysPerWeek(kind.Value)) return null;
         if (!HasReachedStableSendMinute(localNow, kind.Value, selector)) return null;
         if (AlreadySent(snapshot.BotHistory, kind.Value, serviceDate)) return null;
 
-        var mood = SelectMood(selector);
+        var mood = kind == ZaloDailyGreetingKind.Night
+            ? SelectNightMood(selector)
+            : SelectMood(selector);
         var message = ZaloDailyGreetingPhraseCatalog.Pick(
             kind.Value,
             mood,
@@ -87,12 +130,14 @@ internal static class ZaloDailyGreetingEngine
             settings.GreetingRepeatDays);
         if (string.IsNullOrWhiteSpace(message)) return null;
 
-        // Morning greetings are card-first: when greeting media is enabled every
-        // eligible morning plan requests a card. Night cards stay occasional so
-        // bedtime messages do not feel like scheduled posters.
+        // Morning remains card-first. Night is card-first by default, with an explicit
+        // compatibility switch that can restore the old occasional-card behavior.
         var useImage = settings.GreetingImagesEnabled &&
-                       (kind == ZaloDailyGreetingKind.Morning || ((selector / 11) % 4 == 0));
-        return new(kind.Value, mood, message, useImage, serviceDate);
+                       (kind == ZaloDailyGreetingKind.Morning ||
+                        (kind == ZaloDailyGreetingKind.Night && settings.NightGreetingCardFirst) ||
+                        ((selector / 11) % 4 == 0));
+        var cardRequired = kind == ZaloDailyGreetingKind.Night && settings.NightGreetingCardFirst;
+        return new(kind.Value, mood, message, useImage, serviceDate, cardRequired);
     }
 
     public static bool IsHardQuiet(DateTimeOffset now)
@@ -110,6 +155,7 @@ internal static class ZaloDailyGreetingEngine
                minute < 60;
     }
 
+    // Morning distribution stays exactly as before to avoid changing an already-live feature.
     internal static ZaloDailyGreetingMood SelectMood(int selector)
     {
         var bucket = Positive(selector) % 100;
@@ -118,6 +164,18 @@ internal static class ZaloDailyGreetingEngine
             : bucket < 85
                 ? ZaloDailyGreetingMood.PlayfulRomantic
                 : ZaloDailyGreetingMood.MenlySupportive;
+    }
+
+    internal static ZaloDailyGreetingMood SelectNightMood(int selector)
+    {
+        var bucket = Positive(selector) % 100;
+        return bucket < 40
+            ? ZaloDailyGreetingMood.TenderRomantic
+            : bucket < 70
+                ? ZaloDailyGreetingMood.LonelyComfort
+                : bucket < 90
+                    ? ZaloDailyGreetingMood.CozyGroupLove
+                    : ZaloDailyGreetingMood.LightPlayfulSweet;
     }
 
     private static ZaloDailyGreetingKind? CurrentGreetingWindow(DateTimeOffset localNow)
@@ -218,30 +276,80 @@ internal static class ZaloDailyGreetingPhraseCatalog
                 "Morning cả nhà. Cứ bình tĩnh làm tốt phần của mình, chuyện khó tới đâu mình xử tới đó 🤝",
                 "Sáng nha mọi người ☀️ giữ sức, giữ mood, làm việc cho gọn. Hôm nay mình vẫn cân được."
             ],
+
+            // Legacy night moods are kept callable for compatibility, but live Night planning
+            // now uses the four inclusive romantic moods below.
             [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.Warm)] =
             [
                 "Khuya rồi nha mọi người 🌙 hôm nay vui hay mệt gì cũng để lại ở hôm nay thôi. Ngủ ngoan nha.",
                 "Một ngày đủ rồi. Mai tỉnh dậy mình tính tiếp, tối nay cứ nghỉ cho tử tế trước đã. Ngủ ngoan mọi người 🌙",
                 "Good night cả nhà 🌙 cất điện thoại xuống một chút, cho đầu óc nghỉ ngơi rồi ngủ thật ngon nha.",
-                "Tối rồi nha mọi người. Chuyện chưa xong mai làm tiếp, giờ cho bản thân một giấc ngủ tử tế trước đã 🌙",
-                "Ngủ ngoan nha cả nhà 🌙 mong mọi người khép ngày hôm nay nhẹ nhàng và mai thức dậy với mood thật đẹp.",
-                "Hết một ngày rồi nha. Vui thì giữ lại, mệt thì bỏ xuống, ngủ một giấc ngon rồi mai mình tiếp tục 🌙",
-                "Good night mọi người. Tối nay cứ yên tâm nghỉ, ngày mai còn nguyên một ngày mới để mình làm tốt hơn 😌"
+                "Tối rồi nha mọi người. Chuyện chưa xong mai làm tiếp, giờ cho bản thân một giấc ngủ tử tế trước đã 🌙"
             ],
             [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.PlayfulRomantic)] =
             [
-                "Good night cả nhà 🌙 người có người thương thì ngủ ngon cùng người thương, người chưa có cũng phải ngủ ngon nha 😌",
-                "Khuya rồi nha. Chuyện chưa vui để mai xử, người chưa thương thì từ từ kiếm 😌 tối nay ngủ ngoan trước đã.",
-                "Ngủ ngon nha mọi người 🌙 ai đang single thì cứ ngủ thật ngon, biết đâu mai thức dậy có người nhắn trước 😌",
-                "Tối rồi, người thương có thể tới chậm chứ giấc ngủ thì đừng cho tới trễ nha 😌 ngủ ngoan cả nhà.",
-                "Good night mấy bạn trẻ 🌙 có đôi thì ấm áp, chưa có đôi thì vẫn phải thương mình cho đàng hoàng nha."
+                "Khuya rồi nha, trái tim nào còn lang thang thì cũng nên đi ngủ thôi nè 🌙",
+                "Tối rồi, điều dễ thương có thể tới chậm chứ giấc ngủ thì đừng cho tới trễ nha 😌",
+                "Ngủ ngon nha mọi người 🌙 biết đâu mai thức dậy lại có một chuyện nhỏ làm mình cười."
             ],
             [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.MenlySupportive)] =
             [
                 "Nghỉ thôi mọi người. Mai còn việc mai xử, giờ ngủ cho đủ sức trước đã. Ngủ ngon nha.",
                 "Một ngày chiến vậy đủ rồi. Tắt máy, nghỉ đầu, ngủ cho khỏe. Mai mình làm tiếp 🤝",
-                "Khuya rồi nha. Việc khó để sáng mai đầu tỉnh xử sẽ ngon hơn, giờ nghỉ cho tử tế trước đã.",
-                "Good night cả nhà. Hôm nay làm được tới đâu cũng được, ngủ đủ rồi mai mình chiến tiếp 🤝"
+                "Khuya rồi nha. Việc khó để sáng mai đầu tỉnh xử sẽ ngon hơn, giờ nghỉ cho tử tế trước đã."
+            ],
+
+            [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.TenderRomantic)] =
+            [
+                "Đêm xuống rồi 🌙 mong ai trong group mình cũng có một giấc ngủ thật yên, nhẹ như một cái ôm vừa đủ.",
+                "Ngủ ngoan nha mọi người. Mong đêm nay dịu dàng với mỗi người hơn một chút 🤍",
+                "Khép ngày hôm nay lại thôi 🌙 chúc bạn ngủ thật ngon và thức dậy với một trái tim nhẹ hơn.",
+                "Khuya rồi đó. Những điều chưa kịp vui cứ để mai, tối nay mình xứng đáng được nghỉ trong bình yên nha.",
+                "Chúc cả nhà một đêm thật êm ✨ mong giấc ngủ mang đi bớt mệt và để lại một chút ấm áp.",
+                "Nếu hôm nay dài quá thì thôi, mình dừng ở đây nha. Ngủ ngoan và để đêm nay dỗ dành mình một chút 🌙",
+                "Đêm nay mong mọi người ngủ trong cảm giác mình vẫn được thương, dù ngày hôm nay có ra sao 🤍",
+                "Cất ngày hôm nay xuống nha. Chúc mỗi người một khoảng yên thật riêng, một giấc ngủ thật mềm 🌙",
+                "Ngủ ngon nha. Mong trăng đêm nay dịu như cách mỗi người đều xứng đáng được đối xử dịu dàng.",
+                "Một lời chúc nhỏ trước khi ngày khép lại: ngủ thật yên nha, mai mình lại có thêm một ngày để thương đời hơn chút."
+            ],
+            [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.LonelyComfort)] =
+            [
+                "Ai tối nay thấy lòng hơi trống thì nhận lời chúc này nha 🌙 mong bạn ngủ trong cảm giác mình không hề bị bỏ quên.",
+                "Nếu hôm nay chưa ai hỏi bạn có ổn không, thì tối nay cứ nghỉ trước đã nha. Bạn đã cố gắng nhiều rồi 🤍",
+                "Có những đêm chỉ cần một lời chúc nhỏ cũng đủ ấm lòng. Vậy nên ngủ ngoan nhé, người đang đọc dòng này.",
+                "Nếu tối nay bạn đang một mình, mong lời chúc nhỏ này đủ làm tim ấm thêm một chút. Ngủ ngon nha 🌙",
+                "Không sao nếu hôm nay chưa vui lắm. Chỉ cần đêm nay mình được ngủ yên cũng đã là một điều tử tế rồi.",
+                "Ai còn ôm một chút buồn thì để nó ngồi ngoài cửa phòng nha. Tối nay mình ngủ trước, mai tính tiếp 🤍",
+                "Mong người đang mệt được nghỉ, người đang buồn được nhẹ, người đang cô đơn thấy lòng ấm hơn một chút tối nay 🌙",
+                "Nếu hôm nay có khoảnh khắc làm bạn thấy mình bé xíu, thì đêm nay cứ cho bản thân được nghỉ thật an toàn nha.",
+                "Chuyện chưa ổn không cần phải ổn hết trong một đêm. Ngủ ngoan trước nha, sáng mai mình sẽ có thêm sức.",
+                "Tối nay không cần phải mạnh mẽ nữa đâu. Cứ ngủ một giấc thật ngon, phần còn lại để ngày mai lo 🤍"
+            ],
+            [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.CozyGroupLove)] =
+            [
+                "Cả nhà ngủ ngon nha 🌙 mong ai đang mệt sẽ nhẹ hơn, ai đang cô đơn sẽ ấm hơn một chút.",
+                "Khép ngày hôm nay lại thôi mọi người. Chúc mỗi người trong group mình có một đêm thật yên 🤍",
+                "Good night cả nhà 🌙 hôm nay mình đã gặp nhau ở đây rồi, giờ ai về giấc ngủ nấy cho thật ngon nha.",
+                "Khuya rồi, chúc cả group nghỉ thật tử tế. Mai có chuyện vui thì nhớ mang lên đây kể nhau nghe 😌",
+                "Tới giờ sạc pin rồi nha mọi người ✨ chúc cả nhà ngủ sâu, đầu nhẹ và tim cũng nhẹ.",
+                "Đêm nay chúc cả nhà ngủ thật ngon. Dù hôm nay ra sao, mong ai cũng được nghỉ trong cảm giác được yêu thương.",
+                "Một ngày nữa của group mình khép lại rồi 🌙 ngủ ngoan nha, mai gặp nhau với mood dễ thương hơn.",
+                "Ai còn thức thì coi đây là tín hiệu đi ngủ nha 😌 cả nhà nghỉ ngon, mai mình lại chuyện trò tiếp.",
+                "Chúc mỗi người trong group một chiếc chăn ấm, một cái gối êm và một cái đầu chịu im đúng giờ 🌙",
+                "Thôi mình trả ngày hôm nay về cho đêm nha. Ngủ ngon cả nhà, cảm ơn vì vẫn ở đây cùng nhau 🤍"
+            ],
+            [(ZaloDailyGreetingKind.Night, ZaloDailyGreetingMood.LightPlayfulSweet)] =
+            [
+                "Khuya rồi đó 🌙 trái tim nào còn lang thang thì về giường trước nha, chuyện dễ thương để mai tính 😌",
+                "Ngủ sớm đi nha, thức thêm cũng chưa giàu ngay đâu 😌🌙 để mai tỉnh táo rồi mình kiếm tiếp.",
+                "Ai còn chờ một tin nhắn thì cho nó thêm một đêm nha 😌 mình ngủ ngon trước đã.",
+                "Bot gửi chút dịu dàng cuối ngày nè 🤍 nhận xong thì cất điện thoại và ngủ ngoan nha.",
+                "Đừng scroll thêm nữa nha mấy người dễ thương 😌🌙 giấc ngủ đang đứng ngoài cửa chờ lâu rồi.",
+                "Tối nay ai chưa được ai chúc ngủ ngon thì coi như group mình chúc rồi nha 🌙 ngủ ngoan.",
+                "Khuya rồi, drama để mai, crush để mai, công việc cũng để mai 😌 giờ ưu tiên ngủ ngon trước nha.",
+                "Chúc cả nhà mơ đẹp ✨ nếu có gặp điều dễ thương trong mơ thì sáng mai nhớ kể.",
+                "Trái tim đi ngủ, cái đầu cũng đi ngủ, riêng báo thức mai tự lo nha 😌🌙",
+                "Ngủ ngoan nha. Biết đâu sáng mai mở mắt ra, đời tự nhiên dễ thương hơn hôm nay một xíu ✨"
             ]
         };
 
@@ -261,7 +369,9 @@ internal static class ZaloDailyGreetingPhraseCatalog
         IReadOnlyList<ZaloSocialHistoryMessage> history,
         int repeatDays)
     {
-        var pool = Pools[(kind, mood)];
+        if (!Pools.TryGetValue((kind, mood), out var pool))
+            return null;
+
         var cutoff = now - TimeSpan.FromDays(Math.Clamp(repeatDays, 3, 30));
         var recentExact = history
             .Where(item => item.SentAt >= cutoff)
