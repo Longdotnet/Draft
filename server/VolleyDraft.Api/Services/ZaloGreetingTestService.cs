@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
@@ -19,6 +20,7 @@ public sealed record ZaloGreetingTestPreviewResponse(
     string GroupName,
     string? GroupAvatarUrl,
     string Message,
+    string TestSendMessage,
     string ImageUrl,
     int BackgroundId,
     string Mood,
@@ -61,8 +63,11 @@ internal static class ZaloGreetingTestPolicy
         return false;
     }
 
-    public static string AssetPrefix(ZaloDailyGreetingKind kind) =>
-        $"greeting-test-{kind.ToString().ToLowerInvariant()}-";
+    public static string AssetPrefix(
+        ZaloDailyGreetingKind kind,
+        string connectionId,
+        string groupId) =>
+        $"greeting-test-{kind.ToString().ToLowerInvariant()}-{TargetToken(connectionId, groupId)}-";
 
     public static bool IsAllowedMessage(ZaloDailyGreetingKind kind, string? message)
     {
@@ -70,6 +75,19 @@ internal static class ZaloGreetingTestPolicy
         if (string.IsNullOrWhiteSpace(candidate)) return false;
         return ZaloDailyGreetingPhraseCatalog.All(kind)
             .Contains(candidate, StringComparer.Ordinal);
+    }
+
+    public static string BuildOutboundTestMessage(ZaloDailyGreetingKind kind, string productionMessage) =>
+        $"🧪 TEST {kind.ToString().ToUpperInvariant()} · {productionMessage.Trim()}";
+
+    public static bool IsProductionGreetingMessage(string? message, ZaloDailyGreetingKind kind) =>
+        ZaloDailyGreetingPhraseCatalog.IsKind(message, kind);
+
+    private static string TargetToken(string connectionId, string groupId)
+    {
+        var material = $"{connectionId?.Trim()}:{groupId?.Trim()}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        return Convert.ToHexString(hash.AsSpan(0, 8)).ToLowerInvariant();
     }
 }
 
@@ -166,10 +184,11 @@ public sealed class ZaloGreetingTestService(
         }
 
         await CleanupOldTestAssetsAsync(adminUserId, cancellationToken);
+        var assetPrefix = ZaloGreetingTestPolicy.AssetPrefix(kind, request.ConnectionId, request.GroupId);
         var asset = new ZaloBotImageAsset
         {
             AdminUserId = adminUserId,
-            FileName = $"{ZaloGreetingTestPolicy.AssetPrefix(kind)}{Guid.NewGuid():N}.jpg",
+            FileName = $"{assetPrefix}{Guid.NewGuid():N}.jpg",
             ContentType = "image/jpeg",
             Size = rendered.LongLength,
             Data = rendered,
@@ -179,6 +198,7 @@ public sealed class ZaloGreetingTestService(
         await db.SaveChangesAsync(cancellationToken);
 
         var imageUrl = BuildPublicUrl(publicOrigin, asset.Id);
+        var testSendMessage = ZaloGreetingTestPolicy.BuildOutboundTestMessage(kind, message);
         return ServiceResult<ZaloGreetingTestPreviewResponse>.Success(
             new ZaloGreetingTestPreviewResponse(
                 asset.Id,
@@ -187,6 +207,7 @@ public sealed class ZaloGreetingTestService(
                 resolved.Group.Name,
                 resolved.Group.AvatarUrl,
                 message,
+                testSendMessage,
                 imageUrl,
                 backgroundId,
                 mood.ToString(),
@@ -227,7 +248,7 @@ public sealed class ZaloGreetingTestService(
         if (resolved.Error is not null)
             return ServiceResult<ZaloGreetingTestSendResponse>.Failure(resolved.StatusCode, resolved.Error);
 
-        var prefix = ZaloGreetingTestPolicy.AssetPrefix(kind);
+        var prefix = ZaloGreetingTestPolicy.AssetPrefix(kind, request.ConnectionId, request.GroupId);
         var asset = await db.ZaloBotImageAssets
             .AsNoTracking()
             .SingleOrDefaultAsync(item =>
@@ -239,19 +260,27 @@ public sealed class ZaloGreetingTestService(
         {
             return ServiceResult<ZaloGreetingTestSendResponse>.Failure(
                 StatusCodes.Status404NotFound,
-                "Không tìm thấy preview greeting test tương ứng hoặc preview không thuộc tài khoản này.");
+                "Không tìm thấy preview greeting test cho đúng tài khoản/group này hoặc preview không thuộc tài khoản hiện tại.");
         }
 
         var imageUrl = BuildPublicUrl(publicOrigin, asset.Id);
+        var outboundMessage = ZaloGreetingTestPolicy.BuildOutboundTestMessage(kind, request.Message);
+        if (ZaloGreetingTestPolicy.IsProductionGreetingMessage(outboundMessage, kind))
+        {
+            return ServiceResult<ZaloGreetingTestSendResponse>.Failure(
+                StatusCodes.Status500InternalServerError,
+                "Greeting test marker không cô lập được production greeting; đã chặn gửi để bảo vệ lịch chúc thật.");
+        }
+
         try
         {
             var sent = await bridge.SendGroupMessageAsync(
                 resolved.Connection!.AccountZaloId,
                 resolved.Group!.Id,
-                request.Message.Trim(),
+                outboundMessage,
                 [],
                 imageUrl,
-                idempotencyKey: $"greeting-test:{kind}:{resolved.Group.Id}:{asset.Id}");
+                idempotencyKey: $"greeting-test:{kind}:{resolved.Connection.Id}:{resolved.Group.Id}:{asset.Id}");
 
             logger.LogInformation(
                 "Greeting test sent Admin={AdminUserId} Connection={ConnectionId} Group={GroupId} Kind={Kind} Asset={AssetId} Mock={Mock}",
@@ -271,7 +300,7 @@ public sealed class ZaloGreetingTestService(
                     resolved.Group.Name,
                     kind.ToString(),
                     imageUrl,
-                    request.Message.Trim(),
+                    outboundMessage,
                     AffectsProductionSchedule: false));
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
