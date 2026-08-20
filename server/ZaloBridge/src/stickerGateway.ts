@@ -9,12 +9,20 @@ type BridgeStickerResult = {
   messageId: string | null;
 };
 
-type StickerDetail = Record<string, unknown>;
+type StickerDetail = {
+  id: number;
+  cateId: number;
+  type: number;
+};
 
 type MinimalStickerApi = {
   getStickers(keyword: string): Promise<number[]>;
   getStickersDetail(stickerIds: number | number[]): Promise<StickerDetail[]>;
-  sendMessageSticker(sticker: StickerDetail, threadId: string, type: number): Promise<unknown>;
+  sendSticker(
+    sticker: StickerDetail,
+    threadId: string,
+    type: number,
+  ): Promise<{ msgId?: number | string } | unknown>;
 };
 
 type MinimalStickerClient = {
@@ -55,6 +63,15 @@ function stableIndex(seed: string, count: number): number {
   return hash.readUInt32BE(0) % count;
 }
 
+function isSendableSticker(value: StickerDetail | null | undefined): value is StickerDetail {
+  return Boolean(
+    value &&
+      Number.isFinite(value.id) && value.id > 0 &&
+      Number.isFinite(value.cateId) && value.cateId >= 0 &&
+      Number.isFinite(value.type) && value.type > 0,
+  );
+}
+
 async function findSticker(api: MinimalStickerApi, request: SendGroupStickerRequest): Promise<StickerDetail> {
   let lastError: unknown;
   for (const keyword of stickerKeywordsForReaction(request.reaction)) {
@@ -64,7 +81,7 @@ async function findSticker(api: MinimalStickerApi, request: SendGroupStickerRequ
       const seed = request.idempotencyKey || `${request.accountId}:${request.groupId}:${request.reaction}`;
       const stickerId = ids[stableIndex(seed, ids.length)];
       const details = await api.getStickersDetail(stickerId);
-      const sticker = Array.isArray(details) ? details[0] : null;
+      const sticker = Array.isArray(details) ? details.find(isSendableSticker) : null;
       if (sticker) return sticker;
     } catch (error) {
       lastError = error;
@@ -89,8 +106,11 @@ async function sendGroupStickerCore(request: SendGroupStickerRequest): Promise<B
 
   const api = await getApi(request.credentials);
   const sticker = await findSticker(api, request);
-  await api.sendMessageSticker(sticker, request.groupId, ThreadType.Group);
-  return { sent: true, mock: false, messageId: null };
+  const result = await api.sendSticker(sticker, request.groupId, ThreadType.Group);
+  const messageId = result && typeof result === "object" && "msgId" in result
+    ? String((result as { msgId?: number | string }).msgId ?? "").trim() || null
+    : null;
+  return { sent: true, mock: false, messageId };
 }
 
 export async function sendGroupSticker(request: SendGroupStickerRequest): Promise<BridgeStickerResult> {
