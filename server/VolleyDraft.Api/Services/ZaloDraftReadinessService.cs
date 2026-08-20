@@ -40,11 +40,13 @@ public sealed record ZaloDraftReadinessSnapshot(
 
 /// <summary>
 /// Single deterministic source of truth for the conversational/proactive draft pilot.
-/// This deliberately uses the configured session capacity rather than the lower-level
+/// This deliberately uses configured session capacity rather than the lower-level
 /// draft engine's divisibility minimum so the bot never urges a partial 9/12 draft.
 /// </summary>
 public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
 {
+    private sealed record SharedMembership(string DraftSlotId, string SessionPlayerId);
+
     public async Task<ZaloDraftReadinessSnapshot?> BuildAsync(
         string sessionId,
         DateTimeOffset? now = null,
@@ -73,24 +75,32 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
             .Where(slot => slot.SessionId == session.Id && slot.Type == DraftSlotType.Shared)
             .Select(slot => slot.Id)
             .ToListAsync(cancellationToken);
-        var sharedLinks = sharedSlotIds.Count == 0
-            ? []
-            : await db.DraftSlotPlayers
-                .AsNoTracking()
-                .Where(link => sharedSlotIds.Contains(link.DraftSlotId))
-                .Select(link => new { link.DraftSlotId, link.SessionPlayerId })
-                .ToListAsync(cancellationToken);
+        var sharedLinks = await db.DraftSlotPlayers
+            .AsNoTracking()
+            .Where(link => sharedSlotIds.Contains(link.DraftSlotId))
+            .Select(link => new SharedMembership(link.DraftSlotId, link.SessionPlayerId))
+            .ToListAsync(cancellationToken);
         var collapsedPlayers = sharedLinks
             .Where(link => presentIdSet.Contains(link.SessionPlayerId))
             .GroupBy(link => link.DraftSlotId, StringComparer.Ordinal)
-            .Sum(group => Math.Max(0, group.Select(item => item.SessionPlayerId).Distinct(StringComparer.Ordinal).Count() - 1));
+            .Sum(group => Math.Max(0,
+                group.Select(item => item.SessionPlayerId)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() - 1));
         var effectiveSlots = Math.Max(0, presentCount - collapsedPlayers);
 
-        var hasTeams = session.Status == SessionStatus.Finished ||
-                       await db.Teams.AsNoTracking().AnyAsync(team => team.SessionId == session.Id, cancellationToken) ||
-                       await db.DraftSlots.AsNoTracking().AnyAsync(
-                           slot => slot.SessionId == session.Id && slot.AssignedTeamId != null,
-                           cancellationToken);
+        // MatchSession creates Team rows before draft starts and captain selection also
+        // assigns captain slots to teams. Neither is proof that a lineup exists. Only a
+        // completed draft (or a non-captain assignment left by a completed/partial run)
+        // counts as an existing team allocation for this safety gate.
+        var hasNonCaptainAssignments = await db.DraftSlots
+            .AsNoTracking()
+            .AnyAsync(slot =>
+                slot.SessionId == session.Id &&
+                slot.AssignedTeamId != null &&
+                !slot.IsCaptainSlot,
+                cancellationToken);
+        var hasTeams = session.Status == SessionStatus.Finished || hasNonCaptainAssignments;
         var hasLinkedPoll = await db.PollImports.AsNoTracking()
             .AnyAsync(import => import.SessionId == session.Id, cancellationToken);
 
@@ -120,8 +130,8 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
         }
         catch
         {
-            // A missing fingerprint must make the autopilot fail closed. The caller
-            // can still fall through to the existing explicitly-addressed draft flow.
+            // Missing state hashing must fail closed. Explicitly-addressed legacy
+            // draft commands remain available and own their normal validation path.
             fingerprint = string.Empty;
         }
 
@@ -130,16 +140,26 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
         var rosterReady = effectiveSlots == capacity && presentCount > 0 && missingNames.Count == 0;
         var canEscalate = false;
 
-        if (hasTeams || session.Status == SessionStatus.Finished)
+        if (session.Status == SessionStatus.Finished)
         {
             state = ZaloDraftReadinessState.AlreadyDrafted;
             reason = "draft_already_exists";
         }
+        else if (session.Status == SessionStatus.Drafting)
+        {
+            state = ZaloDraftReadinessState.InvalidStatus;
+            reason = "draft_blocked_draft_in_progress";
+        }
+        else if (hasNonCaptainAssignments)
+        {
+            // A non-captain assignment outside Drafting/Finished is inconsistent state.
+            // Never infer permission to redraft or continue automatically from it.
+            state = ZaloDraftReadinessState.InvalidStatus;
+            reason = "draft_blocked_existing_assignment";
+        }
         else if (session.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection))
         {
-            state = session.Status == SessionStatus.Cancelled
-                ? ZaloDraftReadinessState.InvalidStatus
-                : ZaloDraftReadinessState.InvalidStatus;
+            state = ZaloDraftReadinessState.InvalidStatus;
             reason = "draft_blocked_invalid_status";
         }
         else if (session.StartTime is { } start && start <= current)
