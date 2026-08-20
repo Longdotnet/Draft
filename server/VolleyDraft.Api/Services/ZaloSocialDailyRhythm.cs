@@ -42,7 +42,10 @@ internal sealed record ZaloDailyGreetingPlan(
     ZaloDailyGreetingMood Mood,
     string Message,
     bool UseImage,
-    DateOnly ServiceDate);
+    DateOnly ServiceDate)
+{
+    public bool RequiresImage => Kind == ZaloDailyGreetingKind.Morning;
+}
 
 internal static class ZaloDailyGreetingEngine
 {
@@ -84,9 +87,11 @@ internal static class ZaloDailyGreetingEngine
             settings.GreetingRepeatDays);
         if (string.IsNullOrWhiteSpace(message)) return null;
 
-        // About one in four eligible greetings gets a card. This keeps images feeling
-        // like a human occasionally dropping media instead of a scheduled poster bot.
-        var useImage = settings.GreetingImagesEnabled && ((selector / 11) % 4 == 0);
+        // Morning greetings are card-first: when greeting media is enabled every
+        // eligible morning plan requests a card. Night cards stay occasional so
+        // bedtime messages do not feel like scheduled posters.
+        var useImage = settings.GreetingImagesEnabled &&
+                       (kind == ZaloDailyGreetingKind.Morning || ((selector / 11) % 4 == 0));
         return new(kind.Value, mood, message, useImage, serviceDate);
     }
 
