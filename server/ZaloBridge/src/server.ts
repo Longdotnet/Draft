@@ -4,7 +4,14 @@ import {
   getApiKeepAliveRuntimeStatus,
   startApiKeepAlive,
 } from "./apiKeepAlive.js";
-import type { SendGroupMessageRequest, StartListenerRequest, ZaloCredentials } from "./contracts.js";
+import type {
+  SendGroupMessageRequest,
+  SendGroupStickerRequest,
+  StartListenerRequest,
+  ZaloCredentials,
+} from "./contracts.js";
+import { isStickerReaction } from "./stickerLogic.js";
+import { sendGroupSticker } from "./stickerGateway.js";
 import {
   createQrLogin,
   getActiveListenerWebhookUrls,
@@ -153,6 +160,21 @@ app.post("/v1/group-messages", async (request, response) => {
     message: String(body.message),
     mentions: Array.isArray(body.mentions) ? body.mentions : [],
     imageUrl: body.imageUrl ? String(body.imageUrl) : null,
+    idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
+  }));
+});
+
+app.post("/v1/group-stickers", async (request, response) => {
+  const body = request.body as Partial<SendGroupStickerRequest>;
+  if (!body.accountId || !body.groupId || !isStickerReaction(body.reaction)) {
+    response.status(400).json({ error: "accountId, groupId and a supported reaction are required" });
+    return;
+  }
+  response.json(await sendGroupSticker({
+    accountId: String(body.accountId),
+    groupId: String(body.groupId),
+    credentials: credentialsFrom(request),
+    reaction: body.reaction,
     idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
   }));
 });
