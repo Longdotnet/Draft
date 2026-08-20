@@ -104,9 +104,19 @@ public sealed class ZaloNightGreetingCardTests
     }
 
     [Fact]
-    public void Five_night_backgrounds_are_embedded_and_renderable()
+    public void Night_background_catalog_contains_five_ids()
     {
         Assert.Equal(new[] { 1, 2, 3, 4, 5 }, ZaloNightGreetingBackgroundCatalog.ActiveIds);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void Night_background_is_embedded_and_renderable(int id)
+    {
         var resources = typeof(ZaloNightGreetingCardRenderer).Assembly
             .GetManifestResourceNames()
             .ToHashSet(StringComparer.Ordinal);
@@ -115,13 +125,10 @@ public sealed class ZaloNightGreetingCardTests
             "Mong mỗi người có một giấc ngủ thật yên và một trái tim nhẹ hơn.",
             "Ngủ ngoan nhé 🌙");
 
-        foreach (var id in ZaloNightGreetingBackgroundCatalog.ActiveIds)
-        {
-            Assert.Contains(ZaloNightGreetingBackgroundCatalog.LogicalResourceName(id), resources);
-            var jpeg = ZaloNightGreetingCardRenderer.Render(id, "Volley Friends", copy);
-            Assert.True(jpeg.Length > 10_000);
-            Assert.Equal(0xFF, jpeg[0]);
-            Assert.Equal(0xD8, jpeg[1]);
-        }
+        Assert.Contains(ZaloNightGreetingBackgroundCatalog.LogicalResourceName(id), resources);
+        var jpeg = ZaloNightGreetingCardRenderer.Render(id, "Volley Friends", copy);
+        Assert.True(jpeg.Length > 10_000);
+        Assert.Equal(0xFF, jpeg[0]);
+        Assert.Equal(0xD8, jpeg[1]);
     }
 }
