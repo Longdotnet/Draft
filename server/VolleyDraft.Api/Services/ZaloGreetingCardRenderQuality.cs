@@ -45,8 +45,9 @@ internal static class ZaloGreetingCardRenderQuality
         // Never let a missing Linux emoji glyph become a tofu square. Unknown supplementary
         // glyphs are omitted from raster text; approved card icons are drawn as Skia vectors.
         text = Regex.Replace(text, @"[\uD800-\uDBFF][\uDC00-\uDFFF]", string.Empty);
-        text = text.Replace("️", string.Empty, StringComparison.Ordinal)
-            .Replace("‍", string.Empty, StringComparison.Ordinal);
+        text = new string(text
+            .Where(ch => ch is not '\uFE0F' and not '\uFE0E' and not '\u200D')
+            .ToArray());
         return Regex.Replace(text, @"\s+", " ").Trim();
     }
 
