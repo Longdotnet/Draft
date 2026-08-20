@@ -424,22 +424,13 @@ internal static class ZaloNightGreetingCardRenderer
         if (!ZaloNightGreetingCardCopyGenerator.IsNightSafe(copy))
             throw new ArgumentException("Night greeting copy is outside renderer safety bounds.", nameof(copy));
 
-        using var background = ZaloNightGreetingProceduralBackground.Render(backgroundId);
+        using var background = ReadBackground(backgroundId);
         using var surface = SKSurface.Create(
             new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul))
             ?? throw new InvalidOperationException("Could not create Night greeting canvas.");
         var canvas = surface.Canvas;
         canvas.Clear(SKColors.Black);
         canvas.DrawBitmap(background, new SKRect(0, 0, Width, Height));
-
-        using (var panel = new SKPaint
-        {
-            Color = new SKColor(12, 18, 39, 190),
-            IsAntialias = true
-        })
-        {
-            canvas.DrawRoundRect(new SKRect(72, 86, 855, 902), 34, 34, panel);
-        }
 
         DrawHeader(canvas, groupName);
         DrawCopy(canvas, copy);
@@ -508,13 +499,7 @@ internal static class ZaloNightGreetingCardRenderer
             maxLines: 3,
             new SKColor(232, 231, 248));
 
-        using var ribbon = new SKPaint
-        {
-            Color = new SKColor(118, 92, 171, 205),
-            IsAntialias = true
-        };
         var ribbonRect = new SKRect(108, 705, 790, 790);
-        canvas.DrawRoundRect(ribbonRect, 18, 18, ribbon);
         DrawFittedText(
             canvas,
             copy.Ribbon.Trim(),
