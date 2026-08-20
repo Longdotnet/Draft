@@ -245,11 +245,12 @@ public sealed class ZaloSocialPresenceService(
                 if (!settings.SendEnabled)
                 {
                     logger.LogInformation(
-                        "Daily greeting shadow Group={GroupId} Kind={Kind} Mood={Mood} Image={Image} Message={Message}",
+                        "Daily greeting shadow Group={GroupId} Kind={Kind} Mood={Mood} Image={Image} RequiresImage={RequiresImage} Message={Message}",
                         group.Key.GroupId,
                         greeting.Kind,
                         greeting.Mood,
                         greeting.UseImage,
+                        greeting.RequiresImage,
                         greeting.Message);
                     continue;
                 }
@@ -262,6 +263,10 @@ public sealed class ZaloSocialPresenceService(
                         var persistedGroupName = group
                             .Select(item => item.GroupName)
                             .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+                        var hasMatchToday = greeting.Kind == ZaloDailyGreetingKind.Morning && group.Any(item =>
+                            item.StartTime is { } startTime &&
+                            DateOnly.FromDateTime(startTime.ToOffset(TimeSpan.FromHours(7)).Date) == greeting.ServiceDate &&
+                            item.Status != SessionStatus.Cancelled);
                         imageUrl = await socialMedia.GetOrCreateGreetingCardUrlAsync(
                             group.Key.AdminUserId,
                             group.Key.ConnectionId,
@@ -271,16 +276,26 @@ public sealed class ZaloSocialPresenceService(
                             greeting.Kind,
                             greeting.Mood,
                             greeting.ServiceDate,
+                            hasMatchToday,
                             cancellationToken);
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
                     {
                         logger.LogWarning(
                             exception,
-                            "Daily greeting dynamic card failed; falling back to text Group={GroupId} Kind={Kind}",
+                            "Daily greeting dynamic card failed Group={GroupId} Kind={Kind}",
                             group.Key.GroupId,
                             greeting.Kind);
                     }
+                }
+
+                if (greeting.RequiresImage && string.IsNullOrWhiteSpace(imageUrl))
+                {
+                    logger.LogInformation(
+                        "Morning greeting deferred because required card is unavailable; a later reconcile will retry Group={GroupId} ServiceDate={ServiceDate}",
+                        group.Key.GroupId,
+                        greeting.ServiceDate);
+                    continue;
                 }
 
                 try
