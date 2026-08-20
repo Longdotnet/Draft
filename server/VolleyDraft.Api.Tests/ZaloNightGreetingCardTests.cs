@@ -126,9 +126,8 @@ public sealed class ZaloNightGreetingCardTests
             "Ngủ ngoan nhé 🌙");
 
         Assert.Contains(ZaloNightGreetingBackgroundCatalog.LogicalResourceName(id), resources);
-        var jpeg = ZaloNightGreetingCardRenderer.Render(id, "Volley Friends", copy);
-        Assert.True(jpeg.Length > 10_000);
-        Assert.Equal(0xFF, jpeg[0]);
-        Assert.Equal(0xD8, jpeg[1]);
+        var png = ZaloNightGreetingCardRenderer.Render(id, "Volley Friends", copy);
+        Assert.True(png.Length > 10_000);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png.Take(4).ToArray());
     }
 }
