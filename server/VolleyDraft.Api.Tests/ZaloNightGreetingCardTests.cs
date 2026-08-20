@@ -18,16 +18,17 @@ public sealed class ZaloNightGreetingCardTests
     }
 
     [Theory]
-    [InlineData(0, ZaloDailyGreetingMood.TenderRomantic)]
-    [InlineData(39, ZaloDailyGreetingMood.TenderRomantic)]
-    [InlineData(40, ZaloDailyGreetingMood.LonelyComfort)]
-    [InlineData(69, ZaloDailyGreetingMood.LonelyComfort)]
-    [InlineData(70, ZaloDailyGreetingMood.CozyGroupLove)]
-    [InlineData(89, ZaloDailyGreetingMood.CozyGroupLove)]
-    [InlineData(90, ZaloDailyGreetingMood.LightPlayfulSweet)]
-    [InlineData(99, ZaloDailyGreetingMood.LightPlayfulSweet)]
-    public void Night_mood_distribution_is_40_30_20_10(int selector, ZaloDailyGreetingMood expected)
+    [InlineData(0, "TenderRomantic")]
+    [InlineData(39, "TenderRomantic")]
+    [InlineData(40, "LonelyComfort")]
+    [InlineData(69, "LonelyComfort")]
+    [InlineData(70, "CozyGroupLove")]
+    [InlineData(89, "CozyGroupLove")]
+    [InlineData(90, "LightPlayfulSweet")]
+    [InlineData(99, "LightPlayfulSweet")]
+    public void Night_mood_distribution_is_40_30_20_10(int selector, string expectedName)
     {
+        var expected = Enum.Parse<ZaloDailyGreetingMood>(expectedName);
         Assert.Equal(expected, ZaloDailyGreetingEngine.SelectNightMood(selector));
     }
 
