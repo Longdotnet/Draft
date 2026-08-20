@@ -66,8 +66,9 @@ internal static class ZaloGreetingTestPolicy
     public static string AssetPrefix(
         ZaloDailyGreetingKind kind,
         string connectionId,
-        string groupId) =>
-        $"greeting-test-{kind.ToString().ToLowerInvariant()}-{TargetToken(connectionId, groupId)}-";
+        string groupId,
+        string productionMessage) =>
+        $"greeting-test-{kind.ToString().ToLowerInvariant()}-{StableToken(connectionId, groupId)}-{MessageToken(productionMessage)}-";
 
     public static bool IsAllowedMessage(ZaloDailyGreetingKind kind, string? message)
     {
@@ -83,9 +84,16 @@ internal static class ZaloGreetingTestPolicy
     public static bool IsProductionGreetingMessage(string? message, ZaloDailyGreetingKind kind) =>
         ZaloDailyGreetingPhraseCatalog.IsKind(message, kind);
 
-    private static string TargetToken(string connectionId, string groupId)
+    private static string StableToken(string connectionId, string groupId)
     {
         var material = $"{connectionId?.Trim()}:{groupId?.Trim()}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
+        return Convert.ToHexString(hash.AsSpan(0, 8)).ToLowerInvariant();
+    }
+
+    private static string MessageToken(string productionMessage)
+    {
+        var material = productionMessage?.Trim() ?? string.Empty;
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         return Convert.ToHexString(hash.AsSpan(0, 8)).ToLowerInvariant();
     }
@@ -184,7 +192,11 @@ public sealed class ZaloGreetingTestService(
         }
 
         await CleanupOldTestAssetsAsync(adminUserId, cancellationToken);
-        var assetPrefix = ZaloGreetingTestPolicy.AssetPrefix(kind, request.ConnectionId, request.GroupId);
+        var assetPrefix = ZaloGreetingTestPolicy.AssetPrefix(
+            kind,
+            request.ConnectionId,
+            request.GroupId,
+            message);
         var asset = new ZaloBotImageAsset
         {
             AdminUserId = adminUserId,
@@ -248,7 +260,11 @@ public sealed class ZaloGreetingTestService(
         if (resolved.Error is not null)
             return ServiceResult<ZaloGreetingTestSendResponse>.Failure(resolved.StatusCode, resolved.Error);
 
-        var prefix = ZaloGreetingTestPolicy.AssetPrefix(kind, request.ConnectionId, request.GroupId);
+        var prefix = ZaloGreetingTestPolicy.AssetPrefix(
+            kind,
+            request.ConnectionId,
+            request.GroupId,
+            request.Message);
         var asset = await db.ZaloBotImageAssets
             .AsNoTracking()
             .SingleOrDefaultAsync(item =>
@@ -260,7 +276,7 @@ public sealed class ZaloGreetingTestService(
         {
             return ServiceResult<ZaloGreetingTestSendResponse>.Failure(
                 StatusCodes.Status404NotFound,
-                "Không tìm thấy preview greeting test cho đúng tài khoản/group này hoặc preview không thuộc tài khoản hiện tại.");
+                "Preview không khớp chính xác tài khoản/group/kind/tin nhắn đã tạo, hoặc preview không thuộc tài khoản hiện tại.");
         }
 
         var imageUrl = BuildPublicUrl(publicOrigin, asset.Id);
