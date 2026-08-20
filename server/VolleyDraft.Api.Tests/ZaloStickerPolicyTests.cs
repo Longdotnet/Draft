@@ -7,17 +7,18 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloStickerPolicyTests
 {
     [Theory]
-    [InlineData("@Long haha ông nói nghe ghê =))", ZaloStickerReaction.Laugh)]
-    [InlineData("@Long nay cháy quá 🔥", ZaloStickerReaction.Cheer)]
-    [InlineData("@Long thương ông 🫶", ZaloStickerReaction.Love)]
-    [InlineData("@Long wow ghê vậy 😱", ZaloStickerReaction.Wow)]
-    [InlineData("@Long buồn thiệt 😭", ZaloStickerReaction.Sad)]
-    [InlineData("@Long xin lỗi nha 🙏", ZaloStickerReaction.Sorry)]
-    [InlineData("@Long bó tay ông luôn 🤦", ZaloStickerReaction.Facepalm)]
-    [InlineData("@Long đánh ngon 👏", ZaloStickerReaction.GoodJob)]
-    [InlineData("@Long ngủ ngon nha 👋", ZaloStickerReaction.Bye)]
-    public void InferReaction_maps_expressive_chat_to_supported_sticker(string message, ZaloStickerReaction expected)
+    [InlineData("@Long haha ông nói nghe ghê =))", "Laugh")]
+    [InlineData("@Long nay cháy quá 🔥", "Cheer")]
+    [InlineData("@Long thương ông 🫶", "Love")]
+    [InlineData("@Long wow ghê vậy 😱", "Wow")]
+    [InlineData("@Long buồn thiệt 😭", "Sad")]
+    [InlineData("@Long xin lỗi nha 🙏", "Sorry")]
+    [InlineData("@Long bó tay ông luôn 🤦", "Facepalm")]
+    [InlineData("@Long đánh ngon 👏", "GoodJob")]
+    [InlineData("@Long ngủ ngon nha 👋", "Bye")]
+    public void InferReaction_maps_expressive_chat_to_supported_sticker(string message, string expectedName)
     {
+        var expected = Enum.Parse<ZaloStickerReaction>(expectedName);
         Assert.Equal(expected, ZaloStickerPolicy.InferReaction(message));
         Assert.False(string.IsNullOrWhiteSpace(ZaloStickerPolicy.ToWireValue(expected)));
     }
