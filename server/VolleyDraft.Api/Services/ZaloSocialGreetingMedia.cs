@@ -36,6 +36,7 @@ internal sealed class ZaloSocialCardCopyGenerator
         string groupName,
         ZaloDailyGreetingKind kind,
         ZaloDailyGreetingMood mood,
+        bool hasMatchToday,
         IReadOnlyList<ZaloSocialCardMemory> recentCards,
         CancellationToken cancellationToken = default)
     {
@@ -72,6 +73,9 @@ internal sealed class ZaloSocialCardCopyGenerator
                body: 8-110 ký tự, tối đa một câu ngắn.
                ribbon: 3-55 ký tự, như một câu chốt/callout ngắn.
             8. Viết tiếng Việt tự nhiên. GroupName KHÔNG cần lặp lại trong copy vì renderer sẽ đặt tên nhóm thật ở header.
+            9. Nếu Kind là Morning và MatchDay=true, có thể nhắc rất nhẹ rằng hôm nay/tối nay còn lên sân.
+               Đây chỉ là một nét phụ; trọng tâm vẫn phải là lời chúc buổi sáng có tình cảm, không biến card thành reminder.
+               Không bịa giờ, sân, lineup, số slot hay chi tiết trận đấu.
             """;
 
         var userPayload = new
@@ -79,6 +83,7 @@ internal sealed class ZaloSocialCardCopyGenerator
             GroupName = Trim(groupName, 100),
             Kind = kind.ToString(),
             Mood = mood.ToString(),
+            MatchDay = hasMatchToday,
             RecentCards = recentCards
                 .Take(8)
                 .Select(item => new
@@ -257,6 +262,7 @@ internal sealed class ZaloSocialMediaAssetService(
         ZaloDailyGreetingKind kind,
         ZaloDailyGreetingMood mood,
         DateOnly serviceDate,
+        bool hasMatchToday,
         CancellationToken cancellationToken = default)
     {
         var publicOrigin = ResolvePublicOrigin();
@@ -302,7 +308,7 @@ internal sealed class ZaloSocialMediaAssetService(
             take: 8,
             cancellationToken);
         var copy = await new ZaloSocialCardCopyGenerator(configuration, logger)
-            .TryGenerateAsync(groupName, kind, mood, recentCards, cancellationToken);
+            .TryGenerateAsync(groupName, kind, mood, hasMatchToday, recentCards, cancellationToken);
         if (copy is null)
             return null;
 
