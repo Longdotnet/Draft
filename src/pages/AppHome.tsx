@@ -5,6 +5,7 @@ import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
 import { ZaloAutoSessionAdminPanel } from "../components/ZaloAutoSessionAdminPanel";
 import { ZaloAutoSessionAuditPanel } from "../components/ZaloAutoSessionAuditPanel";
 import { ZaloAutoSessionOperationsPanel } from "../components/ZaloAutoSessionOperationsPanel";
+import { ZaloGreetingTestPanel } from "../components/ZaloGreetingTestPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
 function getIsMobileViewport() {
@@ -45,6 +46,7 @@ export function AppHome() {
       ) : (
         <>
           <DbDraftFlow />
+          <ZaloGreetingTestPanel />
           <ZaloAutoSessionAdminPanel />
           <ZaloAutoSessionOperationsPanel />
           <ZaloAutoSessionAuditPanel />

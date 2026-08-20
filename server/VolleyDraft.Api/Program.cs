@@ -59,6 +59,7 @@ builder.Services.AddScoped<PasswordService>();
 builder.Services.AddScoped<SessionDraftService>();
 builder.Services.AddScoped<DraftBoardService>();
 builder.Services.AddScoped<ZaloIntegrationService>();
+builder.Services.AddScoped<ZaloGreetingTestService>();
 builder.Services.AddScoped<ZaloAutoSessionSettingsService>();
 builder.Services.AddScoped<ZaloBotService>();
 builder.Services.AddScoped<ZaloBotImageService>();
@@ -252,6 +253,28 @@ zalo.MapGet("/connections/{connectionId}/groups", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.GetGroupsAsync(userId, connectionId)).ToHttpResult();
+});
+zalo.MapPost("/greeting-tests/preview", async (
+    HttpContext httpContext,
+    ZaloGreetingTestPreviewRequest request,
+    ZaloGreetingTestService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.PreviewAsync(userId, request, cancellationToken)).ToHttpResult();
+});
+zalo.MapPost("/greeting-tests/send", async (
+    HttpContext httpContext,
+    ZaloGreetingTestSendRequest request,
+    ZaloGreetingTestService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.SendAsync(userId, request, cancellationToken)).ToHttpResult();
 });
 zalo.MapGet("/auto-session-groups", async (
     HttpContext httpContext,
