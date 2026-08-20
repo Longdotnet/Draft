@@ -41,7 +41,7 @@ internal sealed class ZaloSocialCardCopyGenerator
         CancellationToken cancellationToken = default)
     {
         if (!IsAiConfigured())
-            return null;
+            return Fallback(kind, mood, hasMatchToday, "ai_not_configured");
 
         var endpoint = configuration["Ai:Endpoint"]!;
         var apiKey = configuration["Ai:ApiKey"]!;
@@ -121,9 +121,9 @@ internal sealed class ZaloSocialCardCopyGenerator
             if (!response.IsSuccessStatusCode)
             {
                 logger.LogWarning(
-                    "Dynamic social-card copy AI returned {StatusCode}; card suppressed.",
+                    "Dynamic social-card copy AI returned {StatusCode}; using deterministic fallback.",
                     (int)response.StatusCode);
-                return null;
+                return Fallback(kind, mood, hasMatchToday, $"http_{(int)response.StatusCode}");
             }
 
             using var document = JsonDocument.Parse(body);
@@ -136,8 +136,8 @@ internal sealed class ZaloSocialCardCopyGenerator
                     finishReason.ValueKind == JsonValueKind.String &&
                     IsTruncationFinishReason(finishReason.GetString()))
                 {
-                    logger.LogDebug("Dynamic social-card copy suppressed because AI output was truncated.");
-                    return null;
+                    logger.LogWarning("Dynamic social-card copy AI output was truncated; using deterministic fallback.");
+                    return Fallback(kind, mood, hasMatchToday, "truncated");
                 }
 
                 if (first.TryGetProperty("message", out var message) &&
@@ -152,8 +152,8 @@ internal sealed class ZaloSocialCardCopyGenerator
             var copy = ParseCandidate(candidate);
             if (!IsValid(copy))
             {
-                logger.LogDebug("Dynamic social-card copy AI returned invalid copy; card suppressed.");
-                return null;
+                logger.LogWarning("Dynamic social-card copy AI returned invalid copy; using deterministic fallback.");
+                return Fallback(kind, mood, hasMatchToday, "invalid_copy");
             }
 
             return new ZaloSocialCardCopy(
@@ -163,13 +163,13 @@ internal sealed class ZaloSocialCardCopyGenerator
         }
         catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(exception, "Dynamic social-card copy AI timed out; card suppressed.");
-            return null;
+            logger.LogWarning(exception, "Dynamic social-card copy AI timed out; using deterministic fallback.");
+            return Fallback(kind, mood, hasMatchToday, "timeout");
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidOperationException)
         {
-            logger.LogWarning(exception, "Dynamic social-card copy AI failed; card suppressed.");
-            return null;
+            logger.LogWarning(exception, "Dynamic social-card copy AI failed; using deterministic fallback.");
+            return Fallback(kind, mood, hasMatchToday, exception.GetType().Name);
         }
     }
 
@@ -202,6 +202,57 @@ internal sealed class ZaloSocialCardCopyGenerator
             " thang lon ", " oc cho ", " nhu cc "
         ];
         return !forbidden.Any(normalized.Contains);
+    }
+
+    internal static ZaloSocialCardCopy CreateFallback(
+        ZaloDailyGreetingKind kind,
+        ZaloDailyGreetingMood mood,
+        bool hasMatchToday)
+    {
+        if (kind == ZaloDailyGreetingKind.Night)
+        {
+            return new ZaloSocialCardCopy(
+                "Ngủ ngon nhé 🌙",
+                "Khép ngày lại thật nhẹ, chuyện còn lại cứ để mai mình từ từ tính tiếp.",
+                "Đêm nay nghỉ cho tử tế");
+        }
+
+        return mood switch
+        {
+            ZaloDailyGreetingMood.PlayfulRomantic => new ZaloSocialCardCopy(
+                "Morning, mình vui trước nha ☀️",
+                hasMatchToday
+                    ? "Ăn sáng tử tế, giữ mood thật xinh; tối nay còn lên sân thì để dành chút năng lượng nha 😌"
+                    : "Ăn sáng tử tế, giữ mood thật xinh rồi mình bắt đầu ngày mới thôi 😌",
+                "Hôm nay cứ vui đã"),
+            ZaloDailyGreetingMood.MenlySupportive => new ZaloSocialCardCopy(
+                "Sáng rồi, chiến thôi 🤝",
+                hasMatchToday
+                    ? "Giữ sức, làm từng việc cho gọn; tối nay còn lên sân thì nhớ chừa pin cho mình nhé."
+                    : "Giữ sức, làm từng việc cho gọn và nhớ cho mình một nhịp nghỉ khi cần.",
+                "Bình tĩnh là cân được"),
+            _ => new ZaloSocialCardCopy(
+                "Chào ngày mới ☀️",
+                hasMatchToday
+                    ? "Chúc hôm nay mọi việc nhẹ nhàng; tối nay còn lên sân thì mình giữ sức một chút nha."
+                    : "Chúc hôm nay mọi việc nhẹ nhàng, đầu óc thoáng và có thêm vài chuyện vui nho nhỏ.",
+                "Một ngày nhẹ nhàng nhé")
+        };
+    }
+
+    private ZaloSocialCardCopy Fallback(
+        ZaloDailyGreetingKind kind,
+        ZaloDailyGreetingMood mood,
+        bool hasMatchToday,
+        string reason)
+    {
+        var copy = CreateFallback(kind, mood, hasMatchToday);
+        logger.LogWarning(
+            "Dynamic social-card copy is using deterministic fallback Kind={Kind} Mood={Mood} Reason={Reason}",
+            kind,
+            mood,
+            reason);
+        return copy;
     }
 
     private bool IsAiConfigured() =>
