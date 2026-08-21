@@ -5,6 +5,7 @@ import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
 import { ZaloAutoSessionAdminPanel } from "../components/ZaloAutoSessionAdminPanel";
 import { ZaloAutoSessionAuditPanel } from "../components/ZaloAutoSessionAuditPanel";
 import { ZaloAutoSessionOperationsPanel } from "../components/ZaloAutoSessionOperationsPanel";
+import { ZaloCommunityTipSettingsPanel } from "../components/ZaloCommunityTipSettingsPanel";
 import { ZaloGreetingTestPanel } from "../components/ZaloGreetingTestPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
@@ -42,12 +43,16 @@ export function AppHome() {
       </header>
 
       {isMobileViewport ? (
-        <MobilePublicDraftFlow />
+        <>
+          <MobilePublicDraftFlow />
+          <ZaloCommunityTipSettingsPanel />
+        </>
       ) : (
         <>
           <DbDraftFlow />
           <ZaloGreetingTestPanel />
           <ZaloAutoSessionAdminPanel />
+          <ZaloCommunityTipSettingsPanel />
           <ZaloAutoSessionOperationsPanel />
           <ZaloAutoSessionAuditPanel />
           <ZaloOverbookAdminPanel />

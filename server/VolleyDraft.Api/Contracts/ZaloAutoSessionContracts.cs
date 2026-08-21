@@ -20,7 +20,8 @@ public sealed record UpdateZaloAutoSessionGroupRequest(
     string? LearningReviewNote = null,
     string? TrustedOrganizerZaloUserId = null,
     string? TrustedOrganizerDisplayName = null,
-    bool? TrustedOrganizerEnabled = null);
+    bool? TrustedOrganizerEnabled = null,
+    int? CommunityTipDailyCount = null);
 
 public sealed record ZaloAutoSessionHealthResponse(
     string ConnectionStatus,
@@ -81,4 +82,5 @@ public sealed record ZaloAutoSessionGroupResponse(
     ZaloAutoSessionHealthResponse? Health = null,
     IReadOnlyList<ZaloAutoSessionLearningSignalResponse>? LearningSignals = null,
     int PendingLearningCount = 0,
-    IReadOnlyList<ZaloAutoSessionOrganizerCandidateResponse>? OrganizerCandidates = null);
+    IReadOnlyList<ZaloAutoSessionOrganizerCandidateResponse>? OrganizerCandidates = null,
+    int CommunityTipDailyCount = 1);

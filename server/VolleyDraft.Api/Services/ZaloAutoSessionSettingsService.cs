@@ -18,6 +18,7 @@ public sealed class ZaloAutoSessionSettingsService(
     private readonly ZaloAutoSessionObservabilityService observability = new(db);
     private readonly ZaloAutoSessionV2Store v2Store = new(db);
     private readonly ZaloAutoSessionTrustedOrganizerStore trustedOrganizerStore = new(db);
+    private readonly ZaloCommunityNudgeStore communityNudgeStore = new(db);
 
     public async Task<ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>> GetGroupsAsync(
         string adminUserId,
@@ -164,6 +165,8 @@ public sealed class ZaloAutoSessionSettingsService(
             return BadRequest<ZaloAutoSessionGroupResponse>("Số set mặc định phải từ 1 đến 20.");
         if (!TryParseStartTime(request.DefaultStartTime, out var startMinutes))
             return BadRequest<ZaloAutoSessionGroupResponse>("Giờ mặc định phải theo dạng HH:mm, ví dụ 17:30.");
+        if (request.CommunityTipDailyCount is < 1 or > 5)
+            return BadRequest<ZaloAutoSessionGroupResponse>("Số lần STT mỗi ngày phải từ 1 đến 5.");
 
         var location = string.IsNullOrWhiteSpace(request.DefaultLocation)
             ? null
@@ -210,6 +213,16 @@ public sealed class ZaloAutoSessionSettingsService(
         tracked = await store.UpdateAsync(tracked, cancellationToken);
         if (tracked is null)
             return NotFound<ZaloAutoSessionGroupResponse>("Group Auto Session vừa bị thay đổi hoặc không còn tồn tại.");
+
+        if (request.CommunityTipDailyCount is { } tipDailyCount)
+        {
+            await communityNudgeStore.SetDailyCountAsync(
+                tracked.ZaloConnectionId,
+                tracked.GroupId,
+                tipDailyCount,
+                adminUserId,
+                cancellationToken);
+        }
 
         await v2Store.EnsureAsync(cancellationToken);
         await trustedOrganizerStore.EnsureAsync(cancellationToken);
@@ -358,6 +371,10 @@ public sealed class ZaloAutoSessionSettingsService(
             connection,
             trustedOrganizers,
             cancellationToken);
+        var communityTipDailyCount = await communityNudgeStore.GetDailyCountAsync(
+            response.ZaloConnectionId,
+            response.GroupId,
+            cancellationToken);
         return response with
         {
             Activity = activity.IsSuccess ? activity.Value : response.Activity,
@@ -374,7 +391,8 @@ public sealed class ZaloAutoSessionSettingsService(
                 health.NextRetryAt),
             LearningSignals = visibleLearning,
             PendingLearningCount = learning.Count(item => item.Status == ZaloAutoSessionLearningStatus.Pending),
-            OrganizerCandidates = organizerCandidates
+            OrganizerCandidates = organizerCandidates,
+            CommunityTipDailyCount = communityTipDailyCount
         };
     }
 

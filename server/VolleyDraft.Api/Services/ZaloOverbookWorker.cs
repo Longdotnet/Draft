@@ -24,6 +24,12 @@ public sealed class ZaloOverbookWorker(
                     logger.LogInformation("Draft autopilot cycle sent {SentCount} message(s)", draftSent);
 
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+                var bridge = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
+                var nudgeLogger = scope.ServiceProvider.GetRequiredService<ILogger<ZaloCommunityNudgeService>>();
+                var communitySent = await new ZaloCommunityNudgeService(db, bridge, nudgeLogger)
+                    .ProcessDueAsync(stoppingToken);
+                if (communitySent > 0)
+                    logger.LogInformation("Community nudge cycle sent {SentCount} message(s)", communitySent);
 
                 var canonicalization = await new ZaloLegacyOutboundCanonicalizer(db)
                     .CanonicalizeAsync(500, stoppingToken);
@@ -94,7 +100,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/draft-autopilot/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/draft-autopilot/community-nudge/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }

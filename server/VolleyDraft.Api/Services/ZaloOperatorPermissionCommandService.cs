@@ -10,12 +10,14 @@ public enum ZaloOperatorPermissionCommandKind
 {
     Grant,
     Revoke,
-    List
+    List,
+    CommunityTipDailyCount
 }
 
 public sealed record ZaloOperatorPermissionCommand(
     ZaloOperatorPermissionCommandKind Kind,
-    IReadOnlyList<string> TargetZaloUserIds);
+    IReadOnlyList<string> TargetZaloUserIds,
+    int? CommunityTipDailyCount = null);
 
 public sealed record ZaloOperatorPermissionResult(
     bool Handled,
@@ -26,7 +28,8 @@ public sealed record ZaloOperatorPermissionResult(
 /// Keeps Zalo-side operator management on the existing per-session
 /// BotOperatorZaloUserIdsJson source of truth. Grant/revoke authority is supplied by
 /// the caller after checking the live Zalo group owner/deputy role; ordinary bot
-/// operators cannot create more operators.
+/// operators cannot create more operators. The same owner/deputy gate is reused for
+/// deterministic group-level community-tip frequency changes via "@bot stt 1..5".
 /// </summary>
 public sealed class ZaloOperatorPermissionCommandService(VolleyDraftDbContext db)
 {
@@ -42,9 +45,20 @@ public sealed class ZaloOperatorPermissionCommandService(VolleyDraftDbContext db
         @"(?<![a-z0-9])(?:ai\s+(?:dang\s+)?co\s+quyen|danh\s+sach\s+(?:nguoi\s+)?co\s+quyen|danh\s+sach\s+operator|operator\s+nao|xem\s+(?:danh\s+sach\s+)?quyen)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex CommunityTipCountPattern = new(
+        @"(?:^|\s)stt\s+([1-5])\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     public static ZaloOperatorPermissionCommand? TryParse(ZaloIncomingMessageEvent incoming)
     {
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
+        var tipMatch = CommunityTipCountPattern.Match(normalized);
+        if (tipMatch.Success && int.TryParse(tipMatch.Groups[1].Value, out var dailyCount))
+            return new ZaloOperatorPermissionCommand(
+                ZaloOperatorPermissionCommandKind.CommunityTipDailyCount,
+                [],
+                Math.Clamp(dailyCount, 1, 5));
+
         ZaloOperatorPermissionCommandKind? kind = GrantPattern.IsMatch(normalized)
             ? ZaloOperatorPermissionCommandKind.Grant
             : RevokePattern.IsMatch(normalized)
@@ -80,7 +94,7 @@ public sealed class ZaloOperatorPermissionCommandService(VolleyDraftDbContext db
                               session.BotEnabled)
             .ToListAsync(cancellationToken);
         if (sessions.Count == 0)
-            return new(true, "Tui chưa thấy kèo nào của nhóm đang bật bot để gắn quyền.");
+            return new(true, "Tui chưa thấy kèo nào của nhóm đang bật bot để cấu hình.");
 
         if (command.Kind == ZaloOperatorPermissionCommandKind.List)
         {
@@ -99,15 +113,30 @@ public sealed class ZaloOperatorPermissionCommandService(VolleyDraftDbContext db
             return new(true, $"Operator hiện tại: {string.Join(", ", display)}.");
         }
 
+        if (canManagePermissions is null)
+            return new(true, "Tui chưa check được quyền trưởng/phó nhóm từ Zalo lúc này, thử lại xíu nha.");
+        if (canManagePermissions != true)
+            return new(true, "Cấu hình này chỉ trưởng/phó nhóm Zalo mới đổi được nha; operator thường không tự đổi setting của group.");
+
+        if (command.Kind == ZaloOperatorPermissionCommandKind.CommunityTipDailyCount)
+        {
+            var count = Math.Clamp(command.CommunityTipDailyCount ?? 1, 1, 5);
+            await new ZaloCommunityNudgeStore(db).SetDailyCountAsync(
+                connectionId,
+                groupId,
+                count,
+                incoming.SenderId,
+                cancellationToken);
+            return new(
+                true,
+                $"Oke, STT đã đặt {count} lần/ngày cho group này. Tui sẽ rải các tip share slot, muốn chơi chung và spotlight tích cực trong khung giờ ban ngày, không dồn tin liên tục.",
+                "CommunityTipSettings");
+        }
+
         if (command.TargetZaloUserIds.Count == 0)
             return new(true, command.Kind == ZaloOperatorPermissionCommandKind.Grant
                 ? "Tag người cần cấp quyền giúp tui nha 😆"
                 : "Tag người cần thu quyền giúp tui nha.");
-
-        if (canManagePermissions is null)
-            return new(true, "Tui chưa check được quyền trưởng/phó nhóm từ Zalo lúc này, thử lại xíu nha.");
-        if (canManagePermissions != true)
-            return new(true, "Quyền này chỉ trưởng/phó nhóm Zalo mới cấp hoặc thu được nha; operator thường không tự cấp thêm người khác.");
 
         var targets = command.TargetZaloUserIds
             .Select(CleanId)
