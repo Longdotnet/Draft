@@ -1,0 +1,587 @@
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Models;
+
+namespace VolleyDraft.Api.Services;
+
+internal sealed record ZaloDraftReminderBucket(
+    string Key,
+    DateTimeOffset DueAt,
+    bool Urgent);
+
+internal static class ZaloDraftPreparationReminderPolicy
+{
+    private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+
+    internal static ZaloDraftReminderBucket? GetDueBucket(
+        DateTimeOffset startTime,
+        DateTimeOffset now,
+        int stopNudgingMinutes)
+    {
+        var localNow = now.ToOffset(VietnamOffset);
+        var localStart = startTime.ToOffset(VietnamOffset);
+        if (localNow.Date != localStart.Date) return null;
+
+        var stopAt = localStart.AddMinutes(-Math.Max(10, stopNudgingMinutes));
+        var noon = new DateTimeOffset(
+            localNow.Year, localNow.Month, localNow.Day, 12, 0, 0, VietnamOffset);
+        if (localNow < noon || localNow > stopAt) return null;
+
+        DateTimeOffset dueAt;
+        var twoPm = noon.AddHours(2);
+        var fourPm = noon.AddHours(4);
+        if (localNow < twoPm)
+        {
+            dueAt = noon;
+        }
+        else if (localNow < fourPm)
+        {
+            dueAt = twoPm;
+        }
+        else
+        {
+            var elapsed = localNow - fourPm;
+            var bucketMinutes = Math.Floor(elapsed.TotalMinutes / 30d) * 30d;
+            dueAt = fourPm.AddMinutes(bucketMinutes);
+        }
+
+        if (dueAt > stopAt) return null;
+        return new ZaloDraftReminderBucket(
+            dueAt.ToString("yyyyMMdd-HHmm"),
+            dueAt,
+            dueAt >= fourPm);
+    }
+
+    internal static string? BuildMessage(
+        ZaloDraftReadinessSnapshot readiness,
+        int? previousSlotCount,
+        int openOfferCount,
+        bool urgent)
+    {
+        var count = readiness.EffectiveSlotCount;
+        var capacity = readiness.Capacity;
+        var name = readiness.SessionName;
+
+        if (openOfferCount > 0)
+        {
+            var offerLabel = openOfferCount == 1 ? "1 slot" : $"{openOfferCount} slot";
+            return $"Tui vừa sync poll {name}: hiện {count}/{capacity}, nhưng đang có {offerLabel} vừa được báo pass/huỷ 😭 Chưa draft vội nha; chốt người thay + cập nhật poll trước giúp, roster sạch rồi tui réo chốt team tiếp.";
+        }
+
+        return readiness.State switch
+        {
+            ZaloDraftReadinessState.Ready => urgent
+                ? $"Tui vừa sync {name}: {count}/{capacity} đẹp bài ✅ mà team vẫn chưa chia nha 😭 Sát giờ rồi, reply `draft đi` là tui check poll lần cuối rồi chạy."
+                : $"Tui vừa sync {name}: đủ {count}/{capacity} rồi nha ✅ Team chưa chia; reply `draft đi` là tui check poll lần cuối rồi chạy.",
+
+            ZaloDraftReadinessState.RosterNotFull => BuildMissingMessage(
+                name,
+                count,
+                capacity,
+                previousSlotCount,
+                urgent),
+
+            ZaloDraftReadinessState.RosterOverCapacity =>
+                $"Tui vừa sync {name}: đang {count}/{capacity}, dư {Math.Max(1, count - capacity)} slot 😭 Chưa draft được nha; bot over-slot xử lý roster về đúng {capacity} trước rồi tui mới gọi chốt team.",
+
+            ZaloDraftReadinessState.MissingProfiles =>
+                $"{name} đủ {count}/{capacity} rồi nhưng còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Update nốt giúp tui, xong là chốt draft được liền 😆",
+
+            ZaloDraftReadinessState.NoRoster =>
+                $"Tui vừa check đúng poll của {name} mà roster đang 0/{capacity} luôn nha 💀 Case này hơi căng rồi; check giúp kèo còn giữ sân không, không ổn thì chốt huỷ sớm cho đỡ tới chiều mới panic mode.",
+
+            _ => null
+        };
+    }
+
+    private static string BuildMissingMessage(
+        string name,
+        int count,
+        int capacity,
+        int? previousSlotCount,
+        bool urgent)
+    {
+        var missing = Math.Max(0, capacity - count);
+        var dropped = previousSlotCount is { } previous && previous > count;
+        var dropPrefix = dropped
+            ? $"Tui vừa sync lại {name}: roster tụt từ {previousSlotCount}/{capacity} xuống {count}/{capacity} rồi 😭 "
+            : $"Tui vừa sync {name}: hiện {count}/{capacity}. ";
+
+        if (missing == 1)
+        {
+            return urgent
+                ? $"{dropPrefix}Còn đúng 1 slot thôi mà giờ này rồi 🚨 cứu kèo gấp 1 mạng giúp anh em, đủ người tui chốt bước draft tiếp."
+                : $"{dropPrefix}Thiếu đúng 1 chiến thần nữa là đóng sổ =)) réo nốt 1 ông cứu kèo giúp, đủ {capacity} tui canh draft tiếp.";
+        }
+
+        if (missing == 2)
+        {
+            return urgent
+                ? $"{dropPrefix}Còn thiếu 2 mà giờ này bắt đầu đỏ đèn rồi nha 🚨 gọi viện binh 2 mạng giúp anh em, đừng để sát giờ mới chạy KPI kiếm người =))"
+                : $"{dropPrefix}Thiếu 2 nha, còn cứu đẹp 😆 kéo nốt 2 mạng giúp anh em, đủ {capacity} tui báo chốt team luôn.";
+        }
+
+        return $"{dropPrefix}Thiếu {missing} thì không còn kiểu ‘thiếu tí’ nữa rồi 💀 Check giúp kèo này còn cứu tiếp không; không ổn thì tính huỷ sân sớm, đừng để tới chiều mới panic mode nha.";
+    }
+}
+
+public sealed partial class ZaloOverbookService
+{
+    public async Task<int> ProcessDraftPreparationRemindersDueAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var settings = DraftAutopilotSettings.FromConfiguration(configuration);
+        if (!settings.Enabled || !settings.ProactiveEnabled || !settings.EscalationEnabled) return 0;
+
+        var now = DateTimeOffset.UtcNow;
+        var sessions = await db.MatchSessions
+            .AsNoTracking()
+            .Include(item => item.ZaloConnection)
+            .Where(item => item.BotEnabled &&
+                           item.ZaloConnection != null &&
+                           item.ZaloConnectionId != null &&
+                           item.ZaloGroupId != null &&
+                           item.StartTime != null &&
+                           (item.Status == SessionStatus.Setup || item.Status == SessionStatus.CaptainSelection))
+            .ToListAsync(cancellationToken);
+
+        var candidates = sessions
+            .Select(session => new
+            {
+                Session = session,
+                Bucket = ZaloDraftPreparationReminderPolicy.GetDueBucket(
+                    session.StartTime!.Value,
+                    now,
+                    settings.StopNudgingMinutesBeforeStart)
+            })
+            .Where(item => item.Bucket is not null)
+            .GroupBy(
+                item => $"{item.Session.ZaloConnectionId}:{item.Session.ZaloGroupId}",
+                StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(item => item.Session.StartTime)
+                .First())
+            .OrderBy(item => item.Session.StartTime)
+            .Take(30)
+            .ToList();
+
+        var reminderStore = new ZaloDraftPreparationReminderStore(db);
+        var tagStore = new ZaloDraftReminderTagPreferenceStore(db);
+        var escalationStore = new ZaloDraftEscalationStore(db);
+        var sent = 0;
+
+        foreach (var candidate in candidates)
+        {
+            if (sent >= settings.MaxSendsPerCycle) break;
+            var session = candidate.Session;
+            var bucket = candidate.Bucket!;
+            var previous = await reminderStore.GetAsync(session.Id, cancellationToken);
+            if (string.Equals(previous?.LastBucketKey, bucket.Key, StringComparison.Ordinal)) continue;
+
+            var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
+            if (!sync.Success)
+            {
+                logger.LogWarning(
+                    "Draft preparation reminder postponed because linked poll sync failed Session={SessionId} Reason={Reason}",
+                    session.Id,
+                    sync.Error);
+                continue;
+            }
+
+            var readiness = await new ZaloDraftReadinessService(db)
+                .BuildAsync(session.Id, now, cancellationToken);
+            if (readiness is null) continue;
+
+            var openOffers = await new ZaloOpenSlotOfferStore(db)
+                .ListClaimableAsync(
+                    session.ZaloConnectionId!,
+                    session.ZaloGroupId!,
+                    session.ZaloConnection!.AccountZaloId,
+                    cancellationToken);
+            var openOfferCount = openOffers.Count(item =>
+                string.Equals(item.SessionId, session.Id, StringComparison.Ordinal));
+
+            var existingRequest = await escalationStore.LoadForSessionAsync(
+                session.ZaloConnectionId!,
+                session.ZaloGroupId!,
+                session.Id,
+                cancellationToken);
+
+            if (existingRequest is not null &&
+                existingRequest.State is ZaloDraftEscalationState.Completed or ZaloDraftEscalationState.Cancelled &&
+                string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal))
+            {
+                await reminderStore.MarkHandledAsync(
+                    session.Id,
+                    bucket.Key,
+                    readiness.EffectiveSlotCount,
+                    openOfferCount,
+                    readiness.Fingerprint,
+                    null,
+                    cancellationToken);
+                continue;
+            }
+
+            if (existingRequest is not null &&
+                existingRequest.State is ZaloDraftEscalationState.AwaitingRequesterConsent or
+                                         ZaloDraftEscalationState.ProactiveSoft or
+                                         ZaloDraftEscalationState.ApproverTagged or
+                                         ZaloDraftEscalationState.Executing &&
+                (!readiness.CanEscalate ||
+                 openOfferCount > 0 ||
+                 !string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
+            {
+                await SupersedeDraftReminderRequestAsync(
+                    escalationStore,
+                    existingRequest,
+                    session,
+                    cancellationToken);
+                existingRequest = null;
+            }
+
+            var body = ZaloDraftPreparationReminderPolicy.BuildMessage(
+                readiness,
+                previous?.LastSlotCount,
+                openOfferCount,
+                bucket.Urgent);
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                await reminderStore.MarkHandledAsync(
+                    session.Id,
+                    bucket.Key,
+                    readiness.EffectiveSlotCount,
+                    openOfferCount,
+                    readiness.Fingerprint,
+                    null,
+                    cancellationToken);
+                continue;
+            }
+
+            var resolved = await ResolveDraftApproversAsync(session, settings, cancellationToken);
+            if (!resolved.RoleLookupSucceeded)
+            {
+                logger.LogWarning(
+                    "Draft preparation reminder could not refresh live organizer roles Session={SessionId} Reason={Reason}",
+                    session.Id,
+                    resolved.Error ?? "draft_role_lookup_failed");
+                continue;
+            }
+
+            var savedPreferences = await tagStore.GetForGroupAsync(
+                session.ZaloConnectionId!,
+                session.ZaloGroupId!,
+                cancellationToken);
+            var preferenceById = savedPreferences
+                .GroupBy(item => item.ZaloUserId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var eligible = resolved.Candidates
+                .Where(item =>
+                    preferenceById.TryGetValue(item.ZaloUserId, out var preference)
+                        ? preference.Enabled
+                        : item.IsCreator)
+                .ToList();
+
+            var missing = Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount);
+            var desiredTags = bucket.Urgent || missing >= 3 || openOfferCount > 0 ? 2 : 1;
+            desiredTags = Math.Min(desiredTags, settings.MaxApproverTags);
+            if (eligible.Count == 0 || desiredTags <= 0)
+            {
+                await reminderStore.MarkHandledAsync(
+                    session.Id,
+                    bucket.Key,
+                    readiness.EffectiveSlotCount,
+                    openOfferCount,
+                    readiness.Fingerprint,
+                    null,
+                    cancellationToken);
+                continue;
+            }
+
+            IReadOnlyList<DraftApproverCandidate> recipients;
+            ZaloDraftEscalationSnapshot? approvalRequest = null;
+            DateTimeOffset? approvalExpiry = null;
+
+            if (readiness.CanEscalate && openOfferCount == 0)
+            {
+                approvalExpiry = GetRequestExpiry(
+                    readiness.StartTime,
+                    now,
+                    settings,
+                    settings.RequestTtlMinutes);
+                approvalRequest = existingRequest;
+                if (approvalRequest is null ||
+                    approvalRequest.State is ZaloDraftEscalationState.Expired or ZaloDraftEscalationState.Superseded)
+                {
+                    approvalRequest = await escalationStore.CreateOrReuseAsync(
+                        session.ZaloConnectionId!,
+                        session.ZaloGroupId!,
+                        session.Id,
+                        "PreparationReminder",
+                        null,
+                        null,
+                        null,
+                        readiness.Fingerprint,
+                        ZaloDraftEscalationState.ProactiveSoft,
+                        approvalExpiry.Value,
+                        cancellationToken);
+                }
+
+                var reserved = new List<DraftApproverCandidate>();
+                foreach (var approver in eligible)
+                {
+                    if (reserved.Count >= desiredTags) break;
+                    if (!await SeedDraftConfirmationAsync(
+                            session.ZaloConnectionId!,
+                            session.ZaloGroupId!,
+                            approver.ZaloUserId,
+                            session.Id,
+                            approvalExpiry.Value,
+                            cancellationToken,
+                            refuseToOverwriteDifferentPending: true))
+                        continue;
+                    reserved.Add(approver);
+                }
+                recipients = reserved;
+            }
+            else
+            {
+                recipients = eligible.Take(desiredTags).ToList();
+            }
+
+            if (recipients.Count == 0)
+            {
+                await reminderStore.MarkHandledAsync(
+                    session.Id,
+                    bucket.Key,
+                    readiness.EffectiveSlotCount,
+                    openOfferCount,
+                    readiness.Fingerprint,
+                    null,
+                    cancellationToken);
+                continue;
+            }
+
+            var ids = recipients.Select(item => item.ZaloUserId).ToList();
+            var names = recipients.ToDictionary(
+                item => item.ZaloUserId,
+                item => item.DisplayName,
+                StringComparer.Ordinal);
+            var outgoing = BuildMentionMessage(ids, names, body);
+            try
+            {
+                var providerId = await SendDraftProactiveAsync(
+                    session,
+                    outgoing.Message,
+                    outgoing.Mentions,
+                    $"draft-prep:{session.Id}:{bucket.Key}",
+                    cancellationToken);
+
+                if (approvalRequest is not null && approvalExpiry is not null)
+                {
+                    await escalationStore.SetPrimaryApproverAsync(
+                        approvalRequest.Id,
+                        recipients[0].ZaloUserId,
+                        providerId,
+                        now,
+                        approvalExpiry.Value,
+                        cancellationToken);
+                    if (recipients.Count > 1)
+                    {
+                        await escalationStore.SetSecondaryApproverAsync(
+                            approvalRequest.Id,
+                            recipients[1].ZaloUserId,
+                            providerId,
+                            now,
+                            approvalExpiry.Value,
+                            cancellationToken);
+                    }
+                }
+
+                await reminderStore.MarkHandledAsync(
+                    session.Id,
+                    bucket.Key,
+                    readiness.EffectiveSlotCount,
+                    openOfferCount,
+                    readiness.Fingerprint,
+                    now,
+                    cancellationToken);
+                sent += 1;
+            }
+            catch
+            {
+                if (approvalRequest is not null)
+                {
+                    foreach (var recipient in recipients)
+                    {
+                        await RemoveDraftPendingAsync(
+                            session.ZaloConnectionId!,
+                            session.ZaloGroupId!,
+                            recipient.ZaloUserId,
+                            session.Id,
+                            cancellationToken);
+                    }
+                }
+                throw;
+            }
+        }
+
+        return sent;
+    }
+
+    private async Task<(bool Success, string? Error)> RefreshLinkedPollForDraftReminderAsync(
+        MatchSession session,
+        CancellationToken cancellationToken)
+    {
+        if (session.ZaloConnection is null ||
+            string.IsNullOrWhiteSpace(session.ZaloConnectionId) ||
+            string.IsNullOrWhiteSpace(session.ZaloGroupId))
+            return (false, "session_not_linked_to_zalo_group");
+
+        var linkedImport = await db.PollImports
+            .AsNoTracking()
+            .Where(item => item.SessionId == session.Id)
+            .OrderByDescending(item => item.ImportedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (linkedImport is null || string.IsNullOrWhiteSpace(linkedImport.PollId))
+            return (false, "session_has_no_linked_poll");
+
+        List<string> selectedOptionIds;
+        try
+        {
+            selectedOptionIds = JsonSerializer.Deserialize<List<string>>(linkedImport.SelectedOptionIdsJson) ?? [];
+        }
+        catch (JsonException)
+        {
+            return (false, "linked_poll_option_ids_invalid");
+        }
+        selectedOptionIds = selectedOptionIds
+            .Select(ZaloOverbookLogic.NormalizeId)
+            .Where(item => item.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (selectedOptionIds.Count == 0)
+            return (false, "session_has_no_linked_poll_option");
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                protector.Unprotect(session.ZaloConnection.EncryptedCredentials));
+            var poll = await bridge.GetPollAsync(document.RootElement.Clone(), linkedImport.PollId);
+            var selectedOptions = poll.Options
+                .Where(option => selectedOptionIds.Contains(
+                    ZaloOverbookLogic.NormalizeId(option.Id),
+                    StringComparer.Ordinal))
+                .ToList();
+            if (selectedOptions.Count != selectedOptionIds.Count)
+                return (false, "linked_poll_option_missing");
+
+            var voterIds = selectedOptions
+                .SelectMany(option => option.VoterIds)
+                .Select(ZaloOverbookLogic.NormalizeId)
+                .Where(item => item.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (voterIds.Count == 0)
+            {
+                await db.SessionPlayers
+                    .Where(player => player.SessionId == session.Id &&
+                                     player.SourcePollId == linkedImport.PollId &&
+                                     player.IsPresent)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(player => player.IsPresent, false)
+                        .SetProperty(player => player.IsCaptainEligible, false), cancellationToken);
+                return (true, null);
+            }
+
+            var previewResult = await integration.CreateImportPreviewAsync(
+                session.AdminUserId,
+                session.Id,
+                new CreateZaloImportPreviewRequest(linkedImport.PollId, selectedOptionIds));
+            if (!previewResult.IsSuccess || previewResult.Value is null)
+                return (false, previewResult.Error ?? "linked_poll_preview_failed");
+
+            var preview = previewResult.Value;
+            if (!string.Equals(preview.PollId, linkedImport.PollId, StringComparison.Ordinal))
+                return (false, "linked_poll_changed_during_refresh");
+
+            var decisions = preview.Candidates
+                .Select(candidate => new ZaloImportCandidateDecision(
+                    candidate.ZaloUserId,
+                    true,
+                    candidate.Gender ?? PlayerGender.Unknown,
+                    candidate.Role,
+                    candidate.Level))
+                .ToList();
+            var imported = await integration.ConfirmImportAsync(
+                session.AdminUserId,
+                session.Id,
+                new ConfirmZaloPollImportRequest(
+                    preview.PollId,
+                    selectedOptionIds,
+                    preview.PollUpdatedAtUnixMs,
+                    decisions),
+                preserveMissingProfileFields: true);
+            if (!imported.IsSuccess)
+                return (false, imported.Error ?? "linked_poll_import_failed");
+
+            var activeZaloIds = preview.Candidates
+                .Select(candidate => ZaloOverbookLogic.NormalizeId(candidate.ZaloUserId))
+                .Where(item => item.Length > 0)
+                .ToHashSet(StringComparer.Ordinal);
+            var importedPlayers = await db.SessionPlayers
+                .Include(player => player.PlayerProfile)
+                .Where(player => player.SessionId == session.Id &&
+                                 player.SourcePollId == linkedImport.PollId &&
+                                 player.IsPresent)
+                .ToListAsync(cancellationToken);
+            var changed = false;
+            foreach (var player in importedPlayers)
+            {
+                var zaloId = ZaloOverbookLogic.NormalizeId(player.PlayerProfile?.ZaloUserId);
+                if (zaloId.Length > 0 && activeZaloIds.Contains(zaloId)) continue;
+                player.IsPresent = false;
+                player.IsCaptainEligible = false;
+                changed = true;
+            }
+            if (changed) await db.SaveChangesAsync(cancellationToken);
+            return (true, null);
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return (false, exception.Message);
+        }
+    }
+
+    private async Task SupersedeDraftReminderRequestAsync(
+        ZaloDraftEscalationStore escalationStore,
+        ZaloDraftEscalationSnapshot request,
+        MatchSession session,
+        CancellationToken cancellationToken)
+    {
+        await escalationStore.SetStateAsync(
+            request.Id,
+            ZaloDraftEscalationState.Superseded,
+            cancellationToken);
+        if (request.PrimaryApproverId is not null)
+        {
+            await RemoveDraftPendingAsync(
+                session.ZaloConnectionId!,
+                session.ZaloGroupId!,
+                request.PrimaryApproverId,
+                session.Id,
+                cancellationToken);
+        }
+        if (request.SecondaryApproverId is not null)
+        {
+            await RemoveDraftPendingAsync(
+                session.ZaloConnectionId!,
+                session.ZaloGroupId!,
+                request.SecondaryApproverId,
+                session.Id,
+                cancellationToken);
+        }
+    }
+}
