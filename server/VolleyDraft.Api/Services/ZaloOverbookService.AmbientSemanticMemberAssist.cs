@@ -44,6 +44,21 @@ public sealed partial class ZaloOverbookService
             return false;
         }
 
+        // Convert the AI meaning into an explicit read-only plan before touching any
+        // domain flow. The plan may preserve quote/member references, but it never
+        // asserts that a slot exists or that a mutation has happened.
+        var plan = ZaloSemanticConversationPlanner.Build(incoming, semantic);
+        if (!plan.CanEnterDeterministicRouter)
+        {
+            logger.LogDebug(
+                "Ambient semantic plan rejected before deterministic routing Group={GroupId} Message={MessageId} Kind={Kind} Reason={Reason}",
+                groupId,
+                incoming.MessageId,
+                plan.Kind,
+                plan.Reason);
+            return false;
+        }
+
         var promoted = ZaloAmbientDomainIntentPromotion.Promote(incoming, semantic);
         if (promoted is null) return false;
 
@@ -58,11 +73,12 @@ public sealed partial class ZaloOverbookService
         if (assist is null)
         {
             logger.LogInformation(
-                "Ambient semantic member-assist rejected by deterministic validator Group={GroupId} Message={MessageId} Kind={Kind} Confidence={Confidence}",
+                "Ambient semantic member-assist rejected by deterministic validator Group={GroupId} Message={MessageId} Kind={Kind} Confidence={Confidence} NeedsClarification={NeedsClarification}",
                 groupId,
                 incoming.MessageId,
                 semantic.Kind,
-                semantic.Confidence);
+                semantic.Confidence,
+                plan.NeedsClarification);
             return false;
         }
 
@@ -77,6 +93,7 @@ public sealed partial class ZaloOverbookService
             Signals = decision.Signals
                 .Append("member_assist_semantic_ai")
                 .Append($"member_assist_semantic_{semantic.Kind}")
+                .Append(plan.NeedsClarification ? "semantic_reference_backend_grounded" : "semantic_reference_explicit")
                 .Distinct(StringComparer.Ordinal)
                 .ToArray()
         };
@@ -102,14 +119,14 @@ public sealed partial class ZaloOverbookService
                     GroupId: groupId,
                     SenderZaloUserId: senderId,
                     AddressReason: "AmbientSemanticMemberAssist",
-                    IntentSource: "StructuredAiMeaning",
+                    IntentSource: "StructuredAiMeaning+GroundedPlan",
                     Intent: semantic.Kind.ToString(),
                     Confidence: semantic.Confidence,
-                    QuotedMessageId: quote.MessageId,
+                    QuotedMessageId: plan.SourceMessageId ?? quote.MessageId,
                     ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
                     ResolvedSessionId: assist.SessionId,
                     AiCalled: true,
-                    FallbackReason: semantic.Reason),
+                    FallbackReason: $"{semantic.Reason}|ref:{plan.ReferencedMemberId ?? "backend"}|clarify:{plan.NeedsClarification}"),
                 cancellationToken);
         }
         catch (Exception traceException)
@@ -122,12 +139,13 @@ public sealed partial class ZaloOverbookService
         }
 
         logger.LogInformation(
-            "Ambient semantic member-assist accepted Group={GroupId} Message={MessageId} Kind={Kind} Confidence={Confidence} Session={SessionId}",
+            "Ambient semantic member-assist accepted Group={GroupId} Message={MessageId} Kind={Kind} Confidence={Confidence} Session={SessionId} Reference={ReferencedMemberId}",
             groupId,
             incoming.MessageId,
             semantic.Kind,
             semantic.Confidence,
-            assist.SessionId);
+            assist.SessionId,
+            plan.ReferencedMemberId);
         return true;
     }
 }
