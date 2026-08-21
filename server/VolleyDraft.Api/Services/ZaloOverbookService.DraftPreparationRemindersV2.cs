@@ -72,13 +72,13 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
             var delta = BuildDelta(previousObservedSlotCount, count, capacity);
             var missing = Math.Max(0, capacity - count);
             return urgent
-                ? $"{delta}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} slot. Tui canh poll tiếp nha 🚨 không tự suy ra huỷ kèo."
-                : $"{delta}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} slot. Tui canh poll tiếp, không hỏi huỷ/giữ sân lại mỗi lượt 😆";
+                ? $"{delta}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} slot. Tui canh poll tiếp nha 🚨 có thay đổi tui báo ngay."
+                : $"{delta}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} slot. Tui canh delta tiếp, không hỏi lại cùng một quyết định mỗi lượt 😆";
         }
 
         if (readiness.State == ZaloDraftReadinessState.NoRoster)
         {
-            return $"{stalePrefix}Tui vừa sync đúng poll {name}: đang 0/{capacity}. Tui chưa tự hiểu là huỷ kèo nha; trưởng/phó chốt giúp `kiếm thêm` hoặc `huỷ kèo`, bot theo quyết định đó.";
+            return $"{stalePrefix}Tui vừa sync đúng poll {name}: đang 0/{capacity}. Trưởng/phó cho tui hướng xử lý kèo nha; nếu vẫn gom người thì nói `kiếm thêm`, tui sẽ canh poll tiếp.";
         }
 
         if (readiness.State != ZaloDraftReadinessState.RosterNotFull)
@@ -94,13 +94,13 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         {
             var perTeam = count / teamCount;
             return urgent
-                ? $"{deltaPrefix}{rawLabel} vẫn chia được {teamCount} team x{perTeam}. Giờ sát giờ rồi 🚨 trưởng/phó chốt giúp: `chốt {count}` / `{count} vẫn đánh`, hoặc `kiếm thêm`. Tui không tự quyết định huỷ kèo."
-                : $"{deltaPrefix}{rawLabel} vẫn chia được {teamCount} team x{perTeam} nha. Trưởng/phó chốt giúp `chốt {count}` / `{count} vẫn đánh`, hoặc nói `kiếm thêm`; bot không tự lấy thiếu người = huỷ sân.";
+                ? $"{deltaPrefix}{rawLabel} vẫn chia được {teamCount} team x{perTeam}. Giờ sát giờ rồi 🚨 trưởng/phó chốt giúp: `chốt {count}` / `{count} vẫn đánh`, hoặc `kiếm thêm`. Tui bám quyết định của ông, không tự phán theo số slot."
+                : $"{deltaPrefix}{rawLabel} vẫn chia được {teamCount} team x{perTeam} nha. Trưởng/phó chốt giúp `chốt {count}` / `{count} vẫn đánh`, hoặc nói `kiếm thêm`; tui bám đúng quyết định đó.";
         }
 
         return urgent
-            ? $"{deltaPrefix}{rawLabel}. Kèo vẫn có thể chơi nếu trưởng/phó muốn, nhưng {count} effective slot chưa chia đều {teamCount} team 🚨 Nếu giữ kèo nói `vẫn đánh`; nếu tiếp tục tuyển nói `kiếm thêm`. Muốn bot auto-draft thì cần shared/rotation hoặc roster về số chia hết cho {teamCount}."
-            : $"{deltaPrefix}{rawLabel}. Tui chưa tự kết luận huỷ nha. Trưởng/phó có thể nói `vẫn đánh` hoặc `kiếm thêm`; riêng auto-draft thì {count} effective slot chưa chia đều {teamCount} team, cần shared/rotation hoặc roster đổi trước.";
+            ? $"{deltaPrefix}{rawLabel}. Kèo vẫn có thể chơi nếu trưởng/phó muốn, nhưng {count} effective slot chưa chia đều {teamCount} team 🚨 Nếu giữ roster hiện tại nói `vẫn đánh`; nếu tiếp tục tuyển nói `kiếm thêm`. Muốn bot auto-draft thì cần shared/rotation hoặc roster về số chia hết cho {teamCount}."
+            : $"{deltaPrefix}{rawLabel}. Trưởng/phó có thể nói `vẫn đánh` hoặc `kiếm thêm`; riêng auto-draft thì {count} effective slot chưa chia đều {teamCount} team, cần shared/rotation hoặc roster đổi trước.";
     }
 
     private static string BuildDelta(int? previous, int current, int capacity)
