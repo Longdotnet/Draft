@@ -193,14 +193,7 @@ public sealed partial class ZaloOverbookService
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
 
-            var openOffers = await new ZaloOpenSlotOfferStore(db)
-                .ListClaimableAsync(
-                    session.ZaloConnectionId!,
-                    session.ZaloGroupId!,
-                    session.ZaloConnection!.AccountZaloId,
-                    cancellationToken);
-            var openOfferCount = openOffers.Count(item =>
-                string.Equals(item.SessionId, session.Id, StringComparison.Ordinal));
+            var openOfferCount = await CountActiveSlotRisksAsync(session, cancellationToken);
 
             var existingRequest = await escalationStore.LoadForSessionAsync(
                 session.ZaloConnectionId!,
@@ -209,7 +202,7 @@ public sealed partial class ZaloOverbookService
                 cancellationToken);
 
             if (existingRequest is not null &&
-                existingRequest.State is ZaloDraftEscalationState.Completed or ZaloDraftEscalationState.Cancelled &&
+                (existingRequest.State is ZaloDraftEscalationState.Completed or ZaloDraftEscalationState.Cancelled) &&
                 string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal))
             {
                 await reminderStore.MarkHandledAsync(
@@ -224,10 +217,10 @@ public sealed partial class ZaloOverbookService
             }
 
             if (existingRequest is not null &&
-                existingRequest.State is ZaloDraftEscalationState.AwaitingRequesterConsent or
-                                         ZaloDraftEscalationState.ProactiveSoft or
-                                         ZaloDraftEscalationState.ApproverTagged or
-                                         ZaloDraftEscalationState.Executing &&
+                (existingRequest.State is ZaloDraftEscalationState.AwaitingRequesterConsent or
+                                          ZaloDraftEscalationState.ProactiveSoft or
+                                          ZaloDraftEscalationState.ApproverTagged or
+                                          ZaloDraftEscalationState.Executing) &&
                 (!readiness.CanEscalate ||
                  openOfferCount > 0 ||
                  !string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
@@ -468,6 +461,9 @@ public sealed partial class ZaloOverbookService
             using var document = JsonDocument.Parse(
                 protector.Unprotect(session.ZaloConnection.EncryptedCredentials));
             var poll = await bridge.GetPollAsync(document.RootElement.Clone(), linkedImport.PollId);
+            if (poll.IsAnonymous)
+                return (false, "linked_poll_is_anonymous");
+
             var selectedOptions = poll.Options
                 .Where(option => selectedOptionIds.Contains(
                     ZaloOverbookLogic.NormalizeId(option.Id),
@@ -485,13 +481,14 @@ public sealed partial class ZaloOverbookService
 
             if (voterIds.Count == 0)
             {
-                await db.SessionPlayers
-                    .Where(player => player.SessionId == session.Id &&
-                                     player.SourcePollId == linkedImport.PollId &&
-                                     player.IsPresent)
-                    .ExecuteUpdateAsync(updates => updates
-                        .SetProperty(player => player.IsPresent, false)
-                        .SetProperty(player => player.IsCaptainEligible, false), cancellationToken);
+                if (poll.HideVotePreview)
+                    return (false, "linked_poll_hides_voters");
+
+                await DeactivateRemovedLinkedPollPlayersAsync(
+                    session.Id,
+                    linkedImport.PollId,
+                    new HashSet<string>(StringComparer.Ordinal),
+                    cancellationToken);
                 return (true, null);
             }
 
@@ -530,28 +527,175 @@ public sealed partial class ZaloOverbookService
                 .Select(candidate => ZaloOverbookLogic.NormalizeId(candidate.ZaloUserId))
                 .Where(item => item.Length > 0)
                 .ToHashSet(StringComparer.Ordinal);
-            var importedPlayers = await db.SessionPlayers
-                .Include(player => player.PlayerProfile)
-                .Where(player => player.SessionId == session.Id &&
-                                 player.SourcePollId == linkedImport.PollId &&
-                                 player.IsPresent)
-                .ToListAsync(cancellationToken);
-            var changed = false;
-            foreach (var player in importedPlayers)
-            {
-                var zaloId = ZaloOverbookLogic.NormalizeId(player.PlayerProfile?.ZaloUserId);
-                if (zaloId.Length > 0 && activeZaloIds.Contains(zaloId)) continue;
-                player.IsPresent = false;
-                player.IsCaptainEligible = false;
-                changed = true;
-            }
-            if (changed) await db.SaveChangesAsync(cancellationToken);
+            await DeactivateRemovedLinkedPollPlayersAsync(
+                session.Id,
+                linkedImport.PollId,
+                activeZaloIds,
+                cancellationToken);
             return (true, null);
         }
         catch (Exception exception) when (
             exception is HttpRequestException or TaskCanceledException or JsonException)
         {
             return (false, exception.Message);
+        }
+    }
+
+    private async Task<int> CountActiveSlotRisksAsync(
+        MatchSession session,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(session.ZaloConnectionId) ||
+            string.IsNullOrWhiteSpace(session.ZaloGroupId))
+            return 0;
+
+        var ownerIds = await db.SessionPlayers
+            .AsNoTracking()
+            .Where(player => player.SessionId == session.Id &&
+                             player.IsPresent &&
+                             player.PlayerProfile != null &&
+                             player.PlayerProfile.ZaloUserId != null)
+            .Select(player => player.PlayerProfile!.ZaloUserId!)
+            .ToListAsync(cancellationToken);
+        ownerIds = ownerIds
+            .Select(ZaloOverbookLogic.NormalizeId)
+            .Where(item => item.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (ownerIds.Count == 0) return 0;
+
+        var offerStore = new ZaloOpenSlotOfferStore(db);
+        var activeOfferIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ownerId in ownerIds)
+        {
+            var offers = await offerStore.ListOwnedActiveAsync(
+                session.ZaloConnectionId!,
+                session.ZaloGroupId!,
+                ownerId,
+                cancellationToken);
+            foreach (var offer in offers)
+            {
+                if (string.Equals(offer.SessionId, session.Id, StringComparison.Ordinal))
+                    activeOfferIds.Add(offer.Id);
+            }
+        }
+        return activeOfferIds.Count;
+    }
+
+    private async Task DeactivateRemovedLinkedPollPlayersAsync(
+        string sessionId,
+        string pollId,
+        IReadOnlySet<string> activeZaloIds,
+        CancellationToken cancellationToken)
+    {
+        var importedPlayers = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId &&
+                             player.SourcePollId == pollId)
+            .ToListAsync(cancellationToken);
+        var removedPlayerIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var player in importedPlayers)
+        {
+            var zaloId = ZaloOverbookLogic.NormalizeId(player.PlayerProfile?.ZaloUserId);
+            if (zaloId.Length > 0 && activeZaloIds.Contains(zaloId)) continue;
+            if (!player.IsPresent && !player.IsInsideSharedSlot) continue;
+            player.IsPresent = false;
+            player.IsCaptainEligible = false;
+            removedPlayerIds.Add(player.Id);
+        }
+
+        if (removedPlayerIds.Count == 0) return;
+        await ReconcileDraftReminderSharedSlotsAfterRemovalAsync(
+            sessionId,
+            removedPlayerIds,
+            cancellationToken);
+        await CleanupDraftReminderTeamPreferenceGroupsAsync(sessionId, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task ReconcileDraftReminderSharedSlotsAfterRemovalAsync(
+        string sessionId,
+        IReadOnlySet<string> removedPlayerIds,
+        CancellationToken cancellationToken)
+    {
+        var slots = await db.DraftSlots
+            .Include(slot => slot.Players.OrderBy(link => link.RotationOrder))
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                slot.Players.Any(link => removedPlayerIds.Contains(link.SessionPlayerId)))
+            .ToListAsync(cancellationToken);
+        foreach (var slot in slots)
+        {
+            var removedLinks = slot.Players
+                .Where(link => removedPlayerIds.Contains(link.SessionPlayerId))
+                .ToList();
+            foreach (var link in removedLinks)
+            {
+                link.SessionPlayer.IsInsideSharedSlot = false;
+                link.SessionPlayer.IsCaptainEligible = false;
+            }
+
+            var remainingLinks = slot.Players
+                .Except(removedLinks)
+                .OrderBy(link => link.RotationOrder)
+                .ToList();
+            db.DraftSlotPlayers.RemoveRange(removedLinks);
+            if (remainingLinks.Count < 2)
+            {
+                foreach (var link in remainingLinks)
+                {
+                    link.SessionPlayer.IsInsideSharedSlot = false;
+                    link.SessionPlayer.IsCaptainEligible = true;
+                }
+                db.DraftSlotPlayers.RemoveRange(remainingLinks);
+                db.DraftSlots.Remove(slot);
+                continue;
+            }
+
+            for (var index = 0; index < remainingLinks.Count; index += 1)
+            {
+                remainingLinks[index].RotationOrder = index + 1;
+                remainingLinks[index].SessionPlayer.IsInsideSharedSlot = true;
+            }
+            var remainingPlayers = remainingLinks.Select(link => link.SessionPlayer).ToList();
+            slot.DisplayName = string.Join(" / ", remainingPlayers.Select(player => player.DisplayName));
+            slot.Role = remainingPlayers[0].Role;
+            slot.AverageScore = remainingPlayers.Average(player => player.Score);
+            slot.Gender = remainingPlayers.All(player => player.Gender == remainingPlayers[0].Gender)
+                ? remainingPlayers[0].Gender
+                : PlayerGender.Unknown;
+        }
+    }
+
+    private async Task CleanupDraftReminderTeamPreferenceGroupsAsync(
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var groups = await db.TeamPreferenceGroups
+            .Include(group => group.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(group => group.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        foreach (var group in groups)
+        {
+            var inactiveLinks = group.Players
+                .Where(link => !link.SessionPlayer.IsPresent)
+                .ToList();
+            var activeLinks = group.Players
+                .Where(link => link.SessionPlayer.IsPresent)
+                .OrderBy(link => link.RotationOrder)
+                .ToList();
+            if (activeLinks.Count < 2)
+            {
+                db.TeamPreferenceGroupPlayers.RemoveRange(group.Players);
+                db.TeamPreferenceGroups.Remove(group);
+                continue;
+            }
+            db.TeamPreferenceGroupPlayers.RemoveRange(inactiveLinks);
+            for (var index = 0; index < activeLinks.Count; index += 1)
+                activeLinks[index].RotationOrder = index + 1;
         }
     }
 
