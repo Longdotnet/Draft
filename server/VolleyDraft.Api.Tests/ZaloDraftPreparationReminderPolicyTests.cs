@@ -156,22 +156,22 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
     }
 
     [Theory]
-    [InlineData("15 vẫn đánh", ZaloDraftPreparationDecisionKind.PlayCurrentRoster, 15)]
-    [InlineData("chốt 15 nha", ZaloDraftPreparationDecisionKind.PlayCurrentRoster, 15)]
-    [InlineData("cứ đánh đi", ZaloDraftPreparationDecisionKind.PlayCurrentRoster, null)]
-    [InlineData("kiếm thêm đi", ZaloDraftPreparationDecisionKind.KeepRecruiting, null)]
-    [InlineData("cứ kiếm thêm", ZaloDraftPreparationDecisionKind.KeepRecruiting, null)]
-    [InlineData("huỷ kèo T4", ZaloDraftPreparationDecisionKind.StopMatch, null)]
-    [InlineData("huy san di", ZaloDraftPreparationDecisionKind.StopMatch, null)]
+    [InlineData("15 vẫn đánh", "PlayCurrentRoster", 15)]
+    [InlineData("chốt 15 nha", "PlayCurrentRoster", 15)]
+    [InlineData("cứ đánh đi", "PlayCurrentRoster", null)]
+    [InlineData("kiếm thêm đi", "KeepRecruiting", null)]
+    [InlineData("cứ kiếm thêm", "KeepRecruiting", null)]
+    [InlineData("huỷ kèo T4", "StopMatch", null)]
+    [InlineData("huy san di", "StopMatch", null)]
     public void DecisionParser_RecognizesStrongLeaderLanguage(
         string text,
-        ZaloDraftPreparationDecisionKind expectedKind,
+        string expectedKind,
         int? expectedCount)
     {
         var command = ZaloDraftPreparationDecisionPolicy.TryParse(text);
 
         Assert.NotNull(command);
-        Assert.Equal(expectedKind, command!.Kind);
+        Assert.Equal(expectedKind, command!.Kind.ToString());
         Assert.Equal(expectedCount, command.RequestedSlotCount);
     }
 
