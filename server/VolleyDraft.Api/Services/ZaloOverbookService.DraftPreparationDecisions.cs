@@ -67,7 +67,10 @@ public sealed partial class ZaloOverbookService
         ZaloAmbientSettings ambientSettings,
         CancellationToken cancellationToken)
     {
-        if (ambientSettings.ShadowMode) return false;
+        // This lane is deterministic domain behavior. Ambient ShadowMode controls AI
+        // participation, not explicit leader authority. Keep the parameter so the same
+        // call site can be used from ambient/pre-routing without coupling semantics.
+        _ = ambientSettings;
 
         // A natural "draft đi" after a leader explicitly locked a partial roster is
         // handled here before Social AI. It is never equivalent to the lock itself:
@@ -123,6 +126,7 @@ public sealed partial class ZaloOverbookService
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
         {
+            await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
             await decisionStore.SetAsync(
                 session.Id,
                 command.Kind,
@@ -166,6 +170,11 @@ public sealed partial class ZaloOverbookService
             .BuildAsync(session.Id, DateTimeOffset.UtcNow, cancellationToken);
         if (readiness is null) return false;
         var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
+
+        // A roster that is no longer fully draft-ready must not retain a pending
+        // confirmation created when the session previously happened to be full.
+        if (!readiness.CanEscalate || activeSlotRisks > 0)
+            await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting)
         {
@@ -648,6 +657,47 @@ public sealed partial class ZaloOverbookService
             "draft_preparation_session_ambiguous",
             cancellationToken);
         return true;
+    }
+
+    private async Task SupersedeAnyActiveDraftRequestAsync(
+        MatchSession session,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(session.ZaloConnectionId) ||
+            string.IsNullOrWhiteSpace(session.ZaloGroupId))
+            return;
+
+        var escalationStore = new ZaloDraftEscalationStore(db);
+        var request = await escalationStore.LoadForSessionAsync(
+            session.ZaloConnectionId,
+            session.ZaloGroupId,
+            session.Id,
+            cancellationToken);
+        if (request is null ||
+            request.State is not (ZaloDraftEscalationState.AwaitingRequesterConsent or
+                                  ZaloDraftEscalationState.ProactiveSoft or
+                                  ZaloDraftEscalationState.ApproverTagged or
+                                  ZaloDraftEscalationState.Executing))
+            return;
+
+        await escalationStore.SetStateAsync(
+            request.Id,
+            ZaloDraftEscalationState.Superseded,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(request.PrimaryApproverId))
+            await RemoveDraftPendingAsync(
+                session.ZaloConnectionId,
+                session.ZaloGroupId,
+                request.PrimaryApproverId,
+                session.Id,
+                cancellationToken);
+        if (!string.IsNullOrWhiteSpace(request.SecondaryApproverId))
+            await RemoveDraftPendingAsync(
+                session.ZaloConnectionId,
+                session.ZaloGroupId,
+                request.SecondaryApproverId,
+                session.Id,
+                cancellationToken);
     }
 
     private static string BuildDecisionChangePrefix(
