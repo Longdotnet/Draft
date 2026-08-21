@@ -15,6 +15,8 @@ public sealed class ZaloMemberAssistServiceTests
     [InlineData("tui pass slot T6 nha")]
     [InlineData("nhường suất CN nè")]
     [InlineData("pass cái kèo tối nay")]
+    [InlineData("huỷ slot thôi")]
+    [InlineData("huy slot T6 nha")]
     public void Pass_slot_slang_is_a_help_opportunity(string text)
     {
         Assert.True(ZaloMemberAssistService.IsPassSlotHelpOpportunity(text));
