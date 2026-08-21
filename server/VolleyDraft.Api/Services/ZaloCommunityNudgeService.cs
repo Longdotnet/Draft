@@ -9,14 +9,20 @@ namespace VolleyDraft.Api.Services;
 internal sealed record ZaloCommunityNudgeCandidate(
     string Type,
     string Text,
-    string? SubjectName = null);
+    string? SubjectName = null,
+    string? SubjectUserId = null);
+
+internal sealed record ZaloCommunityVoteMember(
+    string UserId,
+    string DisplayName,
+    int VoteCount);
 
 /// <summary>
-/// Proactive, group-scoped discovery/positive-community messages. The engine never
-/// mutates roster/team state: share-slot remains owned by the existing deterministic
-/// bot flow. Member spotlights are derived only from observed SessionPlayer presence
-/// in sessions that have already started, so future roster entries cannot be praised
-/// as participation that already happened.
+/// Proactive, group-scoped member discovery and community-engagement messages.
+/// The service only advertises self-service capabilities available to ordinary members,
+/// and activity nudges are grounded in eligible Zalo poll votes from the last 30 days.
+/// Low-activity nudges stay encouraging: analytics are used to select one member, but
+/// the message never publishes a ranking of who is least active.
 /// </summary>
 public sealed class ZaloCommunityNudgeService(
     VolleyDraftDbContext db,
@@ -24,6 +30,9 @@ public sealed class ZaloCommunityNudgeService(
     ILogger<ZaloCommunityNudgeService> logger)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+    private const int ActivityWindowDays = 30;
+    private const int SubjectCooldownDays = 21;
+    private const int MinimumPollsForActivityNudge = 4;
     private readonly ZaloCommunityNudgeStore store = new(db);
 
     public async Task<int> ProcessDueAsync(CancellationToken cancellationToken = default)
@@ -66,7 +75,7 @@ public sealed class ZaloCommunityNudgeService(
 
             var dailyCount = await store.GetDailyCountAsync(connectionId, groupId, cancellationToken);
             var localDate = localNow.ToString("yyyy-MM-dd");
-            var history = await store.GetHistoryAsync(connectionId, groupId, 80, cancellationToken);
+            var history = await store.GetHistoryAsync(connectionId, groupId, 300, cancellationToken);
             var today = history
                 .Where(item => string.Equals(item.LocalDate, localDate, StringComparison.Ordinal))
                 .OrderBy(item => item.SlotNumber)
@@ -115,7 +124,7 @@ public sealed class ZaloCommunityNudgeService(
                     accountId,
                     groupId,
                     candidate.Text,
-                    [],
+                    BuildMentions(candidate),
                     idempotencyKey: idempotencyKey);
                 if (!response.Sent) continue;
 
@@ -155,111 +164,244 @@ public sealed class ZaloCommunityNudgeService(
         IReadOnlyList<ZaloCommunityNudgeHistoryData> history,
         CancellationToken cancellationToken = default)
     {
-        var rotation = StableIndex($"{connectionId}:{groupId}:{localDate}:{slotNumber}", 4);
-        if (rotation >= 2)
+        var candidates = new List<ZaloCommunityNudgeCandidate>
         {
-            var spotlight = await BuildMemberSpotlightAsync(connectionId, groupId, history, cancellationToken);
-            if (spotlight is not null) return spotlight;
-        }
-
-        return rotation % 2 == 0
-            ? new ZaloCommunityNudgeCandidate(
+            new(
+                "team_preference_discovery",
+                "🤝 Có thể bạn chưa biết: muốn được xếp chung team với ai thì cứ nói tự nhiên với tui, ví dụ “tối thứ 6 tui muốn chơi chung team với Minh”. Nếu còn thiếu buổi nào tui sẽ hỏi tiếp nha."),
+            new(
                 "share_slot_discovery",
-                "💡 Có thể bạn chưa biết: muốn được xếp chung team với ai thì không cần nhắn riêng quản lý nha. Cứ nói với tui kiểu: ‘tui muốn share slot với Minh’. Nếu chưa rõ trận nào tui sẽ hỏi tiếp rồi hướng dẫn bạn làm tới nơi.")
-            : new ZaloCommunityNudgeCandidate(
-                "play_together_discovery",
-                "🤝 Muốn chơi chung với ai cứ nói tự nhiên với tui nha. Ví dụ: ‘tối thứ 6 tui muốn chơi chung với Nam’ hoặc ‘tui muốn share slot với Nam’. Tui sẽ hỏi thêm phần còn thiếu rồi đưa vào đúng flow share slot.");
+                "💡 Có thể bạn chưa biết: nếu hai người muốn thay nhau dùng chung một suất thì cứ nói “tui muốn share slot với Minh”. Tui sẽ hỏi phần còn thiếu rồi đưa vào đúng flow share slot.")
+        };
+
+        candidates.AddRange(await BuildVoteActivityCandidatesAsync(
+            connectionId,
+            groupId,
+            history,
+            DateTimeOffset.UtcNow,
+            cancellationToken));
+
+        return SelectRotatedCandidate(
+            candidates,
+            history,
+            connectionId,
+            groupId,
+            localDate,
+            slotNumber);
     }
 
-    private async Task<ZaloCommunityNudgeCandidate?> BuildMemberSpotlightAsync(
+    internal async Task<IReadOnlyList<ZaloCommunityNudgeCandidate>> BuildVoteActivityCandidatesAsync(
         string connectionId,
         string groupId,
         IReadOnlyList<ZaloCommunityNudgeHistoryData> history,
-        CancellationToken cancellationToken)
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
     {
-        var now = DateTimeOffset.UtcNow;
-        var rows = await db.MatchSessions
+        var pollRows = await db.ZaloPollSnapshots
             .AsNoTracking()
-            .Include(item => item.Players)
-            .Where(item => item.ZaloConnectionId == connectionId &&
-                           item.ZaloGroupId == groupId &&
-                           item.Status != SessionStatus.Cancelled &&
-                           (item.StartTime == null || item.StartTime <= now))
-            .ToListAsync(cancellationToken);
-        var sessions = rows
-            .Where(item => (item.StartTime ?? item.CreatedAt) <= now)
-            .OrderByDescending(item => item.StartTime ?? item.CreatedAt)
-            .Take(12)
-            .ToList();
-        if (sessions.Count < 4) return null;
-
-        var recentSubjects = history
-            .Where(item => item.SubjectName is not null && item.SentAt >= now.AddDays(-21))
-            .Select(item => NormalizeName(item.SubjectName!))
-            .ToHashSet(StringComparer.Ordinal);
-        var appearances = new Dictionary<string, (string DisplayName, List<int> SessionIndexes)>(StringComparer.Ordinal);
-        for (var index = 0; index < sessions.Count; index += 1)
-        {
-            foreach (var player in sessions[index].Players.Where(player => player.IsPresent))
+            .Where(item =>
+                item.ZaloConnectionId == connectionId &&
+                item.GroupId == groupId &&
+                item.IsAnalyticsEligible &&
+                item.CreatedAtFromZalo != null)
+            .Select(item => new
             {
-                var display = CleanDisplayName(player.DisplayName);
-                var key = NormalizeName(display);
-                if (key.Length < 2) continue;
-                if (!appearances.TryGetValue(key, out var entry))
-                    entry = (display, []);
-                entry.SessionIndexes.Add(index);
-                appearances[key] = entry;
-            }
-        }
+                item.Id,
+                CreatedAt = item.CreatedAtFromZalo!.Value
+            })
+            .ToListAsync(cancellationToken);
+
+        // SQLite cannot reliably translate DateTimeOffset range comparisons. Apply the
+        // rolling 30-day boundary in memory after the stable group predicate.
+        var windowStart = now.AddDays(-ActivityWindowDays);
+        var pollIds = pollRows
+            .Where(item => item.CreatedAt >= windowStart && item.CreatedAt <= now)
+            .Select(item => item.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (pollIds.Count < MinimumPollsForActivityNudge) return [];
+
+        var members = await db.ZaloGroupMembers
+            .AsNoTracking()
+            .Where(item =>
+                item.ZaloConnectionId == connectionId &&
+                item.GroupId == groupId &&
+                item.IsCurrentMember)
+            .Select(item => new
+            {
+                item.ZaloUserId,
+                item.DisplayName
+            })
+            .ToListAsync(cancellationToken);
+        if (members.Count == 0) return [];
+
+        var botUserId = CleanId(await db.ZaloConnections
+            .AsNoTracking()
+            .Where(item => item.Id == connectionId)
+            .Select(item => item.AccountZaloId)
+            .FirstOrDefaultAsync(cancellationToken));
+
+        var votes = await db.ZaloPollVoteActivities
+            .AsNoTracking()
+            .Where(item =>
+                pollIds.Contains(item.PollSnapshotId) &&
+                item.IsCurrentlySelected)
+            .Select(item => new
+            {
+                item.ZaloUserId,
+                item.PollSnapshotId
+            })
+            .ToListAsync(cancellationToken);
+
+        var voteCounts = votes
+            .GroupBy(item => CleanId(item.ZaloUserId), StringComparer.Ordinal)
+            .Where(group => group.Key.Length > 0)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(item => item.PollSnapshotId)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count(),
+                StringComparer.Ordinal);
+
+        var stats = members
+            .Select(item =>
+            {
+                var userId = CleanId(item.ZaloUserId);
+                var displayName = CleanDisplayName(item.DisplayName);
+                return new ZaloCommunityVoteMember(
+                    userId,
+                    displayName,
+                    voteCounts.GetValueOrDefault(userId));
+            })
+            .Where(item =>
+                item.UserId.Length > 0 &&
+                item.DisplayName.Length >= 2 &&
+                !string.Equals(item.UserId, botUserId, StringComparison.Ordinal))
+            .GroupBy(item => item.UserId, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        if (stats.Count == 0) return [];
 
         var localDate = now.ToOffset(VietnamOffset).ToString("yyyy-MM-dd");
-        var eligible = appearances
-            .Where(item => item.Value.SessionIndexes.Count >= 3 && !recentSubjects.Contains(item.Key))
-            .OrderBy(item => StableIndex($"{groupId}:{item.Key}:{localDate}", 10000))
+        var recentSubjects = history
+            .Where(item =>
+                item.SubjectName is not null &&
+                item.SentAt >= now.AddDays(-SubjectCooldownDays))
+            .Select(item => NormalizeName(item.SubjectName!))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var result = new List<ZaloCommunityNudgeCandidate>();
+
+        var top = stats
+            .Where(item => item.VoteCount > 0)
+            .OrderByDescending(item => item.VoteCount)
+            .ThenBy(item => StableIndex($"{groupId}:{item.UserId}:{localDate}:top-vote", 10000))
+            .Take(3)
             .ToList();
-        foreach (var item in eligible)
+        if (top.Count >= 2)
         {
-            var name = item.Value.DisplayName;
-            var indexes = item.Value.SessionIndexes;
-            var recentFour = indexes.Count(index => index < 4);
-            var previousFour = indexes.Count(index => index is >= 4 and < 8);
-
-            if (indexes.Contains(0) &&
-                !indexes.Any(index => index is >= 1 and < 4) &&
-                indexes.Any(index => index >= 4))
-            {
-                return new ZaloCommunityNudgeCandidate(
-                    "member_returning",
-                    $"✨ Dạo này lại thấy {name} góp mặt trong kèo rồi nha. Có thêm người quay lại nhập hội là group vui hơn hẳn 😄",
-                    name);
-            }
-
-            if (recentFour >= 2 && recentFour > previousFour)
-            {
-                return new ZaloCommunityNudgeCandidate(
-                    "member_more_active",
-                    $"📈 Dạo này {name} góp mặt trong kèo đều hơn trước nha 😄 Giữ nhịp này là đẹp, group có thêm người tham gia đều lúc nào cũng dễ gom kèo hơn.",
-                    name);
-            }
-
-            if (recentFour >= 2)
-            {
-                return new ZaloCommunityNudgeCandidate(
-                    "member_regular",
-                    $"🌟 Gần đây {name} góp mặt khá đều nha. Có tên đều trong các kèo vậy là góp thêm nhịp vui cho group rồi 😄",
-                    name);
-            }
-
-            if (!indexes.Any(index => index < 3) && indexes.Any(index => index >= 3))
-            {
-                return new ZaloCommunityNudgeCandidate(
-                    "member_invite_back",
-                    $"👋 Lâu rồi chưa thấy {name} góp mặt trong kèo á 😄 Hôm nào rảnh quay lại quẩy với anh em nha, group vẫn luôn welcome.",
-                    name);
-            }
+            var summary = string.Join(
+                ", ",
+                top.Select(item => $"{item.DisplayName} ({item.VoteCount}/{pollIds.Count} kèo)"));
+            result.Add(new ZaloCommunityNudgeCandidate(
+                "group_top_voters_30d",
+                $"💡 Có thể bạn chưa biết: trong 30 ngày gần đây, những người vote tham gia kèo đều nhất là {summary} 🔥 Cảm ơn mấy ông giữ nhiệt cho group nha."));
         }
 
-        return null;
+        var praiseMinimum = Math.Max(3, (int)Math.Ceiling(pollIds.Count * 0.60));
+        var praise = stats
+            .Where(item =>
+                item.VoteCount >= praiseMinimum &&
+                !recentSubjects.Contains(NormalizeName(item.DisplayName)))
+            .OrderByDescending(item => item.VoteCount)
+            .ThenBy(item => StableIndex($"{groupId}:{item.UserId}:{localDate}:praise", 10000))
+            .FirstOrDefault();
+        if (praise is not null)
+        {
+            result.Add(new ZaloCommunityNudgeCandidate(
+                "member_vote_spotlight",
+                $"🌟 @{praise.DisplayName} 30 ngày gần đây vote tham gia kèo đều ghê 😄 Ông đang thuộc nhóm giữ nhịp tốt nhất đó, cảm ơn vì kéo nhiệt cho group nha.",
+                praise.DisplayName,
+                praise.UserId));
+        }
+
+        var reengagementMaximum = Math.Max(1, (int)Math.Floor(pollIds.Count * 0.25));
+        var reengage = stats
+            .Where(item =>
+                item.VoteCount <= reengagementMaximum &&
+                !recentSubjects.Contains(NormalizeName(item.DisplayName)))
+            .OrderBy(item => item.VoteCount)
+            .ThenBy(item => StableIndex($"{groupId}:{item.UserId}:{localDate}:reengage", 10000))
+            .FirstOrDefault();
+        if (reengage is not null)
+        {
+            result.Add(new ZaloCommunityNudgeCandidate(
+                "member_vote_reengagement",
+                $"👋 @{reengage.DisplayName} dạo này ít thấy ông nhập hội cùng anh em 😄 Có kèo nào hợp lịch thì vào vote chơi nha, group luôn welcome ông quay lại.",
+                reengage.DisplayName,
+                reengage.UserId));
+        }
+
+        return result;
+    }
+
+    internal static ZaloCommunityNudgeCandidate? SelectRotatedCandidate(
+        IReadOnlyList<ZaloCommunityNudgeCandidate> candidates,
+        IReadOnlyList<ZaloCommunityNudgeHistoryData> history,
+        string connectionId,
+        string groupId,
+        string localDate,
+        int slotNumber)
+    {
+        var unique = candidates
+            .Where(item => !string.IsNullOrWhiteSpace(item.Type) && !string.IsNullOrWhiteSpace(item.Text))
+            .GroupBy(item => item.Type, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        if (unique.Count == 0) return null;
+
+        var lastType = history
+            .OrderByDescending(item => item.SentAt)
+            .Select(item => item.NudgeType)
+            .FirstOrDefault();
+
+        // A type that was just sent is ineligible when any alternative exists.
+        // Among the remaining types, prefer the least-used one so every eligible
+        // content lane gets a turn before a lane accumulates another repeat.
+        var withoutLast = unique
+            .Where(item => !string.Equals(item.Type, lastType, StringComparison.Ordinal))
+            .ToList();
+        var pool = withoutLast.Count > 0 ? withoutLast : unique;
+
+        var usage = pool.ToDictionary(
+            item => item.Type,
+            item => history.Count(row =>
+                string.Equals(row.NudgeType, item.Type, StringComparison.Ordinal)),
+            StringComparer.Ordinal);
+        var minimumUsage = usage.Values.Min();
+        var leastUsed = pool
+            .Where(item => usage[item.Type] == minimumUsage)
+            .OrderBy(item => StableIndex(
+                $"{connectionId}:{groupId}:{localDate}:{slotNumber}:{item.Type}",
+                10000))
+            .ToList();
+
+        return leastUsed[0];
+    }
+
+    internal static IReadOnlyList<BridgeOutgoingMention> BuildMentions(
+        ZaloCommunityNudgeCandidate candidate)
+    {
+        var userId = CleanId(candidate.SubjectUserId);
+        var displayName = CleanDisplayName(candidate.SubjectName);
+        if (userId.Length == 0 || displayName.Length == 0) return [];
+
+        var label = $"@{displayName}";
+        var position = candidate.Text.IndexOf(label, StringComparison.Ordinal);
+        return position < 0
+            ? []
+            : [new BridgeOutgoingMention(userId, position, label.Length)];
     }
 
     private static DateTimeOffset GetScheduledLocalTime(
