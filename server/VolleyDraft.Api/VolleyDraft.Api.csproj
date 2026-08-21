@@ -28,6 +28,17 @@
     <Exec Condition="Exists('Assets/SocialCards/social-card-05-hd.png')" Command="base64 -w 0 Assets/SocialCards/social-card-05-hd.png &gt; Assets/SocialCards/social-card-05.b64" />
   </Target>
 
+  <Target Name="PrepareHdNightBackgrounds" BeforeTargets="BeforeBuild" Condition="'$(OS)' != 'Windows_NT'">
+    <Error Condition="!Exists('Assets/SocialCards/Night/night-card-01-hd.png')" Text="Missing Night HD asset 01." />
+    <Error Condition="!Exists('Assets/SocialCards/Night/night-card-02-hd.png')" Text="Missing Night HD asset 02." />
+    <Error Condition="!Exists('Assets/SocialCards/Night/night-card-03-hd.png')" Text="Missing Night HD asset 03." />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-01-hd.png &gt; Assets/SocialCards/Night/night-card-01.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-02-hd.png &gt; Assets/SocialCards/Night/night-card-02.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-03-hd.png &gt; Assets/SocialCards/Night/night-card-03.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-01-hd.png &gt; Assets/SocialCards/Night/night-card-04.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-02-hd.png &gt; Assets/SocialCards/Night/night-card-05.b64" />
+  </Target>
+
   <ItemGroup>
     <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.jpg"
                       LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg" />
@@ -41,12 +52,16 @@
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard04.jpg" />
     <EmbeddedResource Include="Assets/SocialCards/social-card-05.b64"
                       LogicalName="VolleyDraft.Api.Assets.SocialCards.SocialCard05.jpg" />
-    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-01-hd.png"
-                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard01.png" />
-    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-02-hd.png"
-                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard02.png" />
-    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-03-hd.png"
-                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard03.png" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-01.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard01.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-02.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard02.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-03.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard03.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-04.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard04.jpg" />
+    <EmbeddedResource Include="Assets/SocialCards/Night/night-card-05.b64"
+                      LogicalName="VolleyDraft.Api.Assets.SocialCards.Night.NightCard05.jpg" />
   </ItemGroup>
 
 </Project>
