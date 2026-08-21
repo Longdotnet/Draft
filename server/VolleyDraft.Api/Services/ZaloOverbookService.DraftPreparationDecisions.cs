@@ -55,6 +55,10 @@ internal static partial class ZaloDraftPreparationDecisionPolicy
 
 public sealed partial class ZaloOverbookService
 {
+    private sealed record DraftPreparationSessionResolution(
+        MatchSession? Session,
+        IReadOnlyList<MatchSession> Candidates);
+
     private async Task<bool> TryHandleDraftPreparationDecisionAsync(
         string connectionId,
         string groupId,
@@ -81,13 +85,24 @@ public sealed partial class ZaloOverbookService
         var command = ZaloDraftPreparationDecisionPolicy.TryParse(incoming.Content);
         if (command is null) return false;
 
-        var session = await ResolveDraftPreparationDecisionSessionAsync(
+        var resolution = await ResolveDraftPreparationDecisionSessionAsync(
             connectionId,
             groupId,
             incoming.Content,
             requirePlayCurrentDecision: false,
             cancellationToken);
-        if (session is null) return false;
+        var session = resolution.Session;
+        if (session is null)
+        {
+            return await TryReplyDraftPreparationAmbiguityAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                resolution.Candidates,
+                "quyết định kèo",
+                cancellationToken);
+        }
 
         var role = await integration.GetGroupRoleAuthorizationAsync(
             session.AdminUserId,
@@ -104,6 +119,7 @@ public sealed partial class ZaloOverbookService
             ? senderId
             : incoming.SenderName.Trim();
         var decisionStore = new ZaloDraftPreparationDecisionStore(db);
+        var previousDecision = await decisionStore.GetAsync(session.Id, cancellationToken);
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
         {
@@ -116,13 +132,14 @@ public sealed partial class ZaloOverbookService
                 actorName,
                 incoming.MessageId,
                 cancellationToken);
+            var change = BuildDecisionChangePrefix(previousDecision, command.Kind, null, actorName);
             await SendDraftReplyAsync(
                 connectionId,
                 connection.AccountZaloId,
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Ok, tui ghi nhận trưởng/phó chốt dừng kèo {session.Name}. Tui dừng draft reminder cho trận này nha. Tui chưa tự xoá session, poll hay thao tác huỷ sân bên ngoài.",
+                $"{change}Ok, tui ghi nhận trưởng/phó chốt dừng kèo {session.Name}. Tui dừng draft reminder cho trận này nha. Tui chưa tự xoá session, poll hay thao tác huỷ sân bên ngoài.",
                 [],
                 "draft_preparation_stop_match",
                 cancellationToken);
@@ -177,13 +194,14 @@ public sealed partial class ZaloOverbookService
                 actorName,
                 incoming.MessageId,
                 cancellationToken);
+            var change = BuildDecisionChangePrefix(previousDecision, command.Kind, null, actorName);
             await SendDraftReplyAsync(
                 connectionId,
                 connection.AccountZaloId,
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Ok, kèo {session.Name} tiếp tục kiếm thêm nha 👌 Tui vừa sync đang {readiness.EffectiveSlotCount}/{readiness.Capacity}; mấy lượt sau tui canh delta thôi, không tự suy ra huỷ kèo từ số người thiếu.",
+                $"{change}Ok, kèo {session.Name} tiếp tục kiếm thêm nha 👌 Tui vừa sync đang {readiness.EffectiveSlotCount}/{readiness.Capacity}; mấy lượt sau tui canh delta thôi, không tự đổi hướng nếu trưởng/phó chưa nói.",
                 [],
                 "draft_preparation_keep_recruiting",
                 cancellationToken);
@@ -281,21 +299,26 @@ public sealed partial class ZaloOverbookService
         var evenlyDraftable = ZaloDraftPreparationDecisionPolicy.CanAutoDraftEvenly(
             readiness.EffectiveSlotCount,
             session.TeamCount);
+        var decisionChange = BuildDecisionChangePrefix(
+            previousDecision,
+            ZaloDraftPreparationDecisionKind.PlayCurrentRoster,
+            readiness.EffectiveSlotCount,
+            actorName);
         string reply;
         string outcome;
         if (readiness.MissingProfileCount > 0)
         {
-            reply = $"Ok, tui ghi nhận kèo vẫn chơi với {rawVsEffective} 👌 Nhưng còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt trước khi draft nha.";
+            reply = $"{decisionChange}Ok, tui ghi nhận kèo vẫn chơi với {rawVsEffective} 👌 Nhưng còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt trước khi draft nha.";
             outcome = "draft_preparation_play_current_missing_profiles";
         }
         else if (evenlyDraftable)
         {
-            reply = $"Ok chốt kèo hiện tại: {rawVsEffective} → {session.TeamCount} team x{readiness.EffectiveSlotCount / session.TeamCount} 👌 Khi muốn chia nói `draft đi`; tui sẽ sync poll + check fingerprint lần cuối trước khi chạy.";
+            reply = $"{decisionChange}Ok chốt kèo hiện tại: {rawVsEffective} → {session.TeamCount} team x{readiness.EffectiveSlotCount / session.TeamCount} 👌 Khi muốn chia nói `draft đi`; tui sẽ sync poll + check fingerprint lần cuối trước khi chạy.";
             outcome = "draft_preparation_play_current_locked";
         }
         else
         {
-            reply = $"Ok, tui ghi nhận kèo vẫn chơi với {rawVsEffective} 👌 Nhưng {readiness.EffectiveSlotCount} effective slot chưa chia đều được {session.TeamCount} team. Nếu muốn bot auto-draft thì cần chỉnh shared/rotation hoặc roster về số chia hết cho {session.TeamCount}; tui không tự bẻ roster.";
+            reply = $"{decisionChange}Ok, tui ghi nhận kèo vẫn chơi với {rawVsEffective} 👌 Nhưng {readiness.EffectiveSlotCount} effective slot chưa chia đều được {session.TeamCount} team. Nếu muốn bot auto-draft thì cần chỉnh shared/rotation hoặc roster về số chia hết cho {session.TeamCount}; tui không tự bẻ roster.";
             outcome = "draft_preparation_play_current_not_even";
         }
         await SendDraftReplyAsync(
@@ -319,13 +342,24 @@ public sealed partial class ZaloOverbookService
         CancellationToken cancellationToken)
     {
         if (botService is null) return false;
-        var session = await ResolveDraftPreparationDecisionSessionAsync(
+        var resolution = await ResolveDraftPreparationDecisionSessionAsync(
             connectionId,
             groupId,
             incoming.Content,
             requirePlayCurrentDecision: true,
             cancellationToken);
-        if (session is null) return false;
+        var session = resolution.Session;
+        if (session is null)
+        {
+            return await TryReplyDraftPreparationAmbiguityAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                resolution.Candidates,
+                "draft roster đã chốt",
+                cancellationToken);
+        }
 
         var decisionStore = new ZaloDraftPreparationDecisionStore(db);
         var decision = await decisionStore.GetAsync(session.Id, cancellationToken);
@@ -353,6 +387,30 @@ public sealed partial class ZaloOverbookService
         {
             // Do not consume ordinary members' chat merely because a leader decision exists.
             return false;
+        }
+
+        // The actor who authorized playing the partial roster must still hold a live
+        // organizer role too. Another leader cannot revive a stale authorization from
+        // someone whose role was removed.
+        var decisionActorAuthorization = await integration.GetGroupRoleAuthorizationAsync(
+            session.AdminUserId,
+            session.Id,
+            decision.ActorZaloUserId);
+        if (!decisionActorAuthorization.IsSuccess ||
+            decisionActorAuthorization.Value?.CanOperateBot != true)
+        {
+            await decisionStore.ClearAsync(session.Id, cancellationToken);
+            await SendDraftReplyAsync(
+                connectionId,
+                session.ZaloConnection!.AccountZaloId,
+                session.ZaloConnection.DisplayName,
+                groupId,
+                incoming,
+                $"Quyền trưởng/phó của người đã chốt roster {session.Name} không còn xác minh được, nên quyết định cũ hết hiệu lực. Tui chưa draft nha; chốt roster lại bằng người đang có quyền giúp tui.",
+                [],
+                "draft_partial_decision_actor_role_stale",
+                cancellationToken);
+            return true;
         }
 
         var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
@@ -388,6 +446,25 @@ public sealed partial class ZaloOverbookService
                 $"Roster {session.Name} vừa đổi so với lúc trưởng/phó chốt, nên quyết định cũ hết hiệu lực nha 😭 Tui chưa draft. Chốt lại roster hiện tại trước giúp tui.",
                 [],
                 "draft_partial_roster_changed",
+                cancellationToken);
+            return true;
+        }
+
+        if (readiness.State is ZaloDraftReadinessState.SessionStarted or
+                               ZaloDraftReadinessState.InvalidStatus or
+                               ZaloDraftReadinessState.AlreadyDrafted or
+                               ZaloDraftReadinessState.MissingStartTime)
+        {
+            await decisionStore.ClearAsync(session.Id, cancellationToken);
+            await SendDraftReplyAsync(
+                connectionId,
+                session.ZaloConnection!.AccountZaloId,
+                session.ZaloConnection.DisplayName,
+                groupId,
+                incoming,
+                BuildReadinessBlockerText(readiness),
+                [],
+                readiness.ReasonCode,
                 cancellationToken);
             return true;
         }
@@ -490,7 +567,7 @@ public sealed partial class ZaloOverbookService
         return true;
     }
 
-    private async Task<MatchSession?> ResolveDraftPreparationDecisionSessionAsync(
+    private async Task<DraftPreparationSessionResolution> ResolveDraftPreparationDecisionSessionAsync(
         string connectionId,
         string groupId,
         string? content,
@@ -508,9 +585,10 @@ public sealed partial class ZaloOverbookService
                 item.ZaloConnection != null &&
                 (item.Status == SessionStatus.Setup || item.Status == SessionStatus.CaptainSelection) &&
                 (item.StartTime == null ||
-                 (item.StartTime >= now.AddHours(-4) && item.StartTime <= now.AddHours(36))))
+                 (item.StartTime > now && item.StartTime <= now.AddHours(36))))
+            .OrderBy(item => item.StartTime ?? DateTimeOffset.MaxValue)
             .ToListAsync(cancellationToken);
-        if (sessions.Count == 0) return null;
+        if (sessions.Count == 0) return new DraftPreparationSessionResolution(null, []);
 
         if (requirePlayCurrentDecision)
         {
@@ -523,7 +601,7 @@ public sealed partial class ZaloOverbookService
                     withDecision.Add(item);
             }
             sessions = withDecision;
-            if (sessions.Count == 0) return null;
+            if (sessions.Count == 0) return new DraftPreparationSessionResolution(null, []);
         }
 
         var normalized = ZaloDraftConversationPolicy.Normalize(content);
@@ -532,10 +610,76 @@ public sealed partial class ZaloOverbookService
             .ToList();
         var matchedIds = ZaloBotIntelligence.ResolveSessionReference(normalized, references);
         var matched = sessions.Where(item => matchedIds.Contains(item.Id, StringComparer.Ordinal)).ToList();
-        return matched.Count == 1
-            ? matched[0]
-            : matched.Count == 0 && sessions.Count == 1
-                ? sessions[0]
-                : null;
+        if (matched.Count == 1)
+            return new DraftPreparationSessionResolution(matched[0], matched);
+        if (matched.Count == 0 && sessions.Count == 1)
+            return new DraftPreparationSessionResolution(sessions[0], sessions);
+        return new DraftPreparationSessionResolution(
+            null,
+            matched.Count > 1 ? matched : sessions);
+    }
+
+    private async Task<bool> TryReplyDraftPreparationAmbiguityAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloIncomingMessageEvent incoming,
+        IReadOnlyList<MatchSession> candidates,
+        string actionLabel,
+        CancellationToken cancellationToken)
+    {
+        if (candidates.Count < 2) return false;
+        var authoritySession = candidates[0];
+        var role = await integration.GetGroupRoleAuthorizationAsync(
+            authoritySession.AdminUserId,
+            authoritySession.Id,
+            senderId);
+        if (!role.IsSuccess || role.Value?.CanOperateBot != true) return false;
+
+        var choices = string.Join(", ", candidates.Take(4).Select(FormatDraftSessionChoice));
+        await SendDraftReplyAsync(
+            connectionId,
+            authoritySession.ZaloConnection!.AccountZaloId,
+            authoritySession.ZaloConnection.DisplayName,
+            groupId,
+            incoming,
+            $"Ông đang muốn {actionLabel} cho trận nào: {choices}? Nói rõ T4/T6, ngày hoặc tên kèo giúp tui; tui không đoán khi group có nhiều trận.",
+            [],
+            "draft_preparation_session_ambiguous",
+            cancellationToken);
+        return true;
+    }
+
+    private static string BuildDecisionChangePrefix(
+        ZaloDraftPreparationDecisionSnapshot? previous,
+        ZaloDraftPreparationDecisionKind nextKind,
+        int? nextSlots,
+        string actorName)
+    {
+        if (previous is null) return string.Empty;
+        if (previous.Kind == nextKind &&
+            (nextKind != ZaloDraftPreparationDecisionKind.PlayCurrentRoster ||
+             previous.EffectiveSlotCount == nextSlots))
+            return string.Empty;
+
+        var before = previous.Kind switch
+        {
+            ZaloDraftPreparationDecisionKind.KeepRecruiting => "tiếp tục kiếm thêm",
+            ZaloDraftPreparationDecisionKind.StopMatch => "dừng kèo",
+            ZaloDraftPreparationDecisionKind.PlayCurrentRoster => previous.EffectiveSlotCount is { } count
+                ? $"chơi roster {count}"
+                : "chơi roster hiện tại",
+            _ => previous.Kind.ToString()
+        };
+        var after = nextKind switch
+        {
+            ZaloDraftPreparationDecisionKind.KeepRecruiting => "tiếp tục kiếm thêm",
+            ZaloDraftPreparationDecisionKind.StopMatch => "dừng kèo",
+            ZaloDraftPreparationDecisionKind.PlayCurrentRoster => nextSlots is { } count
+                ? $"chơi roster {count}"
+                : "chơi roster hiện tại",
+            _ => nextKind.ToString()
+        };
+        return $"Update theo {actorName}: {before} → {after}. ";
     }
 }
