@@ -51,6 +51,20 @@ public sealed partial class ZaloOverbookService
                 cancellationToken))
             return true;
 
+        // The deterministic member-assist fast path already ran in V2 pre-routing.
+        // For natural paraphrases it did not understand, allow a narrow structured AI
+        // classifier to infer PassOwnSlot/ClaimOpenSlot from quote + recent context,
+        // then immediately re-enter the same deterministic validator before sending.
+        if (await TryHandleAmbientSemanticMemberAssistAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                decision,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         var socialSettings = ZaloAmbientSocialPilotSettings.FromConfiguration(configuration);
         if (!socialSettings.Enabled) return false;
 
