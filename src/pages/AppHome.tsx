@@ -43,7 +43,10 @@ export function AppHome() {
       </header>
 
       {isMobileViewport ? (
-        <MobilePublicDraftFlow />
+        <>
+          <MobilePublicDraftFlow />
+          <ZaloCommunityTipSettingsPanel />
+        </>
       ) : (
         <>
           <DbDraftFlow />
