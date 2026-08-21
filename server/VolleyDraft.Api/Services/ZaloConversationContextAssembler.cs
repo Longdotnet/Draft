@@ -18,9 +18,8 @@ public static class ZaloConversationContextAssembler
     private const int ImmediateTailSize = 6;
     private const int ReferenceChainRadius = 2;
 
-    private static readonly HashSet<string> ReferentialTokens = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> ReferentialNouns = new(StringComparer.Ordinal)
     {
-        "do", "nay", "kia", "vay", "con", "nguoi", "ong", "ba", "ban",
         "slot", "suat", "cho", "team", "doi", "tran", "buoi", "lich"
     };
 
@@ -58,38 +57,29 @@ public static class ZaloConversationContextAssembler
             .Select(item => item.index)
             .ToHashSet();
 
-        // Always retain a local tail. Pronouns and shorthand almost always resolve to
-        // this local thread, so widening the tail from four to six makes the classifier
-        // materially better at multi-speaker exchanges while keeping the token budget
-        // bounded.
-        var tailCount = Math.Min(ImmediateTailSize, Math.Max(1, maxMessages / 2));
-        var tailStart = Math.Max(0, working.Count - tailCount);
-        var selectedIndexes = Enumerable.Range(tailStart, working.Count - tailStart).ToHashSet();
+        var selectedIndexes = new HashSet<int>();
 
-        // If the current question is referential, keep a small chain around the most
-        // recent turn from this sender. This preserves "A asks -> B answers -> A says
-        // vậy còn tui?" even when unrelated group chatter sits nearby.
+        // Referential turns need their local antecedent chain more than unrelated
+        // newest chatter. Reserve that chain first, then spend the remaining budget on
+        // the immediate tail. This avoids a late burst of noise evicting "Long chắc
+        // nghỉ" from "vậy slot đó Nam vô được không?".
         if (referentialQuestion)
         {
             var lastSenderIndex = senderIndexes.Where(index => index < working.Count).DefaultIfEmpty(-1).Max();
             if (lastSenderIndex >= 0)
             {
                 for (var index = Math.Max(0, lastSenderIndex - ReferenceChainRadius);
-                     index <= Math.Min(working.Count - 1, lastSenderIndex + ReferenceChainRadius);
+                     index <= Math.Min(working.Count - 1, lastSenderIndex + ReferenceChainRadius) &&
+                     selectedIndexes.Count < maxMessages;
                      index++)
                     selectedIndexes.Add(index);
             }
         }
 
-        // Never let deterministic preselection exceed the requested budget. Keep the
-        // newest items because they are the strongest source for local references.
-        if (selectedIndexes.Count > maxMessages)
-        {
-            selectedIndexes = selectedIndexes
-                .OrderByDescending(index => index)
-                .Take(maxMessages)
-                .ToHashSet();
-        }
+        var tailCount = Math.Min(ImmediateTailSize, Math.Max(1, maxMessages / 2));
+        var tailStart = Math.Max(0, working.Count - tailCount);
+        for (var index = tailStart; index < working.Count && selectedIndexes.Count < maxMessages; index++)
+            selectedIndexes.Add(index);
 
         var semanticSlots = Math.Max(0, maxMessages - selectedIndexes.Count);
         var semanticIndexes = working
@@ -131,7 +121,7 @@ public static class ZaloConversationContextAssembler
         bool referentialQuestion,
         HashSet<string> mentionedNames)
     {
-        var score = index; // deterministic recency tie-breaker
+        var score = index;
         var normalizedMessageSender = NormalizeId(message.SenderId);
         var normalizedContent = ZaloBotIntelligence.Normalize(message.Content ?? string.Empty);
         var normalizedMessageName = ZaloBotIntelligence.Normalize(message.SenderName ?? string.Empty);
@@ -140,11 +130,11 @@ public static class ZaloConversationContextAssembler
             score += 1_000;
 
         if (message.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase) &&
-            IsAddressedToSender(message.Content, senderName))
+            IsAddressedToSender(message.Content ?? string.Empty, senderName))
             score += 800;
 
         if (message.Role.Equals("context", StringComparison.OrdinalIgnoreCase) &&
-            message.Content.StartsWith("[UNTRUSTED_ZALO_QUOTE]", StringComparison.Ordinal))
+            (message.Content ?? string.Empty).StartsWith("[UNTRUSTED_ZALO_QUOTE]", StringComparison.Ordinal))
             score += 2_500;
 
         if (senderIndexes.Contains(index - 1) || senderIndexes.Contains(index + 1))
@@ -165,10 +155,7 @@ public static class ZaloConversationContextAssembler
                                        normalizedContent.Contains(name, StringComparison.Ordinal)))
             score += 700;
 
-        // For vague references, operational nouns in earlier turns are often the
-        // antecedent ("slot đó", "team đó", "trận đó"). Give those turns a modest
-        // bonus, but never enough to outrank an explicit quote or same-sender turn.
-        if (referentialQuestion && SignificantTokens(message.Content).Any(ReferentialTokens.Contains))
+        if (referentialQuestion && SignificantTokens(message.Content).Any(ReferentialNouns.Contains))
             score += 180;
 
         return score;
@@ -184,14 +171,16 @@ public static class ZaloConversationContextAssembler
     private static bool LooksReferential(string normalizedQuestion)
     {
         if (string.IsNullOrWhiteSpace(normalizedQuestion)) return false;
-        var tokens = Regex.Split(normalizedQuestion, @"[^a-z0-9]+", RegexOptions.CultureInvariant)
-            .Where(token => token.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
-        if (tokens.Overlaps(ReferentialTokens)) return true;
         return normalizedQuestion.Contains("cai do", StringComparison.Ordinal) ||
                normalizedQuestion.Contains("nguoi do", StringComparison.Ordinal) ||
                normalizedQuestion.Contains("slot do", StringComparison.Ordinal) ||
+               normalizedQuestion.Contains("suat do", StringComparison.Ordinal) ||
+               normalizedQuestion.Contains("cho do", StringComparison.Ordinal) ||
                normalizedQuestion.Contains("team do", StringComparison.Ordinal) ||
+               normalizedQuestion.Contains("doi do", StringComparison.Ordinal) ||
+               normalizedQuestion.Contains("tran do", StringComparison.Ordinal) ||
+               normalizedQuestion.Contains("buoi do", StringComparison.Ordinal) ||
+               normalizedQuestion.Contains("lich do", StringComparison.Ordinal) ||
                normalizedQuestion.StartsWith("vay ", StringComparison.Ordinal) ||
                normalizedQuestion.StartsWith("con ", StringComparison.Ordinal);
     }
