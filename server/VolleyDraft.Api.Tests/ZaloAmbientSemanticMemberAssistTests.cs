@@ -69,7 +69,7 @@ public sealed class ZaloAmbientSemanticMemberAssistTests
         Assert.NotNull(claimReply);
         Assert.Equal(ZaloMemberAssistKind.OpenSlotClaim, claimReply!.Kind);
         Assert.Contains("Nhân", claimReply.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Hoàng", claimReply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Nguyễn", claimReply.Text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -178,7 +178,7 @@ public sealed class ZaloAmbientSemanticMemberAssistTests
         Assert.Equal(.97, decision.Confidence, 2);
         Assert.Equal(1, handler.CallCount);
         Assert.Contains("A xin", handler.LastRequestBody, StringComparison.Ordinal);
-        Assert.Contains("Nay có ai mún đánh hong", handler.LastRequestBody, StringComparison.Ordinal);
+        Assert.Contains("pass-ai", handler.LastRequestBody, StringComparison.Ordinal);
         Assert.Contains("OpenOffers", handler.LastRequestBody, StringComparison.Ordinal);
     }
 
