@@ -21,6 +21,9 @@ public sealed record UpdateZaloAutoSessionGroupRequest(
     string? TrustedOrganizerZaloUserId = null,
     string? TrustedOrganizerDisplayName = null,
     bool? TrustedOrganizerEnabled = null,
+    string? DraftReminderTagZaloUserId = null,
+    string? DraftReminderTagDisplayName = null,
+    bool? DraftReminderTagEnabled = null,
     int? CommunityTipDailyCount = null);
 
 public sealed record ZaloAutoSessionHealthResponse(
@@ -53,7 +56,8 @@ public sealed record ZaloAutoSessionOrganizerCandidateResponse(
     string ZaloRole,
     bool IsCurrentOrganizer,
     bool TrustedBackup,
-    bool IsFallbackByDefault);
+    bool IsFallbackByDefault,
+    bool ReceiveDraftReminderTag);
 
 public sealed record ZaloAutoSessionGroupResponse(
     string Id,
