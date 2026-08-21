@@ -37,13 +37,13 @@ public sealed class ZaloDraftPreparationDecisionStoreTests
     }
 
     [Theory]
-    [InlineData(ZaloDraftPreparationDecisionKind.KeepRecruiting)]
-    [InlineData(ZaloDraftPreparationDecisionKind.StopMatch)]
-    public async Task NonRosterBoundDecisions_SurviveRosterFingerprintChanges(
-        ZaloDraftPreparationDecisionKind kind)
+    [InlineData("KeepRecruiting")]
+    [InlineData("StopMatch")]
+    public async Task NonRosterBoundDecisions_SurviveRosterFingerprintChanges(string kindName)
     {
         await using var fixture = await Fixture.CreateAsync();
         var store = new ZaloDraftPreparationDecisionStore(fixture.Db);
+        var kind = Enum.Parse<ZaloDraftPreparationDecisionKind>(kindName);
 
         var saved = await store.SetAsync(
             "session-1",
