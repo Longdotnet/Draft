@@ -14,7 +14,9 @@ internal sealed record ZaloCommunityNudgeCandidate(
 /// <summary>
 /// Proactive, group-scoped discovery/positive-community messages. The engine never
 /// mutates roster/team state: share-slot remains owned by the existing deterministic
-/// bot flow. Member spotlights are derived only from observed SessionPlayer presence.
+/// bot flow. Member spotlights are derived only from observed SessionPlayer presence
+/// in sessions that have already started, so future roster entries cannot be praised
+/// as participation that already happened.
 /// </summary>
 public sealed class ZaloCommunityNudgeService(
     VolleyDraftDbContext db,
@@ -34,7 +36,6 @@ public sealed class ZaloCommunityNudgeService(
 
         var rows = await db.MatchSessions
             .AsNoTracking()
-            .Include(item => item.ZaloConnection)
             .Where(item => item.BotEnabled &&
                            item.ZaloConnectionId != null &&
                            item.ZaloGroupId != null &&
@@ -176,21 +177,24 @@ public sealed class ZaloCommunityNudgeService(
         IReadOnlyList<ZaloCommunityNudgeHistoryData> history,
         CancellationToken cancellationToken)
     {
+        var now = DateTimeOffset.UtcNow;
         var rows = await db.MatchSessions
             .AsNoTracking()
             .Include(item => item.Players)
             .Where(item => item.ZaloConnectionId == connectionId &&
                            item.ZaloGroupId == groupId &&
-                           item.Status != SessionStatus.Cancelled)
+                           item.Status != SessionStatus.Cancelled &&
+                           (item.StartTime == null || item.StartTime <= now))
             .ToListAsync(cancellationToken);
         var sessions = rows
+            .Where(item => (item.StartTime ?? item.CreatedAt) <= now)
             .OrderByDescending(item => item.StartTime ?? item.CreatedAt)
             .Take(12)
             .ToList();
         if (sessions.Count < 4) return null;
 
         var recentSubjects = history
-            .Where(item => item.SubjectName is not null && item.SentAt >= DateTimeOffset.UtcNow.AddDays(-21))
+            .Where(item => item.SubjectName is not null && item.SentAt >= now.AddDays(-21))
             .Select(item => NormalizeName(item.SubjectName!))
             .ToHashSet(StringComparer.Ordinal);
         var appearances = new Dictionary<string, (string DisplayName, List<int> SessionIndexes)>(StringComparer.Ordinal);
@@ -208,9 +212,10 @@ public sealed class ZaloCommunityNudgeService(
             }
         }
 
+        var localDate = now.ToOffset(VietnamOffset).ToString("yyyy-MM-dd");
         var eligible = appearances
             .Where(item => item.Value.SessionIndexes.Count >= 3 && !recentSubjects.Contains(item.Key))
-            .OrderBy(item => StableIndex($"{groupId}:{item.Key}:{DateTimeOffset.UtcNow:yyyy-MM-dd}", 10000))
+            .OrderBy(item => StableIndex($"{groupId}:{item.Key}:{localDate}", 10000))
             .ToList();
         foreach (var item in eligible)
         {
@@ -219,11 +224,13 @@ public sealed class ZaloCommunityNudgeService(
             var recentFour = indexes.Count(index => index < 4);
             var previousFour = indexes.Count(index => index is >= 4 and < 8);
 
-            if (indexes.Contains(0) && indexes.Skip(1).Any(index => index >= 4))
+            if (indexes.Contains(0) &&
+                !indexes.Any(index => index is >= 1 and < 4) &&
+                indexes.Any(index => index >= 4))
             {
                 return new ZaloCommunityNudgeCandidate(
                     "member_returning",
-                    $"✨ Dạo này lại thấy {name} xuất hiện trên sân rồi nha. Có thêm người quay lại nhập hội là group vui hơn hẳn 😄",
+                    $"✨ Dạo này lại thấy {name} góp mặt trong kèo rồi nha. Có thêm người quay lại nhập hội là group vui hơn hẳn 😄",
                     name);
             }
 
@@ -231,7 +238,7 @@ public sealed class ZaloCommunityNudgeService(
             {
                 return new ZaloCommunityNudgeCandidate(
                     "member_more_active",
-                    $"📈 Dạo này {name} lên sân đều hơn trước nha 😄 Giữ nhịp này là đẹp, group có thêm người tham gia đều lúc nào cũng dễ gom kèo hơn.",
+                    $"📈 Dạo này {name} góp mặt trong kèo đều hơn trước nha 😄 Giữ nhịp này là đẹp, group có thêm người tham gia đều lúc nào cũng dễ gom kèo hơn.",
                     name);
             }
 
@@ -239,7 +246,7 @@ public sealed class ZaloCommunityNudgeService(
             {
                 return new ZaloCommunityNudgeCandidate(
                     "member_regular",
-                    $"🌟 Gần đây {name} tham gia khá đều nha. Có mặt ổn định vậy là góp thêm nhịp vui cho group rồi 😄",
+                    $"🌟 Gần đây {name} góp mặt khá đều nha. Có tên đều trong các kèo vậy là góp thêm nhịp vui cho group rồi 😄",
                     name);
             }
 
@@ -247,7 +254,7 @@ public sealed class ZaloCommunityNudgeService(
             {
                 return new ZaloCommunityNudgeCandidate(
                     "member_invite_back",
-                    $"👋 Lâu rồi chưa thấy {name} lên sân á 😄 Hôm nào rảnh quay lại quẩy với anh em nha, group vẫn luôn welcome.",
+                    $"👋 Lâu rồi chưa thấy {name} góp mặt trong kèo á 😄 Hôm nào rảnh quay lại quẩy với anh em nha, group vẫn luôn welcome.",
                     name);
             }
         }
