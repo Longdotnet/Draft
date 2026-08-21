@@ -19,10 +19,11 @@ public sealed class ZaloOverbookWorker(
                 var sent = await overbook.ProcessDueAsync(stoppingToken);
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
 
-                // The preparation lane owns proactive draft reminders now. It always
-                // refreshes the exact poll/option linked to the MatchSession before
-                // deciding who to tag or whether draft is safe to offer.
-                var draftSent = await overbook.ProcessDraftPreparationRemindersDueAsync(stoppingToken);
+                // The leader-aware preparation lane owns proactive draft reminders.
+                // It always refreshes the exact poll/option linked to MatchSession and
+                // separates observed roster state from leader decisions such as
+                // KeepRecruiting / PlayCurrentRoster / StopMatch.
+                var draftSent = await overbook.ProcessDraftPreparationRemindersDueV2Async(stoppingToken);
                 if (draftSent > 0)
                     logger.LogInformation("Draft preparation reminder cycle sent {SentCount} message(s)", draftSent);
 
