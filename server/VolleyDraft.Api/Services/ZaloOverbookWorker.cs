@@ -19,9 +19,12 @@ public sealed class ZaloOverbookWorker(
                 var sent = await overbook.ProcessDueAsync(stoppingToken);
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
 
-                var draftSent = await overbook.ProcessDraftAutopilotDueAsync(stoppingToken);
+                // The preparation lane owns proactive draft reminders now. It always
+                // refreshes the exact poll/option linked to the MatchSession before
+                // deciding who to tag or whether draft is safe to offer.
+                var draftSent = await overbook.ProcessDraftPreparationRemindersDueAsync(stoppingToken);
                 if (draftSent > 0)
-                    logger.LogInformation("Draft autopilot cycle sent {SentCount} message(s)", draftSent);
+                    logger.LogInformation("Draft preparation reminder cycle sent {SentCount} message(s)", draftSent);
 
                 var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
                 var bridge = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
@@ -100,7 +103,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/draft-autopilot/community-nudge/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
