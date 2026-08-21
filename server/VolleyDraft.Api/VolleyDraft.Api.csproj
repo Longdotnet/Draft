@@ -29,11 +29,14 @@
   </Target>
 
   <Target Name="PrepareHdNightBackgrounds" BeforeTargets="BeforeBuild" Condition="'$(OS)' != 'Windows_NT'">
-    <Exec Condition="Exists('../../public/images/file_0000000009548207882e0b1b476499f9.png')" Command="base64 -w 0 ../../public/images/file_0000000009548207882e0b1b476499f9.png &gt; Assets/SocialCards/Night/night-card-01.b64" />
-    <Exec Condition="Exists('../../public/images/file_0000000066508209ba9f734b809f69ab.png')" Command="base64 -w 0 ../../public/images/file_0000000066508209ba9f734b809f69ab.png &gt; Assets/SocialCards/Night/night-card-02.b64" />
-    <Exec Condition="Exists('../../file_000000007cec82308d18325693f6fcd6.png')" Command="base64 -w 0 ../../file_000000007cec82308d18325693f6fcd6.png &gt; Assets/SocialCards/Night/night-card-03.b64" />
-    <Exec Condition="Exists('../../public/images/file_0000000009548207882e0b1b476499f9.png')" Command="base64 -w 0 ../../public/images/file_0000000009548207882e0b1b476499f9.png &gt; Assets/SocialCards/Night/night-card-04.b64" />
-    <Exec Condition="Exists('../../public/images/file_0000000066508209ba9f734b809f69ab.png')" Command="base64 -w 0 ../../public/images/file_0000000066508209ba9f734b809f69ab.png &gt; Assets/SocialCards/Night/night-card-05.b64" />
+    <Error Condition="!Exists('Assets/SocialCards/Night/night-card-01-hd.png')" Text="Missing Night HD asset 01." />
+    <Error Condition="!Exists('Assets/SocialCards/Night/night-card-02-hd.png')" Text="Missing Night HD asset 02." />
+    <Error Condition="!Exists('Assets/SocialCards/Night/night-card-03-hd.png')" Text="Missing Night HD asset 03." />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-01-hd.png &gt; Assets/SocialCards/Night/night-card-01.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-02-hd.png &gt; Assets/SocialCards/Night/night-card-02.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-03-hd.png &gt; Assets/SocialCards/Night/night-card-03.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-01-hd.png &gt; Assets/SocialCards/Night/night-card-04.b64" />
+    <Exec Command="base64 -w 0 Assets/SocialCards/Night/night-card-02-hd.png &gt; Assets/SocialCards/Night/night-card-05.b64" />
   </Target>
 
   <ItemGroup>
