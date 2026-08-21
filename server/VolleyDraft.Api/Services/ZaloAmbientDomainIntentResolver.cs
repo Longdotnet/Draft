@@ -30,8 +30,14 @@ internal sealed record ZaloAmbientDomainIntentSettings(
 {
     public static ZaloAmbientDomainIntentSettings FromConfiguration(IConfiguration configuration) => new(
         Enabled: configuration.GetValue("ZaloBot:Ambient:MemberAssist:SemanticAi:Enabled", true),
-        MinimumConfidence: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:MemberAssist:SemanticAi:MinimumConfidence", .85), .60, .99),
-        MaxContextMessages: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:MemberAssist:SemanticAi:MaxContextMessages", 8), 3, 12),
+        MinimumConfidence: Math.Clamp(
+            configuration.GetValue("ZaloBot:Ambient:MemberAssist:SemanticAi:MinimumConfidence", .85),
+            .60,
+            .99),
+        MaxContextMessages: Math.Clamp(
+            configuration.GetValue("ZaloBot:Ambient:MemberAssist:SemanticAi:MaxContextMessages", 8),
+            3,
+            12),
         MaxUserCallsPerMinute: Math.Clamp(configuration.GetValue("ZaloBot:AiPerUserPerMinute", 4), 1, 20),
         MaxGroupCallsPerMinute: Math.Clamp(configuration.GetValue("ZaloBot:AiPerGroupPerMinute", 20), 1, 100));
 }
@@ -44,10 +50,9 @@ internal sealed record ZaloAmbientDomainContextMessage(
     bool IsFromBot);
 
 /// <summary>
-/// Read-only semantic classifier for high-value ambient domain chatter. The model may
-/// understand paraphrases and reply context, but it never receives a mutation service.
-/// A positive decision is translated back into the existing deterministic member-assist
-/// flow, which remains responsible for ownership, session, offer and confirmation checks.
+/// Read-only semantic classifier for high-value ambient domain chatter. AI is used
+/// only to understand meaning. Existing deterministic services still own validation,
+/// coordination state, authorization, confirmation and every real domain mutation.
 /// </summary>
 internal sealed class ZaloAmbientDomainIntentResolver
 {
@@ -80,8 +85,7 @@ internal sealed class ZaloAmbientDomainIntentResolver
     public static bool LooksLikeCandidate(ZaloIncomingMessageEvent incoming)
     {
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
-        if (normalized.Length == 0) return false;
-        if (CandidatePattern.IsMatch(normalized)) return true;
+        if (normalized.Length > 0 && CandidatePattern.IsMatch(normalized)) return true;
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
         return quote.HasQuote && CandidatePattern.IsMatch(ZaloBotIntelligence.Normalize(quote.Content));
@@ -101,7 +105,7 @@ internal sealed class ZaloAmbientDomainIntentResolver
             return new(ZaloAmbientDomainIntentKind.None, 0, "ai_not_configured");
 
         var senderId = Clean(incoming.SenderId, 100);
-        if (!TryAcquireBudget(connectionId, groupId, senderId, settings))
+        if (senderId.Length == 0 || !TryAcquireBudget(connectionId, groupId, senderId, settings))
             return new(ZaloAmbientDomainIntentKind.None, 0, "ai_budget_exhausted");
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
@@ -151,7 +155,7 @@ internal sealed class ZaloAmbientDomainIntentResolver
             2. "A xin" đứng một mình mơ hồ; nhưng nếu reply trực tiếp tin "em pass nè" thì là ClaimOpenSlot.
             3. "Nay có việc hk đi dx. Em xin pass slot hôm nay a. @All" là PassOwnSlot. @All chỉ là broadcast, không phải chỉ định một người khác làm chủ slot.
             4. "@To An pass slot T6" hoặc "Nguyên rút slot rồi" là phát biểu về người khác; không được biến thành PassOwnSlot của người gửi.
-            5. "pass bóng", "xin chào", "đánh giá team", câu đùa không liên quan việc nhường/nhận suất là None.
+            5. "pass bóng", "xin chào", "đánh giá team" hoặc câu đùa không liên quan việc nhường/nhận suất là None.
             6. Không tự bịa session, chủ slot hay quyền. ActiveSessions/OpenOffers chỉ là dữ kiện tham khảo; backend sẽ tự xác minh lại.
             7. Chỉ cho confidence >= 0.85 khi ý định thực sự rõ từ CurrentMessage + Quote/RecentMessages/OpenOffers.
             """;
@@ -241,9 +245,9 @@ internal sealed class ZaloAmbientDomainIntentResolver
                 ? Clean(reasonNode.GetString(), 120)
                 : "no_reason";
 
-            if (!Enum.TryParse<ZaloAmbientDomainIntentKind>(kindText, true, out var kind))
-                return new(ZaloAmbientDomainIntentKind.None, confidence, "invalid_kind");
-            return new(kind, confidence, reason);
+            return Enum.TryParse<ZaloAmbientDomainIntentKind>(kindText, true, out var kind)
+                ? new(kind, confidence, reason)
+                : new(ZaloAmbientDomainIntentKind.None, confidence, "invalid_kind");
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
@@ -291,7 +295,8 @@ internal sealed class ZaloAmbientDomainIntentResolver
             .OrderBy(item => order.GetValueOrDefault(item.MessageId, int.MaxValue))
             .ToArray();
         var quotedId = Clean(quotedSenderId, 100);
-        var ranked = ordered
+
+        return ordered
             .Select((item, index) => new
             {
                 Item = item,
@@ -312,7 +317,6 @@ internal sealed class ZaloAmbientDomainIntentResolver
                 Clean(item.Item.Content, 400),
                 item.Item.IsFromBot))
             .ToArray();
-        return ranked;
     }
 
     private bool IsConfigured() =>
@@ -336,8 +340,7 @@ internal sealed class ZaloAmbientDomainIntentResolver
             var groupQueue = GetQueue(GroupCalls, groupKey);
             Prune(userQueue, cutoff);
             Prune(groupQueue, cutoff);
-            if (userQueue.Count >= settings.MaxUserCallsPerMinute ||
-                groupQueue.Count >= settings.MaxGroupCallsPerMinute)
+            if (userQueue.Count >= settings.MaxUserCallsPerMinute || groupQueue.Count >= settings.MaxGroupCallsPerMinute)
                 return false;
             userQueue.Enqueue(now);
             groupQueue.Enqueue(now);
@@ -402,16 +405,30 @@ internal static class ZaloAmbientDomainIntentPromotion
         ZaloAmbientDomainIntentDecision decision)
     {
         if (decision.Kind == ZaloAmbientDomainIntentKind.None) return null;
-        var mentions = incoming.Mentions
-            .Where(mention => !ZaloMemberAssistService.IsBroadcastMention(incoming, mention))
-            .ToArray();
+
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+        var promotedContent = decision.Kind switch
+        {
+            ZaloAmbientDomainIntentKind.PassOwnSlot => $"tui pass slot {incoming.Content}".Trim(),
+            ZaloAmbientDomainIntentKind.ClaimOpenSlot when quote.HasQuote && !string.IsNullOrWhiteSpace(quote.SenderName) =>
+                $"tui nhận của {quote.SenderName}",
+            ZaloAmbientDomainIntentKind.ClaimOpenSlot => "tui nhận",
+            _ => incoming.Content
+        };
 
         return incoming with
         {
-            Content = decision.Kind == ZaloAmbientDomainIntentKind.PassOwnSlot
-                ? $"tui pass slot {incoming.Content}".Trim()
-                : "tui nhận",
-            Mentions = mentions
+            Content = promotedContent,
+            Mentions = incoming.Mentions.Where(mention => !IsBroadcastMention(incoming, mention)).ToArray()
         };
+    }
+
+    internal static bool IsBroadcastMention(ZaloIncomingMessageEvent incoming, ZaloBridgeMention mention)
+    {
+        var content = incoming.Content ?? string.Empty;
+        if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos + mention.Len > content.Length) return false;
+        var label = content.Substring(mention.Pos, mention.Len).Trim().TrimStart('@');
+        var normalized = ZaloBotIntelligence.Normalize(label);
+        return normalized is "all" or "everyone" or "moi nguoi" or "ca nhom";
     }
 }
