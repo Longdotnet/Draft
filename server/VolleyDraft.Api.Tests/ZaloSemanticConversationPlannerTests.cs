@@ -41,7 +41,7 @@ public sealed class ZaloSemanticConversationPlannerTests
     }
 
     [Fact]
-    public void Bare_claim_does_not_invent_slot_owner()
+    public void Bare_claim_does_not_invent_slot_owner_and_leaves_grounding_to_backend()
     {
         var plan = ZaloSemanticConversationPlanner.Build(
             Message("claim-2", "user-nam", "Nam", "tui nhận"),
@@ -54,7 +54,8 @@ public sealed class ZaloSemanticConversationPlannerTests
         Assert.Null(plan.ReferencedMemberName);
         Assert.Null(plan.SourceMessageId);
         Assert.True(plan.NeedsClarification);
-        Assert.False(plan.CanEnterDeterministicRouter);
+        Assert.True(plan.RequiresAuthoritativeValidation);
+        Assert.True(plan.CanEnterDeterministicRouter);
     }
 
     [Fact]
