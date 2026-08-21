@@ -58,7 +58,7 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
     }
 
     [Fact]
-    public void KeepRecruiting_DoesNotAskCancelQuestionAgain()
+    public void KeepRecruiting_DoesNotAskSameDecisionAgain()
     {
         var readiness = Snapshot(15, 15, 18, ZaloDraftReadinessState.RosterNotFull, "fp-15");
         var decision = Decision(ZaloDraftPreparationDecisionKind.KeepRecruiting, null, null);
@@ -68,7 +68,7 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         Assert.NotNull(message);
         Assert.Contains("đã chốt tiếp tục kiếm thêm", message!);
         Assert.Contains("14/18 → 15/18", message);
-        Assert.Contains("không hỏi huỷ/giữ sân lại", message);
+        Assert.Contains("không hỏi lại cùng một quyết định", message);
     }
 
     [Fact]
@@ -83,6 +83,26 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         Assert.Contains("3 team x5", message!);
         Assert.Contains("Không dí kiếm thêm nữa", message);
         Assert.Contains("`draft đi`", message);
+    }
+
+    [Fact]
+    public void PlayCurrentWithMissingProfile_DoesNotInviteDraftYet()
+    {
+        var readiness = Snapshot(
+            15,
+            15,
+            18,
+            ZaloDraftReadinessState.MissingProfiles,
+            "fp-15",
+            missingNames: ["A", "B"]);
+        var decision = Decision(ZaloDraftPreparationDecisionKind.PlayCurrentRoster, "fp-15", 15);
+
+        var message = Build(readiness, decision: decision);
+
+        Assert.NotNull(message);
+        Assert.Contains("2 hồ sơ thiếu dữ liệu", message!);
+        Assert.Contains("A, B", message);
+        Assert.DoesNotContain("`draft đi`", message);
     }
 
     [Fact]
@@ -128,6 +148,29 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         Assert.NotNull(message);
         Assert.Contains("quyết định roster cũ hết hiệu lực", message!);
         Assert.Contains("15/18 → 16/18", message);
+    }
+
+    [Fact]
+    public void StopMatch_SuppressesDraftPreparationReminder()
+    {
+        var readiness = Snapshot(15, 15, 18, ZaloDraftReadinessState.RosterNotFull, "fp-15");
+        var decision = Decision(ZaloDraftPreparationDecisionKind.StopMatch, null, null);
+
+        Assert.Null(Build(readiness, decision: decision));
+    }
+
+    [Fact]
+    public void NoRoster_RemainsNeutralAndDoesNotSeedCancellationLanguage()
+    {
+        var readiness = Snapshot(0, 0, 18, ZaloDraftReadinessState.NoRoster, "fp-0");
+
+        var message = Build(readiness);
+
+        Assert.NotNull(message);
+        Assert.Contains("0/18", message!);
+        Assert.Contains("kiếm thêm", message);
+        Assert.DoesNotContain("huỷ", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("cancel", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -180,7 +223,11 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
     [InlineData("huy slot T4 nha")]
     [InlineData("15 người đang chơi")]
     [InlineData("tối nay đánh mấy giờ")]
-    public void DecisionParser_DoesNotConfuseSlotOrOrdinaryChatWithMatchDecision(string text)
+    [InlineData("chốt")]
+    [InlineData("ok")]
+    [InlineData("ừ")]
+    [InlineData("tuỳ")]
+    public void DecisionParser_DoesNotConfuseWeakSlotOrOrdinaryChatWithMatchDecision(string text)
     {
         Assert.Null(ZaloDraftPreparationDecisionPolicy.TryParse(text));
     }
@@ -254,8 +301,11 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         int capacity,
         ZaloDraftReadinessState state,
         string fingerprint,
-        bool canEscalate = false) =>
-        new(
+        bool canEscalate = false,
+        IReadOnlyList<string>? missingNames = null)
+    {
+        missingNames ??= [];
+        return new(
             SessionId: "session-1",
             SessionName: "T4 26/08 18:00",
             AdminUserId: "admin",
@@ -265,8 +315,8 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
             PresentPlayerCount: presentPlayers,
             EffectiveSlotCount: effectiveSlots,
             Capacity: capacity,
-            MissingProfileCount: 0,
-            MissingProfileNames: [],
+            MissingProfileCount: missingNames.Count,
+            MissingProfileNames: missingNames,
             HasTeams: false,
             HasLinkedPoll: true,
             Fingerprint: fingerprint,
@@ -274,4 +324,5 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
             ReasonCode: state == ZaloDraftReadinessState.Ready ? "draft_ready" : "draft_blocked_roster_not_full",
             IsRosterReady: state == ZaloDraftReadinessState.Ready,
             CanEscalate: canEscalate);
+    }
 }
