@@ -18,6 +18,7 @@ public sealed class ZaloAutoSessionSettingsService(
     private readonly ZaloAutoSessionObservabilityService observability = new(db);
     private readonly ZaloAutoSessionV2Store v2Store = new(db);
     private readonly ZaloAutoSessionTrustedOrganizerStore trustedOrganizerStore = new(db);
+    private readonly ZaloDraftReminderTagPreferenceStore draftReminderTagStore = new(db);
     private readonly ZaloCommunityNudgeStore communityNudgeStore = new(db);
 
     public async Task<ServiceResult<IReadOnlyList<ZaloAutoSessionGroupResponse>>> GetGroupsAsync(
@@ -200,6 +201,14 @@ public sealed class ZaloAutoSessionSettingsService(
             (trustedOrganizerId.Length == 0 || request.TrustedOrganizerEnabled is null))
             return BadRequest<ZaloAutoSessionGroupResponse>("Trusted Backup cần Zalo user id và trạng thái bật/tắt.");
 
+        var draftReminderTagId = NormalizeId(request.DraftReminderTagZaloUserId);
+        var draftReminderTagChange =
+            request.DraftReminderTagEnabled is not null ||
+            draftReminderTagId.Length > 0;
+        if (draftReminderTagChange &&
+            (draftReminderTagId.Length == 0 || request.DraftReminderTagEnabled is null))
+            return BadRequest<ZaloAutoSessionGroupResponse>("Draft Reminder tag cần Zalo user id và trạng thái bật/tắt.");
+
         tracked.AutoSessionEnabled = request.AutoSessionEnabled;
         tracked.RequireOrganizerApproval = request.RequireOrganizerApproval;
         tracked.DefaultTeamCount = 3;
@@ -226,6 +235,7 @@ public sealed class ZaloAutoSessionSettingsService(
 
         await v2Store.EnsureAsync(cancellationToken);
         await trustedOrganizerStore.EnsureAsync(cancellationToken);
+        await draftReminderTagStore.EnsureAsync(cancellationToken);
         if (!tracked.AutoSessionEnabled)
         {
             await ZaloAutoSessionRolloutGuard.SupersedePendingAsync(
@@ -320,6 +330,48 @@ public sealed class ZaloAutoSessionSettingsService(
                 cancellationToken);
         }
 
+        if (draftReminderTagChange)
+        {
+            var tagConnection = await db.ZaloConnections
+                .AsNoTracking()
+                .SingleOrDefaultAsync(item =>
+                    item.Id == tracked.ZaloConnectionId &&
+                    item.AdminUserId == adminUserId,
+                    cancellationToken);
+            if (tagConnection is null || tagConnection.Status != ZaloConnectionStatus.Connected)
+                return BadRequest<ZaloAutoSessionGroupResponse>("Cần Zalo connection đang Connected để đổi người nhận Draft Reminder.");
+
+            try
+            {
+                using var tagDocument = JsonDocument.Parse(
+                    credentialProtector.Unprotect(tagConnection.EncryptedCredentials));
+                var roles = await bridge.GetGroupRolesAsync(tagDocument.RootElement.Clone(), tracked.GroupId);
+                var currentOrganizerIds = new[] { NormalizeId(roles.CreatorId) }
+                    .Concat(roles.AdminIds.Select(NormalizeId))
+                    .Where(id => id.Length > 0)
+                    .ToHashSet(StringComparer.Ordinal);
+                if (!currentOrganizerIds.Contains(draftReminderTagId))
+                    return BadRequest<ZaloAutoSessionGroupResponse>("Chỉ trưởng/phó nhóm Zalo hiện tại mới cấu hình nhận Draft Reminder tag.");
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                return BridgeFailure<ZaloAutoSessionGroupResponse>(exception);
+            }
+
+            var displayName = string.IsNullOrWhiteSpace(request.DraftReminderTagDisplayName)
+                ? draftReminderTagId
+                : request.DraftReminderTagDisplayName.Trim();
+            await draftReminderTagStore.SetAsync(
+                tracked.Id,
+                tracked.ZaloConnectionId,
+                tracked.GroupId,
+                draftReminderTagId,
+                displayName,
+                request.DraftReminderTagEnabled!.Value,
+                adminUserId,
+                cancellationToken);
+        }
+
         var connection = await db.ZaloConnections
             .AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == tracked.ZaloConnectionId && item.AdminUserId == adminUserId, cancellationToken);
@@ -365,11 +417,14 @@ public sealed class ZaloAutoSessionSettingsService(
         var learning = await v2Store.GetLearningSignalsAsync(response.Id, 100, cancellationToken);
         var visibleLearning = learning.Take(20).Select(ToLearningResponse).ToList();
         await trustedOrganizerStore.EnsureAsync(cancellationToken);
+        await draftReminderTagStore.EnsureAsync(cancellationToken);
         var trustedOrganizers = await trustedOrganizerStore.GetAsync(response.Id, cancellationToken);
+        var reminderTags = await draftReminderTagStore.GetForTrackedGroupAsync(response.Id, cancellationToken);
         var organizerCandidates = await GetOrganizerCandidatesAsync(
             response,
             connection,
             trustedOrganizers,
+            reminderTags,
             cancellationToken);
         var communityTipDailyCount = await communityNudgeStore.GetDailyCountAsync(
             response.ZaloConnectionId,
@@ -414,9 +469,13 @@ public sealed class ZaloAutoSessionSettingsService(
         ZaloAutoSessionGroupResponse response,
         ZaloConnection? connection,
         IReadOnlyList<ZaloAutoSessionTrustedOrganizerData> trusted,
+        IReadOnlyList<ZaloDraftReminderTagPreferenceData> reminderTags,
         CancellationToken cancellationToken)
     {
         var trustedById = trusted
+            .GroupBy(item => NormalizeId(item.ZaloUserId), StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var reminderTagById = reminderTags
             .GroupBy(item => NormalizeId(item.ZaloUserId), StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
         var current = new Dictionary<string, (string Name, string Role, bool DefaultFallback)>(StringComparer.Ordinal);
@@ -464,13 +523,15 @@ public sealed class ZaloAutoSessionSettingsService(
         var result = current.Select(item =>
         {
             trustedById.TryGetValue(item.Key, out var saved);
+            reminderTagById.TryGetValue(item.Key, out var savedTag);
             return new ZaloAutoSessionOrganizerCandidateResponse(
                 item.Key,
                 item.Value.Name,
                 item.Value.Role,
                 true,
                 !item.Value.DefaultFallback && saved?.Enabled == true,
-                item.Value.DefaultFallback);
+                item.Value.DefaultFallback,
+                savedTag?.Enabled ?? item.Value.DefaultFallback);
         }).ToList();
 
         foreach (var saved in trusted.Where(item => item.Enabled))
@@ -483,6 +544,7 @@ public sealed class ZaloAutoSessionSettingsService(
                 "NoLongerAdmin",
                 false,
                 true,
+                false,
                 false));
         }
 

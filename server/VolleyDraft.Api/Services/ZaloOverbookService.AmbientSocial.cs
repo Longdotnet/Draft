@@ -15,6 +15,18 @@ public sealed partial class ZaloOverbookService
         ZaloAmbientSettings ambientSettings,
         CancellationToken cancellationToken)
     {
+        // Leader/deputy roster decisions are deterministic domain state, not Social AI.
+        // They run before conversation-lease promotion so natural ambient phrases such
+        // as "15 vẫn đánh" or "cứ kiếm thêm" are bound to a fresh linked-poll snapshot.
+        if (await TryHandleDraftPreparationDecisionAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         // A live same-sender lease may continue a pending preview only when the
         // pending intent itself is in the narrow draft/rebalance confirmation allowlist.
         // Generic "ok" acknowledgements are deliberately not confirmation authority.

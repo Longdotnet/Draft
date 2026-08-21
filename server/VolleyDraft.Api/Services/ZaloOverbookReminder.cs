@@ -115,9 +115,10 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
-        // Draft-autopilot owns only its narrow natural-readiness/escalation turns and
-        // must run before Ambient, otherwise one unmentioned question can receive two
-        // replies. All other messages fall through unchanged to V2 and legacy routing.
+        // Draft preparation decisions are deterministic domain state. Route them
+        // before mention/Ambient gating so a live leader can naturally say
+        // "15 vẫn đánh", "kiếm thêm", or the follow-up "draft đi" with or without @bot.
+        // Slot-level "huỷ slot" is deliberately not matched by this lane.
         var draftAccountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
         var draftGroupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
         if (draftAccountId.Length > 0 && draftGroupId.Length > 0)
@@ -129,15 +130,30 @@ public sealed partial class ZaloOverbookService
                 .Select(item => new { item.Id, item.AccountZaloId, item.DisplayName, item.UpdatedAt })
                 .ToListAsync(cancellationToken);
             var draftConnection = draftConnectionRows.OrderByDescending(item => item.UpdatedAt).FirstOrDefault();
-            if (draftConnection is not null &&
-                await TryHandleDraftAutopilotAsync(
-                    draftConnection.Id,
-                    draftConnection.AccountZaloId,
-                    draftConnection.DisplayName,
-                    draftGroupId,
-                    incoming,
-                    cancellationToken))
-                return true;
+            if (draftConnection is not null)
+            {
+                var ambientSettings = ZaloAmbientSettings.FromConfiguration(configuration);
+                if (await TryHandleDraftPreparationDecisionAsync(
+                        draftConnection.Id,
+                        draftGroupId,
+                        ZaloOverbookLogic.NormalizeId(incoming.SenderId),
+                        incoming,
+                        ambientSettings,
+                        cancellationToken))
+                    return true;
+
+                // Draft-autopilot still owns its narrow natural-readiness/escalation
+                // turns. The new preparation lane replaces only proactive scheduling,
+                // not the existing interactive safety/approval router.
+                if (await TryHandleDraftAutopilotAsync(
+                        draftConnection.Id,
+                        draftConnection.AccountZaloId,
+                        draftConnection.DisplayName,
+                        draftGroupId,
+                        incoming,
+                        cancellationToken))
+                    return true;
+            }
         }
 
         if (await TryHandleV2PreRoutingAsync(incoming, cancellationToken)) return true;

@@ -39,7 +39,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     private static readonly TimeSpan FirstNudgeDelay = TimeSpan.FromMinutes(45);
 
     private static readonly Regex PassSlotPattern = new(
-        @"(?<![a-z0-9])(?:pass|nhuong|tra|bo)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:pass|nhuong|tra|bo|huy|cancel)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex NegatedPassPattern = new(
