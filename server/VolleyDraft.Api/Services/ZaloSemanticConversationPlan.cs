@@ -18,9 +18,11 @@ internal sealed record ZaloSemanticConversationPlan(
     bool RequiresAuthoritativeValidation,
     string Reason)
 {
+    // NeedsClarification means the AI itself could not ground every reference. It does
+    // not block the deterministic router: that router may still resolve a unique live
+    // open offer from authoritative state. If it cannot, it fails closed as before.
     public bool CanEnterDeterministicRouter =>
         Kind != ZaloAmbientDomainIntentKind.None &&
-        !NeedsClarification &&
         RequiresAuthoritativeValidation;
 }
 
@@ -48,9 +50,8 @@ internal static class ZaloSemanticConversationPlanner
             }
             else
             {
-                // A bare "tui nhận" can only be promoted safely if the existing
-                // deterministic open-offer resolver can unambiguously bind it. Mark
-                // the plan as needing grounding instead of inventing an owner here.
+                // Do not invent an owner. The deterministic open-offer resolver gets
+                // the chance to bind a unique live offer; otherwise it rejects safely.
                 needsClarification = true;
             }
         }
