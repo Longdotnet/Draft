@@ -57,9 +57,16 @@ internal sealed record ZaloReadOnlyGroundingSession(
     int Capacity,
     int PlayerCount);
 
+/// <summary>
+/// MemberId is a stable person identity, not a session-scoped roster row. Prefer
+/// zalo:&lt;uid&gt;, then profile:&lt;PlayerProfileId&gt;, with a session-player fallback only
+/// when the database has no stable identity yet. SessionPlayerId/SessionId describe
+/// optional membership in one candidate session.
+/// </summary>
 internal sealed record ZaloReadOnlyGroundingMember(
     string MemberId,
-    string SessionId,
+    string? SessionPlayerId,
+    string? SessionId,
     string? PlayerProfileId,
     string? ZaloUserId,
     string DisplayName,
