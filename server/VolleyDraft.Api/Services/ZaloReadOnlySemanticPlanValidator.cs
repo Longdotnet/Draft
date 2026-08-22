@@ -65,23 +65,13 @@ internal static class ZaloReadOnlySemanticPlanValidator
             normalized = normalized with { SessionId = snapshot.Sessions[0].SessionId };
         }
 
-        if (!string.IsNullOrWhiteSpace(normalized.SubjectMemberId))
-        {
-            var subject = snapshot.Members.FirstOrDefault(member =>
-                string.Equals(member.MemberId, normalized.SubjectMemberId, StringComparison.Ordinal));
-            if (subject is null ||
-                (normalized.SessionId is not null && !string.Equals(subject.SessionId, normalized.SessionId, StringComparison.Ordinal)))
-                return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
-        }
+        if (!string.IsNullOrWhiteSpace(normalized.SubjectMemberId) &&
+            !snapshot.Members.Any(member => string.Equals(member.MemberId, normalized.SubjectMemberId, StringComparison.Ordinal)))
+            return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
 
-        if (!string.IsNullOrWhiteSpace(normalized.ReferencedMemberId))
-        {
-            var referenced = snapshot.Members.FirstOrDefault(member =>
-                string.Equals(member.MemberId, normalized.ReferencedMemberId, StringComparison.Ordinal));
-            if (referenced is null ||
-                (normalized.SessionId is not null && !string.Equals(referenced.SessionId, normalized.SessionId, StringComparison.Ordinal)))
-                return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
-        }
+        if (!string.IsNullOrWhiteSpace(normalized.ReferencedMemberId) &&
+            !snapshot.Members.Any(member => string.Equals(member.MemberId, normalized.ReferencedMemberId, StringComparison.Ordinal)))
+            return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
 
         if (normalized.SubjectIsCurrentSender && normalized.SubjectMemberId is not null)
             return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_subject");
@@ -90,20 +80,22 @@ internal static class ZaloReadOnlySemanticPlanValidator
             !normalized.SubjectIsCurrentSender && normalized.SubjectMemberId is null)
             return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_subject");
 
+        ZaloReadOnlyGroundingOffer? groundedOffer = null;
         if (normalized.OpenOfferId is not null)
         {
-            var offer = snapshot.OpenOffers.FirstOrDefault(item =>
+            groundedOffer = snapshot.OpenOffers.FirstOrDefault(item =>
                 string.Equals(item.OfferId, normalized.OpenOfferId, StringComparison.Ordinal));
-            if (offer is null ||
-                (normalized.SessionId is not null && !string.Equals(offer.SessionId, normalized.SessionId, StringComparison.Ordinal)))
+            if (groundedOffer is null ||
+                (normalized.SessionId is not null && !string.Equals(groundedOffer.SessionId, normalized.SessionId, StringComparison.Ordinal)))
                 return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
 
             if (normalized.ReferencedMemberId is not null)
             {
-                var referenced = snapshot.Members.First(member =>
-                    string.Equals(member.MemberId, normalized.ReferencedMemberId, StringComparison.Ordinal));
-                if (!string.IsNullOrWhiteSpace(referenced.ZaloUserId) &&
-                    !string.Equals(referenced.ZaloUserId, offer.OwnerZaloUserId, StringComparison.Ordinal))
+                var referencedIdentities = snapshot.Members
+                    .Where(member => string.Equals(member.MemberId, normalized.ReferencedMemberId, StringComparison.Ordinal))
+                    .ToArray();
+                if (referencedIdentities.Any(member => !string.IsNullOrWhiteSpace(member.ZaloUserId)) &&
+                    !referencedIdentities.Any(member => string.Equals(member.ZaloUserId, groundedOffer.OwnerZaloUserId, StringComparison.Ordinal)))
                     return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
             }
         }
@@ -114,6 +106,14 @@ internal static class ZaloReadOnlySemanticPlanValidator
                 return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_subject");
             if (normalized.ReferencedMemberId is null && normalized.OpenOfferId is null)
                 return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_unresolved_slot_reference");
+
+            // Without an authoritative open offer, a referenced "slot of Long" must
+            // still be tied to Long's membership in the validated target session.
+            if (groundedOffer is null && normalized.ReferencedMemberId is not null && normalized.SessionId is not null &&
+                !snapshot.Members.Any(member =>
+                    string.Equals(member.MemberId, normalized.ReferencedMemberId, StringComparison.Ordinal) &&
+                    string.Equals(member.SessionId, normalized.SessionId, StringComparison.Ordinal)))
+                return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_entity");
         }
 
         if (normalized.SourceMessageId is not null)
