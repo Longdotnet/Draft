@@ -75,9 +75,14 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
         Assert.Equal(ZaloReadOnlySemanticRoute.ReadOnlyQuestion, plan.Route);
         Assert.Equal(ZaloReadOnlyFactKind.SessionSchedule, plan.FactKind);
         Assert.Equal("session-t6", plan.SessionId);
-        Assert.Contains("chắc tối nay tui nghỉ", handler.LastRequestBody, StringComparison.Ordinal);
-        Assert.Contains("GroundingSnapshot", handler.LastRequestBody, StringComparison.Ordinal);
-        Assert.Contains("session-t6", handler.LastRequestBody, StringComparison.Ordinal);
+        using var requestDocument = JsonDocument.Parse(handler.LastRequestBody);
+        var modelInput = requestDocument.RootElement
+            .GetProperty("messages")[1]
+            .GetProperty("content")
+            .GetString() ?? string.Empty;
+        Assert.Contains("chắc tối nay tui nghỉ", modelInput, StringComparison.Ordinal);
+        Assert.Contains("GroundingSnapshot", modelInput, StringComparison.Ordinal);
+        Assert.Contains("session-t6", modelInput, StringComparison.Ordinal);
         Assert.Equal(1, handler.CallCount);
     }
 
