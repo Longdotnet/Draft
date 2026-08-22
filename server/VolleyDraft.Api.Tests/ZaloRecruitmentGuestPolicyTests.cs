@@ -24,6 +24,7 @@ public sealed class ZaloRecruitmentGuestPolicyTests
 
     [Theory]
     [InlineData("+1 bạn tui")]
+    [InlineData("+1 bạn mình")]
     [InlineData("+1 bạn T7")]
     public void AddParser_DoesNotMistakePronounOrSessionForGuestName(string text)
     {
@@ -32,6 +33,15 @@ public sealed class ZaloRecruitmentGuestPolicyTests
         Assert.NotNull(command);
         Assert.Single(command!.Guests!);
         Assert.Null(command.Guests[0].DisplayName);
+    }
+
+    [Fact]
+    public void AddParser_PreservesMinhAsARealName()
+    {
+        var command = ZaloRecruitmentGuestPolicy.TryParse("+1 Minh");
+
+        Assert.NotNull(command);
+        Assert.Equal("Minh", Assert.Single(command!.Guests!).DisplayName);
     }
 
     [Fact]
