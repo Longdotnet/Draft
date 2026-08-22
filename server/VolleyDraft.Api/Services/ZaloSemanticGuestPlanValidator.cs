@@ -26,7 +26,12 @@ internal static class ZaloSemanticGuestPlanValidator
         ZaloSemanticGuestGroundingSnapshot snapshot,
         ZaloSemanticActionSettings settings)
     {
-        if (snapshot.AnchorKind != ZaloSemanticGuestAnchorKind.RecruitmentBroadcast)
+        var directRecruitment = snapshot.AnchorKind == ZaloSemanticGuestAnchorKind.RecruitmentBroadcast;
+        var resumedPendingAdd = snapshot.AnchorKind == ZaloSemanticGuestAnchorKind.PendingGuestAction &&
+                                !string.IsNullOrWhiteSpace(snapshot.RecruitmentMessageId) &&
+                                snapshot.PendingMissingFields.Any(item =>
+                                    string.Equals(item, "quantity", StringComparison.OrdinalIgnoreCase));
+        if (!directRecruitment && !resumedPendingAdd)
             return ZaloSemanticGuestValidationResult.Reject(
                 plan,
                 "semantic_guest_add_requires_recruitment_reply",
@@ -87,7 +92,9 @@ internal static class ZaloSemanticGuestPlanValidator
     {
         if (snapshot.AnchorKind is not (ZaloSemanticGuestAnchorKind.RecruitmentBroadcast or
             ZaloSemanticGuestAnchorKind.GuestConversation or
-            ZaloSemanticGuestAnchorKind.ActiveGuestConversation))
+            ZaloSemanticGuestAnchorKind.ActiveGuestConversation or
+            ZaloSemanticGuestAnchorKind.PendingGuestAction or
+            ZaloSemanticGuestAnchorKind.RecentGuestMutation))
             return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_update_without_context");
 
         var sources = plan.Guests.ToList();
@@ -163,21 +170,33 @@ internal static class ZaloSemanticGuestPlanValidator
     {
         if (snapshot.AnchorKind is not (ZaloSemanticGuestAnchorKind.RecruitmentBroadcast or
             ZaloSemanticGuestAnchorKind.GuestConversation or
-            ZaloSemanticGuestAnchorKind.ActiveGuestConversation))
+            ZaloSemanticGuestAnchorKind.ActiveGuestConversation or
+            ZaloSemanticGuestAnchorKind.PendingGuestAction or
+            ZaloSemanticGuestAnchorKind.RecentGuestMutation))
             return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_cancel_without_context");
 
-        var resolved = plan.Guests
+        var confidentSources = plan.Guests
             .Where(item => item.Confidence >= settings.MinimumConfidence)
+            .ToList();
+        var resolved = confidentSources
             .Select(item => ResolveGroundedGuest(item, snapshot))
             .Where(item => item is not null)
             .Cast<ZaloSemanticGuestGroundingGuest>()
             .DistinctBy(item => item.ReservationId, StringComparer.Ordinal)
             .Take(2)
             .ToList();
-        if (resolved.Count == 0 && snapshot.ExistingGuests.Count == 1 && plan.Quantity is null or 1)
+
+        // A single grounded guest may be inferred only when the planner supplied no
+        // target at all. If the model supplied an explicit reservation/reference that
+        // failed grounding, never replace it with "the only guest" — that would turn a
+        // fabricated target into mutation authority.
+        if (resolved.Count == 0 &&
+            plan.Guests.Count == 0 &&
+            snapshot.ExistingGuests.Count == 1 &&
+            plan.Quantity is null or 1)
             resolved.Add(snapshot.ExistingGuests[0]);
 
-        if (resolved.Count == 0 || plan.NeedsClarification)
+        if (resolved.Count == 0 || resolved.Count != confidentSources.Count || plan.NeedsClarification)
             return ZaloSemanticGuestValidationResult.Reject(
                 plan,
                 "semantic_guest_cancel_target_ambiguous",
