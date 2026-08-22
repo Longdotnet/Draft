@@ -9,7 +9,9 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
     [Fact]
     public void UnderCapacity_BuildsAllMentionRecruitmentCopyFromGroundedReadiness()
     {
-        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(Snapshot(15, 15, 18));
+        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+            Snapshot(15, 15, 18),
+            guestSignupOpen: true);
 
         Assert.NotNull(message);
         Assert.StartsWith("@all ", message!, StringComparison.Ordinal);
@@ -20,6 +22,22 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
         Assert.Contains("tiếp tục kiếm thêm", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("reply thẳng tin này `+1` hoặc `+2`", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần ở trong group Zalo", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BeforeGuestWindow_RecruitmentCopyPrioritizesGroupMembersOnly()
+    {
+        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+            Snapshot(15, 15, 18),
+            guestSignupOpen: false);
+
+        Assert.NotNull(message);
+        Assert.StartsWith("@all ", message!, StringComparison.Ordinal);
+        Assert.Contains("chưa vote", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vào poll", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("+1", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("+2", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ngoài group", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
