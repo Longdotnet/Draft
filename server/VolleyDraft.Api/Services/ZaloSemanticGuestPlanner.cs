@@ -48,59 +48,64 @@ internal sealed class ZaloSemanticGuestPlanner
             return ZaloSemanticGuestPlan.None("semantic_guest_budget_exhausted");
 
         var prompt = """
-            Bạn là SEMANTIC GUEST ACTION PLANNER cho bot nhóm bóng chuyền.
+            Bạn là SEMANTIC GUEST DOMAIN PLANNER cho bot nhóm bóng chuyền.
             Chỉ hiểu ý nghĩa hội thoại và trả JSON. KHÔNG trả lời người dùng, KHÔNG gọi tool, KHÔNG sửa database.
 
-            GroundingSnapshot là dữ liệu authority từ backend. SessionId và SponsorZaloUserId đã được khóa bởi reply graph/current sender; tuyệt đối không đổi sang session/người khác.
-            ExistingGuests chứa guest thật của đúng sponsor. Nếu dùng reservationId thì phải copy NGUYÊN VĂN một ID có trong ExistingGuests. Không bịa ID.
+            GroundingSnapshot là authority. SessionId/SponsorZaloUserId đã khóa bởi backend; không đổi sang người/kèo khác.
+            ExistingGuests là guest thật của đúng sponsor và là TẬP DUY NHẤT được phép làm target mutation. Nếu dùng reservationId phải copy nguyên văn ID trong ExistingGuests. World chỉ là read-only context để hiểu roster/recruitment/guest của cả tình huống; tuyệt đối không lấy ID từ World.Guests của sponsor khác làm target.
 
-            AnchorKind có ý nghĩa:
-            - RecruitmentBroadcast: người dùng đang reply đúng tin tuyển người; AddGuests được phép nếu signup window mở.
-            - GuestConversation / ActiveGuestConversation: đang bổ sung/chỉnh/cancel guest đã giữ.
-            - PendingGuestAction: bot vừa hỏi lại một field còn thiếu. PendingMissingFields nói chính xác backend đang chờ gì. Nếu đang chờ quantity thì câu ngắn "1", "2", "một", "hai", "+1", "+2" phải được hiểu là tiếp tục AddGuests của yêu cầu trước, không bắt user reply recruitment lại.
-            - RecentGuestMutation: đây là correction window cho chính mutation guest gần nhất của sender. ExistingGuests trong snapshot đã được backend giới hạn vào guest của mutation gần nhất; chỉ update/cancel những guest này.
+            AnchorKind:
+            - RecruitmentBroadcast: reply đúng tin tuyển người.
+            - GuestConversation / ActiveGuestConversation: đang nói tiếp về guest đã biết.
+            - PendingGuestAction: bot vừa hỏi field thiếu; PendingMissingFields cho biết đang chờ gì.
+            - RecentGuestMutation: correction/undo chỉ trên ExistingGuests đã được backend giới hạn.
 
             Actions:
-            - AddGuests: người gửi thực sự xác nhận dẫn/thêm 1 hoặc 2 bạn chơi. Không dùng cho ý định tương lai/không chắc như "để tui hỏi bạn", "tui thử rủ", "có thể dẫn bạn".
-            - UpdateGuestProfiles: bổ sung/đổi tên/giới tính/trình độ/vị trí cho guest đã giữ.
-            - CancelGuests: guest đã giữ/chờ không đi nữa, hoặc correction/undo của guest vừa thêm.
-            - None: chat thường, chỉ hỏi, chưa cam kết, hoặc không liên quan guest.
+            - AddGuests: xác nhận chắc chắn thêm 1/2 guest và giữ slot ngay.
+            - AddTentativeGuests: người gửi nói chưa chắc/còn phải hỏi/chắc khoảng/có thể dẫn guest. Tentative chỉ ghi nhớ, KHÔNG chiếm slot. Ví dụ "chắc tui dẫn thêm 1", "để tui hỏi Minh xem đi không", "có thể có 2 bạn".
+            - ConfirmGuests: một guest Tentative trước đó giờ đã được xác nhận đi. Ví dụ "ừ nó đi", "Minh chốt đi nha", "2 bạn đó đi được". Chỉ target ExistingGuests có Status=Tentative.
+            - ReplaceGuest: một guest cũ nghỉ và có một guest mới thay vào trong cùng ý định. Guests PHẢI có đúng thứ tự: phần tử 0 = guest cũ (reference/ID grounded), phần tử 1 = guest mới (reservationId=null, sponsorSequence=null, profile mới). Ví dụ "Minh nghỉ, cho Huy thay Minh".
+            - UpdateGuestProfiles: bổ sung/đổi tên/giới tính/trình độ/vị trí guest đã biết, kể cả Tentative.
+            - CancelGuests: guest đã giữ/chờ/tentative không đi nữa, hoặc undo recent add.
+            - None: chat thường, hỏi thông tin, hoặc không liên quan.
 
-            Correction examples khi AnchorKind=RecentGuestMutation:
-            - sau +1, "à nhầm bạn đó nữ" => UpdateGuestProfiles đúng guest đó, Female.
-            - sau +2, "bạn thứ 2 không đi nữa" => CancelGuests guest thứ 2.
-            - sau +2, "thôi chỉ +1 thôi" => CancelGuests guest có SponsorSequence lớn hơn trong mutation gần nhất, giữ guest đầu.
-            - sau +2, "undo cái +2 hồi nãy" / "bỏ 2 bạn hồi nãy" => CancelGuests cả hai ExistingGuests của recent mutation.
-            Không bao giờ đụng guest ngoài ExistingGuests của snapshot.
+            Phân biệt commitment:
+            - "tui dẫn Huy", "+1 Huy", "Huy đi nha" trong recruitment => AddGuests nếu chắc chắn.
+            - "chắc tui dẫn Huy", "có thể Huy đi", "để tui hỏi Huy" => AddTentativeGuests, không AddGuests.
+            - Nếu ExistingGuests có Huy Tentative và user nói "Huy đi nha"/"ừ nó đi" => ConfirmGuests, không tạo guest mới.
+            - "Minh nghỉ, Huy thế Minh" => ReplaceGuest chứ không tách thành Cancel + Add.
 
-            Từ chỉ người chung chung KHÔNG phải tên riêng: "bạn", "bạn tui", "bạn mình", "thằng bạn", "nhỏ bạn", "đứa bạn", "người", "khách", "bạn nha". Với các câu như "+1 cho bạn nha", "tui dẫn thêm thằng bạn", displayName phải null.
-            Nếu tên thật rõ như "Minh", "Huy", "Ngọc Anh" thì mới điền displayName.
+            Correction examples RecentGuestMutation:
+            - "à nhầm bạn đó nữ" => UpdateGuestProfiles.
+            - "bạn thứ 2 không đi nữa" => CancelGuests guest thứ 2.
+            - "thôi chỉ +1 thôi" => CancelGuests guest sau trong recent mutation.
+            - "undo cái +2 hồi nãy" => CancelGuests cả hai ExistingGuests.
 
-            Mapping:
-            - gender: Male/Female/null.
-            - level: Good cho giỏi/khá/tốt; Average cho trung bình/tb/bình thường; New cho mới/newbie/mới chơi; không rõ => null.
-            - role: Attack/Defense/Setter/FullStack/New/null, chỉ điền khi người dùng thực sự nói vị trí.
+            Từ chung chung KHÔNG phải tên: "bạn", "bạn tui", "bạn mình", "thằng bạn", "nhỏ bạn", "đứa bạn", "người", "khách", "bạn nha". "+1 cho bạn nha" => displayName=null.
+            Tên thật rõ như Minh/Huy/Ngọc Anh mới điền displayName.
+
+            Mapping profile:
+            - gender Male/Female/null.
+            - level Good=giỏi/khá/tốt; Average=trung bình/tb/bình thường; New=mới/newbie/mới chơi.
+            - role Attack/Defense/Setter/FullStack/New/null khi người dùng thật sự nói vị trí.
 
             Multi guest:
-            - "+2 nam nữ" => guest đầu Male, guest sau Female.
-            - "+2 nữ nam" => ngược lại.
-            - "+2 đều nam" => cả hai Male.
-            - "+2 Minh nam khá, Huy nữ trung bình" => hai guest riêng với name/gender/level tương ứng.
-            - Khi ActiveGuestConversation có đúng hai guest đang thiếu gender, câu "nam nữ" có thể map theo SponsorSequence tăng dần.
-            - Nếu có hai guest mà người dùng chỉ nói "nam" và không nói cả hai/# nào, phải needsClarification=true; không tự đoán target.
+            - "+2 nam nữ" => Male, Female.
+            - "+2 đều nam" => Male, Male.
+            - "+2 Minh nam khá, Huy nữ trung bình" => hai item riêng.
+            - Nếu hai guest mà chỉ nói "nam" không rõ target/cả hai => needsClarification=true.
 
-            Optional profile không được cản giữ slot. Ví dụ "+1 bạn Nam" có thể mơ hồ Nam là tên hay giới tính: nếu quantity/add intent chắc chắn thì vẫn trả AddGuests quantity=1, nhưng bỏ field profile không chắc (null hoặc confidence thấp) và needsClarification=true.
-            Quantity là authority quan trọng cho AddGuests. Nếu chỉ nói "mấy đứa bạn tui" mà không xác định 1 hay 2, quantity=null và needsClarification=true.
+            Optional profile không được làm mất slot. Quantity/target/action mới là authority quan trọng. Khi profile mơ hồ, bỏ field confidence thấp và có thể needsClarification=true.
 
             Chỉ trả đúng JSON object:
             {
-              "action":"None|AddGuests|UpdateGuestProfiles|CancelGuests",
+              "action":"None|AddGuests|AddTentativeGuests|ConfirmGuests|ReplaceGuest|UpdateGuestProfiles|CancelGuests",
               "confidence":0.0,
               "quantity":1,
               "quantityConfidence":0.0,
               "guests":[
                 {
-                  "referenceText":"#1|Minh|guest đầu|...",
+                  "referenceText":"#1|Minh|bạn thứ hai|replacement|...",
                   "reservationId":null,
                   "sponsorSequence":null,
                   "displayName":null,
@@ -124,7 +129,7 @@ internal sealed class ZaloSemanticGuestPlanner
         {
             model = configuration["Ai:Model"],
             temperature = 0,
-            max_tokens = 820,
+            max_tokens = 900,
             messages = new object[]
             {
                 new { role = "system", content = prompt },
@@ -199,11 +204,11 @@ internal sealed class ZaloSemanticGuestPlanner
                         ReadNullableInt(node, "sponsorSequence"),
                         NullIfEmpty(Clean(ReadString(node, "displayName"), 80)),
                         ReadConfidence(node, "nameConfidence"),
-                        ReadEnum<PlayerGender>(node, "gender"),
+                        ReadEnum<VolleyDraft.Api.Models.PlayerGender>(node, "gender"),
                         ReadConfidence(node, "genderConfidence"),
-                        ReadEnum<PlayerLevel>(node, "level"),
+                        ReadEnum<VolleyDraft.Api.Models.PlayerLevel>(node, "level"),
                         ReadConfidence(node, "levelConfidence"),
-                        ReadEnum<PlayerRole>(node, "role"),
+                        ReadEnum<VolleyDraft.Api.Models.PlayerRole>(node, "role"),
                         ReadConfidence(node, "roleConfidence"),
                         ReadConfidence(node, "confidence")));
                 }

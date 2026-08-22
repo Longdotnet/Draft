@@ -7,7 +7,8 @@ public enum ZaloGuestReservationStatus
     Active,
     Waitlisted,
     Cancelled,
-    Linked
+    Linked,
+    Tentative
 }
 
 [Index(nameof(SessionId), nameof(SourceMessageId), nameof(GuestIndex), IsUnique = true)]

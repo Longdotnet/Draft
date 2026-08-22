@@ -39,19 +39,27 @@ internal static class ZaloStatefulGuestFollowupPolicy
         PendingKind(outcome) != ZaloStatefulGuestPendingKind.None || outcome is
         "guest_semantic_added" or
         "guest_semantic_add_idempotent" or
+        "guest_semantic_tentative_added" or
+        "guest_semantic_tentative_idempotent" or
+        "guest_semantic_confirmed" or
+        "guest_semantic_confirm_idempotent" or
+        "guest_semantic_replaced" or
+        "guest_semantic_replace_idempotent" or
         "guest_semantic_profile_updated" or
         "guest_semantic_cancelled" or
+        "guest_semantic_tentative_cancel_idempotent" or
         "guest_semantic_pending_abandoned" or
         "guest_semantic_poll_sync_failed" or
         "guest_semantic_execution_failed";
 
     internal static bool IsRecentAdd(string? outcome) => outcome is
-        "guest_semantic_added" or "guest_semantic_add_idempotent";
+        "guest_semantic_added" or
+        "guest_semantic_add_idempotent" or
+        "guest_semantic_tentative_added" or
+        "guest_semantic_tentative_idempotent";
 
-    internal static bool IsFresh(
-        DateTimeOffset updatedAt,
-        DateTimeOffset now,
-        int minutes) => updatedAt >= now.AddMinutes(-Math.Max(1, minutes));
+    internal static bool IsFresh(DateTimeOffset updatedAt, DateTimeOffset now, int minutes) =>
+        updatedAt >= now.AddMinutes(-Math.Max(1, minutes));
 
     internal static bool IsPendingAbandon(string? content)
     {
@@ -82,13 +90,6 @@ public sealed partial class ZaloOverbookService
         ZaloStatefulGuestPendingKind PendingKind,
         bool TechnicalFallbackShouldExplain);
 
-    /// <summary>
-    /// Handles the stateful turns that cannot be safely expressed as a keyword gate:
-    /// 1) a clarification answer such as bare "2" after the bot asked +1/+2,
-    /// 2) natural follow-up profile language shortly after a guest mutation,
-    /// 3) correction/undo against only the reservations created by the most recent add.
-    /// It runs before the older semantic guest pre-route and before Ambient/GeneralChat.
-    /// </summary>
     private async Task<bool> TryHandleStatefulSemanticGuestFollowupAsync(
         string connectionId,
         string accountId,
@@ -104,23 +105,12 @@ public sealed partial class ZaloOverbookService
         if (senderId.Length == 0) return false;
         await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
 
-        // Multi-session task stack is consulted first only for an explicit pending
-        // clarification. Profile tasks are held as a fallback so the narrower recent
-        // mutation correction window below keeps priority for undo/"à nhầm" turns.
         var taskStackContext = await ResolveGuestTaskStackContextAsync(
-            connectionId,
-            groupId,
-            senderId,
-            incoming.Content,
-            cancellationToken);
+            connectionId, groupId, senderId, incoming.Content, cancellationToken);
         StatefulSemanticGuestContext? context = taskStackContext?.PendingKind != ZaloStatefulGuestPendingKind.None
             ? taskStackContext
             : await ResolveStatefulSemanticGuestContextAsync(
-                connectionId,
-                groupId,
-                senderId,
-                incoming.MessageId,
-                cancellationToken);
+                connectionId, groupId, senderId, incoming.MessageId, cancellationToken);
         context ??= taskStackContext;
         if (context is null) return false;
 
@@ -128,47 +118,22 @@ public sealed partial class ZaloOverbookService
             ZaloStatefulGuestFollowupPolicy.IsPendingAbandon(incoming.Content))
         {
             await SendSemanticGuestReplyAsync(
-                connectionId,
-                accountId,
-                botName,
-                groupId,
-                incoming,
-                context.Turn.Session.Id,
+                connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
                 "Ok, tui bỏ yêu cầu guest đang hỏi dở nha. Roster chưa bị đổi thêm gì.",
-                "guest_semantic_pending_abandoned",
-                aiCalled: false,
-                cancellationToken);
+                "guest_semantic_pending_abandoned", aiCalled: false, cancellationToken);
             return true;
         }
 
         var actionSettings = ZaloSemanticActionSettings.FromConfiguration(configuration);
         var recentIds = await LoadRecentGuestContextMessageIdsAsync(
-            connectionId,
-            groupId,
-            actionSettings.MaxContextMessages,
-            cancellationToken);
+            connectionId, groupId, actionSettings.MaxContextMessages, cancellationToken);
         var conversation = await ZaloReadOnlyConversationContextLoader.LoadAsync(
-            db,
-            connectionId,
-            groupId,
-            incoming,
-            recentIds,
-            actionSettings.MaxContextMessages,
-            cancellationToken);
+            db, connectionId, groupId, incoming, recentIds, actionSettings.MaxContextMessages, cancellationToken);
         var snapshot = await BuildSemanticGuestSnapshotAsync(
-            context.Turn,
-            senderId,
-            incoming.SenderName,
-            cancellationToken);
+            context.Turn, senderId, incoming.SenderName, cancellationToken);
         var planner = new ZaloSemanticGuestPlanner(configuration, logger);
         var plan = await planner.PlanAsync(
-            connectionId,
-            groupId,
-            incoming.Content,
-            conversation,
-            snapshot,
-            actionSettings,
-            cancellationToken);
+            connectionId, groupId, incoming.Content, conversation, snapshot, actionSettings, cancellationToken);
         var technicalFallback = IsSemanticGuestTechnicalFallback(plan.Reason);
         var aiCalled = !technicalFallback;
         if (technicalFallback)
@@ -186,25 +151,16 @@ public sealed partial class ZaloOverbookService
                         "Tui đang không đọc được câu tự nhiên ổn định. Nói rõ `#1`/`#2` giúp tui nha.",
                     ZaloStatefulGuestPendingKind.UpdateFields =>
                         "Tui đang không đọc được câu tự nhiên ổn định. Nói kiểu `#1 nam`, `#1 nữ`, `#1 nam khá` giúp tui nha.",
-                    _ => ""
+                    _ => string.Empty
                 };
                 if (help.Length > 0)
                 {
                     await SendSemanticGuestReplyAsync(
-                        connectionId,
-                        accountId,
-                        botName,
-                        groupId,
-                        incoming,
-                        context.Turn.Session.Id,
-                        help,
-                        "guest_semantic_fallback_guidance",
-                        aiCalled: false,
-                        cancellationToken);
+                        connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
+                        help, "guest_semantic_fallback_guidance", aiCalled: false, cancellationToken);
                     return true;
                 }
             }
-
             return false;
         }
 
@@ -215,30 +171,14 @@ public sealed partial class ZaloOverbookService
                 ? "Tui hiểu ý liên quan guest nhưng chưa đủ chắc để đổi dữ liệu. Nói rõ hơn giúp tui nha."
                 : validation.ClarificationReason;
             await SendSemanticGuestReplyAsync(
-                connectionId,
-                accountId,
-                botName,
-                groupId,
-                incoming,
-                context.Turn.Session.Id,
-                clarification,
-                validation.Reason,
-                aiCalled,
-                cancellationToken);
+                connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
+                clarification, validation.Reason, aiCalled, cancellationToken);
             return true;
         }
 
         return await ExecuteStatefulSemanticGuestMutationAsync(
-            connectionId,
-            accountId,
-            botName,
-            groupId,
-            senderId,
-            incoming,
-            context,
-            validation,
-            aiCalled,
-            cancellationToken);
+            connectionId, accountId, botName, groupId, senderId, incoming,
+            context, validation, aiCalled, cancellationToken);
     }
 
     private async Task<StatefulSemanticGuestContext?> ResolveStatefulSemanticGuestContextAsync(
@@ -250,17 +190,11 @@ public sealed partial class ZaloOverbookService
     {
         var now = DateTimeOffset.UtcNow;
         var pendingMinutes = Math.Clamp(
-            configuration.GetValue("ZaloBot:DraftAutopilot:GuestPendingClarificationMinutes", 15),
-            5,
-            60);
+            configuration.GetValue("ZaloBot:DraftAutopilot:GuestPendingClarificationMinutes", 15), 5, 60);
         var correctionMinutes = Math.Clamp(
-            configuration.GetValue("ZaloBot:DraftAutopilot:GuestCorrectionMinutes", 10),
-            3,
-            30);
+            configuration.GetValue("ZaloBot:DraftAutopilot:GuestCorrectionMinutes", 10), 3, 30);
         var naturalMinutes = Math.Clamp(
-            configuration.GetValue("ZaloBot:DraftAutopilot:GuestNaturalFollowupMinutes", 15),
-            5,
-            30);
+            configuration.GetValue("ZaloBot:DraftAutopilot:GuestNaturalFollowupMinutes", 15), 5, 30);
         var cutoff = now.AddMinutes(-Math.Max(pendingMinutes, Math.Max(correctionMinutes, naturalMinutes)));
 
         var recentRows = await db.ZaloGroupMessages
@@ -291,21 +225,12 @@ public sealed partial class ZaloOverbookService
                 var sessionId = ZaloRecruitmentGuestGatePolicy.TryReadGuestSessionId(latestTerminal.SelectedIntent);
                 if (!string.IsNullOrWhiteSpace(sessionId))
                 {
-                    var session = await LoadStatefulGuestSessionAsync(
-                        connectionId,
-                        groupId,
-                        sessionId!,
-                        cancellationToken);
+                    var session = await LoadStatefulGuestSessionAsync(connectionId, groupId, sessionId!, cancellationToken);
                     if (session is not null)
                     {
                         var recruitmentMessageId = pendingKind == ZaloStatefulGuestPendingKind.AddQuantity
                             ? await ResolvePendingRecruitmentMessageIdAsync(
-                                connectionId,
-                                groupId,
-                                senderId,
-                                session.Id,
-                                ordered,
-                                cancellationToken)
+                                connectionId, groupId, senderId, session.Id, ordered, cancellationToken)
                             : null;
                         if (pendingKind != ZaloStatefulGuestPendingKind.AddQuantity ||
                             !string.IsNullOrWhiteSpace(recruitmentMessageId))
@@ -344,16 +269,13 @@ public sealed partial class ZaloOverbookService
                         item.SponsorZaloUserId == senderId &&
                         item.SourceMessageId == latestAdd.MessageId &&
                         (item.Status == ZaloGuestReservationStatus.Active ||
-                         item.Status == ZaloGuestReservationStatus.Waitlisted))
+                         item.Status == ZaloGuestReservationStatus.Waitlisted ||
+                         item.Status == ZaloGuestReservationStatus.Tentative))
                     .OrderBy(item => item.SponsorSequence)
                     .ToListAsync(cancellationToken);
                 if (recentGuests.Count > 0)
                 {
-                    var session = await LoadStatefulGuestSessionAsync(
-                        connectionId,
-                        groupId,
-                        sessionId!,
-                        cancellationToken);
+                    var session = await LoadStatefulGuestSessionAsync(connectionId, groupId, sessionId!, cancellationToken);
                     if (session is not null)
                     {
                         return new StatefulSemanticGuestContext(
@@ -380,11 +302,7 @@ public sealed partial class ZaloOverbookService
             var sessionId = TryReadSemanticGuestConversationSessionId(active.CollectedArgumentsJson);
             if (!string.IsNullOrWhiteSpace(sessionId))
             {
-                var session = await LoadStatefulGuestSessionAsync(
-                    connectionId,
-                    groupId,
-                    sessionId!,
-                    cancellationToken);
+                var session = await LoadStatefulGuestSessionAsync(connectionId, groupId, sessionId!, cancellationToken);
                 if (session is not null)
                 {
                     var guests = await LoadStatefulSponsorGuestsAsync(session.Id, senderId, cancellationToken);
@@ -440,7 +358,8 @@ public sealed partial class ZaloOverbookService
                 item.SessionId == sessionId &&
                 item.SponsorZaloUserId == senderId &&
                 (item.Status == ZaloGuestReservationStatus.Active ||
-                 item.Status == ZaloGuestReservationStatus.Waitlisted))
+                 item.Status == ZaloGuestReservationStatus.Waitlisted ||
+                 item.Status == ZaloGuestReservationStatus.Tentative))
             .OrderBy(item => item.SponsorSequence)
             .ToListAsync(cancellationToken);
 
@@ -515,15 +434,11 @@ public sealed partial class ZaloOverbookService
                 (normalized.Contains("undo", StringComparison.Ordinal) ||
                  normalized.Contains("bo 2 ban hoi nay", StringComparison.Ordinal) ||
                  normalized.Contains("bo hai ban hoi nay", StringComparison.Ordinal)))
-            {
                 return CancelRecentGuestsFallback(guests);
-            }
             if (guests.Length == 2 &&
                 (normalized.Contains("chi +1", StringComparison.Ordinal) ||
                  normalized.Contains("chi 1", StringComparison.Ordinal)))
-            {
                 return CancelRecentGuestsFallback([guests[1]]);
-            }
             if (guests.Length == 1 && normalized.Contains("nham", StringComparison.Ordinal))
             {
                 PlayerGender? gender = normalized.Contains(" nu", StringComparison.Ordinal) || normalized.EndsWith("nu", StringComparison.Ordinal)
@@ -562,15 +477,7 @@ public sealed partial class ZaloOverbookService
             $"#{item.SponsorSequence}",
             item.ReservationId,
             item.SponsorSequence,
-            null,
-            0,
-            null,
-            0,
-            null,
-            0,
-            null,
-            0,
-            1)).ToArray(),
+            null, 0, null, 0, null, 0, null, 0, 1)).ToArray(),
         false,
         string.Empty,
         "semantic_guest_recent_cancel_fallback");
@@ -593,50 +500,48 @@ public sealed partial class ZaloOverbookService
             string reply;
             string outcome;
 
-            if (validation.Action == ZaloSemanticGuestActionKind.AddGuests)
+            var extended = await TryExecuteExtendedSemanticGuestActionAsync(
+                context.Turn.Session,
+                senderId,
+                incoming.SenderName,
+                incoming.MessageId,
+                context.Turn.RecruitmentMessageId,
+                validation,
+                cancellationToken);
+            if (extended is not null)
+            {
+                reply = extended.Reply;
+                outcome = extended.Outcome;
+                await SyncSemanticGuestConversationStateAsync(
+                    groupId, senderId, context.Turn.Session.Id, incoming.MessageId,
+                    context.Turn.RecruitmentMessageId, cancellationToken);
+            }
+            else if (validation.Action == ZaloSemanticGuestActionKind.AddGuests)
             {
                 var sync = await RefreshLinkedPollForDraftReminderAsync(context.Turn.Session, cancellationToken);
                 if (!sync.Success)
                 {
                     await SendSemanticGuestReplyAsync(
-                        connectionId,
-                        accountId,
-                        botName,
-                        groupId,
-                        incoming,
-                        context.Turn.Session.Id,
+                        connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
                         $"Tui hiểu ông muốn +{validation.Quantity} cho {context.Turn.Session.Name}, nhưng chưa sync được poll thật nên chưa giữ slot để khỏi cộng nhầm nha.",
-                        "guest_semantic_poll_sync_failed",
-                        aiCalled,
-                        cancellationToken);
+                        "guest_semantic_poll_sync_failed", aiCalled, cancellationToken);
                     return true;
                 }
 
                 await new ZaloGuestIdentityReconciler(db)
                     .ReconcileAsync(context.Turn.Session.Id, cancellationToken);
                 var preview = await BuildSemanticGuestMutationPreviewAsync(
-                    context.Turn.Session.Id,
-                    validation.Quantity,
-                    cancellationToken);
+                    context.Turn.Session.Id, validation.Quantity, cancellationToken);
                 logger.LogInformation(
                     "Stateful semantic guest preview Session={SessionId} Sender={SenderId} Before={Before}/{Capacity} Add={Add} Admit={Admit} Wait={Wait} After={After}",
-                    context.Turn.Session.Id,
-                    senderId,
-                    preview.BeforeEffectiveSlots,
-                    preview.Capacity,
-                    validation.Quantity,
-                    preview.AdmitCount,
-                    preview.WaitlistCount,
-                    preview.AfterEffectiveSlots);
+                    context.Turn.Session.Id, senderId, preview.BeforeEffectiveSlots, preview.Capacity,
+                    validation.Quantity, preview.AdmitCount, preview.WaitlistCount, preview.AfterEffectiveSlots);
 
                 var command = new ZaloRecruitmentGuestCommand(
                     ZaloRecruitmentGuestCommandKind.Add,
                     validation.Quantity,
                     validation.Items.Select(item => new ZaloRecruitmentGuestSpec(
-                        item.DisplayName,
-                        item.Gender,
-                        item.Role,
-                        item.Level)).ToArray());
+                        item.DisplayName, item.Gender, item.Role, item.Level)).ToArray());
                 var result = await service.AddAsync(
                     context.Turn.Session,
                     senderId,
@@ -648,12 +553,8 @@ public sealed partial class ZaloOverbookService
                 reply = BuildSemanticGuestAddReply(result);
                 outcome = result.Idempotent ? "guest_semantic_add_idempotent" : "guest_semantic_added";
                 await SyncSemanticGuestConversationStateAsync(
-                    groupId,
-                    senderId,
-                    context.Turn.Session.Id,
-                    incoming.MessageId,
-                    context.Turn.RecruitmentMessageId,
-                    cancellationToken);
+                    groupId, senderId, context.Turn.Session.Id, incoming.MessageId,
+                    context.Turn.RecruitmentMessageId, cancellationToken);
             }
             else if (validation.Action == ZaloSemanticGuestActionKind.UpdateGuestProfiles)
             {
@@ -674,16 +575,9 @@ public sealed partial class ZaloOverbookService
                     if (result.NeedsClarification)
                     {
                         await SendSemanticGuestReplyAsync(
-                            connectionId,
-                            accountId,
-                            botName,
-                            groupId,
-                            incoming,
-                            context.Turn.Session.Id,
+                            connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
                             result.Clarification ?? "Tui chưa xác định chắc guest nào cần cập nhật.",
-                            "semantic_guest_update_target_ambiguous",
-                            aiCalled,
-                            cancellationToken);
+                            "semantic_guest_update_target_ambiguous", aiCalled, cancellationToken);
                         return true;
                     }
                     changed.AddRange(result.Changed);
@@ -691,14 +585,10 @@ public sealed partial class ZaloOverbookService
                 reply = BuildSemanticGuestProfileReply(context.Turn.Session.Name, changed);
                 outcome = "guest_semantic_profile_updated";
                 await SyncSemanticGuestConversationStateAsync(
-                    groupId,
-                    senderId,
-                    context.Turn.Session.Id,
-                    incoming.MessageId,
-                    context.Turn.RecruitmentMessageId,
-                    cancellationToken);
+                    groupId, senderId, context.Turn.Session.Id, incoming.MessageId,
+                    context.Turn.RecruitmentMessageId, cancellationToken);
             }
-            else
+            else if (validation.Action == ZaloSemanticGuestActionKind.CancelGuests)
             {
                 var changed = new List<ZaloGuestReservation>();
                 foreach (var item in validation.Items)
@@ -713,16 +603,9 @@ public sealed partial class ZaloOverbookService
                     if (result.NeedsClarification)
                     {
                         await SendSemanticGuestReplyAsync(
-                            connectionId,
-                            accountId,
-                            botName,
-                            groupId,
-                            incoming,
-                            context.Turn.Session.Id,
+                            connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
                             result.Clarification ?? "Tui chưa xác định chắc guest nào nghỉ.",
-                            "semantic_guest_cancel_target_ambiguous",
-                            aiCalled,
-                            cancellationToken);
+                            "semantic_guest_cancel_target_ambiguous", aiCalled, cancellationToken);
                         return true;
                     }
                     changed.AddRange(result.Changed);
@@ -736,33 +619,25 @@ public sealed partial class ZaloOverbookService
                     ? string.Empty
                     : $" Roster hiện {readiness.EffectiveSlotCount}/{readiness.Capacity}.";
                 var promotionText = promotions.Count == 0
-                    ? ""
+                    ? string.Empty
                     : $" Tui đã đẩy {string.Join(", ", promotions.Select(item => item.DisplayName))} từ guest waitlist lên trước.";
                 var recruitText = readiness is not null && readiness.EffectiveSlotCount < readiness.Capacity
                     ? " Nếu KeepRecruiting đang bật thì luồng kiếm thêm sẽ tiếp tục theo cooldown."
-                    : "";
+                    : string.Empty;
                 reply = $"Ok, tui rút {names} khỏi {context.Turn.Session.Name}.{promotionText}{rosterText}{recruitText}";
                 outcome = "guest_semantic_cancelled";
                 await SyncSemanticGuestConversationStateAsync(
-                    groupId,
-                    senderId,
-                    context.Turn.Session.Id,
-                    incoming.MessageId,
-                    context.Turn.RecruitmentMessageId,
-                    cancellationToken);
+                    groupId, senderId, context.Turn.Session.Id, incoming.MessageId,
+                    context.Turn.RecruitmentMessageId, cancellationToken);
+            }
+            else
+            {
+                throw new InvalidOperationException($"Validated guest action {validation.Action} has no executor.");
             }
 
             await SendSemanticGuestReplyAsync(
-                connectionId,
-                accountId,
-                botName,
-                groupId,
-                incoming,
-                context.Turn.Session.Id,
-                reply,
-                outcome,
-                aiCalled,
-                cancellationToken);
+                connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
+                reply, outcome, aiCalled, cancellationToken);
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -777,16 +652,9 @@ public sealed partial class ZaloOverbookService
                 context.Turn.Session.Id,
                 incoming.MessageId);
             await SendSemanticGuestReplyAsync(
-                connectionId,
-                accountId,
-                botName,
-                groupId,
-                incoming,
-                context.Turn.Session.Id,
+                connectionId, accountId, botName, groupId, incoming, context.Turn.Session.Id,
                 "Tui hiểu ý guest nhưng thao tác DB chưa chạy an toàn được, nên tui chưa đổi roster nha. Thử lại chút nữa giúp tui.",
-                "guest_semantic_execution_failed",
-                aiCalled,
-                cancellationToken);
+                "guest_semantic_execution_failed", aiCalled, cancellationToken);
             return true;
         }
     }

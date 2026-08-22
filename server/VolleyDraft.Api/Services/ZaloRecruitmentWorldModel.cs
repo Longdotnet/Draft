@@ -54,12 +54,6 @@ internal sealed record ZaloRecruitmentWorldSnapshot(
     IReadOnlyList<ZaloRecruitmentWorldTask> SenderTasks,
     DateTimeOffset CurrentUtc);
 
-/// <summary>
-/// Bounded read-only world model for recruitment reasoning. It centralizes the
-/// facts that used to be scattered across readiness, guest rows, decision state,
-/// and conversation state. The model is context only; mutation services still own
-/// authorization/capacity and re-read DB before executing.
-/// </summary>
 internal sealed class ZaloRecruitmentWorldModelBuilder(VolleyDraftDbContext db)
 {
     internal async Task<ZaloRecruitmentWorldSnapshot?> BuildAsync(
@@ -79,12 +73,7 @@ internal sealed class ZaloRecruitmentWorldModelBuilder(VolleyDraftDbContext db)
             .ThenBy(item => item.CreatedAt)
             .Take(40)
             .Select(item => new ZaloRecruitmentWorldPlayer(
-                item.Id,
-                item.DisplayName,
-                item.IsPresent,
-                item.Gender,
-                item.Level,
-                item.Role))
+                item.Id, item.DisplayName, item.IsPresent, item.Gender, item.Level, item.Role))
             .ToListAsync(cancellationToken);
 
         await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
@@ -92,25 +81,22 @@ internal sealed class ZaloRecruitmentWorldModelBuilder(VolleyDraftDbContext db)
             .AsNoTracking()
             .Where(item => item.SessionId == sessionId &&
                            (item.Status == ZaloGuestReservationStatus.Active ||
-                            item.Status == ZaloGuestReservationStatus.Waitlisted))
+                            item.Status == ZaloGuestReservationStatus.Waitlisted ||
+                            item.Status == ZaloGuestReservationStatus.Tentative))
             .Take(60)
             .ToListAsync(cancellationToken);
         var guests = guestRows
-            .OrderBy(item => item.Status == ZaloGuestReservationStatus.Active ? 0 : 1)
+            .OrderBy(item => item.Status switch
+            {
+                ZaloGuestReservationStatus.Active => 0,
+                ZaloGuestReservationStatus.Waitlisted => 1,
+                _ => 2
+            })
             .ThenBy(item => item.CreatedAt)
             .Select(item => new ZaloRecruitmentWorldGuest(
-                item.Id,
-                item.SponsorZaloUserId,
-                item.SponsorDisplayName,
-                item.SponsorSequence,
-                item.DisplayName,
-                item.Gender,
-                item.Level,
-                item.Role,
-                item.Status.ToString(),
-                item.SessionPlayerId,
-                item.SourceMessageId,
-                item.UpdatedAt))
+                item.Id, item.SponsorZaloUserId, item.SponsorDisplayName, item.SponsorSequence,
+                item.DisplayName, item.Gender, item.Level, item.Role, item.Status.ToString(),
+                item.SessionPlayerId, item.SourceMessageId, item.UpdatedAt))
             .ToArray();
 
         string? decision = null;
@@ -119,11 +105,7 @@ internal sealed class ZaloRecruitmentWorldModelBuilder(VolleyDraftDbContext db)
             decision = (await new ZaloDraftPreparationDecisionStore(db)
                 .GetAsync(sessionId, cancellationToken))?.Kind.ToString();
         }
-        catch
-        {
-            // Decision state is context enrichment only. Readiness/DB grounding still
-            // remains usable when an old deployment has not created this table yet.
-        }
+        catch { }
 
         IReadOnlyList<ZaloConversationTaskSnapshot> taskRows = [];
         try
@@ -131,37 +113,16 @@ internal sealed class ZaloRecruitmentWorldModelBuilder(VolleyDraftDbContext db)
             taskRows = await new ZaloConversationTaskStackStore(db)
                 .LoadActiveAsync(groupId, senderZaloUserId, "RecruitmentGuest", 12, cancellationToken);
         }
-        catch
-        {
-            // Same fail-soft rule: world enrichment may be absent but never grants or
-            // removes mutation authority.
-        }
+        catch { }
         var tasks = taskRows.Select(item => new ZaloRecruitmentWorldTask(
-            item.TaskKey,
-            item.Intent,
-            item.SessionId,
-            item.SessionName,
-            item.MissingArgumentsJson,
-            item.CandidateEntitiesJson,
-            item.UpdatedAt,
-            item.ExpiresAt)).ToArray();
+            item.TaskKey, item.Intent, item.SessionId, item.SessionName,
+            item.MissingArgumentsJson, item.CandidateEntitiesJson, item.UpdatedAt, item.ExpiresAt)).ToArray();
 
         return new ZaloRecruitmentWorldSnapshot(
-            readiness.SessionId,
-            readiness.SessionName,
-            readiness.StartTime,
-            readiness.PresentPlayerCount,
-            readiness.EffectiveSlotCount,
-            readiness.Capacity,
-            readiness.MissingProfileCount,
-            readiness.MissingProfileNames,
-            readiness.HasLinkedPoll,
-            readiness.IsRosterReady,
-            readiness.State.ToString(),
-            decision,
-            players,
-            guests,
-            tasks,
-            DateTimeOffset.UtcNow);
+            readiness.SessionId, readiness.SessionName, readiness.StartTime,
+            readiness.PresentPlayerCount, readiness.EffectiveSlotCount, readiness.Capacity,
+            readiness.MissingProfileCount, readiness.MissingProfileNames,
+            readiness.HasLinkedPoll, readiness.IsRosterReady, readiness.State.ToString(), decision,
+            players, guests, tasks, DateTimeOffset.UtcNow);
     }
 }

@@ -68,6 +68,107 @@ public sealed class ZaloSemanticGuestPlannerTests
     }
 
     [Fact]
+    public void ParsePlan_AcceptsTentativeConfirmAndReplaceDomainActions()
+    {
+        var tentative = ZaloSemanticGuestPlanner.ParsePlan("""
+            {
+              "action":"AddTentativeGuests",
+              "confidence":0.97,
+              "quantity":1,
+              "quantityConfidence":0.98,
+              "guests":[{
+                "referenceText":"Minh",
+                "reservationId":null,
+                "sponsorSequence":null,
+                "displayName":"Minh",
+                "nameConfidence":0.99,
+                "gender":null,
+                "genderConfidence":0,
+                "level":null,
+                "levelConfidence":0,
+                "role":null,
+                "roleConfidence":0,
+                "confidence":0.97
+              }],
+              "needsClarification":false,
+              "clarificationReason":"",
+              "reason":"possible guest"
+            }
+            """);
+        var confirm = ZaloSemanticGuestPlanner.ParsePlan("""
+            {
+              "action":"ConfirmGuests",
+              "confidence":0.98,
+              "quantity":1,
+              "quantityConfidence":0.98,
+              "guests":[{
+                "referenceText":"Minh",
+                "reservationId":"g1",
+                "sponsorSequence":1,
+                "displayName":null,
+                "nameConfidence":0,
+                "gender":null,
+                "genderConfidence":0,
+                "level":null,
+                "levelConfidence":0,
+                "role":null,
+                "roleConfidence":0,
+                "confidence":0.99
+              }],
+              "needsClarification":false,
+              "clarificationReason":"",
+              "reason":"guest confirmed"
+            }
+            """);
+        var replace = ZaloSemanticGuestPlanner.ParsePlan("""
+            {
+              "action":"ReplaceGuest",
+              "confidence":0.99,
+              "quantity":1,
+              "quantityConfidence":0.99,
+              "guests":[
+                {
+                  "referenceText":"Minh",
+                  "reservationId":"g1",
+                  "sponsorSequence":1,
+                  "displayName":null,
+                  "nameConfidence":0,
+                  "gender":null,
+                  "genderConfidence":0,
+                  "level":null,
+                  "levelConfidence":0,
+                  "role":null,
+                  "roleConfidence":0,
+                  "confidence":0.99
+                },
+                {
+                  "referenceText":"Huy",
+                  "reservationId":null,
+                  "sponsorSequence":null,
+                  "displayName":"Huy",
+                  "nameConfidence":0.99,
+                  "gender":"Male",
+                  "genderConfidence":0.95,
+                  "level":null,
+                  "levelConfidence":0,
+                  "role":null,
+                  "roleConfidence":0,
+                  "confidence":0.99
+                }
+              ],
+              "needsClarification":false,
+              "clarificationReason":"",
+              "reason":"replace old guest"
+            }
+            """);
+
+        Assert.Equal(ZaloSemanticGuestActionKind.AddTentativeGuests, tentative.Action);
+        Assert.Equal(ZaloSemanticGuestActionKind.ConfirmGuests, confirm.Action);
+        Assert.Equal(ZaloSemanticGuestActionKind.ReplaceGuest, replace.Action);
+        Assert.Equal("Huy", replace.Guests[1].DisplayName);
+    }
+
+    [Fact]
     public void AddValidation_DropsGenericFriendPhrase_ButKeepsSlotMutation()
     {
         var snapshot = Snapshot(ZaloSemanticGuestAnchorKind.RecruitmentBroadcast);
@@ -120,6 +221,75 @@ public sealed class ZaloSemanticGuestPlannerTests
 
         Assert.False(validation.Accepted);
         Assert.Equal("semantic_guest_add_requires_recruitment_reply", validation.Reason);
+    }
+
+    [Fact]
+    public void ConfirmValidation_OnlyAllowsGroundedTentativeGuest()
+    {
+        var snapshot = Snapshot(
+            ZaloSemanticGuestAnchorKind.ActiveGuestConversation,
+            [
+                new ZaloSemanticGuestGroundingGuest(
+                    "g1", 1, "Minh", null, null, null, ZaloGuestReservationStatus.Tentative.ToString()),
+                new ZaloSemanticGuestGroundingGuest(
+                    "g2", 2, "Huy", null, null, null, ZaloGuestReservationStatus.Active.ToString())
+            ]);
+        var confirm = new ZaloSemanticGuestPlan(
+            ZaloSemanticGuestActionKind.ConfirmGuests,
+            .99,
+            1,
+            .99,
+            [new ZaloSemanticGuestPlanItem("Minh", "g1", 1, null, 0, null, 0, null, 0, null, 0, .99)],
+            false,
+            string.Empty,
+            "confirmed");
+        var wrong = confirm with
+        {
+            Guests = [new ZaloSemanticGuestPlanItem("Huy", "g2", 2, null, 0, null, 0, null, 0, null, 0, .99)]
+        };
+
+        Assert.True(ZaloSemanticGuestPlanValidator.Validate(confirm, snapshot, Settings).Accepted);
+        var rejected = ZaloSemanticGuestPlanValidator.Validate(wrong, snapshot, Settings);
+        Assert.False(rejected.Accepted);
+        Assert.Equal("semantic_guest_confirm_target_ambiguous", rejected.Reason);
+    }
+
+    [Fact]
+    public void ReplaceValidation_RequiresGroundedOldGuest_AndUngroundedNewGuest()
+    {
+        var snapshot = Snapshot(
+            ZaloSemanticGuestAnchorKind.ActiveGuestConversation,
+            [new ZaloSemanticGuestGroundingGuest(
+                "g1", 1, "Minh", PlayerGender.Male, null, null, ZaloGuestReservationStatus.Active.ToString())]);
+        var plan = new ZaloSemanticGuestPlan(
+            ZaloSemanticGuestActionKind.ReplaceGuest,
+            .99,
+            1,
+            .99,
+            [
+                new ZaloSemanticGuestPlanItem("Minh", "g1", 1, null, 0, null, 0, null, 0, null, 0, .99),
+                new ZaloSemanticGuestPlanItem("Huy", null, null, "Huy", .99, PlayerGender.Male, .95, null, 0, null, 0, .99)
+            ],
+            false,
+            string.Empty,
+            "replace");
+
+        var accepted = ZaloSemanticGuestPlanValidator.Validate(plan, snapshot, Settings);
+        Assert.True(accepted.Accepted);
+        Assert.Equal("g1", accepted.Items[0].ReservationId);
+        Assert.Equal("Huy", accepted.Items[1].DisplayName);
+
+        var fabricated = plan with
+        {
+            Guests =
+            [
+                plan.Guests[0],
+                plan.Guests[1] with { ReservationId = "fake-new-id" }
+            ]
+        };
+        var rejected = ZaloSemanticGuestPlanValidator.Validate(fabricated, snapshot, Settings);
+        Assert.False(rejected.Accepted);
+        Assert.Equal("semantic_guest_replace_new_target_fabricated", rejected.Reason);
     }
 
     [Fact]

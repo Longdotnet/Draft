@@ -122,11 +122,23 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
-            if (item.Row.ReplyOutcome is "guest_semantic_added" or "guest_semantic_add_idempotent" or "guest_semantic_profile_updated")
+            if (item.Row.ReplyOutcome is
+                "guest_semantic_added" or
+                "guest_semantic_add_idempotent" or
+                "guest_semantic_tentative_added" or
+                "guest_semantic_tentative_idempotent" or
+                "guest_semantic_confirmed" or
+                "guest_semantic_confirm_idempotent" or
+                "guest_semantic_replaced" or
+                "guest_semantic_replace_idempotent" or
+                "guest_semantic_profile_updated")
             {
                 var guests = await LoadStatefulSponsorGuestsAsync(item.SessionId, senderId, cancellationToken);
                 var missing = guests.Where(guest => guest.Gender is null)
                     .Select(guest => $"gender:#{guest.SponsorSequence}")
+                    .Concat(guests.Where(guest => guest.Status == ZaloGuestReservationStatus.Tentative)
+                        .Select(guest => $"confirmation:#{guest.SponsorSequence}"))
+                    .Distinct(StringComparer.Ordinal)
                     .ToArray();
                 if (missing.Length > 0)
                 {
@@ -154,7 +166,10 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
-            if (item.Row.ReplyOutcome is "guest_semantic_cancelled" or "guest_semantic_pending_abandoned")
+            if (item.Row.ReplyOutcome is
+                "guest_semantic_cancelled" or
+                "guest_semantic_tentative_cancel_idempotent" or
+                "guest_semantic_pending_abandoned")
                 await store.CompleteSessionDomainAsync(groupId, senderId, GuestTaskDomain, item.SessionId, cancellationToken);
         }
     }
