@@ -52,16 +52,65 @@ internal static class ZaloRecruitmentGuestPolicy
 
     internal static ZaloRecruitmentGuestCommand? TryParse(string? content)
     {
-        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        var original = (content ?? string.Empty).Trim();
+        var normalized = ZaloBotIntelligence.Normalize(original);
         if (normalized.Length == 0) return null;
 
+        // Preserve the exact display-name spelling/casing that the member typed. The
+        // normalized form is only for intent detection and sequence extraction.
         var rename = SequenceRename.Match(normalized);
         if (rename.Success && int.TryParse(rename.Groups["seq"].Value, out var renameSeq))
         {
+            var originalRename = Regex.Match(
+                original,
+                @"(?:bạn|ban|đứa|dua|người|nguoi)?\s*#?\d{1,2}\s*(?:tên|ten|là|la)\s+(?<name>[^,.;]{2,80})$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            var renameTo = originalRename.Success
+                ? CleanName(originalRename.Groups["name"].Value)
+                : CleanName(rename.Groups["name"].Value);
             return new ZaloRecruitmentGuestCommand(
                 ZaloRecruitmentGuestCommandKind.UpdateProfile,
                 SponsorSequence: renameSeq,
-                RenameTo: CleanName(rename.Groups["name"].Value));
+                RenameTo: renameTo);
+        }
+
+        // Cancellation must win over signup wording if a member says that their guest
+        // is no longer going. It is still grounded later to this sender's reservations.
+        var cancel = Cancel.Match(normalized);
+        if (cancel.Success)
+        {
+            var quantity = int.TryParse(cancel.Groups["count"].Value, out var count) ? Math.Clamp(count, 1, 2) : 1;
+            var name = CleanName(cancel.Groups["name"].Value);
+            return new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.Cancel,
+                Quantity: quantity,
+                GuestReference: string.IsNullOrWhiteSpace(name) ? null : name,
+                ApplyAll: quantity == 2 && (normalized.Contains("het", StringComparison.Ordinal) || normalized.Contains("ca 2", StringComparison.Ordinal)));
+        }
+
+        // Explicit +1/+2/add language is authoritative. Parse it before generic profile
+        // language so "+2 bạn tui, 1 nam 1 nữ" remains an Add command rather than being
+        // misclassified as a two-guest gender update.
+        var plus = PlusQuantity.Match(normalized);
+        int? quantityToAdd = null;
+        if (plus.Success)
+        {
+            var rawCount = plus.Groups["count"].Success ? plus.Groups["count"].Value : plus.Groups["count2"].Value;
+            if (int.TryParse(rawCount, out var parsedCount))
+                quantityToAdd = Math.Clamp(parsedCount, 1, 2);
+        }
+        else if (ImplicitOne.IsMatch(normalized))
+        {
+            quantityToAdd = 1;
+        }
+
+        if (quantityToAdd is { } addCount)
+        {
+            var specs = ParseGuestSpecs(original, normalized, addCount);
+            return new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.Add,
+                Quantity: addCount,
+                Guests: specs);
         }
 
         if (Regex.IsMatch(normalized, @"(?:2|hai)\s*(?:ban|dua|nguoi)?\s*(?:tui|toi|minh)?\s*(?:deu\s*)?(?:la\s*)?(?<gender>nam|nu)(?:\s|$)", RegexOptions.CultureInvariant))
@@ -83,21 +132,9 @@ internal static class ZaloRecruitmentGuestPolicy
                 Gender: ParseGender(sequenceGender.Groups["gender"].Value));
         }
 
-        var cancel = Cancel.Match(normalized);
-        if (cancel.Success)
-        {
-            var quantity = int.TryParse(cancel.Groups["count"].Value, out var count) ? Math.Clamp(count, 1, 2) : 1;
-            var name = CleanName(cancel.Groups["name"].Value);
-            return new ZaloRecruitmentGuestCommand(
-                ZaloRecruitmentGuestCommandKind.Cancel,
-                Quantity: quantity,
-                GuestReference: string.IsNullOrWhiteSpace(name) ? null : name,
-                ApplyAll: quantity == 2 && (normalized.Contains("het", StringComparison.Ordinal) || normalized.Contains("ca 2", StringComparison.Ordinal)));
-        }
-
-        // Profile completion is intentionally evaluated after cancellation language so
-        // "Minh nghỉ" can never be mistaken for a profile update. Name-based gender
-        // updates are grounded later against this sender's own guest reservations.
+        // Profile completion is intentionally evaluated after cancellation and signup
+        // language. Name references remain normalized because they are only used for
+        // grounded matching against this sponsor's existing guest reservations.
         var namedGender = NamedGender.Match(normalized);
         if (namedGender.Success)
         {
@@ -107,28 +144,7 @@ internal static class ZaloRecruitmentGuestPolicy
                 Gender: ParseGender(namedGender.Groups["gender"].Value));
         }
 
-        var plus = PlusQuantity.Match(normalized);
-        int quantityToAdd;
-        if (plus.Success)
-        {
-            var rawCount = plus.Groups["count"].Success ? plus.Groups["count"].Value : plus.Groups["count2"].Value;
-            if (!int.TryParse(rawCount, out var parsedCount)) return null;
-            quantityToAdd = Math.Clamp(parsedCount, 1, 2);
-        }
-        else if (ImplicitOne.IsMatch(normalized))
-        {
-            quantityToAdd = 1;
-        }
-        else
-        {
-            return null;
-        }
-
-        var specs = ParseGuestSpecs(content ?? string.Empty, normalized, quantityToAdd);
-        return new ZaloRecruitmentGuestCommand(
-            ZaloRecruitmentGuestCommandKind.Add,
-            Quantity: quantityToAdd,
-            Guests: specs);
+        return null;
     }
 
     private static IReadOnlyList<ZaloRecruitmentGuestSpec> ParseGuestSpecs(
@@ -161,28 +177,48 @@ internal static class ZaloRecruitmentGuestPolicy
             original,
             @"(?:\+\s*[12]|thêm\s*[12]|them\s*[12]|kéo\s*(?:thêm\s*)?[12]|keo\s*(?:them\s*)?[12])\s*(?:bạn|ban|đứa|dua|người|nguoi|khách|khach)?\s*(?<names>.+)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (named.Success)
-        {
-            var tail = named.Groups["names"].Value.Trim(' ', ',', '.', ':', ';');
-            tail = Regex.Replace(tail, @"^(?:tui|toi|minh)\s+", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            tail = Regex.Replace(tail, @"^(?:tên|ten)\s+(?:là|la)?\s*", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            tail = Regex.Replace(tail, @"\s+(?:đều|deu)\s+(?:nam|nữ|nu)\s*$", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            tail = Regex.Replace(tail, @"\s*,?\s*1\s+(?:nam|nữ|nu)\s+1\s+(?:nam|nữ|nu)\s*$", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!named.Success) return result;
 
-            var pieces = Regex.Split(tail, @"\s*(?:,|\bvà\b|\bva\b|\bvới\b|\bvoi\b|\b&\b)\s*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
-                .Select(CleanName)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Take(quantity)
-                .ToList();
-            if (pieces.Count == quantity && pieces.All(IsPlausibleName))
-            {
-                for (var index = 0; index < quantity; index += 1)
-                    result[index] = result[index] with { DisplayName = pieces[index] };
-            }
-            else if (quantity == 1 && IsPlausibleName(CleanName(tail)))
-            {
-                result[0] = result[0] with { DisplayName = CleanName(tail) };
-            }
+        var tail = named.Groups["names"].Value.Trim(' ', ',', '.', ':', ';');
+        tail = Regex.Replace(
+            tail,
+            @"\s+(?:đều|deu)\s+(?:nam|nữ|nu)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        tail = Regex.Replace(
+            tail,
+            @"\s*,?\s*1\s+(?:nam|nữ|nu)\s+1\s+(?:nam|nữ|nu)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        tail = Regex.Replace(
+            tail,
+            @"^(?:tên|ten)\s+(?:là|la)?\s*",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        // Normalize only separators, never names themselves, so "Minh với Huy" keeps
+        // display casing while still accepting accented/unaccented conjunctions.
+        tail = Regex.Replace(
+            tail,
+            @"\s+(?:và|va|với|voi)\s+",
+            ",",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        tail = tail.Replace('&', ',');
+        var pieces = tail
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(CleanName)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Take(quantity)
+            .ToList();
+
+        if (pieces.Count == quantity && pieces.All(IsPlausibleName))
+        {
+            for (var index = 0; index < quantity; index += 1)
+                result[index] = result[index] with { DisplayName = pieces[index] };
+        }
+        else if (quantity == 1 && IsPlausibleName(CleanName(tail)))
+        {
+            result[0] = result[0] with { DisplayName = CleanName(tail) };
         }
 
         return result;
