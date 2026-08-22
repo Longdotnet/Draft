@@ -18,6 +18,7 @@ internal static class ZaloSemanticGuestPlanValidator
         {
             ZaloSemanticGuestActionKind.AddGuests => ValidateAddLike(plan, snapshot, settings, tentative: false),
             ZaloSemanticGuestActionKind.AddTentativeGuests => ValidateAddLike(plan, snapshot, settings, tentative: true),
+            ZaloSemanticGuestActionKind.ScheduleConditionalGuests => ValidateConditional(plan, snapshot, settings),
             ZaloSemanticGuestActionKind.ConfirmGuests => ValidateConfirm(plan, snapshot, settings),
             ZaloSemanticGuestActionKind.ReplaceGuest => ValidateReplace(plan, snapshot, settings),
             ZaloSemanticGuestActionKind.UpdateGuestProfiles => ValidateUpdate(plan, snapshot, settings),
@@ -71,6 +72,76 @@ internal static class ZaloSemanticGuestPlanValidator
             items,
             plan.NeedsClarification,
             plan.ClarificationReason);
+    }
+
+    private static ZaloSemanticGuestValidationResult ValidateConditional(
+        ZaloSemanticGuestPlan plan,
+        ZaloSemanticGuestGroundingSnapshot snapshot,
+        ZaloSemanticActionSettings settings)
+    {
+        if (snapshot.AnchorKind != ZaloSemanticGuestAnchorKind.RecruitmentBroadcast ||
+            string.IsNullOrWhiteSpace(snapshot.RecruitmentMessageId))
+            return ZaloSemanticGuestValidationResult.Reject(
+                plan,
+                "semantic_guest_conditional_requires_recruitment_reply",
+                "Muốn hẹn điều kiện + bạn thì reply đúng tin `@all` tuyển người của tui nha.");
+        if (snapshot.StartTime is null || snapshot.StartTime <= snapshot.CurrentUtc)
+            return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_conditional_session_not_upcoming");
+        if (plan.NeedsClarification)
+            return ZaloSemanticGuestValidationResult.Reject(
+                plan,
+                "semantic_guest_conditional_ambiguous",
+                string.IsNullOrWhiteSpace(plan.ClarificationReason)
+                    ? "Nói rõ mốc giờ và +1 hay +2 giúp tui nha."
+                    : plan.ClarificationReason);
+        if (plan.Quantity is not (1 or 2) || plan.QuantityConfidence < settings.MinimumConfidence)
+            return ZaloSemanticGuestValidationResult.Reject(
+                plan,
+                "semantic_guest_quantity_ambiguous",
+                "Condition này sẽ +1 hay +2 vậy ông?");
+        if (plan.ConditionalHour is null or < 0 or > 23 || plan.ConditionalMinute is null or < 0 or > 59)
+            return ZaloSemanticGuestValidationResult.Reject(
+                plan,
+                "semantic_guest_conditional_time_ambiguous",
+                "Nói rõ mốc giờ kiểu `19h` hoặc `19:30` giúp tui nha.");
+        var minimumMissing = plan.MinimumMissingSlots ?? 1;
+        if (minimumMissing is not (1 or 2))
+            return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_conditional_missing_slots_invalid");
+
+        var draft = new ZaloConditionalGuestIntentDraft(
+            plan.Quantity.Value,
+            minimumMissing,
+            plan.ConditionalHour.Value,
+            plan.ConditionalMinute.Value,
+            plan.ConditionalEvening,
+            []);
+        if (ZaloConditionalGuestIntentPolicy.ResolveRequestedTrigger(draft, snapshot.CurrentUtc, snapshot.StartTime.Value) is null)
+            return ZaloSemanticGuestValidationResult.Reject(
+                plan,
+                "semantic_guest_conditional_time_outside_session",
+                "Mốc giờ đó không còn nằm trước giờ trận. Nói lại một mốc tương lai trước giờ chơi giúp tui nha.");
+
+        var items = new List<ZaloSemanticGuestValidatedItem>();
+        for (var index = 0; index < plan.Quantity.Value; index += 1)
+        {
+            var source = index < plan.Guests.Count ? plan.Guests[index] : null;
+            if (source?.ReservationId is not null || source?.SponsorSequence is not null)
+                return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_conditional_fabricated_target");
+            items.Add(ProfileFromNewGuest(source, settings));
+        }
+
+        return new ZaloSemanticGuestValidationResult(
+            true,
+            "semantic_guest_conditional_ready",
+            plan.Action,
+            plan.Quantity.Value,
+            items,
+            false,
+            string.Empty,
+            plan.ConditionalHour,
+            plan.ConditionalMinute,
+            plan.ConditionalEvening,
+            minimumMissing);
     }
 
     private static ZaloSemanticGuestValidationResult ValidateConfirm(

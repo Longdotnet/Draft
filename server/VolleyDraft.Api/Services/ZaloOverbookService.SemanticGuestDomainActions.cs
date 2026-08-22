@@ -36,6 +36,58 @@ public sealed partial class ZaloOverbookService
                 result.Idempotent ? "guest_semantic_tentative_idempotent" : "guest_semantic_tentative_added");
         }
 
+        if (validation.Action == ZaloSemanticGuestActionKind.ScheduleConditionalGuests)
+        {
+            if (session.StartTime is null || string.IsNullOrWhiteSpace(recruitmentMessageId) ||
+                validation.ConditionalHour is null || validation.ConditionalMinute is null)
+                throw new InvalidOperationException("Conditional guest action is missing grounded timing/recruitment data.");
+
+            var specs = validation.Items.Select(item => new ZaloRecruitmentGuestSpec(
+                item.DisplayName, item.Gender, item.Role, item.Level)).ToArray();
+            var draft = new ZaloConditionalGuestIntentDraft(
+                validation.Quantity,
+                validation.MinimumMissingSlots,
+                validation.ConditionalHour.Value,
+                validation.ConditionalMinute.Value,
+                validation.ConditionalEvening,
+                specs);
+            var requested = ZaloConditionalGuestIntentPolicy.ResolveRequestedTrigger(
+                draft,
+                DateTimeOffset.UtcNow,
+                session.StartTime.Value)
+                ?? throw new InvalidOperationException("Conditional guest time is no longer before session start.");
+            var executeNotBefore = ZaloConditionalGuestIntentPolicy.ResolveExecuteNotBefore(
+                requested,
+                session.StartTime.Value,
+                configuration);
+            var store = new ZaloConditionalGuestIntentStore(db);
+            var existing = await store.LoadBySourceMessageAsync(sourceMessageId, cancellationToken);
+            var intent = await store.CreateOrReuseAsync(
+                session.Id,
+                session.ZaloGroupId ?? string.Empty,
+                senderId,
+                FriendlySponsorName(senderName, senderId),
+                sourceMessageId,
+                recruitmentMessageId,
+                requested,
+                executeNotBefore,
+                validation.MinimumMissingSlots,
+                validation.Quantity,
+                ZaloConditionalGuestIntentPolicy.SerializeGuests(specs),
+                cancellationToken);
+            var requestedLabel = ZaloConditionalGuestIntentPolicy.FormatLocalTime(intent.RequestedTriggerAt);
+            var executeLabel = ZaloConditionalGuestIntentPolicy.FormatLocalTime(intent.ExecuteNotBeforeAt);
+            var gateNote = intent.ExecuteNotBeforeAt > intent.RequestedTriggerAt
+                ? $" Rule guest ngoài group chỉ mở gần giờ trận nên tui sẽ kiểm tra sớm nhất lúc {executeLabel}."
+                : string.Empty;
+            var condition = intent.MinimumMissingSlots == 1
+                ? "roster vẫn còn thiếu"
+                : $"roster còn thiếu ít nhất {intent.MinimumMissingSlots} slot";
+            return new(
+                $"Ok, tui ghi condition cho {session.Name}: tới {requestedLabel}, nếu {condition} thì mới xét +{intent.Quantity}. Tới mốc đó tui sync poll thật trước; nếu condition không còn đúng thì tui không cộng ai.{gateNote}",
+                existing is null ? "guest_semantic_conditional_scheduled" : "guest_semantic_conditional_idempotent");
+        }
+
         if (validation.Action == ZaloSemanticGuestActionKind.ConfirmGuests)
         {
             var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);

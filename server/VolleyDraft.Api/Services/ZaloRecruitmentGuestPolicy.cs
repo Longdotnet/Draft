@@ -86,6 +86,11 @@ internal static class ZaloRecruitmentGuestPolicy
         var normalized = ZaloBotIntelligence.Normalize(original);
         if (normalized.Length == 0) return null;
 
+        // Conditional intent is not an immediate guest mutation. Without this guard,
+        // a technical semantic-AI fallback could see the embedded +1/+2 and execute it
+        // now, violating the user's "nếu ... thì ..." condition.
+        if (ZaloConditionalGuestIntentPolicy.LooksConditional(original)) return null;
+
         var rename = SequenceRename.Match(normalized);
         if (rename.Success && int.TryParse(rename.Groups["seq"].Value, out var renameSeq))
         {

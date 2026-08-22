@@ -7,6 +7,7 @@ internal enum ZaloSemanticGuestActionKind
     None,
     AddGuests,
     AddTentativeGuests,
+    ScheduleConditionalGuests,
     ConfirmGuests,
     ReplaceGuest,
     UpdateGuestProfiles,
@@ -47,7 +48,11 @@ internal sealed record ZaloSemanticGuestPlan(
     IReadOnlyList<ZaloSemanticGuestPlanItem> Guests,
     bool NeedsClarification,
     string ClarificationReason,
-    string Reason)
+    string Reason,
+    int? ConditionalHour = null,
+    int? ConditionalMinute = null,
+    bool ConditionalEvening = false,
+    int? MinimumMissingSlots = null)
 {
     public static ZaloSemanticGuestPlan None(string reason) => new(
         ZaloSemanticGuestActionKind.None,
@@ -103,7 +108,11 @@ internal sealed record ZaloSemanticGuestValidationResult(
     int Quantity,
     IReadOnlyList<ZaloSemanticGuestValidatedItem> Items,
     bool NeedsClarification,
-    string ClarificationReason)
+    string ClarificationReason,
+    int? ConditionalHour = null,
+    int? ConditionalMinute = null,
+    bool ConditionalEvening = false,
+    int MinimumMissingSlots = 1)
 {
     public static ZaloSemanticGuestValidationResult Reject(
         ZaloSemanticGuestPlan plan,

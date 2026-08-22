@@ -63,6 +63,7 @@ internal sealed class ZaloSemanticGuestPlanner
             Actions:
             - AddGuests: xác nhận chắc chắn thêm 1/2 guest và giữ slot ngay.
             - AddTentativeGuests: người gửi nói chưa chắc/còn phải hỏi/chắc khoảng/có thể dẫn guest. Tentative chỉ ghi nhớ, KHÔNG chiếm slot. Ví dụ "chắc tui dẫn thêm 1", "để tui hỏi Minh xem đi không", "có thể có 2 bạn".
+            - ScheduleConditionalGuests: người gửi đặt điều kiện tương lai kiểu "nếu 19h vẫn thiếu thì +2", "7h mà còn thiếu thì cho 1 bạn tui vô". Action này CHỈ lưu một condition; KHÔNG cộng slot ngay. Phải điền conditionalHour, conditionalMinute, conditionalEvening và minimumMissingSlots. Nếu user chỉ nói "vẫn thiếu" thì minimumMissingSlots=1. Nếu nói "còn thiếu 2 slot" thì minimumMissingSlots=2.
             - ConfirmGuests: một guest Tentative trước đó giờ đã được xác nhận đi. Ví dụ "ừ nó đi", "Minh chốt đi nha", "2 bạn đó đi được". Chỉ target ExistingGuests có Status=Tentative.
             - ReplaceGuest: một guest cũ nghỉ và có một guest mới thay vào trong cùng ý định. Guests PHẢI có đúng thứ tự: phần tử 0 = guest cũ (reference/ID grounded), phần tử 1 = guest mới (reservationId=null, sponsorSequence=null, profile mới). Ví dụ "Minh nghỉ, cho Huy thay Minh".
             - UpdateGuestProfiles: bổ sung/đổi tên/giới tính/trình độ/vị trí guest đã biết, kể cả Tentative.
@@ -72,8 +73,15 @@ internal sealed class ZaloSemanticGuestPlanner
             Phân biệt commitment:
             - "tui dẫn Huy", "+1 Huy", "Huy đi nha" trong recruitment => AddGuests nếu chắc chắn.
             - "chắc tui dẫn Huy", "có thể Huy đi", "để tui hỏi Huy" => AddTentativeGuests, không AddGuests.
+            - "nếu 19h vẫn thiếu thì +2" => ScheduleConditionalGuests, tuyệt đối không AddGuests/AddTentativeGuests ngay.
             - Nếu ExistingGuests có Huy Tentative và user nói "Huy đi nha"/"ừ nó đi" => ConfirmGuests, không tạo guest mới.
             - "Minh nghỉ, Huy thế Minh" => ReplaceGuest chứ không tách thành Cancel + Add.
+
+            Conditional time:
+            - conditionalHour là giờ người dùng nói theo local time Việt Nam, 0..23.
+            - conditionalMinute mặc định 0.
+            - conditionalEvening=true nếu user nói rõ "tối/chiều" với giờ 1..11; backend sẽ resolve AM/PM an toàn theo giờ trận.
+            - Không tự suy ra ngày/kèo khác; backend dùng đúng ngày của SessionId đã grounded.
 
             Correction examples RecentGuestMutation:
             - "à nhầm bạn đó nữ" => UpdateGuestProfiles.
@@ -99,10 +107,14 @@ internal sealed class ZaloSemanticGuestPlanner
 
             Chỉ trả đúng JSON object:
             {
-              "action":"None|AddGuests|AddTentativeGuests|ConfirmGuests|ReplaceGuest|UpdateGuestProfiles|CancelGuests",
+              "action":"None|AddGuests|AddTentativeGuests|ScheduleConditionalGuests|ConfirmGuests|ReplaceGuest|UpdateGuestProfiles|CancelGuests",
               "confidence":0.0,
               "quantity":1,
               "quantityConfidence":0.0,
+              "conditionalHour":null,
+              "conditionalMinute":null,
+              "conditionalEvening":false,
+              "minimumMissingSlots":null,
               "guests":[
                 {
                   "referenceText":"#1|Minh|bạn thứ hai|replacement|...",
@@ -222,7 +234,11 @@ internal sealed class ZaloSemanticGuestPlanner
                 guests,
                 ReadBool(root, "needsClarification"),
                 Clean(ReadString(root, "clarificationReason"), 180),
-                Clean(ReadString(root, "reason"), 180));
+                Clean(ReadString(root, "reason"), 180),
+                ReadNullableInt(root, "conditionalHour"),
+                ReadNullableInt(root, "conditionalMinute"),
+                ReadBool(root, "conditionalEvening"),
+                ReadNullableInt(root, "minimumMissingSlots"));
         }
         catch (JsonException)
         {
