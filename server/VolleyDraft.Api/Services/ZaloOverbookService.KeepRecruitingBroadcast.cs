@@ -38,18 +38,29 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
         return $"{MessagePrefix(sessionId)}{bucket}";
     }
 
-    internal static string? BuildMessage(ZaloDraftReadinessSnapshot readiness)
+    internal static string? BuildMessage(
+        ZaloDraftReadinessSnapshot readiness,
+        int activeSlotRiskCount = 0)
     {
-        if (readiness.EffectiveSlotCount >= readiness.Capacity)
+        if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRiskCount <= 0)
             return null;
 
-        var missing = Math.Max(1, readiness.Capacity - readiness.EffectiveSlotCount);
         var roster = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
             ? $"{readiness.EffectiveSlotCount}/{readiness.Capacity}"
             : $"{readiness.PresentPlayerCount} người / {readiness.EffectiveSlotCount} effective slot (mốc {readiness.Capacity})";
-        var slotLabel = missing == 1 ? "1 slot" : $"{missing} slot";
 
-        return $"@all Kèo {readiness.SessionName} đang {roster}, còn thiếu {slotLabel} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì vào poll chốt giúp nha. Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người bot tự ngưng réo.";
+        if (activeSlotRiskCount > 0 && readiness.EffectiveSlotCount >= readiness.Capacity)
+        {
+            var riskLabel = activeSlotRiskCount == 1 ? "1 slot" : $"{activeSlotRiskCount} slot";
+            return $"@all Kèo {readiness.SessionName} poll đang {roster} nhưng có {riskLabel} báo pass/huỷ đang cần người thay 👋 Ai chưa vote hoặc giờ sắp xếp vào được thì vào poll chốt giúp nha. Trưởng/phó đang chọn tiếp tục kiếm thêm; slot sạch lại bot tự ngưng réo.";
+        }
+
+        var missing = Math.Max(1, readiness.Capacity - readiness.EffectiveSlotCount);
+        var slotLabel = missing == 1 ? "1 slot" : $"{missing} slot";
+        var riskNote = activeSlotRiskCount > 0
+            ? $"; đồng thời còn {activeSlotRiskCount} slot pass/huỷ chưa xử lý xong"
+            : string.Empty;
+        return $"@all Kèo {readiness.SessionName} đang {roster}, còn thiếu {slotLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì vào poll chốt giúp nha. Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người và slot sạch thì bot tự ngưng réo.";
     }
 }
 
@@ -146,14 +157,14 @@ public sealed partial class ZaloOverbookService
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
+            var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
-            if (readiness.EffectiveSlotCount >= readiness.Capacity)
+            if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRisks == 0)
             {
                 await decisionStore.ClearAsync(session.Id, cancellationToken);
                 continue;
             }
 
-            var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
             ZaloKeepRecruitingBroadcastResult result;
             if (recentBroadcast)
             {
@@ -164,6 +175,7 @@ public sealed partial class ZaloOverbookService
                 result = await TrySendKeepRecruitingBroadcastAsync(
                     session,
                     readiness,
+                    activeSlotRisks,
                     now,
                     cancellationToken);
             }
@@ -194,6 +206,7 @@ public sealed partial class ZaloOverbookService
     private async Task<ZaloKeepRecruitingBroadcastResult> TrySendKeepRecruitingBroadcastAsync(
         MatchSession session,
         ZaloDraftReadinessSnapshot readiness,
+        int activeSlotRiskCount,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -205,7 +218,7 @@ public sealed partial class ZaloOverbookService
             start <= now.AddMinutes(settings.StopNudgingMinutesBeforeStart))
             return ZaloKeepRecruitingBroadcastResult.WindowClosed;
 
-        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(readiness);
+        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(readiness, activeSlotRiskCount);
         if (message is null)
             return ZaloKeepRecruitingBroadcastResult.NotNeeded;
 
