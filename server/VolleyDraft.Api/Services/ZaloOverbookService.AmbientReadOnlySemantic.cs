@@ -69,11 +69,6 @@ public sealed partial class ZaloOverbookService
         var settings = ZaloReadOnlySemanticSettings.FromConfiguration(configuration);
         if (!ZaloReadOnlySemanticGate.IsEligible(incoming, ambientSettings, settings)) return false;
 
-        // Cost gate is generic: ordinary statements with no existing Fact/Social/Action
-        // participation signal do not spend an AI call. A question with no volleyball
-        // keywords is still Kind=Social via the generic question signal and reaches AI.
-        if (decision.Kind == ZaloAmbientParticipationKind.None) return false;
-
         var messageId = ZaloOverbookLogic.NormalizeId(incoming.MessageId);
         var observed = await db.ZaloGroupMessages
             .AsNoTracking()
