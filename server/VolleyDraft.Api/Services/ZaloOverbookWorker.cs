@@ -33,6 +33,14 @@ public sealed class ZaloOverbookWorker(
                 if (guestPromotions > 0)
                     logger.LogInformation("Guest waitlist cycle announced {PromotionCount} promotion(s)", guestPromotions);
 
+                // Event observation is separate from send cooldown. This lane refreshes
+                // the linked poll every cycle while KeepRecruiting is active, consumes a
+                // guest waitlist first, debounces accidental unvotes, and only then
+                // chooses soft update vs @all for a confirmed roster drop.
+                var rosterChanges = await overbook.ProcessRecruitmentRosterChangesDueAsync(stoppingToken);
+                if (rosterChanges > 0)
+                    logger.LogInformation("Recruitment roster-change cycle sent {SentCount} update(s)", rosterChanges);
+
                 // KeepRecruiting owns group-wide recruiting once a live organizer has
                 // explicitly chosen that direction. Run it before the leader-aware V2
                 // reminder so a handled recruitment bucket is not duplicated by a
@@ -126,7 +134,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/recruitment-guest/guest-waitlist/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/recruitment-guest/guest-waitlist/roster-change/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
