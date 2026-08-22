@@ -175,18 +175,28 @@ internal static class ZaloSemanticGuestPlanValidator
             ZaloSemanticGuestAnchorKind.RecentGuestMutation))
             return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_cancel_without_context");
 
-        var resolved = plan.Guests
+        var confidentSources = plan.Guests
             .Where(item => item.Confidence >= settings.MinimumConfidence)
+            .ToList();
+        var resolved = confidentSources
             .Select(item => ResolveGroundedGuest(item, snapshot))
             .Where(item => item is not null)
             .Cast<ZaloSemanticGuestGroundingGuest>()
             .DistinctBy(item => item.ReservationId, StringComparer.Ordinal)
             .Take(2)
             .ToList();
-        if (resolved.Count == 0 && snapshot.ExistingGuests.Count == 1 && plan.Quantity is null or 1)
+
+        // A single grounded guest may be inferred only when the planner supplied no
+        // target at all. If the model supplied an explicit reservation/reference that
+        // failed grounding, never replace it with "the only guest" — that would turn a
+        // fabricated target into mutation authority.
+        if (resolved.Count == 0 &&
+            plan.Guests.Count == 0 &&
+            snapshot.ExistingGuests.Count == 1 &&
+            plan.Quantity is null or 1)
             resolved.Add(snapshot.ExistingGuests[0]);
 
-        if (resolved.Count == 0 || plan.NeedsClarification)
+        if (resolved.Count == 0 || resolved.Count != confidentSources.Count || plan.NeedsClarification)
             return ZaloSemanticGuestValidationResult.Reject(
                 plan,
                 "semantic_guest_cancel_target_ambiguous",
