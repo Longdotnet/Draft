@@ -88,10 +88,16 @@ public sealed class ZaloGroundedSemanticActionPlannerTests
 
         Assert.Equal(ZaloSemanticActionKind.PassOwnSlot, plan.Action);
         Assert.Single(plan.Targets);
-        Assert.Contains("bữa đó chắc tui nghỉ", handler.LastRequestBody, StringComparison.Ordinal);
-        Assert.Contains("CurrentLocalDateTime", handler.LastRequestBody, StringComparison.Ordinal);
-        Assert.Contains("Asia/Ho_Chi_Minh", handler.LastRequestBody, StringComparison.Ordinal);
-        Assert.Contains(session.SessionId, handler.LastRequestBody, StringComparison.Ordinal);
+        using var requestDocument = JsonDocument.Parse(handler.LastRequestBody);
+        var userPayload = requestDocument.RootElement
+            .GetProperty("messages")[1]
+            .GetProperty("content")
+            .GetString();
+        Assert.NotNull(userPayload);
+        Assert.Contains("bữa đó chắc tui nghỉ", userPayload!, StringComparison.Ordinal);
+        Assert.Contains("CurrentLocalDateTime", userPayload, StringComparison.Ordinal);
+        Assert.Contains("Asia/Ho_Chi_Minh", userPayload, StringComparison.Ordinal);
+        Assert.Contains(session.SessionId, userPayload, StringComparison.Ordinal);
         Assert.Equal(1, handler.CallCount);
     }
 
