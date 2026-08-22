@@ -85,6 +85,12 @@ public sealed partial class ZaloOverbookService
                         continue;
                     }
 
+                    // If a previously named outside guest has since joined the group and
+                    // voted, collapse the old manual placeholder before counting room for
+                    // this new +1/+2. Only exact unique names are reconciled.
+                    await new ZaloGuestIdentityReconciler(db)
+                        .ReconcileAsync(session.Id, cancellationToken);
+
                     var result = await service.AddAsync(
                         session,
                         ZaloOverbookLogic.NormalizeId(message.SenderId),
@@ -184,6 +190,8 @@ public sealed partial class ZaloOverbookService
 
             var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
             if (!sync.Success) continue;
+            await new ZaloGuestIdentityReconciler(db)
+                .ReconcileAsync(sessionId, cancellationToken);
             var promotions = await service.PromoteWaitingAsync(sessionId, cancellationToken);
             foreach (var promotion in promotions)
             {
@@ -303,8 +311,8 @@ public sealed partial class ZaloOverbookService
         var senderName = FriendlySponsorName(incoming.SenderName, senderId);
         var label = $"@{senderName}";
         var text = $"{label} {body}";
-        var mentions = senderId.Length == 0
-            ? Array.Empty<BridgeOutgoingMention>()
+        IReadOnlyList<BridgeOutgoingMention> mentions = senderId.Length == 0
+            ? []
             : [new BridgeOutgoingMention(senderId, 0, label.Length)];
         var idempotencyKey = $"guest-recruit:{connection.Id}:{incoming.MessageId}";
         var send = await bridge.SendGroupMessageAsync(
