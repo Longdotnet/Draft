@@ -26,7 +26,12 @@ internal static class ZaloSemanticGuestPlanValidator
         ZaloSemanticGuestGroundingSnapshot snapshot,
         ZaloSemanticActionSettings settings)
     {
-        if (snapshot.AnchorKind != ZaloSemanticGuestAnchorKind.RecruitmentBroadcast)
+        var directRecruitment = snapshot.AnchorKind == ZaloSemanticGuestAnchorKind.RecruitmentBroadcast;
+        var resumedPendingAdd = snapshot.AnchorKind == ZaloSemanticGuestAnchorKind.PendingGuestAction &&
+                                !string.IsNullOrWhiteSpace(snapshot.RecruitmentMessageId) &&
+                                snapshot.PendingMissingFields.Any(item =>
+                                    string.Equals(item, "quantity", StringComparison.OrdinalIgnoreCase));
+        if (!directRecruitment && !resumedPendingAdd)
             return ZaloSemanticGuestValidationResult.Reject(
                 plan,
                 "semantic_guest_add_requires_recruitment_reply",
@@ -87,7 +92,9 @@ internal static class ZaloSemanticGuestPlanValidator
     {
         if (snapshot.AnchorKind is not (ZaloSemanticGuestAnchorKind.RecruitmentBroadcast or
             ZaloSemanticGuestAnchorKind.GuestConversation or
-            ZaloSemanticGuestAnchorKind.ActiveGuestConversation))
+            ZaloSemanticGuestAnchorKind.ActiveGuestConversation or
+            ZaloSemanticGuestAnchorKind.PendingGuestAction or
+            ZaloSemanticGuestAnchorKind.RecentGuestMutation))
             return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_update_without_context");
 
         var sources = plan.Guests.ToList();
@@ -163,7 +170,9 @@ internal static class ZaloSemanticGuestPlanValidator
     {
         if (snapshot.AnchorKind is not (ZaloSemanticGuestAnchorKind.RecruitmentBroadcast or
             ZaloSemanticGuestAnchorKind.GuestConversation or
-            ZaloSemanticGuestAnchorKind.ActiveGuestConversation))
+            ZaloSemanticGuestAnchorKind.ActiveGuestConversation or
+            ZaloSemanticGuestAnchorKind.PendingGuestAction or
+            ZaloSemanticGuestAnchorKind.RecentGuestMutation))
             return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_cancel_without_context");
 
         var resolved = plan.Guests
