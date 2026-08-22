@@ -97,6 +97,22 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
     }
 
     [Fact]
+    public async Task Snapshot_uses_stable_member_ids_and_includes_current_group_member_without_roster_row()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var snapshot = await BuildSnapshotAsync(fixture);
+
+        Assert.Contains(snapshot.Members, member =>
+            member.MemberId == "zalo:user-long" &&
+            member.SessionPlayerId == "player-long" &&
+            member.SessionId == "session-t6");
+        Assert.Contains(snapshot.Members, member =>
+            member.MemberId == "zalo:user-huy" &&
+            member.SessionPlayerId is null &&
+            member.SessionId is null);
+    }
+
+    [Fact]
     public async Task Mutation_request_is_rejected_by_readonly_validator()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -105,8 +121,8 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             ZaloReadOnlySemanticRoute.MutationRequest,
             ZaloReadOnlyFactKind.CanMemberTakeSlot,
             sessionId: "session-t6",
-            subjectMemberId: "player-nam",
-            referencedMemberId: "player-long",
+            subjectMemberId: "zalo:user-nam",
+            referencedMemberId: "zalo:user-long",
             reason: "imperative_add_member");
 
         var result = ZaloReadOnlySemanticPlanValidator.Validate(
@@ -150,7 +166,7 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             ZaloReadOnlySemanticRoute.ReadOnlyQuestion,
             ZaloReadOnlyFactKind.MemberTeam,
             sessionId: "session-t6",
-            subjectMemberId: "player-made-up");
+            subjectMemberId: "zalo:user-made-up");
 
         var result = ZaloReadOnlySemanticPlanValidator.Validate(
             plan,
@@ -225,8 +241,8 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             ZaloReadOnlySemanticRoute.ReadOnlyQuestion,
             ZaloReadOnlyFactKind.CanMemberTakeSlot,
             sessionId: "session-t6",
-            subjectMemberId: "player-nam",
-            referencedMemberId: "player-long",
+            subjectMemberId: "zalo:user-nam",
+            referencedMemberId: "zalo:user-long",
             reason: "asks_if_nam_can_take_long_reference");
 
         var reply = await new ZaloReadOnlyGroundedFactResolver(fixture.Db).TryBuildAsync(
@@ -254,6 +270,44 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
     }
 
     [Fact]
+    public async Task Group_member_without_target_roster_row_can_be_checked_without_mutation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var snapshot = await BuildSnapshotAsync(fixture);
+        var beforePlayers = await fixture.Db.SessionPlayers.AsNoTracking().CountAsync();
+        var plan = Plan(
+            ZaloReadOnlySemanticRoute.ReadOnlyQuestion,
+            ZaloReadOnlyFactKind.CanMemberTakeSlot,
+            sessionId: "session-t6",
+            subjectMemberId: "zalo:user-huy",
+            referencedMemberId: "zalo:user-long",
+            reason: "group_member_without_target_membership");
+        var validation = ZaloReadOnlySemanticPlanValidator.Validate(
+            plan,
+            Message("huy-check", "user-binh", "Bình", "Huy vô đó được không?"),
+            EmptyContext(),
+            snapshot,
+            Settings());
+
+        var reply = validation.Accepted
+            ? await new ZaloReadOnlyGroundedFactResolver(fixture.Db).TryBuildAsync(
+                "bot-account",
+                "conn-1",
+                "g1",
+                Message("huy-check", "user-binh", "Bình", "Huy vô đó được không?"),
+                AmbientDecision(),
+                validation.Plan,
+                snapshot)
+            : null;
+
+        Assert.True(validation.Accepted);
+        Assert.NotNull(reply);
+        Assert.Contains("Huy hiện chưa có slot", reply!.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("slot của Long chưa được pass/mở", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(beforePlayers, await fixture.Db.SessionPlayers.AsNoTracking().CountAsync());
+    }
+
+    [Fact]
     public async Task Can_member_take_slot_uses_real_open_offer_and_leaves_it_open()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -271,8 +325,8 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             ZaloReadOnlySemanticRoute.ReadOnlyQuestion,
             ZaloReadOnlyFactKind.CanMemberTakeSlot,
             sessionId: "session-t6",
-            subjectMemberId: "player-nam",
-            referencedMemberId: "player-long",
+            subjectMemberId: "zalo:user-nam",
+            referencedMemberId: "zalo:user-long",
             openOfferId: offer.Id,
             sourceMessageId: "long-pass",
             reason: "real_open_offer");
@@ -302,7 +356,7 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             ZaloReadOnlySemanticRoute.ReadOnlyQuestion,
             ZaloReadOnlyFactKind.MemberTeam,
             sessionId: "session-t6",
-            subjectMemberId: "player-long",
+            subjectMemberId: "zalo:user-long",
             sourceMessageId: "quoted-long",
             reason: "quoted_member_team");
         var context = new ZaloReadOnlyConversationContext([], ["quoted-long"]);
@@ -542,6 +596,12 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
                 ZaloUserId = "user-nam",
                 DisplayName = "Nam"
             };
+            var huyProfile = new PlayerProfile
+            {
+                Id = "profile-huy",
+                ZaloUserId = "user-huy",
+                DisplayName = "Huy"
+            };
             var longPlayer = new SessionPlayer
             {
                 Id = "player-long",
@@ -614,8 +674,21 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
 
             db.Users.Add(admin);
             db.ZaloConnections.Add(zalo);
-            db.PlayerProfiles.AddRange(longProfile, namProfile);
+            db.PlayerProfiles.AddRange(longProfile, namProfile, huyProfile);
             db.MatchSessions.Add(session);
+            db.ZaloGroupMembers.Add(new ZaloGroupMember
+            {
+                Id = "group-member-huy",
+                ZaloConnectionId = zalo.Id,
+                ZaloConnection = zalo,
+                GroupId = "g1",
+                ZaloUserId = "user-huy",
+                DisplayName = "Huy",
+                IsCurrentMember = true,
+                FirstSeenAt = DateTimeOffset.UtcNow.AddDays(-30),
+                LastSeenAt = DateTimeOffset.UtcNow,
+                LastSyncedAt = DateTimeOffset.UtcNow
+            });
 
             if (addSecondSession)
             {
