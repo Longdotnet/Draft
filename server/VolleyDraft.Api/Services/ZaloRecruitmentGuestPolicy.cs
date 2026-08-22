@@ -30,6 +30,10 @@ internal static class ZaloRecruitmentGuestPolicy
         @"(?<![a-z0-9])\+(?<count>[12])(?!\d)|(?<![a-z0-9])(?:them|cong|keo|dan|ru|co)\s*(?:them\s*)?(?<count2>[12])\s*(?:ban|dua|nguoi|khach)?(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex ImplicitOne = new(
+        @"(?<![a-z0-9])(?:\+\s*(?:ban|dua|nguoi|khach)|(?:them|keo|dan|ru)\s+(?:them\s+)?(?:ban|dua|nguoi|khach))(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex Cancel = new(
         @"(?<![a-z0-9])(?:(?<count>[12])\s*(?:ban|dua|nguoi)\s*(?:tui|toi|minh)?\s*(?:nghi|huy|khong di|ko di)|(?:ban|dua|nguoi)\s*(?:tui|toi|minh)\s*(?:nghi|huy|khong di|ko di)|(?<name>[a-z0-9][a-z0-9 ._-]{1,60})\s+(?:nghi|khong di|ko di))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -104,10 +108,21 @@ internal static class ZaloRecruitmentGuestPolicy
         }
 
         var plus = PlusQuantity.Match(normalized);
-        if (!plus.Success) return null;
-        var rawCount = plus.Groups["count"].Success ? plus.Groups["count"].Value : plus.Groups["count2"].Value;
-        if (!int.TryParse(rawCount, out var parsedCount)) return null;
-        var quantityToAdd = Math.Clamp(parsedCount, 1, 2);
+        int quantityToAdd;
+        if (plus.Success)
+        {
+            var rawCount = plus.Groups["count"].Success ? plus.Groups["count"].Value : plus.Groups["count2"].Value;
+            if (!int.TryParse(rawCount, out var parsedCount)) return null;
+            quantityToAdd = Math.Clamp(parsedCount, 1, 2);
+        }
+        else if (ImplicitOne.IsMatch(normalized))
+        {
+            quantityToAdd = 1;
+        }
+        else
+        {
+            return null;
+        }
 
         var specs = ParseGuestSpecs(content ?? string.Empty, normalized, quantityToAdd);
         return new ZaloRecruitmentGuestCommand(
