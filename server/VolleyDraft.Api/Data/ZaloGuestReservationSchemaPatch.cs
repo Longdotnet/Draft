@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 
 namespace VolleyDraft.Api.Data;
@@ -30,6 +31,8 @@ public static class ZaloGuestReservationSchemaPatch
                         "GuestIndex" integer NOT NULL,
                         "SponsorSequence" integer NOT NULL,
                         "Gender" integer NULL,
+                        "Role" integer NULL,
+                        "Level" integer NULL,
                         "SourceMessageId" TEXT NOT NULL,
                         "RecruitmentMessageId" TEXT NULL,
                         "Status" integer NOT NULL,
@@ -56,6 +59,8 @@ public static class ZaloGuestReservationSchemaPatch
                         "GuestIndex" INTEGER NOT NULL,
                         "SponsorSequence" INTEGER NOT NULL,
                         "Gender" INTEGER NULL,
+                        "Role" INTEGER NULL,
+                        "Level" INTEGER NULL,
                         "SourceMessageId" TEXT NOT NULL,
                         "RecruitmentMessageId" TEXT NULL,
                         "Status" INTEGER NOT NULL,
@@ -72,10 +77,56 @@ public static class ZaloGuestReservationSchemaPatch
                     ON "ZaloGuestReservations" ("SessionId", "Status", "CreatedAt");
                     """;
             await db.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+
+            if (isPostgres)
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """
+                    ALTER TABLE "ZaloGuestReservations" ADD COLUMN IF NOT EXISTS "Role" integer NULL;
+                    ALTER TABLE "ZaloGuestReservations" ADD COLUMN IF NOT EXISTS "Level" integer NULL;
+                    """,
+                    cancellationToken);
+            }
+            else
+            {
+                await EnsureSqliteColumnAsync(db, "Role", "INTEGER NULL", cancellationToken);
+                await EnsureSqliteColumnAsync(db, "Level", "INTEGER NULL", cancellationToken);
+            }
         }
         finally
         {
             Gate.Release();
         }
+    }
+
+    private static async Task EnsureSqliteColumnAsync(
+        VolleyDraftDbContext db,
+        string columnName,
+        string definition,
+        CancellationToken cancellationToken)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(cancellationToken);
+
+        var exists = false;
+        await using (var query = connection.CreateCommand())
+        {
+            query.CommandText = "PRAGMA table_info(\"ZaloGuestReservations\");";
+            await using var reader = await query.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (string.Equals(Convert.ToString(reader.GetValue(1)), columnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+        if (exists) return;
+
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE \"ZaloGuestReservations\" ADD COLUMN \"{columnName}\" {definition};";
+        await alter.ExecuteNonQueryAsync(cancellationToken);
     }
 }

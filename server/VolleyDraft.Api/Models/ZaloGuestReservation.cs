@@ -23,6 +23,8 @@ public sealed class ZaloGuestReservation
     public int GuestIndex { get; set; }
     public int SponsorSequence { get; set; }
     public PlayerGender? Gender { get; set; }
+    public PlayerRole? Role { get; set; }
+    public PlayerLevel? Level { get; set; }
     public string SourceMessageId { get; set; } = string.Empty;
     public string? RecruitmentMessageId { get; set; }
     public ZaloGuestReservationStatus Status { get; set; }

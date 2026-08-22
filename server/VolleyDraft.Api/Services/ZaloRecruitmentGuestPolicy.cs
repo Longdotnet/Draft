@@ -12,7 +12,9 @@ internal enum ZaloRecruitmentGuestCommandKind
 
 internal sealed record ZaloRecruitmentGuestSpec(
     string? DisplayName = null,
-    PlayerGender? Gender = null);
+    PlayerGender? Gender = null,
+    PlayerRole? Role = null,
+    PlayerLevel? Level = null);
 
 internal sealed record ZaloRecruitmentGuestCommand(
     ZaloRecruitmentGuestCommandKind Kind,
@@ -22,6 +24,8 @@ internal sealed record ZaloRecruitmentGuestCommand(
     string? GuestReference = null,
     string? RenameTo = null,
     PlayerGender? Gender = null,
+    PlayerRole? Role = null,
+    PlayerLevel? Level = null,
     bool ApplyAll = false);
 
 internal static class ZaloRecruitmentGuestPolicy
@@ -56,9 +60,8 @@ internal static class ZaloRecruitmentGuestPolicy
         if (parsed?.Kind == ZaloRecruitmentGuestCommandKind.Add)
             return true;
 
-        // Catch natural phrases that describe bringing an outside friend but do not
-        // use the canonical +1/+2 syntax. This is routing-only: it must never itself
-        // become mutation authority. Example: "nay tui di chung voi 1 ban o ngoai gr".
+        // Routing-only broad signal. Semantic AI/grounding still owns meaning and
+        // mutation authority; this must never itself create a guest.
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
         if (normalized.Length == 0) return false;
 
@@ -83,8 +86,6 @@ internal static class ZaloRecruitmentGuestPolicy
         var normalized = ZaloBotIntelligence.Normalize(original);
         if (normalized.Length == 0) return null;
 
-        // Preserve the exact display-name spelling/casing that the member typed. The
-        // normalized form is only for intent detection and sequence extraction.
         var rename = SequenceRename.Match(normalized);
         if (rename.Success && int.TryParse(rename.Groups["seq"].Value, out var renameSeq))
         {
@@ -101,8 +102,6 @@ internal static class ZaloRecruitmentGuestPolicy
                 RenameTo: renameTo);
         }
 
-        // Cancellation must win over signup wording if a member says that their guest
-        // is no longer going. It is still grounded later to this sender's reservations.
         var cancel = Cancel.Match(normalized);
         if (cancel.Success)
         {
@@ -115,9 +114,6 @@ internal static class ZaloRecruitmentGuestPolicy
                 ApplyAll: quantity == 2 && (normalized.Contains("het", StringComparison.Ordinal) || normalized.Contains("ca 2", StringComparison.Ordinal)));
         }
 
-        // Explicit +1/+2/add language is authoritative. Parse it before generic profile
-        // language so "+2 bạn tui, 1 nam 1 nữ" remains an Add command rather than being
-        // misclassified as a two-guest gender update.
         var plus = PlusQuantity.Match(normalized);
         int? quantityToAdd = null;
         if (plus.Success)
@@ -159,9 +155,6 @@ internal static class ZaloRecruitmentGuestPolicy
                 Gender: ParseGender(sequenceGender.Groups["gender"].Value));
         }
 
-        // Profile completion is intentionally evaluated after cancellation and signup
-        // language. Name references remain normalized because they are only used for
-        // grounded matching against this sponsor's existing guest reservations.
         var namedGender = NamedGender.Match(normalized);
         if (namedGender.Success)
         {
@@ -223,14 +216,9 @@ internal static class ZaloRecruitmentGuestPolicy
             string.Empty,
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-        // "mình" is a pronoun, while the very common name "Minh" must remain valid.
-        // For unaccented chat, lowercase "minh" is treated conservatively as a pronoun;
-        // a member can still provide the explicit name as "Minh" or rename later.
         if (quantity == 1 && IsStandaloneSelfPronoun(tail))
             return result;
 
-        // Normalize only separators, never names themselves, so "Minh với Huy" keeps
-        // display casing while still accepting accented/unaccented conjunctions.
         tail = Regex.Replace(
             tail,
             @"\s+(?:và|va|với|voi)\s+",
@@ -276,7 +264,12 @@ internal static class ZaloRecruitmentGuestPolicy
         if (string.IsNullOrWhiteSpace(value) || value.Length is < 2 or > 80) return false;
         var normalized = ZaloBotIntelligence.Normalize(value);
         if (normalized is "tui" or "toi" or "ban" or "dua" or "nguoi" or "khach" or
-            "ban tui" or "ban toi" or "ban minh" or "dua tui" or "dua toi" or "dua minh")
+            "ban tui" or "ban toi" or "ban minh" or "dua tui" or "dua toi" or "dua minh" or
+            "cho ban nha" or "cho ban" or "ban nha" or "thang ban" or "nho ban" or "dua ban")
+            return false;
+        if (normalized.StartsWith("cho ban ", StringComparison.Ordinal) ||
+            normalized.StartsWith("ban tui ", StringComparison.Ordinal) ||
+            normalized.StartsWith("ban minh ", StringComparison.Ordinal))
             return false;
         if (Regex.IsMatch(normalized, @"^(?:t[2-7]|cn|thu\s*[2-7]|chu\s*nhat)(?:\s|$)", RegexOptions.CultureInvariant))
             return false;
