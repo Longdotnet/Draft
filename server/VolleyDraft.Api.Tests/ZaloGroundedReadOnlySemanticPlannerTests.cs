@@ -80,9 +80,19 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             .GetProperty("messages")[1]
             .GetProperty("content")
             .GetString() ?? string.Empty;
-        Assert.Contains("chắc tối nay tui nghỉ", modelInput, StringComparison.Ordinal);
-        Assert.Contains("GroundingSnapshot", modelInput, StringComparison.Ordinal);
-        Assert.Contains("session-t6", modelInput, StringComparison.Ordinal);
+        using var modelInputDocument = JsonDocument.Parse(modelInput);
+        var modelRoot = modelInputDocument.RootElement;
+        var conversationContext = modelRoot.GetProperty("ConversationContext");
+        Assert.Single(conversationContext.EnumerateArray());
+        Assert.Equal(
+            "chắc tối nay tui nghỉ",
+            conversationContext[0].GetProperty("Content").GetString());
+        var groundingSessions = modelRoot
+            .GetProperty("GroundingSnapshot")
+            .GetProperty("Sessions");
+        Assert.Contains(
+            groundingSessions.EnumerateArray(),
+            item => item.GetProperty("SessionId").GetString() == "session-t6");
         Assert.Equal(1, handler.CallCount);
     }
 
@@ -293,13 +303,47 @@ public sealed class ZaloGroundedReadOnlySemanticPlannerTests
             ZaloReadOnlyFactKind.MemberTeam,
             sessionId: "session-t6",
             subjectMemberId: "player-long",
+            sourceMessageId: "quoted-long",
             reason: "quoted_member_team");
+        var context = new ZaloReadOnlyConversationContext([], ["quoted-long"]);
+        var validation = ZaloReadOnlySemanticPlanValidator.Validate(
+            plan,
+            Message("member-team", "user-binh", "Bình", "người đó bên nào?"),
+            context,
+            await BuildSnapshotAsync(fixture),
+            Settings());
+        Assert.True(validation.Accepted);
 
         var reply = await new ZaloReadOnlyGroundedFactResolver(fixture.Db).TryBuildAsync(
             "bot-account",
             "conn-1",
             "g1",
             Message("member-team", "user-binh", "Bình", "người đó bên nào?"),
+            AmbientDecision(),
+            validation.Plan,
+            await BuildSnapshotAsync(fixture));
+
+        Assert.NotNull(reply);
+        Assert.Contains("Long", reply!.Text, StringComparison.Ordinal);
+        Assert.Contains("Team A", reply.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Current_sender_team_continuation_resolves_previous_team_topic()
+    {
+        await using var fixture = await Fixture.CreateAsync(withTeam: true);
+        var plan = Plan(
+            ZaloReadOnlySemanticRoute.ReadOnlyQuestion,
+            ZaloReadOnlyFactKind.MemberTeam,
+            sessionId: "session-t6",
+            subjectIsCurrentSender: true,
+            reason: "team_continuation");
+
+        var reply = await new ZaloReadOnlyGroundedFactResolver(fixture.Db).TryBuildAsync(
+            "bot-account",
+            "conn-1",
+            "g1",
+            Message("current-team", "user-long", "Long", "còn tui?"),
             AmbientDecision(),
             plan,
             await BuildSnapshotAsync(fixture));
