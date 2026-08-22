@@ -1,3 +1,5 @@
+using VolleyDraft.Api.Models;
+
 namespace VolleyDraft.Api.Services;
 
 internal static class ZaloSemanticGuestPlanValidator
@@ -79,7 +81,7 @@ internal static class ZaloSemanticGuestPlanValidator
         if (!HasGuestContext(snapshot))
             return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_confirm_without_context");
         var sources = plan.Guests.Where(item => item.Confidence >= settings.MinimumConfidence).Take(2).ToList();
-        if (sources.Count == 0 && snapshot.ExistingGuests.Count(item => IsTentative(item)) == 1)
+        if (sources.Count == 0 && snapshot.ExistingGuests.Count(IsTentative) == 1)
         {
             var only = snapshot.ExistingGuests.Single(IsTentative);
             sources.Add(Target(only, plan.Confidence));
@@ -235,7 +237,7 @@ internal static class ZaloSemanticGuestPlanValidator
             ZaloSemanticGuestAnchorKind.RecentGuestMutation;
 
     private static bool IsTentative(ZaloSemanticGuestGroundingGuest guest) =>
-        string.Equals(guest.Status, Models.ZaloGuestReservationStatus.Tentative.ToString(), StringComparison.OrdinalIgnoreCase);
+        string.Equals(guest.Status, ZaloGuestReservationStatus.Tentative.ToString(), StringComparison.OrdinalIgnoreCase);
 
     private static ZaloSemanticGuestPlanItem Target(ZaloSemanticGuestGroundingGuest guest, double confidence) => new(
         guest.DisplayName, guest.ReservationId, guest.SponsorSequence, null, 0, null, 0, null, 0, null, 0, confidence);
