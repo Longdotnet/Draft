@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Configuration;
 using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
 using Xunit;
@@ -15,14 +14,15 @@ public sealed class ZaloStatefulSemanticGuestFollowupTests
         MaxGroupCallsPerMinute: 20);
 
     [Theory]
-    [InlineData("semantic_guest_quantity_ambiguous", ZaloStatefulGuestPendingKind.AddQuantity)]
-    [InlineData("semantic_guest_update_target_ambiguous", ZaloStatefulGuestPendingKind.UpdateTarget)]
-    [InlineData("semantic_guest_profile_fields_ambiguous", ZaloStatefulGuestPendingKind.UpdateFields)]
-    [InlineData("semantic_guest_cancel_target_ambiguous", ZaloStatefulGuestPendingKind.CancelTarget)]
-    public void PendingOutcome_IsClassified(string outcome, ZaloStatefulGuestPendingKind expected)
+    [InlineData("semantic_guest_quantity_ambiguous", "AddQuantity")]
+    [InlineData("semantic_guest_update_target_ambiguous", "UpdateTarget")]
+    [InlineData("semantic_guest_profile_fields_ambiguous", "UpdateFields")]
+    [InlineData("semantic_guest_cancel_target_ambiguous", "CancelTarget")]
+    public void PendingOutcome_IsClassified(string outcome, string expected)
     {
-        Assert.Equal(expected, ZaloStatefulGuestFollowupPolicy.PendingKind(outcome));
-        Assert.NotEmpty(ZaloStatefulGuestFollowupPolicy.MissingFields(expected));
+        var actual = ZaloStatefulGuestFollowupPolicy.PendingKind(outcome);
+        Assert.Equal(expected, actual.ToString());
+        Assert.NotEmpty(ZaloStatefulGuestFollowupPolicy.MissingFields(actual));
     }
 
     [Theory]
