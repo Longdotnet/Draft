@@ -13,6 +13,8 @@ namespace VolleyDraft.Api.Services;
 /// </summary>
 internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
 {
+    private sealed record GroundedSubject(SessionPlayer? Member, string Name, string ZaloUserId);
+
     public async Task<ZaloAmbientFactReply?> TryBuildAsync(
         string accountId,
         string connectionId,
@@ -26,15 +28,16 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
         if (plan.Route != ZaloReadOnlySemanticRoute.ReadOnlyQuestion) return null;
 
         if (plan.FactKind == ZaloReadOnlyFactKind.MemberMembership)
-            return await BuildMemberMembershipAsync(groupId, incoming, plan, cancellationToken);
+            return await BuildMemberMembershipAsync(groupId, incoming, plan, snapshot, cancellationToken);
         if (plan.FactKind == ZaloReadOnlyFactKind.MemberTeam)
-            return await BuildMemberTeamAsync(groupId, incoming, plan, cancellationToken);
+            return await BuildMemberTeamAsync(groupId, incoming, plan, snapshot, cancellationToken);
         if (plan.FactKind == ZaloReadOnlyFactKind.CanMemberTakeSlot)
             return await BuildCanMemberTakeSlotAsync(
                 connectionId,
                 groupId,
                 incoming,
                 plan,
+                snapshot,
                 cancellationToken);
 
         var intent = MapExistingFactIntent(plan.FactKind);
@@ -79,19 +82,19 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
         string groupId,
         ZaloIncomingMessageEvent incoming,
         ZaloReadOnlySemanticPlan plan,
+        ZaloReadOnlyGroundingSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         var session = await LoadSessionAsync(groupId, plan.SessionId, cancellationToken);
         if (session is null) return null;
 
-        var subject = ResolveSubject(session, incoming, plan);
+        var subject = ResolveSubject(session, incoming, plan, snapshot);
+        if (subject is null) return null;
         if (subject.Member is null)
         {
-            if (!plan.SubjectIsCurrentSender) return null;
-            var senderName = DisplayName(incoming.SenderName, "Bạn");
             return new ZaloAmbientFactReply(
                 ZaloBotIntent.SelfMembership,
-                $"Tui chưa thấy {senderName} trong danh sách {session.Name}.",
+                $"Tui chưa thấy {subject.Name} trong danh sách {session.Name}.",
                 session.Id);
         }
 
@@ -107,15 +110,16 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
         string groupId,
         ZaloIncomingMessageEvent incoming,
         ZaloReadOnlySemanticPlan plan,
+        ZaloReadOnlyGroundingSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         var session = await LoadSessionAsync(groupId, plan.SessionId, cancellationToken);
         if (session is null) return null;
 
-        var subject = ResolveSubject(session, incoming, plan);
+        var subject = ResolveSubject(session, incoming, plan, snapshot);
+        if (subject is null) return null;
         if (subject.Member is null)
         {
-            if (!plan.SubjectIsCurrentSender) return null;
             return new ZaloAmbientFactReply(
                 ZaloBotIntent.TeamLineup,
                 $"Tui chưa thấy {subject.Name} trong danh sách {session.Name}, nên chưa có team để đối chiếu.",
@@ -157,12 +161,14 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
         string groupId,
         ZaloIncomingMessageEvent incoming,
         ZaloReadOnlySemanticPlan plan,
+        ZaloReadOnlyGroundingSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         var session = await LoadSessionAsync(groupId, plan.SessionId, cancellationToken);
         if (session is null) return null;
 
-        var subject = ResolveSubject(session, incoming, plan);
+        var subject = ResolveSubject(session, incoming, plan, snapshot);
+        if (subject is null) return null;
         var subjectName = subject.Name;
         if (subject.Member?.IsPresent == true)
         {
@@ -172,9 +178,7 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
                 session.Id);
         }
 
-        var subjectZaloUserId = plan.SubjectIsCurrentSender
-            ? Clean(incoming.SenderId)
-            : Clean(subject.Member?.PlayerProfile?.ZaloUserId);
+        var subjectZaloUserId = Clean(subject.ZaloUserId);
         if (subjectZaloUserId.Length == 0)
         {
             return new ZaloAmbientFactReply(
@@ -183,13 +187,11 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
                 session.Id);
         }
 
-        var referenced = plan.ReferencedMemberId is null
+        var referencedIdentity = ResolveSnapshotMember(snapshot, plan.ReferencedMemberId, session.Id);
+        var referencedOwnerId = Clean(referencedIdentity?.ZaloUserId);
+        var referencedOwnerName = referencedIdentity is null
             ? null
-            : session.Players.FirstOrDefault(player => player.Id == plan.ReferencedMemberId);
-        var referencedOwnerId = Clean(referenced?.PlayerProfile?.ZaloUserId);
-        var referencedOwnerName = referenced is null
-            ? null
-            : DisplayName(referenced.DisplayName, "người được nhắc");
+            : DisplayName(referencedIdentity.DisplayName, "người được nhắc");
 
         var liveOffers = await new ZaloOpenSlotOfferStore(db)
             .ListClaimableAsync(connectionId, groupId, subjectZaloUserId, cancellationToken);
@@ -203,7 +205,7 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
 
         if (offer is null)
         {
-            if (referenced is not null)
+            if (referencedIdentity is not null)
             {
                 return new ZaloAmbientFactReply(
                     ZaloBotIntent.SlotTransfer,
@@ -241,23 +243,57 @@ internal sealed class ZaloReadOnlyGroundedFactResolver(VolleyDraftDbContext db)
                 cancellationToken);
     }
 
-    private static (SessionPlayer? Member, string Name) ResolveSubject(
+    private static GroundedSubject? ResolveSubject(
         MatchSession session,
         ZaloIncomingMessageEvent incoming,
-        ZaloReadOnlySemanticPlan plan)
+        ZaloReadOnlySemanticPlan plan,
+        ZaloReadOnlyGroundingSnapshot snapshot)
     {
         if (plan.SubjectIsCurrentSender)
         {
             var senderId = Clean(incoming.SenderId);
             var member = session.Players.FirstOrDefault(player =>
                 string.Equals(Clean(player.PlayerProfile?.ZaloUserId), senderId, StringComparison.Ordinal));
-            return (member, DisplayName(member?.DisplayName ?? incoming.SenderName, "Bạn"));
+            return new GroundedSubject(
+                member,
+                DisplayName(member?.DisplayName ?? incoming.SenderName, "Bạn"),
+                senderId);
         }
 
-        var resolved = plan.SubjectMemberId is null
-            ? null
-            : session.Players.FirstOrDefault(player => player.Id == plan.SubjectMemberId);
-        return (resolved, DisplayName(resolved?.DisplayName, "Người này"));
+        var identity = ResolveSnapshotMember(snapshot, plan.SubjectMemberId, session.Id);
+        if (identity is null) return null;
+        var targetMember = session.Players.FirstOrDefault(player => MatchesIdentity(player, identity));
+        return new GroundedSubject(
+            targetMember,
+            DisplayName(identity.DisplayName, targetMember?.DisplayName ?? "Người này"),
+            Clean(identity.ZaloUserId ?? targetMember?.PlayerProfile?.ZaloUserId));
+    }
+
+    private static ZaloReadOnlyGroundingMember? ResolveSnapshotMember(
+        ZaloReadOnlyGroundingSnapshot snapshot,
+        string? memberId,
+        string? preferredSessionId)
+    {
+        if (string.IsNullOrWhiteSpace(memberId)) return null;
+        var candidates = snapshot.Members
+            .Where(member => string.Equals(member.MemberId, memberId, StringComparison.Ordinal))
+            .ToArray();
+        return candidates.FirstOrDefault(member =>
+                   preferredSessionId is not null &&
+                   string.Equals(member.SessionId, preferredSessionId, StringComparison.Ordinal))
+               ?? candidates.FirstOrDefault();
+    }
+
+    private static bool MatchesIdentity(SessionPlayer player, ZaloReadOnlyGroundingMember identity)
+    {
+        if (!string.IsNullOrWhiteSpace(identity.SessionPlayerId) &&
+            string.Equals(player.Id, identity.SessionPlayerId, StringComparison.Ordinal))
+            return true;
+        if (!string.IsNullOrWhiteSpace(identity.PlayerProfileId) &&
+            string.Equals(player.PlayerProfileId, identity.PlayerProfileId, StringComparison.Ordinal))
+            return true;
+        return !string.IsNullOrWhiteSpace(identity.ZaloUserId) &&
+               string.Equals(player.PlayerProfile?.ZaloUserId, identity.ZaloUserId, StringComparison.Ordinal);
     }
 
     private static ZaloBotIntent? MapExistingFactIntent(ZaloReadOnlyFactKind factKind) => factKind switch
