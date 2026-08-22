@@ -94,6 +94,17 @@ internal sealed class ZaloRecruitmentRosterObservationStore(VolleyDraftDbContext
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<int> DeleteAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        const string sql = "DELETE FROM \"ZaloRecruitmentRosterObservations\" WHERE \"SessionId\" = @SessionId;";
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@SessionId", sessionId);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
     {
         var provider = db.Database.ProviderName ?? string.Empty;
