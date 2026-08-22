@@ -100,7 +100,7 @@ public sealed class ZaloGroundedSemanticActionPlannerTests
 
         Assert.Equal(ZaloSemanticActionKind.PassOwnSlot, plan.Action);
         Assert.Single(plan.Targets);
-        Assert.Contains("previous-action-turn", handler.LastRequestBody, StringComparison.Ordinal);
+        Assert.Contains("bữa đó chắc tui nghỉ", handler.LastRequestBody, StringComparison.Ordinal);
         Assert.Contains("CurrentLocalDateTime", handler.LastRequestBody, StringComparison.Ordinal);
         Assert.Contains("Asia/Ho_Chi_Minh", handler.LastRequestBody, StringComparison.Ordinal);
         Assert.Contains(session.SessionId, handler.LastRequestBody, StringComparison.Ordinal);
