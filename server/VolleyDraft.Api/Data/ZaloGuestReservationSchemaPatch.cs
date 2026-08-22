@@ -34,7 +34,9 @@ public static class ZaloGuestReservationSchemaPatch
                         "RecruitmentMessageId" TEXT NULL,
                         "Status" integer NOT NULL,
                         "CreatedAt" timestamp with time zone NOT NULL,
-                        "UpdatedAt" timestamp with time zone NOT NULL
+                        "UpdatedAt" timestamp with time zone NOT NULL,
+                        CONSTRAINT "FK_ZaloGuestReservations_MatchSessions_SessionId"
+                            FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
                     );
                     CREATE UNIQUE INDEX IF NOT EXISTS "UX_ZaloGuestReservations_Source"
                     ON "ZaloGuestReservations" ("SessionId", "SourceMessageId", "GuestIndex");
@@ -58,7 +60,9 @@ public static class ZaloGuestReservationSchemaPatch
                         "RecruitmentMessageId" TEXT NULL,
                         "Status" INTEGER NOT NULL,
                         "CreatedAt" TEXT NOT NULL,
-                        "UpdatedAt" TEXT NOT NULL
+                        "UpdatedAt" TEXT NOT NULL,
+                        CONSTRAINT "FK_ZaloGuestReservations_MatchSessions_SessionId"
+                            FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
                     );
                     CREATE UNIQUE INDEX IF NOT EXISTS "UX_ZaloGuestReservations_Source"
                     ON "ZaloGuestReservations" ("SessionId", "SourceMessageId", "GuestIndex");
