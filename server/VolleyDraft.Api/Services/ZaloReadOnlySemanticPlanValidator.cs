@@ -86,7 +86,7 @@ internal static class ZaloReadOnlySemanticPlanValidator
         if (normalized.SubjectIsCurrentSender && normalized.SubjectMemberId is not null)
             return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_subject");
 
-        if (normalized.FactKind is ZaloReadOnlyFactKind.MemberTeam or ZaloReadOnlyFactKind.MemberMembership &&
+        if ((normalized.FactKind is ZaloReadOnlyFactKind.MemberTeam or ZaloReadOnlyFactKind.MemberMembership) &&
             !normalized.SubjectIsCurrentSender && normalized.SubjectMemberId is null)
             return ZaloReadOnlyPlanValidationResult.Reject(plan, "semantic_invalid_subject");
 
