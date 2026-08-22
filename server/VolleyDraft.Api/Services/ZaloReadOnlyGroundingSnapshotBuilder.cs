@@ -63,8 +63,8 @@ internal sealed class ZaloReadOnlyGroundingSnapshotBuilder(VolleyDraftDbContext 
             .Take(120)
             .ToArray();
 
-        var teams = sessionIds.Count == 0
-            ? []
+        var teamRows = sessionIds.Count == 0
+            ? new List<Team>()
             : await db.Teams
                 .AsNoTracking()
                 .Include(team => team.AssignedSlots)
@@ -73,17 +73,19 @@ internal sealed class ZaloReadOnlyGroundingSnapshotBuilder(VolleyDraftDbContext 
                 .OrderBy(team => team.SessionId)
                 .ThenBy(team => team.Name)
                 .Take(32)
-                .Select(team => new ZaloReadOnlyGroundingTeam(
-                    team.Id,
-                    team.Name,
-                    team.SessionId,
-                    team.AssignedSlots
-                        .SelectMany(slot => slot.Players)
-                        .Select(player => player.SessionPlayerId)
-                        .Distinct()
-                        .Take(40)
-                        .ToArray()))
-                .ToArrayAsync(cancellationToken);
+                .ToListAsync(cancellationToken);
+        var teams = teamRows
+            .Select(team => new ZaloReadOnlyGroundingTeam(
+                team.Id,
+                Clean(team.Name, 120),
+                team.SessionId,
+                team.AssignedSlots
+                    .SelectMany(slot => slot.Players)
+                    .Select(player => player.SessionPlayerId)
+                    .Distinct(StringComparer.Ordinal)
+                    .Take(40)
+                    .ToArray()))
+            .ToArray();
 
         var waitlist = sessions
             .SelectMany(session => session.WaitlistEntries
