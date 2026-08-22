@@ -51,6 +51,9 @@ jobs:
       - name: Test backend
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-build --no-restore
 
+      - name: Guest agent conversation evals
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-build --no-restore --filter Category=GuestAgentEval
+
   npc11-worker:
     name: NPC11 worker syntax
     runs-on: ubuntu-latest
