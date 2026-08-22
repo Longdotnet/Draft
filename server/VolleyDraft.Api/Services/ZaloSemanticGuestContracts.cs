@@ -80,7 +80,14 @@ internal sealed record ZaloSemanticGuestGroundingSnapshot(
     IReadOnlyList<ZaloSemanticGuestGroundingGuest> ExistingGuests,
     IReadOnlyList<string> PendingMissingFields,
     DateTimeOffset CurrentUtc,
-    DateTimeOffset CurrentLocal);
+    DateTimeOffset CurrentLocal)
+{
+    /// <summary>
+    /// Optional bounded world model used only for reasoning. Mutation authority
+    /// remains SessionId/Sponsor/ExistingGuests plus validator and DB executor.
+    /// </summary>
+    public ZaloRecruitmentWorldSnapshot? World { get; init; }
+}
 
 internal sealed record ZaloSemanticGuestValidatedItem(
     string? ReservationId,

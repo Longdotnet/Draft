@@ -104,12 +104,24 @@ public sealed partial class ZaloOverbookService
         if (senderId.Length == 0) return false;
         await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
 
-        var context = await ResolveStatefulSemanticGuestContextAsync(
+        // Multi-session task stack is consulted first only for an explicit pending
+        // clarification. Profile tasks are held as a fallback so the narrower recent
+        // mutation correction window below keeps priority for undo/"à nhầm" turns.
+        var taskStackContext = await ResolveGuestTaskStackContextAsync(
             connectionId,
             groupId,
             senderId,
-            incoming.MessageId,
+            incoming.Content,
             cancellationToken);
+        StatefulSemanticGuestContext? context = taskStackContext?.PendingKind != ZaloStatefulGuestPendingKind.None
+            ? taskStackContext
+            : await ResolveStatefulSemanticGuestContextAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming.MessageId,
+                cancellationToken);
+        context ??= taskStackContext;
         if (context is null) return false;
 
         if (context.PendingKind != ZaloStatefulGuestPendingKind.None &&
@@ -193,8 +205,6 @@ public sealed partial class ZaloOverbookService
                 }
             }
 
-            // The sender may simply be chatting about something else while a profile
-            // state/correction window exists. None means this lane yields to normal chat.
             return false;
         }
 
@@ -270,9 +280,6 @@ public sealed partial class ZaloOverbookService
             .ThenByDescending(item => item.MessageId, StringComparer.Ordinal)
             .ToList();
 
-        // A pending clarification is durable in the message log. Only the newest
-        // semantic guest terminal event may keep a pending action alive; a later
-        // success/abandon closes the older question automatically.
         var latestTerminal = ordered.FirstOrDefault(item =>
             ZaloStatefulGuestFollowupPolicy.IsSemanticGuestTerminal(item.ReplyOutcome));
         if (latestTerminal is not null &&
@@ -322,9 +329,6 @@ public sealed partial class ZaloOverbookService
             }
         }
 
-        // The latest successful add creates a short correction window. Reservations
-        // are selected by SourceMessageId, so the model can never see older guest rows
-        // from this sponsor while interpreting "undo", "à nhầm", "chỉ +1 thôi".
         var latestAdd = ordered.FirstOrDefault(item =>
             ZaloStatefulGuestFollowupPolicy.IsRecentAdd(item.ReplyOutcome) &&
             ZaloStatefulGuestFollowupPolicy.IsFresh(item.ReceivedAt, now, correctionMinutes));
@@ -367,10 +371,6 @@ public sealed partial class ZaloOverbookService
             }
         }
 
-        // No keyword gate here. For a short freshness window after NPC asks for a
-        // missing profile, every same-sender turn may be semantically inspected. If AI
-        // returns None the message falls through untouched. The 60m durable V2 state
-        // still remains available for explicit reply recovery in the older lane.
         var active = await new ZaloConversationStateV2Store(db)
             .LoadActiveAsync(groupId, senderId, cancellationToken);
         if (active is not null &&
@@ -728,8 +728,6 @@ public sealed partial class ZaloOverbookService
                     changed.AddRange(result.Changed);
                 }
 
-                // Roster-change coordinator step 1: immediately consume any guest
-                // waitlist before allowing recruitment to re-open on a newly empty slot.
                 var promotions = await service.PromoteWaitingAsync(context.Turn.Session.Id, cancellationToken);
                 var readiness = await new ZaloDraftReadinessService(db)
                     .BuildAsync(context.Turn.Session.Id, cancellationToken: cancellationToken);

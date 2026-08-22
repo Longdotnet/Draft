@@ -72,9 +72,6 @@ internal static class ZaloSemanticGuestPlanValidator
             items.Add(new ZaloSemanticGuestValidatedItem(null, null, displayName, gender, level, role));
         }
 
-        // Optional profile ambiguity never loses a slot. The validator simply drops
-        // low-confidence optional fields; the deterministic result composer asks for
-        // missing gender after the DB mutation succeeds.
         return new ZaloSemanticGuestValidationResult(
             true,
             "semantic_guest_add_ready",
@@ -119,19 +116,22 @@ internal static class ZaloSemanticGuestPlanValidator
             return ZaloSemanticGuestValidationResult.Reject(
                 plan,
                 "semantic_guest_update_target_ambiguous",
-                "Ông đang nói guest nào vậy? Nói `#1`, `#2` hoặc tên giúp tui nha.");
+                "Ông đang nói guest nào vậy? Nói `#1`, `#2`, tên, `bạn đầu` hoặc `bạn thứ hai` giúp tui nha.");
 
         var items = new List<ZaloSemanticGuestValidatedItem>();
         foreach (var source in sources.Take(4))
         {
             if (source.Confidence < settings.MinimumConfidence && sources.Count > 1)
                 return ZaloSemanticGuestValidationResult.Reject(plan, "semantic_guest_update_target_low_confidence");
-            var grounded = ResolveGroundedGuest(source, snapshot);
-            if (grounded is null)
+            var resolution = ZaloSemanticGuestEntityResolver.Resolve(source, snapshot);
+            if (resolution.Status != ZaloSemanticGuestEntityResolutionStatus.Resolved || resolution.Guest is null)
                 return ZaloSemanticGuestValidationResult.Reject(
                     plan,
-                    "semantic_guest_invalid_guest_target",
+                    resolution.Status == ZaloSemanticGuestEntityResolutionStatus.Ambiguous
+                        ? "semantic_guest_update_target_ambiguous"
+                        : "semantic_guest_invalid_guest_target",
                     "Tui chưa xác định chắc guest nào cần cập nhật nên chưa đổi gì nha.");
+            var grounded = resolution.Guest;
 
             var displayName = source.NameConfidence >= settings.MinimumConfidence && IsUsableExplicitName(source.DisplayName)
                 ? source.DisplayName!.Trim()
@@ -178,29 +178,30 @@ internal static class ZaloSemanticGuestPlanValidator
         var confidentSources = plan.Guests
             .Where(item => item.Confidence >= settings.MinimumConfidence)
             .ToList();
-        var resolved = confidentSources
-            .Select(item => ResolveGroundedGuest(item, snapshot))
-            .Where(item => item is not null)
-            .Cast<ZaloSemanticGuestGroundingGuest>()
+        var resolutions = confidentSources
+            .Select(item => ZaloSemanticGuestEntityResolver.Resolve(item, snapshot))
+            .ToList();
+        var resolved = resolutions
+            .Where(item => item.Status == ZaloSemanticGuestEntityResolutionStatus.Resolved && item.Guest is not null)
+            .Select(item => item.Guest!)
             .DistinctBy(item => item.ReservationId, StringComparer.Ordinal)
             .Take(2)
             .ToList();
 
-        // A single grounded guest may be inferred only when the planner supplied no
-        // target at all. If the model supplied an explicit reservation/reference that
-        // failed grounding, never replace it with "the only guest" — that would turn a
-        // fabricated target into mutation authority.
         if (resolved.Count == 0 &&
             plan.Guests.Count == 0 &&
             snapshot.ExistingGuests.Count == 1 &&
             plan.Quantity is null or 1)
             resolved.Add(snapshot.ExistingGuests[0]);
 
-        if (resolved.Count == 0 || resolved.Count != confidentSources.Count || plan.NeedsClarification)
+        if (resolved.Count == 0 ||
+            resolved.Count != confidentSources.Count ||
+            resolutions.Any(item => item.Status != ZaloSemanticGuestEntityResolutionStatus.Resolved) ||
+            plan.NeedsClarification)
             return ZaloSemanticGuestValidationResult.Reject(
                 plan,
                 "semantic_guest_cancel_target_ambiguous",
-                "Tui chưa chắc bạn nào nghỉ. Nói `#1`, `#2` hoặc tên guest giúp tui nha.");
+                "Tui chưa chắc bạn nào nghỉ. Nói `#1`, `#2`, tên, `bạn đầu` hoặc `bạn thứ hai` giúp tui nha.");
 
         return new ZaloSemanticGuestValidationResult(
             true,
@@ -216,28 +217,6 @@ internal static class ZaloSemanticGuestPlanValidator
                 null)).ToArray(),
             false,
             string.Empty);
-    }
-
-    private static ZaloSemanticGuestGroundingGuest? ResolveGroundedGuest(
-        ZaloSemanticGuestPlanItem source,
-        ZaloSemanticGuestGroundingSnapshot snapshot)
-    {
-        if (!string.IsNullOrWhiteSpace(source.ReservationId))
-            return snapshot.ExistingGuests.SingleOrDefault(item =>
-                string.Equals(item.ReservationId, source.ReservationId, StringComparison.Ordinal));
-        if (source.SponsorSequence is { } sequence)
-            return snapshot.ExistingGuests.SingleOrDefault(item => item.SponsorSequence == sequence);
-        if (!string.IsNullOrWhiteSpace(source.ReferenceText))
-        {
-            var reference = ZaloBotIntelligence.Normalize(source.ReferenceText);
-            var matches = snapshot.ExistingGuests.Where(item =>
-                    ZaloBotIntelligence.Normalize(item.DisplayName).Contains(reference, StringComparison.Ordinal) ||
-                    reference.Contains(ZaloBotIntelligence.Normalize(item.DisplayName), StringComparison.Ordinal))
-                .Take(2)
-                .ToArray();
-            return matches.Length == 1 ? matches[0] : null;
-        }
-        return null;
     }
 
     internal static bool IsUsableExplicitName(string? value)
