@@ -103,8 +103,8 @@ public sealed partial class ZaloOverbookService
             catch (Exception exception)
             {
                 state.LastError = Truncate(exception.Message, 1000);
-                state.NextReminderAt = now.AddMinutes(Math.Clamp(configuration.GetValue("Scheduler:RetryMinutes", 10), 5, 60));
-                await store.SaveAsync(state, cancellationToken);
+                snapshot.NextReminderAt = now.AddMinutes(Math.Clamp(configuration.GetValue("Scheduler:RetryMinutes", 10), 5, 60));
+                await store.SaveAsync(snapshot, cancellationToken);
                 logger.LogWarning(exception, "Could not send overbook reminder Session={SessionId}", session.Id);
             }
         }
@@ -157,6 +157,7 @@ public sealed partial class ZaloOverbookService
         }
 
         if (await TryHandleV2PreRoutingAsync(incoming, cancellationToken)) return true;
+        if (await TryHandleRecruitmentGuestSingleLaneGateAsync(incoming, cancellationToken)) return true;
         if (!incoming.MentionedBot) return false;
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content);
         var isConfirmation = normalized.Contains("xac nhan", StringComparison.Ordinal) &&
