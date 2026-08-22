@@ -154,13 +154,21 @@ public sealed partial class ZaloOverbookService
                         cancellationToken))
                     return true;
 
-                // Guest turns are grounded by reply graph / active guest conversation
+                // Guest turns are grounded by reply graph / durable semantic checkpoints
                 // and must run before V2 Ambient/legacy GeneralChat. This prevents a
-                // conversational model from ever claiming a +1 mutation it did not do.
+                // conversational model from ever claiming a mutation it did not do.
                 try
                 {
                     await new ZaloMessageGraphStore(db)
                         .RememberIncomingQuoteAsync(draftConnection.Id, incoming, cancellationToken);
+                    if (await TryHandleStatefulSemanticGuestFollowupAsync(
+                            draftConnection.Id,
+                            draftConnection.AccountZaloId,
+                            draftConnection.DisplayName,
+                            draftGroupId,
+                            incoming,
+                            cancellationToken))
+                        return true;
                     if (await TryHandleSemanticRecruitmentGuestPreRouteAsync(
                             draftConnection.Id,
                             draftConnection.AccountZaloId,
