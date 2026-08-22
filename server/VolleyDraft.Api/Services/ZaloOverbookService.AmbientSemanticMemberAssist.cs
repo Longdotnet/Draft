@@ -233,8 +233,8 @@ public sealed partial class ZaloOverbookService
         try
         {
             var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
-            var traceTargets = execution is null
-                ? plan.Targets.Select(target => new
+            IEnumerable<object> traceTargets = execution is null
+                ? plan.Targets.Select(target => (object)new
                 {
                     target.ReferenceText,
                     target.ResolvedDate,
@@ -244,7 +244,7 @@ public sealed partial class ZaloOverbookService
                     Disposition = target.Disposition.ToString(),
                     target.Confidence
                 })
-                : execution.Results.Select(result => new
+                : execution.Results.Select(result => (object)new
                 {
                     result.Target.ReferenceText,
                     result.Target.ResolvedDate,
