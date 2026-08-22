@@ -153,6 +153,31 @@ public sealed partial class ZaloOverbookService
                         incoming,
                         cancellationToken))
                     return true;
+
+                // Guest turns are grounded by reply graph / active guest conversation
+                // and must run before V2 Ambient/legacy GeneralChat. This prevents a
+                // conversational model from ever claiming a +1 mutation it did not do.
+                try
+                {
+                    await new ZaloMessageGraphStore(db)
+                        .RememberIncomingQuoteAsync(draftConnection.Id, incoming, cancellationToken);
+                    if (await TryHandleSemanticRecruitmentGuestPreRouteAsync(
+                            draftConnection.Id,
+                            draftConnection.AccountZaloId,
+                            draftConnection.DisplayName,
+                            draftGroupId,
+                            incoming,
+                            cancellationToken))
+                        return true;
+                }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Semantic guest pre-route failed closed Group={GroupId} Message={MessageId}",
+                        draftGroupId,
+                        incoming.MessageId);
+                }
             }
         }
 
