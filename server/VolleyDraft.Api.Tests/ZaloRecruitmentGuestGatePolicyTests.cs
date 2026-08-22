@@ -46,20 +46,25 @@ public sealed class ZaloRecruitmentGuestGatePolicyTests
             ZaloRecruitmentGuestReplyAnchorKind.None));
     }
 
-    [Theory]
-    [InlineData(ZaloRecruitmentGuestCommandKind.Cancel)]
-    [InlineData(ZaloRecruitmentGuestCommandKind.UpdateProfile)]
-    public void GuestFollowups_AllowGroundedBotConversationAnchors(ZaloRecruitmentGuestCommandKind kind)
+    [Fact]
+    public void GuestFollowups_AllowGroundedBotConversationAnchors()
     {
-        Assert.True(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
-            kind,
-            ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast));
-        Assert.True(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
-            kind,
-            ZaloRecruitmentGuestReplyAnchorKind.GuestConversation));
-        Assert.False(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
-            kind,
-            ZaloRecruitmentGuestReplyAnchorKind.None));
+        foreach (var kind in new[]
+                 {
+                     ZaloRecruitmentGuestCommandKind.Cancel,
+                     ZaloRecruitmentGuestCommandKind.UpdateProfile
+                 })
+        {
+            Assert.True(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
+                kind,
+                ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast));
+            Assert.True(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
+                kind,
+                ZaloRecruitmentGuestReplyAnchorKind.GuestConversation));
+            Assert.False(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
+                kind,
+                ZaloRecruitmentGuestReplyAnchorKind.None));
+        }
     }
 
     [Fact]
