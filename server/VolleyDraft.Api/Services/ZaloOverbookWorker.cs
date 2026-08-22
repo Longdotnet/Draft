@@ -26,6 +26,13 @@ public sealed class ZaloOverbookWorker(
                 if (guestTurns > 0)
                     logger.LogInformation("Recruitment guest cycle handled {HandledCount} turn(s)", guestTurns);
 
+                // Conditional guest intents are durable promises such as
+                // "nếu 19h vẫn thiếu thì +2". At the due time this lane re-syncs the
+                // exact poll and evaluates the condition before any mutation.
+                var conditionalGuests = await overbook.ProcessConditionalGuestIntentsDueAsync(stoppingToken);
+                if (conditionalGuests > 0)
+                    logger.LogInformation("Conditional guest cycle resolved {HandledCount} intent(s)", conditionalGuests);
+
                 // Guest overflow has its own sponsor-aware waitlist because the friend
                 // may not have a Zalo UID. Promote that queue before deciding whether
                 // the group still needs another recruitment broadcast.
@@ -134,7 +141,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/recruitment-guest/guest-waitlist/roster-change/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/recruitment-guest/conditional-guest/guest-waitlist/roster-change/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
