@@ -52,7 +52,8 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
 
     internal static string? BuildMessage(
         ZaloDraftReadinessSnapshot readiness,
-        int activeSlotRiskCount = 0)
+        int activeSlotRiskCount = 0,
+        bool guestSignupOpen = true)
     {
         if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRiskCount <= 0)
             return null;
@@ -60,7 +61,9 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
         var roster = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
             ? $"{readiness.EffectiveSlotCount}/{readiness.Capacity}"
             : $"{readiness.PresentPlayerCount} người / {readiness.EffectiveSlotCount} effective slot (mốc {readiness.Capacity})";
-        const string guestHint = " Có kéo bạn ngoài group thì reply thẳng tin này `+1` hoặc `+2`; bạn đó không cần ở trong group Zalo.";
+        var guestHint = guestSignupOpen
+            ? " Có kéo bạn ngoài group thì reply thẳng tin này `+1` hoặc `+2`; bạn đó không cần ở trong group Zalo."
+            : string.Empty;
 
         if (activeSlotRiskCount > 0 && readiness.EffectiveSlotCount >= readiness.Capacity)
         {
@@ -238,7 +241,14 @@ public sealed partial class ZaloOverbookService
             start <= now.AddMinutes(settings.StopNudgingMinutesBeforeStart))
             return ZaloKeepRecruitingBroadcastResult.WindowClosed;
 
-        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(readiness, activeSlotRiskCount);
+        var guestSignupOpen = ZaloRecruitmentGuestGatePolicy.IsAddWindowOpen(
+            session.StartTime,
+            now,
+            configuration);
+        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+            readiness,
+            activeSlotRiskCount,
+            guestSignupOpen);
         if (message is null)
             return ZaloKeepRecruitingBroadcastResult.NotNeeded;
 

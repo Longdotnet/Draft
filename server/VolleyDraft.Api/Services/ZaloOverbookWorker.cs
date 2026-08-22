@@ -19,10 +19,10 @@ public sealed class ZaloOverbookWorker(
                 var sent = await overbook.ProcessDueAsync(stoppingToken);
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
 
-                // Non-mentioned replies such as "+1 bạn" are persisted by the normal
-                // webhook path even though V1 does not answer them. Resolve those turns
-                // against the recruitment anchor before another @all decision is made.
-                var guestTurns = await overbook.ProcessRecruitmentGuestTurnsDueAsync(stoppingToken);
+                // Guest commands are intentionally reply-gated. Ordinary group chat must
+                // never fall into +1/+2/cancel/profile handling just because a session is
+                // currently recruiting.
+                var guestTurns = await overbook.ProcessReplyGatedRecruitmentGuestTurnsDueAsync(stoppingToken);
                 if (guestTurns > 0)
                     logger.LogInformation("Recruitment guest cycle handled {HandledCount} turn(s)", guestTurns);
 
