@@ -38,7 +38,12 @@ public sealed partial class ZaloOverbookService
 
         if (validation.Action == ZaloSemanticGuestActionKind.ConfirmGuests)
         {
-            var ids = validation.Items.Select(item => item.ReservationId).Where(id => !string.IsNullOrWhiteSpace(id)).Cast<string>().ToArray();
+            var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
+            if (!sync.Success)
+                throw new InvalidOperationException(sync.Error ?? "Không sync được poll thật trước khi xác nhận guest.");
+
+            var ids = validation.Items.Select(item => item.ReservationId)
+                .Where(id => !string.IsNullOrWhiteSpace(id)).Cast<string>().ToArray();
             var result = await domain.ConfirmAsync(session, senderId, ids, cancellationToken);
             var active = result.Changed.Where(item => item.Status == ZaloGuestReservationStatus.Active).ToArray();
             var waiting = result.Changed.Where(item => item.Status == ZaloGuestReservationStatus.Waitlisted).ToArray();
@@ -48,15 +53,22 @@ public sealed partial class ZaloOverbookService
                 : active.Length == 0
                     ? "roster đang full nên đã vào waitlist"
                     : $"{active.Length} vào roster, {waiting.Length} vào waitlist";
-            return new($"Chốt rồi 👌 {details}; {placement}. Roster hiện {result.EffectiveSlots}/{result.Capacity}.", "guest_semantic_confirmed");
+            return new(
+                $"Chốt rồi 👌 {details}; {placement}. Roster hiện {result.EffectiveSlots}/{result.Capacity}.",
+                result.Idempotent ? "guest_semantic_confirm_idempotent" : "guest_semantic_confirmed");
         }
 
         if (validation.Action == ZaloSemanticGuestActionKind.ReplaceGuest)
         {
+            var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
+            if (!sync.Success)
+                throw new InvalidOperationException(sync.Error ?? "Không sync được poll thật trước khi thay guest.");
+
             var old = validation.Items[0];
             var replacement = validation.Items[1];
             var oldId = old.ReservationId ?? throw new InvalidOperationException("Replacement target is not grounded.");
-            var before = await db.ZaloGuestReservations.AsNoTracking().SingleAsync(item => item.Id == oldId, cancellationToken);
+            var before = await db.ZaloGuestReservations.AsNoTracking()
+                .SingleAsync(item => item.Id == oldId && item.SessionId == session.Id && item.SponsorZaloUserId == senderId, cancellationToken);
             var result = await domain.ReplaceAsync(
                 session,
                 senderId,
@@ -66,17 +78,19 @@ public sealed partial class ZaloOverbookService
                 recruitmentMessageId,
                 new ZaloRecruitmentGuestSpec(replacement.DisplayName, replacement.Gender, replacement.Role, replacement.Level),
                 cancellationToken);
-            var next = result.Changed.Single(item => item.Id != before.Id);
+            var next = result.Changed.FirstOrDefault(item => item.Id != before.Id) ?? result.Changed.Single();
             return new(
                 $"Ok, tui thay {before.DisplayName} bằng #{next.SponsorSequence} {next.DisplayName} trong cùng transaction. Trạng thái mới: {next.Status}; roster hiện {result.EffectiveSlots}/{result.Capacity}. Không có khoảng trống trung gian để bot réo tuyển nhầm.",
-                "guest_semantic_replaced");
+                result.Idempotent ? "guest_semantic_replace_idempotent" : "guest_semantic_replaced");
         }
 
         if (validation.Action == ZaloSemanticGuestActionKind.UpdateGuestProfiles)
         {
-            var ids = validation.Items.Select(item => item.ReservationId).Where(id => !string.IsNullOrWhiteSpace(id)).Cast<string>().ToArray();
+            var ids = validation.Items.Select(item => item.ReservationId)
+                .Where(id => !string.IsNullOrWhiteSpace(id)).Cast<string>().ToArray();
             var tentativeIds = await db.ZaloGuestReservations.AsNoTracking()
-                .Where(item => ids.Contains(item.Id) && item.SessionId == session.Id && item.SponsorZaloUserId == senderId && item.Status == ZaloGuestReservationStatus.Tentative)
+                .Where(item => ids.Contains(item.Id) && item.SessionId == session.Id &&
+                               item.SponsorZaloUserId == senderId && item.Status == ZaloGuestReservationStatus.Tentative)
                 .Select(item => item.Id).ToListAsync(cancellationToken);
             if (tentativeIds.Count == 0) return null;
 
@@ -109,6 +123,44 @@ public sealed partial class ZaloOverbookService
                 }
             }
             return new(BuildSemanticGuestProfileReply(session.Name, changed), "guest_semantic_profile_updated");
+        }
+
+        if (validation.Action == ZaloSemanticGuestActionKind.CancelGuests)
+        {
+            var ids = validation.Items.Select(item => item.ReservationId)
+                .Where(id => !string.IsNullOrWhiteSpace(id)).Cast<string>().ToArray();
+            var tentativeIds = await db.ZaloGuestReservations.AsNoTracking()
+                .Where(item => ids.Contains(item.Id) && item.SessionId == session.Id &&
+                               item.SponsorZaloUserId == senderId && item.Status == ZaloGuestReservationStatus.Tentative)
+                .Select(item => item.Id).ToListAsync(cancellationToken);
+            if (tentativeIds.Count == 0) return null;
+
+            var changed = new List<ZaloGuestReservation>();
+            var tentativeResult = await domain.CancelTentativeAsync(session, senderId, tentativeIds, cancellationToken);
+            changed.AddRange(tentativeResult.Changed);
+
+            var normal = new ZaloGuestReservationService(db);
+            foreach (var item in validation.Items.Where(item =>
+                         item.ReservationId is not null && !tentativeIds.Contains(item.ReservationId, StringComparer.Ordinal)))
+            {
+                var result = await normal.CancelAsync(
+                    session,
+                    senderId,
+                    new ZaloRecruitmentGuestCommand(
+                        ZaloRecruitmentGuestCommandKind.Cancel,
+                        SponsorSequence: item.SponsorSequence),
+                    cancellationToken);
+                if (result.NeedsClarification)
+                    throw new InvalidOperationException(result.Clarification ?? "Không huỷ được guest.");
+                changed.AddRange(result.Changed);
+            }
+
+            var names = string.Join(", ", changed.DistinctBy(item => item.Id).Select(item => item.DisplayName));
+            var readiness = await new ZaloDraftReadinessService(db)
+                .BuildAsync(session.Id, cancellationToken: cancellationToken);
+            return new(
+                $"Ok, tui bỏ {names} khỏi {session.Name}. Guest tentative không chiếm slot nên huỷ nó không làm roster tụt; roster hiện {readiness?.EffectiveSlotCount ?? tentativeResult.EffectiveSlots}/{readiness?.Capacity ?? tentativeResult.Capacity}.",
+                tentativeResult.Idempotent ? "guest_semantic_tentative_cancel_idempotent" : "guest_semantic_cancelled");
         }
 
         return null;
