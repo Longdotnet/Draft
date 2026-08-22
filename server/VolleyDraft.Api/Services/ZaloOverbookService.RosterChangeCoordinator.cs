@@ -40,15 +40,34 @@ public sealed partial class ZaloOverbookService
         if (sessions.Count == 0) return 0;
 
         var decisionStore = new ZaloDraftPreparationDecisionStore(db);
-        var keepRecruiting = new List<MatchSession>();
+        var observationStore = new ZaloRecruitmentRosterObservationStore(db);
+        var watched = new List<MatchSession>();
         foreach (var session in sessions)
         {
             var decision = await decisionStore.GetAsync(session.Id, cancellationToken);
+            var previousWatch = await observationStore.GetAsync(session.Id, cancellationToken);
             if (decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting)
-                keepRecruiting.Add(session);
+            {
+                watched.Add(session);
+                continue;
+            }
+
+            // PlayCurrentRoster/StopMatch are explicit newer organizer directions and
+            // must terminate any old recruitment watch. A null decision may be the V2
+            // reminder lane auto-clearing KeepRecruiting after a clean full roster; in
+            // that case the durable observation keeps watching for a later 18→17 break.
+            if (decision?.Kind is ZaloDraftPreparationDecisionKind.PlayCurrentRoster or
+                                  ZaloDraftPreparationDecisionKind.StopMatch)
+            {
+                if (previousWatch is not null)
+                    await observationStore.DeleteAsync(session.Id, cancellationToken);
+                continue;
+            }
+            if (decision is null && previousWatch is not null)
+                watched.Add(session);
         }
 
-        var candidates = keepRecruiting
+        var candidates = watched
             .GroupBy(item => $"{item.ZaloConnectionId}:{item.ZaloGroupId}", StringComparer.Ordinal)
             .Select(group => group.OrderBy(item => item.StartTime).First())
             .OrderBy(item => item.StartTime)
@@ -56,7 +75,6 @@ public sealed partial class ZaloOverbookService
             .ToList();
         if (candidates.Count == 0) return 0;
 
-        var observationStore = new ZaloRecruitmentRosterObservationStore(db);
         var debounce = ZaloRosterChangeCoordinatorPolicy.GetDebounce(configuration);
         var recentBroadcastWindow = ZaloRosterChangeCoordinatorPolicy.GetRecentBroadcastWindow(configuration);
         var sent = 0;
@@ -113,8 +131,6 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
-            // If the roster recovered after a confirmed-but-unsent incident, discard
-            // the stale notification instead of announcing a drop that no longer exists.
             var state = transition.State;
             if (transition.Kind is ZaloRosterObservationTransitionKind.Increased or ZaloRosterObservationTransitionKind.DropBounced)
                 continue;
