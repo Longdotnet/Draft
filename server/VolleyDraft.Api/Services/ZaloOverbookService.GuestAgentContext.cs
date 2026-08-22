@@ -100,7 +100,7 @@ public sealed partial class ZaloOverbookService
                         cancellationToken);
                 }
 
-                var guests = pendingKind == ZaloStatefulGuestPendingKind.AddQuantity
+                List<ZaloGuestReservation> guests = pendingKind == ZaloStatefulGuestPendingKind.AddQuantity
                     ? []
                     : await LoadStatefulSponsorGuestsAsync(item.SessionId, senderId, cancellationToken);
                 var intent = PendingTaskIntent(pendingKind);
@@ -209,7 +209,7 @@ public sealed partial class ZaloOverbookService
         }
 
         var pendingKind = TaskPendingKind(selected.Intent);
-        var guests = pendingKind == ZaloStatefulGuestPendingKind.AddQuantity
+        List<ZaloGuestReservation> guests = pendingKind == ZaloStatefulGuestPendingKind.AddQuantity
             ? []
             : await LoadStatefulSponsorGuestsAsync(session.Id, senderId, cancellationToken);
         string? recruitmentMessageId = null;
