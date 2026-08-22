@@ -118,6 +118,8 @@ internal sealed class ZaloGuestReservationService(VolleyDraftDbContext db)
                 GuestIndex = index + 1,
                 SponsorSequence = sequence,
                 Gender = spec.Gender,
+                Role = spec.Role,
+                Level = spec.Level,
                 SourceMessageId = sourceMessageId,
                 RecruitmentMessageId = recruitmentMessageId,
                 Status = index < available
@@ -136,18 +138,18 @@ internal sealed class ZaloGuestReservationService(VolleyDraftDbContext db)
                 if (!playerResult.IsSuccess || playerResult.Value is null)
                     throw new InvalidOperationException(playerResult.Error ?? $"Không thêm được guest {displayName}.");
                 reservation.SessionPlayerId = playerResult.Value.Player.Id;
-                if (spec.Gender is not null)
+                if (spec.Gender is not null || spec.Role is not null || spec.Level is not null)
                 {
                     var profileUpdate = await draftService.UpdatePlayerProfileFromBotAsync(
                         liveSession.AdminUserId,
                         liveSession.Id,
                         displayName,
                         spec.Gender,
-                        null,
-                        null,
+                        spec.Role,
+                        spec.Level,
                         sessionPlayerId: reservation.SessionPlayerId);
                     if (!profileUpdate.IsSuccess)
-                        throw new InvalidOperationException(profileUpdate.Error ?? $"Không cập nhật được giới tính cho {displayName}.");
+                        throw new InvalidOperationException(profileUpdate.Error ?? $"Không cập nhật được hồ sơ cho {displayName}.");
                 }
                 added.Add(reservation);
             }
@@ -219,22 +221,40 @@ internal sealed class ZaloGuestReservationService(VolleyDraftDbContext db)
             return new ZaloGuestUpdateResult(session.Id, session.Name, [], true, "Tui chưa thấy guest phù hợp để cập nhật.");
         if (!string.IsNullOrWhiteSpace(command.RenameTo) && selected.Items.Count != 1)
             return new ZaloGuestUpdateResult(session.Id, session.Name, [], true, "Đổi tên cần chỉ đúng một guest, ví dụ `bạn #1 tên Minh`.");
+        if (string.IsNullOrWhiteSpace(command.RenameTo) &&
+            command.Gender is null && command.Role is null && command.Level is null)
+            return new ZaloGuestUpdateResult(session.Id, session.Name, [], true, "Chưa có thông tin hồ sơ chắc chắn để cập nhật.");
 
+        var draftService = new SessionDraftService(db);
         foreach (var reservation in selected.Items)
         {
             if (!string.IsNullOrWhiteSpace(command.RenameTo))
                 reservation.DisplayName = command.RenameTo!.Trim();
-            if (command.Gender is not null)
-                reservation.Gender = command.Gender;
+            if (command.Gender is not null) reservation.Gender = command.Gender;
+            if (command.Role is not null) reservation.Role = command.Role;
+            if (command.Level is not null) reservation.Level = command.Level;
             reservation.UpdatedAt = DateTimeOffset.UtcNow;
 
             if (!string.IsNullOrWhiteSpace(reservation.SessionPlayerId))
             {
-                var player = await db.SessionPlayers.SingleOrDefaultAsync(item => item.Id == reservation.SessionPlayerId, cancellationToken);
-                if (player is not null)
+                var player = await db.SessionPlayers.SingleOrDefaultAsync(
+                    item => item.Id == reservation.SessionPlayerId,
+                    cancellationToken);
+                if (player is not null && !string.IsNullOrWhiteSpace(command.RenameTo))
+                    player.DisplayName = reservation.DisplayName;
+
+                if (command.Gender is not null || command.Role is not null || command.Level is not null)
                 {
-                    if (!string.IsNullOrWhiteSpace(command.RenameTo)) player.DisplayName = reservation.DisplayName;
-                    if (command.Gender is not null) player.Gender = command.Gender.Value;
+                    var profileUpdate = await draftService.UpdatePlayerProfileFromBotAsync(
+                        session.AdminUserId,
+                        session.Id,
+                        reservation.DisplayName,
+                        command.Gender,
+                        command.Role,
+                        command.Level,
+                        sessionPlayerId: reservation.SessionPlayerId);
+                    if (!profileUpdate.IsSuccess)
+                        throw new InvalidOperationException(profileUpdate.Error ?? $"Không cập nhật được hồ sơ cho {reservation.DisplayName}.");
                 }
             }
         }
@@ -284,16 +304,17 @@ internal sealed class ZaloGuestReservationService(VolleyDraftDbContext db)
             reservation.SessionPlayerId = add.Value.Player.Id;
             reservation.Status = ZaloGuestReservationStatus.Active;
             reservation.UpdatedAt = DateTimeOffset.UtcNow;
-            if (reservation.Gender is not null)
+            if (reservation.Gender is not null || reservation.Role is not null || reservation.Level is not null)
             {
-                await draftService.UpdatePlayerProfileFromBotAsync(
+                var profile = await draftService.UpdatePlayerProfileFromBotAsync(
                     session.AdminUserId,
                     session.Id,
                     reservation.DisplayName,
                     reservation.Gender,
-                    null,
-                    null,
+                    reservation.Role,
+                    reservation.Level,
                     sessionPlayerId: reservation.SessionPlayerId);
+                if (!profile.IsSuccess) continue;
             }
             effective += 1;
             promoted.Add(new ZaloGuestPromotion(
