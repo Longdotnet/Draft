@@ -123,7 +123,7 @@ public sealed partial class ZaloOverbookService
                 session.Status is SessionStatus.Cancelled or SessionStatus.Drafting or SessionStatus.Finished ||
                 session.StartTime <= now)
             {
-                await store.SetStatusAsync(intent.Id, ZaloConditionalGuestIntentStatus.Expired, null, now, cancellationToken);
+                await store.SetStatusAsync(intent.Id, ZaloConditionalGuestIntentStatus.Expired, null, null, cancellationToken);
                 handled += 1;
                 continue;
             }
@@ -139,7 +139,6 @@ public sealed partial class ZaloOverbookService
             }
 
             await new ZaloGuestIdentityReconciler(db).ReconcileAsync(session.Id, cancellationToken);
-            await new ZaloGuestReservationService(db).PromoteWaitingAsync(session.Id, cancellationToken);
 
             var readiness = await new ZaloDraftReadinessService(db).BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null)
@@ -149,6 +148,17 @@ public sealed partial class ZaloOverbookService
             }
 
             var missing = Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount);
+            if (missing > 0)
+            {
+                // Existing waitlist always owns newly free room first. The worker runs
+                // the waitlist lane before this one; this extra guard handles a rare
+                // poll change between those two reads without silently leapfrogging it.
+                var hasWaiting = await db.ZaloGuestReservations.AsNoTracking().AnyAsync(item =>
+                    item.SessionId == session.Id && item.Status == ZaloGuestReservationStatus.Waitlisted,
+                    cancellationToken);
+                if (hasWaiting) continue;
+            }
+
             if (missing < intent.MinimumMissingSlots)
             {
                 await store.SetStatusAsync(
