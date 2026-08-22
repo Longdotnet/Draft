@@ -43,9 +43,6 @@ public sealed partial class ZaloOverbookService
             cancellationToken);
         if (turn is null) return false;
 
-        // Active follow-up context is intentionally a softer gate than ReplyTo. It is
-        // only used to wake semantic understanding for short profile/cancel turns;
-        // unrelated text can still fall through when the model returns None.
         if (turn.AnchorKind == ZaloSemanticGuestAnchorKind.ActiveGuestConversation &&
             !LooksLikePotentialGuestContinuation(incoming.Content))
             return false;
@@ -81,8 +78,6 @@ public sealed partial class ZaloOverbookService
 
         if (plan.Action == ZaloSemanticGuestActionKind.None)
         {
-            // A reply directly to one of our guest/recruitment messages belongs to this
-            // lane even when it is just acknowledgement; keep legacy/general AI away.
             if (turn.AnchorKind is ZaloSemanticGuestAnchorKind.RecruitmentBroadcast or ZaloSemanticGuestAnchorKind.GuestConversation)
             {
                 await MarkSemanticGuestTurnWithoutReplyAsync(
@@ -124,8 +119,6 @@ public sealed partial class ZaloOverbookService
             string outcome;
             if (validation.Action == ZaloSemanticGuestActionKind.AddGuests)
             {
-                // Poll is source of truth. Semantic meaning was already decided; now
-                // refresh authoritative roster before preview/capacity mutation.
                 var sync = await RefreshLinkedPollForDraftReminderAsync(turn.Session, cancellationToken);
                 if (!sync.Success)
                 {
@@ -392,7 +385,7 @@ public sealed partial class ZaloOverbookService
         var readiness = await new ZaloDraftReadinessService(db)
             .BuildAsync(turn.Session.Id, cancellationToken: cancellationToken);
         var utc = DateTimeOffset.UtcNow;
-        return new ZaloSemanticGuestGroundingSnapshot(
+        var snapshot = new ZaloSemanticGuestGroundingSnapshot(
             turn.Session.Id,
             turn.Session.Name,
             turn.Session.StartTime,
@@ -414,6 +407,9 @@ public sealed partial class ZaloOverbookService
             turn.PendingMissingFields,
             utc,
             utc.ToOffset(TimeSpan.FromHours(7)));
+        return string.IsNullOrWhiteSpace(turn.Session.ZaloGroupId)
+            ? snapshot
+            : await EnrichSemanticGuestSnapshotAsync(snapshot, turn.Session.ZaloGroupId!, senderId, cancellationToken);
     }
 
     private async Task<ZaloSemanticGuestMutationPreview> BuildSemanticGuestMutationPreviewAsync(
@@ -687,8 +683,6 @@ public sealed partial class ZaloOverbookService
             }
         }
 
-        // Safe fallback for the most common short profile continuation when AI is
-        // unavailable. It never guesses a target when more than one guest is pending.
         var normalized = ZaloBotIntelligence.Normalize(content);
         var missingGender = snapshot.ExistingGuests.Where(item => item.Gender is null).OrderBy(item => item.SponsorSequence).ToArray();
         if (missingGender.Length == 1 && normalized is "nam" or "nu")
