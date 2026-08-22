@@ -27,11 +27,6 @@ public sealed partial class ZaloOverbookService
         }
     }
 
-    /// <summary>
-    /// Projects the durable semantic message journal into a multi-session task stack.
-    /// This is additive beside ConversationStateV2: older deployments already have
-    /// the message journal, so rollout does not lose pending context.
-    /// </summary>
     private async Task ProjectGuestTaskStackAsync(
         string connectionId,
         string groupId,
@@ -174,7 +169,36 @@ public sealed partial class ZaloOverbookService
         await ProjectGuestTaskStackAsync(connectionId, groupId, senderId, cancellationToken);
         var store = new ZaloConversationTaskStackStore(db);
         var tasks = await store.LoadActiveAsync(groupId, senderId, GuestTaskDomain, 12, cancellationToken);
-        var selected = ZaloConversationTaskStackStore.SelectForMessage(tasks, currentMessage);
+        if (tasks.Count == 0) return null;
+
+        var normalized = ZaloBotIntelligence.Normalize(currentMessage);
+        var named = tasks.Where(item =>
+        {
+            var sessionName = ZaloBotIntelligence.Normalize(item.SessionName);
+            return sessionName.Length >= 2 && normalized.Contains(sessionName, StringComparison.Ordinal);
+        }).OrderByDescending(item => item.UpdatedAt).Take(2).ToArray();
+
+        ZaloConversationTaskSnapshot? selected;
+        if (named.Length == 1)
+        {
+            selected = named[0];
+        }
+        else if (named.Length > 1)
+        {
+            return null;
+        }
+        else
+        {
+            var pending = tasks.Where(item => TaskPendingKind(item.Intent) != ZaloStatefulGuestPendingKind.None)
+                .OrderByDescending(item => item.UpdatedAt).ToArray();
+            if (pending.Length == 1) selected = pending[0];
+            else if (pending.Length > 1) return null;
+            else
+            {
+                var profile = tasks.Where(item => item.Intent == "GuestProfile").OrderByDescending(item => item.UpdatedAt).ToArray();
+                selected = profile.Length == 1 ? profile[0] : null;
+            }
+        }
         if (selected is null) return null;
 
         var session = await LoadStatefulGuestSessionAsync(connectionId, groupId, selected.SessionId, cancellationToken);
