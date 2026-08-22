@@ -196,6 +196,12 @@ internal static class ZaloRecruitmentGuestPolicy
             string.Empty,
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+        // "mình" is a pronoun, while the very common name "Minh" must remain valid.
+        // For unaccented chat, lowercase "minh" is treated conservatively as a pronoun;
+        // a member can still provide the explicit name as "Minh" or rename later.
+        if (quantity == 1 && IsStandaloneSelfPronoun(tail))
+            return result;
+
         // Normalize only separators, never names themselves, so "Minh với Huy" keeps
         // display casing while still accepting accented/unaccented conjunctions.
         tail = Regex.Replace(
@@ -231,11 +237,18 @@ internal static class ZaloRecruitmentGuestPolicy
         _ => null
     };
 
+    private static bool IsStandaloneSelfPronoun(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Equals("mình", StringComparison.OrdinalIgnoreCase)) return true;
+        return trimmed.Equals("minh", StringComparison.Ordinal);
+    }
+
     private static bool IsPlausibleName(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length is < 2 or > 80) return false;
         var normalized = ZaloBotIntelligence.Normalize(value);
-        if (normalized is "tui" or "toi" or "minh" or "ban" or "dua" or "nguoi" or "khach" or
+        if (normalized is "tui" or "toi" or "ban" or "dua" or "nguoi" or "khach" or
             "ban tui" or "ban toi" or "ban minh" or "dua tui" or "dua toi" or "dua minh")
             return false;
         if (Regex.IsMatch(normalized, @"^(?:t[2-7]|cn|thu\s*[2-7]|chu\s*nhat)(?:\s|$)", RegexOptions.CultureInvariant))
