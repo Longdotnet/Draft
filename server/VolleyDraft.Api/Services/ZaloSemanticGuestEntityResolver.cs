@@ -1,3 +1,5 @@
+using VolleyDraft.Api.Models;
+
 namespace VolleyDraft.Api.Services;
 
 internal enum ZaloSemanticGuestEntityResolutionStatus
@@ -70,7 +72,7 @@ internal static class ZaloSemanticGuestEntityResolver
 
         if (reference.Contains("nam", StringComparison.Ordinal) || reference.Contains("nu", StringComparison.Ordinal))
         {
-            var gender = reference.Contains("nu", StringComparison.Ordinal) ? Models.PlayerGender.Female : Models.PlayerGender.Male;
+            var gender = reference.Contains("nu", StringComparison.Ordinal) ? PlayerGender.Female : PlayerGender.Male;
             var genderMatches = guests.Where(item => item.Gender == gender).Take(3).ToArray();
             if (genderMatches.Length == 1) return Resolved(genderMatches[0], "unique_gender_reference");
             if (genderMatches.Length > 1) return Ambiguous(genderMatches, "gender_reference_ambiguous");
