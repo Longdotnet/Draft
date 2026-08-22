@@ -11,6 +11,8 @@ public sealed class ZaloRecruitmentGuestPolicyTests
     [InlineData("+2 bạn tui", 2)]
     [InlineData("tui kéo thêm 2 đứa", 2)]
     [InlineData("cho tui +1", 1)]
+    [InlineData("tui + bạn tui", 1)]
+    [InlineData("thêm bạn tui vô", 1)]
     public void AddParser_AcceptsShortNaturalForms(string text, int quantity)
     {
         var command = ZaloRecruitmentGuestPolicy.TryParse(text);
