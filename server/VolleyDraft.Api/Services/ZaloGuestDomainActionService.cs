@@ -90,24 +90,45 @@ internal sealed class ZaloGuestDomainActionService(VolleyDraftDbContext db)
         CancellationToken cancellationToken)
     {
         await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
+        var ids = reservationIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).Take(2).ToArray();
+        if (ids.Length == 0) throw new InvalidOperationException("Chưa có guest tentative nào để xác nhận.");
+
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var live = await LoadLiveSessionAsync(session.Id, cancellationToken);
-        var rows = await db.ZaloGuestReservations
-            .Where(x => x.SessionId == live.Id && x.SponsorZaloUserId == sponsorId &&
-                        reservationIds.Contains(x.Id) && x.Status == ZaloGuestReservationStatus.Tentative)
-            .OrderBy(x => x.SponsorSequence).ToListAsync(cancellationToken);
-        if (rows.Count == 0) throw new InvalidOperationException("Không còn guest tentative phù hợp để xác nhận.");
+        var matched = await db.ZaloGuestReservations
+            .Where(x => x.SessionId == live.Id && x.SponsorZaloUserId == sponsorId && ids.Contains(x.Id))
+            .OrderBy(x => x.SponsorSequence)
+            .ToListAsync(cancellationToken);
+        if (matched.Count != ids.Length)
+            throw new InvalidOperationException("Guest cần xác nhận không còn thuộc đúng sponsor/kèo này.");
+
+        var tentative = matched.Where(x => x.Status == ZaloGuestReservationStatus.Tentative).ToList();
+        if (tentative.Count == 0)
+        {
+            if (matched.All(x => x.Status is ZaloGuestReservationStatus.Active or ZaloGuestReservationStatus.Waitlisted))
+            {
+                var ready = await new ZaloDraftReadinessService(db).BuildAsync(live.Id, cancellationToken: cancellationToken);
+                await tx.CommitAsync(cancellationToken);
+                return new(live.Id, live.Name, matched, ready?.EffectiveSlotCount ?? 0,
+                    ready?.Capacity ?? live.TeamCount * live.TeamSize, true);
+            }
+            throw new InvalidOperationException("Không còn guest tentative phù hợp để xác nhận.");
+        }
+        if (matched.Any(x => x.Status is ZaloGuestReservationStatus.Cancelled or ZaloGuestReservationStatus.Linked))
+            throw new InvalidOperationException("Một guest cần xác nhận đã đổi trạng thái nên tui chưa chốt tiếp.");
+
         var readiness = await new ZaloDraftReadinessService(db).BuildAsync(live.Id, cancellationToken: cancellationToken)
             ?? throw new InvalidOperationException("Không đọc được roster hiện tại.");
         var available = Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount);
         var draft = new SessionDraftService(db);
-        for (var i = 0; i < rows.Count; i++)
+        for (var i = 0; i < tentative.Count; i++)
         {
-            var row = rows[i];
+            var row = tentative[i];
             if (i < available)
             {
                 var add = await draft.AddGuestPlayerFromBotAsync(live.AdminUserId, live.Id, row.DisplayName);
-                if (!add.IsSuccess || add.Value is null) throw new InvalidOperationException(add.Error ?? "Không đưa guest vào roster được.");
+                if (!add.IsSuccess || add.Value is null)
+                    throw new InvalidOperationException(add.Error ?? "Không đưa guest vào roster được.");
                 row.SessionPlayerId = add.Value.Player.Id;
                 row.Status = ZaloGuestReservationStatus.Active;
                 if (row.Gender is not null || row.Role is not null || row.Level is not null)
@@ -115,17 +136,59 @@ internal sealed class ZaloGuestDomainActionService(VolleyDraftDbContext db)
                     var profile = await draft.UpdatePlayerProfileFromBotAsync(
                         live.AdminUserId, live.Id, row.DisplayName, row.Gender, row.Role, row.Level,
                         sessionPlayerId: row.SessionPlayerId);
-                    if (!profile.IsSuccess) throw new InvalidOperationException(profile.Error ?? "Không cập nhật profile guest được.");
+                    if (!profile.IsSuccess)
+                        throw new InvalidOperationException(profile.Error ?? "Không cập nhật profile guest được.");
                 }
             }
-            else row.Status = ZaloGuestReservationStatus.Waitlisted;
+            else
+            {
+                row.SessionPlayerId = null;
+                row.Status = ZaloGuestReservationStatus.Waitlisted;
+            }
             row.UpdatedAt = DateTimeOffset.UtcNow;
         }
         await db.SaveChangesAsync(cancellationToken);
         await tx.CommitAsync(cancellationToken);
         var after = await new ZaloDraftReadinessService(db).BuildAsync(live.Id, cancellationToken: cancellationToken);
-        return new(live.Id, live.Name, rows, after?.EffectiveSlotCount ?? readiness.EffectiveSlotCount,
+        return new(live.Id, live.Name, matched, after?.EffectiveSlotCount ?? readiness.EffectiveSlotCount,
             readiness.Capacity);
+    }
+
+    public async Task<ZaloGuestDomainActionResult> CancelTentativeAsync(
+        MatchSession session,
+        string sponsorId,
+        IReadOnlyList<string> reservationIds,
+        CancellationToken cancellationToken)
+    {
+        await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
+        var ids = reservationIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).Take(2).ToArray();
+        if (ids.Length == 0) throw new InvalidOperationException("Chưa có guest tentative nào để huỷ.");
+
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        var live = await LoadLiveSessionAsync(session.Id, cancellationToken);
+        var rows = await db.ZaloGuestReservations
+            .Where(x => x.SessionId == live.Id && x.SponsorZaloUserId == sponsorId && ids.Contains(x.Id))
+            .OrderBy(x => x.SponsorSequence)
+            .ToListAsync(cancellationToken);
+        if (rows.Count != ids.Length)
+            throw new InvalidOperationException("Guest tentative cần huỷ không còn thuộc đúng sponsor/kèo này.");
+
+        var changed = rows.Where(x => x.Status == ZaloGuestReservationStatus.Tentative).ToList();
+        var idempotent = changed.Count == 0 && rows.All(x => x.Status == ZaloGuestReservationStatus.Cancelled);
+        if (!idempotent && changed.Count == 0)
+            throw new InvalidOperationException("Guest này không còn là tentative nên không huỷ theo luồng tentative được.");
+
+        foreach (var row in changed)
+        {
+            row.Status = ZaloGuestReservationStatus.Cancelled;
+            row.SessionPlayerId = null;
+            row.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+        await db.SaveChangesAsync(cancellationToken);
+        await tx.CommitAsync(cancellationToken);
+        var readiness = await new ZaloDraftReadinessService(db).BuildAsync(live.Id, cancellationToken: cancellationToken);
+        return new(live.Id, live.Name, rows, readiness?.EffectiveSlotCount ?? 0,
+            readiness?.Capacity ?? live.TeamCount * live.TeamSize, idempotent);
     }
 
     public async Task<ZaloGuestDomainActionResult> ReplaceAsync(
@@ -152,7 +215,9 @@ internal sealed class ZaloGuestDomainActionService(VolleyDraftDbContext db)
         var live = await LoadLiveSessionAsync(session.Id, cancellationToken);
         var old = await db.ZaloGuestReservations.SingleOrDefaultAsync(x =>
             x.Id == oldReservationId && x.SessionId == live.Id && x.SponsorZaloUserId == sponsorId &&
-            (x.Status == ZaloGuestReservationStatus.Active || x.Status == ZaloGuestReservationStatus.Waitlisted || x.Status == ZaloGuestReservationStatus.Tentative), cancellationToken)
+            (x.Status == ZaloGuestReservationStatus.Active ||
+             x.Status == ZaloGuestReservationStatus.Waitlisted ||
+             x.Status == ZaloGuestReservationStatus.Tentative), cancellationToken)
             ?? throw new InvalidOperationException("Guest cần thay không còn ở trạng thái có thể thay.");
         var oldStatus = old.Status;
         if (!string.IsNullOrWhiteSpace(old.SessionPlayerId))
@@ -162,7 +227,7 @@ internal sealed class ZaloGuestDomainActionService(VolleyDraftDbContext db)
         }
         old.Status = ZaloGuestReservationStatus.Cancelled;
         old.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken); // remains inside transaction; rollback restores old slot on failure.
+        await db.SaveChangesAsync(cancellationToken); // still inside transaction; rollback restores old slot on failure.
 
         var next = (await db.ZaloGuestReservations.Where(x => x.SessionId == live.Id && x.SponsorZaloUserId == sponsorId)
             .Select(x => (int?)x.SponsorSequence).MaxAsync(cancellationToken) ?? 0) + 1;
@@ -191,13 +256,15 @@ internal sealed class ZaloGuestDomainActionService(VolleyDraftDbContext db)
         {
             var draft = new SessionDraftService(db);
             var add = await draft.AddGuestPlayerFromBotAsync(live.AdminUserId, live.Id, name);
-            if (!add.IsSuccess || add.Value is null) throw new InvalidOperationException(add.Error ?? "Không thay guest vào roster được.");
+            if (!add.IsSuccess || add.Value is null)
+                throw new InvalidOperationException(add.Error ?? "Không thay guest vào roster được.");
             row.SessionPlayerId = add.Value.Player.Id;
             if (row.Gender is not null || row.Role is not null || row.Level is not null)
             {
                 var profile = await draft.UpdatePlayerProfileFromBotAsync(
                     live.AdminUserId, live.Id, name, row.Gender, row.Role, row.Level, sessionPlayerId: row.SessionPlayerId);
-                if (!profile.IsSuccess) throw new InvalidOperationException(profile.Error ?? "Không cập nhật profile guest thay thế được.");
+                if (!profile.IsSuccess)
+                    throw new InvalidOperationException(profile.Error ?? "Không cập nhật profile guest thay thế được.");
             }
         }
         db.ZaloGuestReservations.Add(row);
@@ -215,6 +282,7 @@ internal sealed class ZaloGuestDomainActionService(VolleyDraftDbContext db)
         ZaloSemanticGuestValidatedItem item,
         CancellationToken cancellationToken)
     {
+        await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
         var row = await db.ZaloGuestReservations.SingleOrDefaultAsync(x =>
             x.Id == reservationId && x.SessionId == sessionId && x.SponsorZaloUserId == sponsorId &&
             x.Status == ZaloGuestReservationStatus.Tentative, cancellationToken)
