@@ -6,6 +6,9 @@ internal enum ZaloSemanticGuestActionKind
 {
     None,
     AddGuests,
+    AddTentativeGuests,
+    ConfirmGuests,
+    ReplaceGuest,
     UpdateGuestProfiles,
     CancelGuests
 }
@@ -82,10 +85,6 @@ internal sealed record ZaloSemanticGuestGroundingSnapshot(
     DateTimeOffset CurrentUtc,
     DateTimeOffset CurrentLocal)
 {
-    /// <summary>
-    /// Optional bounded world model used only for reasoning. Mutation authority
-    /// remains SessionId/Sponsor/ExistingGuests plus validator and DB executor.
-    /// </summary>
     public ZaloRecruitmentWorldSnapshot? World { get; init; }
 }
 
