@@ -16,6 +16,20 @@ public sealed partial class ZaloOverbookService
     {
         if (ambientSettings.ShadowMode) return false;
 
+        // Read-only semantic understanding gets first refusal after deterministic
+        // action/lease paths and before action-oriented PassOwnSlot/ClaimOpenSlot AI.
+        // This prevents a question such as "Nam vô được không?" from being promoted
+        // into a claim merely because it mentions a slot-like concept.
+        if (await TryHandleAmbientReadOnlySemanticAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                decision,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         var memberAssistSettings = ZaloMemberAssistSettings.FromConfiguration(configuration);
         var semanticSettings = ZaloAmbientDomainIntentSettings.FromConfiguration(configuration);
         if (!memberAssistSettings.Enabled ||
