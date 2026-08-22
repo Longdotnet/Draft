@@ -15,7 +15,9 @@ internal enum ZaloSemanticGuestAnchorKind
     None,
     RecruitmentBroadcast,
     GuestConversation,
-    ActiveGuestConversation
+    ActiveGuestConversation,
+    PendingGuestAction,
+    RecentGuestMutation
 }
 
 internal sealed record ZaloSemanticGuestField<T>(T? Value, double Confidence) where T : struct;
