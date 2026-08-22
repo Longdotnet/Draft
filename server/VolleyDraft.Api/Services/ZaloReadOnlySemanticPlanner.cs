@@ -11,6 +11,10 @@ internal sealed record ZaloReadOnlyConversationContext(
     IReadOnlyList<ZaloAiMessage> Messages,
     IReadOnlyList<string> MessageIds);
 
+internal sealed record ZaloReadOnlyConversationTurn(
+    string MessageId,
+    ZaloAiMessage Message);
+
 internal static class ZaloReadOnlySemanticGate
 {
     public static bool IsEligible(
@@ -55,54 +59,48 @@ internal static class ZaloReadOnlyConversationContextLoader
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        var rows = ids.Length == 0
-            ? []
-            : await db.ZaloGroupMessages
-                .AsNoTracking()
-                .Where(item => item.ZaloConnectionId == connectionId &&
-                               item.GroupId == groupId &&
-                               ids.Contains(item.MessageId))
-                .Select(item => new
-                {
-                    item.MessageId,
-                    item.SenderId,
-                    item.SenderName,
-                    item.Content,
-                    item.IsFromBot,
-                    item.SentAt
-                })
-                .ToListAsync(cancellationToken);
+        var rows = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .Where(item => item.ZaloConnectionId == connectionId &&
+                           item.GroupId == groupId &&
+                           ids.Contains(item.MessageId))
+            .Select(item => new
+            {
+                item.MessageId,
+                item.SenderId,
+                item.SenderName,
+                item.Content,
+                item.IsFromBot,
+                item.SentAt
+            })
+            .ToListAsync(cancellationToken);
 
         var order = ids
             .Select((id, index) => new { id, index })
             .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
         var turns = rows
             .OrderBy(row => order.GetValueOrDefault(row.MessageId, int.MaxValue))
-            .Select(row => new
-            {
+            .Select(row => new ZaloReadOnlyConversationTurn(
                 row.MessageId,
-                Message = new ZaloAiMessage(
+                new ZaloAiMessage(
                     row.IsFromBot ? "assistant" : "user",
                     Clean(row.SenderId, 100),
                     Clean(row.SenderName, 80),
                     Clean(row.Content, 600),
-                    row.SentAt)
-            })
+                    row.SentAt)))
             .ToList();
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
         if (quote.HasQuote)
         {
-            turns.Add(new
-            {
-                MessageId = Clean(quote.MessageId, 160),
-                Message = new ZaloAiMessage(
+            turns.Add(new ZaloReadOnlyConversationTurn(
+                Clean(quote.MessageId, 160),
+                new ZaloAiMessage(
                     "context",
                     Clean(quote.SenderId, 100),
                     Clean(quote.SenderName, 80),
                     "[UNTRUSTED_ZALO_QUOTE] " + ZaloQuotedContextResolver.BuildAiGrounding(quote),
-                    quote.SentAt ?? DateTimeOffset.UtcNow)
-            });
+                    quote.SentAt ?? DateTimeOffset.UtcNow)));
         }
 
         if (turns.Count == 0) return new([], []);
@@ -330,10 +328,10 @@ internal sealed class ZaloReadOnlySemanticPlanner
                 ? Math.Clamp(parsedConfidence, 0, 1)
                 : 0;
             var subjectIsCurrentSender = root.TryGetProperty("subjectIsCurrentSender", out var currentSenderNode) &&
-                                         currentSenderNode.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                                         (currentSenderNode.ValueKind is JsonValueKind.True or JsonValueKind.False) &&
                                          currentSenderNode.GetBoolean();
             var needsClarification = root.TryGetProperty("needsClarification", out var clarificationNode) &&
-                                     clarificationNode.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                                     (clarificationNode.ValueKind is JsonValueKind.True or JsonValueKind.False) &&
                                      clarificationNode.GetBoolean();
 
             return new ZaloReadOnlySemanticPlan(
