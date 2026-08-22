@@ -62,27 +62,15 @@ public sealed class ZaloGroundedSemanticActionPlannerTests
     public async Task Planner_receives_shared_context_local_time_and_bounded_grounding_snapshot()
     {
         await using var fixture = await Fixture.CreateAsync();
-        fixture.Db.ZaloGroupMessages.Add(new ZaloGroupMessage
-        {
-            Id = "stored-action-context",
-            ZaloConnectionId = "conn-1",
-            GroupId = "g1",
-            MessageId = "previous-action-turn",
-            SenderId = "user-huy",
-            SenderName = "Huy",
-            Content = "bữa đó chắc tui nghỉ",
-            SentAt = DateTimeOffset.UtcNow.AddSeconds(-10)
-        });
-        await fixture.Db.SaveChangesAsync();
-
         var incoming = Message("planner-action", "user-huy", "Huy", "ừ phần đó để người khác nha");
-        var context = await ZaloReadOnlyConversationContextLoader.LoadAsync(
-            fixture.Db,
-            "conn-1",
-            "g1",
-            incoming,
-            ["previous-action-turn"],
-            12);
+        var context = new ZaloReadOnlyConversationContext(
+            [new ZaloAiMessage(
+                "user",
+                "user-huy",
+                "Huy",
+                "bữa đó chắc tui nghỉ",
+                DateTimeOffset.UtcNow.AddSeconds(-10))],
+            ["previous-action-turn"]);
         var snapshot = await new ZaloActionGroundingSnapshotBuilder(fixture.Db)
             .BuildAsync("conn-1", "g1", "user-huy");
         var session = snapshot.Sessions.Single();
