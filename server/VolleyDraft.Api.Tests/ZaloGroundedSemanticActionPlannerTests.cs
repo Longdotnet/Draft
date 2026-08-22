@@ -94,10 +94,18 @@ public sealed class ZaloGroundedSemanticActionPlannerTests
             .GetProperty("content")
             .GetString();
         Assert.NotNull(userPayload);
-        Assert.Contains("bữa đó chắc tui nghỉ", userPayload!, StringComparison.Ordinal);
-        Assert.Contains("CurrentLocalDateTime", userPayload, StringComparison.Ordinal);
-        Assert.Contains("Asia/Ho_Chi_Minh", userPayload, StringComparison.Ordinal);
-        Assert.Contains(session.SessionId, userPayload, StringComparison.Ordinal);
+        using var payloadDocument = JsonDocument.Parse(userPayload!);
+        var payloadRoot = payloadDocument.RootElement;
+        Assert.Equal(
+            "bữa đó chắc tui nghỉ",
+            payloadRoot.GetProperty("ConversationContext")[0].GetProperty("Content").GetString());
+        Assert.Equal(
+            "Asia/Ho_Chi_Minh",
+            payloadRoot.GetProperty("GroundingSnapshot").GetProperty("TimeZone").GetString());
+        Assert.True(payloadRoot.GetProperty("GroundingSnapshot").TryGetProperty("CurrentLocalDateTime", out _));
+        Assert.Contains(
+            payloadRoot.GetProperty("GroundingSnapshot").GetProperty("Sessions").EnumerateArray(),
+            item => string.Equals(item.GetProperty("SessionId").GetString(), session.SessionId, StringComparison.Ordinal));
         Assert.Equal(1, handler.CallCount);
     }
 
