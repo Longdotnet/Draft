@@ -89,14 +89,21 @@ public sealed partial class ZaloOverbookService
         if (decision == ZaloRecruitmentGuestMentionGateDecision.QueueReplyGatedMutation)
         {
             // V2 pre-routing already captured ReplyTo topology. Persist the incoming
-            // turn without marking it handled so the recruitment guest worker owns
-            // sync, capacity, idempotency and the actual DB mutation. Returning true
-            // here only prevents the legacy AddGuestPlayer/GeneralChat paths racing it.
-            await EnsureV2IncomingMessageAsync(
+            // turn, then explicitly release the generic pre-route processing lease so
+            // ProcessReplyGatedRecruitmentGuestTurnsDueAsync can own the only mutation.
+            // Returning true here prevents legacy AddGuestPlayer/GeneralChat racing it.
+            var stored = await EnsureV2IncomingMessageAsync(
                 connection.Id,
                 groupId,
                 incoming,
                 cancellationToken);
+            if (stored.BotReplySentAt is null)
+            {
+                stored.ReplyOutcome = null;
+                stored.ProcessingStartedAt = null;
+                stored.ProcessingToken = null;
+                await db.SaveChangesAsync(cancellationToken);
+            }
             logger.LogInformation(
                 "Queued grounded recruitment guest reply for single mutation lane Group={GroupId} Message={MessageId} Sender={SenderId}",
                 groupId,
