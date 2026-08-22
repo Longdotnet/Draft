@@ -60,9 +60,6 @@ internal sealed class ZaloAmbientDomainIntentResolver
         @"(?<![a-z0-9])(?:pass|nhuong|rut|slot|suat|keo|nhan|lay|hot|giu|xin|chot|nghi|khong\s+di|ko\s+di|hk\s+di)(?![a-z0-9])|(?<![a-z0-9])(?:de|cho)\s+(?:tui|toi|minh|em|anh)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private static readonly object BudgetGate = new();
-    private static readonly Dictionary<string, Queue<DateTimeOffset>> UserCalls = new(StringComparer.Ordinal);
-    private static readonly Dictionary<string, Queue<DateTimeOffset>> GroupCalls = new(StringComparer.Ordinal);
     private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
 
     private readonly VolleyDraftDbContext db;
@@ -105,7 +102,13 @@ internal sealed class ZaloAmbientDomainIntentResolver
             return new(ZaloAmbientDomainIntentKind.None, 0, "ai_not_configured");
 
         var senderId = Clean(incoming.SenderId, 100);
-        if (senderId.Length == 0 || !TryAcquireBudget(connectionId, groupId, senderId, settings))
+        if (senderId.Length == 0 ||
+            !ZaloAiBudgetLimiter.TryAcquire(
+                connectionId,
+                groupId,
+                senderId,
+                settings.MaxUserCallsPerMinute,
+                settings.MaxGroupCallsPerMinute))
             return new(ZaloAmbientDomainIntentKind.None, 0, "ai_budget_exhausted");
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
@@ -323,45 +326,6 @@ internal sealed class ZaloAmbientDomainIntentResolver
         !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
         !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
         !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
-
-    private static bool TryAcquireBudget(
-        string connectionId,
-        string groupId,
-        string senderId,
-        ZaloAmbientDomainIntentSettings settings)
-    {
-        var now = DateTimeOffset.UtcNow;
-        var cutoff = now.AddMinutes(-1);
-        var groupKey = $"{connectionId}:{groupId}";
-        var userKey = $"{groupKey}:{senderId}";
-        lock (BudgetGate)
-        {
-            var userQueue = GetQueue(UserCalls, userKey);
-            var groupQueue = GetQueue(GroupCalls, groupKey);
-            Prune(userQueue, cutoff);
-            Prune(groupQueue, cutoff);
-            if (userQueue.Count >= settings.MaxUserCallsPerMinute || groupQueue.Count >= settings.MaxGroupCallsPerMinute)
-                return false;
-            userQueue.Enqueue(now);
-            groupQueue.Enqueue(now);
-            return true;
-        }
-    }
-
-    private static Queue<DateTimeOffset> GetQueue(
-        IDictionary<string, Queue<DateTimeOffset>> map,
-        string key)
-    {
-        if (map.TryGetValue(key, out var queue)) return queue;
-        queue = new Queue<DateTimeOffset>();
-        map[key] = queue;
-        return queue;
-    }
-
-    private static void Prune(Queue<DateTimeOffset> queue, DateTimeOffset cutoff)
-    {
-        while (queue.Count > 0 && queue.Peek() < cutoff) queue.Dequeue();
-    }
 
     private static string? ReadModelContent(JsonElement root)
     {
