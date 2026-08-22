@@ -140,6 +140,7 @@ public sealed partial class ZaloOverbookService
             changed.AddRange(tentativeResult.Changed);
 
             var normal = new ZaloGuestReservationService(db);
+            var cancelledNormal = false;
             foreach (var item in validation.Items.Where(item =>
                          item.ReservationId is not null && !tentativeIds.Contains(item.ReservationId, StringComparer.Ordinal)))
             {
@@ -152,15 +153,24 @@ public sealed partial class ZaloOverbookService
                     cancellationToken);
                 if (result.NeedsClarification)
                     throw new InvalidOperationException(result.Clarification ?? "Không huỷ được guest.");
+                if (result.Changed.Count > 0) cancelledNormal = true;
                 changed.AddRange(result.Changed);
             }
 
+            var promotions = cancelledNormal
+                ? await normal.PromoteWaitingAsync(session.Id, cancellationToken)
+                : [];
             var names = string.Join(", ", changed.DistinctBy(item => item.Id).Select(item => item.DisplayName));
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(session.Id, cancellationToken: cancellationToken);
+            var promotionText = promotions.Count == 0
+                ? string.Empty
+                : $" Tui đã đẩy {string.Join(", ", promotions.Select(item => item.DisplayName))} từ waitlist lên trước.";
             return new(
-                $"Ok, tui bỏ {names} khỏi {session.Name}. Guest tentative không chiếm slot nên huỷ nó không làm roster tụt; roster hiện {readiness?.EffectiveSlotCount ?? tentativeResult.EffectiveSlots}/{readiness?.Capacity ?? tentativeResult.Capacity}.",
-                tentativeResult.Idempotent ? "guest_semantic_tentative_cancel_idempotent" : "guest_semantic_cancelled");
+                $"Ok, tui bỏ {names} khỏi {session.Name}.{promotionText} Roster hiện {readiness?.EffectiveSlotCount ?? tentativeResult.EffectiveSlots}/{readiness?.Capacity ?? tentativeResult.Capacity}. Guest tentative vốn không chiếm slot nên phần tentative không làm roster tụt.",
+                tentativeResult.Idempotent && !cancelledNormal
+                    ? "guest_semantic_tentative_cancel_idempotent"
+                    : "guest_semantic_cancelled");
         }
 
         return null;
