@@ -32,7 +32,21 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
     }
 
     [Fact]
-    public void FullRoster_DoesNotBuildRecruitmentBroadcast()
+    public void FullPollWithPassRisk_StillCallsForAReplacement()
+    {
+        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+            Snapshot(18, 18, 18),
+            activeSlotRiskCount: 1);
+
+        Assert.NotNull(message);
+        Assert.Contains("18/18", message!);
+        Assert.Contains("1 slot", message);
+        Assert.Contains("pass/huỷ", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("người thay", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FullCleanRoster_DoesNotBuildRecruitmentBroadcast()
     {
         Assert.Null(ZaloKeepRecruitingBroadcastPolicy.BuildMessage(Snapshot(18, 18, 18)));
         Assert.Null(ZaloKeepRecruitingBroadcastPolicy.BuildMessage(Snapshot(19, 19, 18)));
