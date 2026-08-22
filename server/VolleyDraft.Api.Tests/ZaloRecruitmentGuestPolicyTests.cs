@@ -20,6 +20,18 @@ public sealed class ZaloRecruitmentGuestPolicyTests
         Assert.Equal(quantity, command.Quantity);
     }
 
+    [Theory]
+    [InlineData("+1 bạn tui")]
+    [InlineData("+1 bạn T7")]
+    public void AddParser_DoesNotMistakePronounOrSessionForGuestName(string text)
+    {
+        var command = ZaloRecruitmentGuestPolicy.TryParse(text);
+
+        Assert.NotNull(command);
+        Assert.Single(command!.Guests!);
+        Assert.Null(command.Guests[0].DisplayName);
+    }
+
     [Fact]
     public void AddParser_ReadsTwoNames()
     {
@@ -62,6 +74,17 @@ public sealed class ZaloRecruitmentGuestPolicyTests
         Assert.Equal(ZaloRecruitmentGuestCommandKind.UpdateProfile, command!.Kind);
         Assert.Equal(1, command.SponsorSequence);
         Assert.Equal("Minh", command.RenameTo);
+    }
+
+    [Fact]
+    public void ProfileParser_AllowsGenderByGuestName()
+    {
+        var command = ZaloRecruitmentGuestPolicy.TryParse("Minh nam nha");
+
+        Assert.NotNull(command);
+        Assert.Equal(ZaloRecruitmentGuestCommandKind.UpdateProfile, command!.Kind);
+        Assert.Equal("minh", command.GuestReference);
+        Assert.Equal(PlayerGender.Male, command.Gender);
     }
 
     [Fact]
