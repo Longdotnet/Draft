@@ -157,6 +157,7 @@ public sealed partial class ZaloOverbookService
         }
 
         if (await TryHandleV2PreRoutingAsync(incoming, cancellationToken)) return true;
+        if (await TryHandleRecruitmentGuestSingleLaneGateAsync(incoming, cancellationToken)) return true;
         if (!incoming.MentionedBot) return false;
         var normalized = ZaloBotIntelligence.Normalize(incoming.Content);
         var isConfirmation = normalized.Contains("xac nhan", StringComparison.Ordinal) &&

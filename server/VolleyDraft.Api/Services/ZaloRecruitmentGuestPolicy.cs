@@ -50,6 +50,33 @@ internal static class ZaloRecruitmentGuestPolicy
         @"^(?<name>[a-z0-9][a-z0-9 ._-]{1,60})\s+(?:la\s+)?(?<gender>nam|nu)(?:\s+(?:nha|nhe))?$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    internal static bool LooksLikeAddRequest(string? content)
+    {
+        var parsed = TryParse(content);
+        if (parsed?.Kind == ZaloRecruitmentGuestCommandKind.Add)
+            return true;
+
+        // Catch natural phrases that describe bringing an outside friend but do not
+        // use the canonical +1/+2 syntax. This is routing-only: it must never itself
+        // become mutation authority. Example: "nay tui di chung voi 1 ban o ngoai gr".
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        if (normalized.Length == 0) return false;
+
+        var mentionsGuest = Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])(?:ban|dua|nguoi|khach)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        var outsideGroup = Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])(?:ngoai\s*(?:group|gr|nhom)|khong\s+(?:o|trong)\s+(?:group|gr|nhom)|chua\s+(?:o|trong)\s+(?:group|gr|nhom))(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        var addMeaning = Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])(?:1|2|mot|hai|them|keo|dan|ru|di\s+chung|di\s+voi|choi\s+chung)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        return mentionsGuest && outsideGroup && addMeaning;
+    }
+
     internal static ZaloRecruitmentGuestCommand? TryParse(string? content)
     {
         var original = (content ?? string.Empty).Trim();
