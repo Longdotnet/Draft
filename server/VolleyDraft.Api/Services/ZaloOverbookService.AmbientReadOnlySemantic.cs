@@ -109,6 +109,27 @@ public sealed partial class ZaloOverbookService
                        not "semantic_ai_not_configured" and
                        not "semantic_budget_exhausted";
 
+        if (ZaloReadOnlySemanticFailurePolicy.ShouldSuppressFallback(plan))
+        {
+            await WriteReadOnlySemanticTraceAsync(
+                groupId,
+                senderId,
+                incoming,
+                plan.FactKind.ToString(),
+                plan.Confidence,
+                context.MessageIds,
+                plan.SessionId,
+                aiCalled,
+                plan.Reason,
+                cancellationToken,
+                plan);
+            // The deterministic read-only fast path already had the first chance.
+            // When the semantic intelligence layer itself fails, consume the message
+            // without a factual reply so Social/action AI cannot invent an answer or
+            // accidentally turn an unclassified message into a mutation.
+            return true;
+        }
+
         if (plan.Route == ZaloReadOnlySemanticRoute.MutationRequest)
         {
             await WriteReadOnlySemanticTraceAsync(
@@ -256,13 +277,18 @@ public sealed partial class ZaloOverbookService
             var details = plan is null
                 ? reason
                 : $"{reason}|route:{plan.Route}|subject:{plan.SubjectMemberId ?? (plan.SubjectIsCurrentSender ? "current_sender" : "-")}|ref:{plan.ReferencedMemberId ?? "-"}|offer:{plan.OpenOfferId ?? "-"}|clarify:{plan.NeedsClarification}|model_reason:{plan.Reason}";
+            var intentSource = aiCalled
+                ? "GroundedReadOnlySemanticAi"
+                : string.Equals(reason, "readonly_fast_path", StringComparison.Ordinal)
+                    ? "DeterministicFastPath"
+                    : "GroundedReadOnlySemanticGate";
             await new ZaloBotTraceStore(db).WriteAsync(
                 new ZaloBotTraceEntry(
                     MessageId: ZaloOverbookLogic.NormalizeId(incoming.MessageId),
                     GroupId: groupId,
                     SenderZaloUserId: senderId,
                     AddressReason: "AmbientReadOnlySemantic",
-                    IntentSource: aiCalled ? "GroundedReadOnlySemanticAi" : "DeterministicFastPath",
+                    IntentSource: intentSource,
                     Intent: intent,
                     Confidence: confidence,
                     QuotedMessageId: plan?.SourceMessageId ?? quote.MessageId,
@@ -292,4 +318,13 @@ public sealed partial class ZaloOverbookService
             resolvedSessionId,
             reason);
     }
+}
+
+internal static class ZaloReadOnlySemanticFailurePolicy
+{
+    public static bool ShouldSuppressFallback(ZaloReadOnlySemanticPlan plan) =>
+        plan.Route == ZaloReadOnlySemanticRoute.None &&
+        plan.Reason is "semantic_ai_error" or
+            "semantic_malformed_json" or
+            "semantic_budget_exhausted";
 }
