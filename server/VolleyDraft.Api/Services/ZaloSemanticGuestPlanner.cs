@@ -54,11 +54,24 @@ internal sealed class ZaloSemanticGuestPlanner
             GroundingSnapshot là dữ liệu authority từ backend. SessionId và SponsorZaloUserId đã được khóa bởi reply graph/current sender; tuyệt đối không đổi sang session/người khác.
             ExistingGuests chứa guest thật của đúng sponsor. Nếu dùng reservationId thì phải copy NGUYÊN VĂN một ID có trong ExistingGuests. Không bịa ID.
 
+            AnchorKind có ý nghĩa:
+            - RecruitmentBroadcast: người dùng đang reply đúng tin tuyển người; AddGuests được phép nếu signup window mở.
+            - GuestConversation / ActiveGuestConversation: đang bổ sung/chỉnh/cancel guest đã giữ.
+            - PendingGuestAction: bot vừa hỏi lại một field còn thiếu. PendingMissingFields nói chính xác backend đang chờ gì. Nếu đang chờ quantity thì câu ngắn "1", "2", "một", "hai", "+1", "+2" phải được hiểu là tiếp tục AddGuests của yêu cầu trước, không bắt user reply recruitment lại.
+            - RecentGuestMutation: đây là correction window cho chính mutation guest gần nhất của sender. ExistingGuests trong snapshot đã được backend giới hạn vào guest của mutation gần nhất; chỉ update/cancel những guest này.
+
             Actions:
             - AddGuests: người gửi thực sự xác nhận dẫn/thêm 1 hoặc 2 bạn chơi. Không dùng cho ý định tương lai/không chắc như "để tui hỏi bạn", "tui thử rủ", "có thể dẫn bạn".
             - UpdateGuestProfiles: bổ sung/đổi tên/giới tính/trình độ/vị trí cho guest đã giữ.
-            - CancelGuests: guest đã giữ/chờ không đi nữa.
+            - CancelGuests: guest đã giữ/chờ không đi nữa, hoặc correction/undo của guest vừa thêm.
             - None: chat thường, chỉ hỏi, chưa cam kết, hoặc không liên quan guest.
+
+            Correction examples khi AnchorKind=RecentGuestMutation:
+            - sau +1, "à nhầm bạn đó nữ" => UpdateGuestProfiles đúng guest đó, Female.
+            - sau +2, "bạn thứ 2 không đi nữa" => CancelGuests guest thứ 2.
+            - sau +2, "thôi chỉ +1 thôi" => CancelGuests guest có SponsorSequence lớn hơn trong mutation gần nhất, giữ guest đầu.
+            - sau +2, "undo cái +2 hồi nãy" / "bỏ 2 bạn hồi nãy" => CancelGuests cả hai ExistingGuests của recent mutation.
+            Không bao giờ đụng guest ngoài ExistingGuests của snapshot.
 
             Từ chỉ người chung chung KHÔNG phải tên riêng: "bạn", "bạn tui", "bạn mình", "thằng bạn", "nhỏ bạn", "đứa bạn", "người", "khách", "bạn nha". Với các câu như "+1 cho bạn nha", "tui dẫn thêm thằng bạn", displayName phải null.
             Nếu tên thật rõ như "Minh", "Huy", "Ngọc Anh" thì mới điền displayName.
