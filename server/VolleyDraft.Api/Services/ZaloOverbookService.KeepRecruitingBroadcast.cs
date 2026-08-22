@@ -18,6 +18,7 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
 {
     internal const string ReplyOutcome = "draft_keep_recruiting_broadcast";
     internal const string MessageIdPrefix = "draft-keep-recruiting:";
+    internal const string SelectedIntentPrefix = "KeepRecruiting:";
 
     internal static TimeSpan GetCooldown(IConfiguration configuration) =>
         TimeSpan.FromMinutes(Math.Clamp(
@@ -27,6 +28,17 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
 
     internal static string MessagePrefix(string sessionId) =>
         $"{MessageIdPrefix}{sessionId}:";
+
+    internal static string SelectedIntent(string sessionId) => $"{SelectedIntentPrefix}{sessionId}";
+
+    internal static string? TryReadSessionId(string? selectedIntent)
+    {
+        if (string.IsNullOrWhiteSpace(selectedIntent) ||
+            !selectedIntent.StartsWith(SelectedIntentPrefix, StringComparison.Ordinal))
+            return null;
+        var value = selectedIntent[SelectedIntentPrefix.Length..].Trim();
+        return value.Length == 0 ? null : value;
+    }
 
     internal static string BuildIdempotencyKey(
         string sessionId,
@@ -48,11 +60,12 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
         var roster = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
             ? $"{readiness.EffectiveSlotCount}/{readiness.Capacity}"
             : $"{readiness.PresentPlayerCount} người / {readiness.EffectiveSlotCount} effective slot (mốc {readiness.Capacity})";
+        const string guestHint = " Có kéo bạn ngoài group thì reply thẳng tin này `+1` hoặc `+2`; bạn đó không cần ở trong group Zalo.";
 
         if (activeSlotRiskCount > 0 && readiness.EffectiveSlotCount >= readiness.Capacity)
         {
             var riskLabel = activeSlotRiskCount == 1 ? "1 slot" : $"{activeSlotRiskCount} slot";
-            return $"@all Kèo {readiness.SessionName} poll đang {roster} nhưng có {riskLabel} báo pass/huỷ đang cần người thay 👋 Ai chưa vote hoặc giờ sắp xếp vào được thì vào poll chốt giúp nha. Trưởng/phó đang chọn tiếp tục kiếm thêm; slot sạch lại bot tự ngưng réo.";
+            return $"@all Kèo {readiness.SessionName} poll đang {roster} nhưng có {riskLabel} báo pass/huỷ đang cần người thay 👋 Ai chưa vote hoặc giờ sắp xếp vào được thì vào poll chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; slot sạch lại bot tự ngưng réo.";
         }
 
         var missing = Math.Max(1, readiness.Capacity - readiness.EffectiveSlotCount);
@@ -60,7 +73,7 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
         var riskNote = activeSlotRiskCount > 0
             ? $"; đồng thời còn {activeSlotRiskCount} slot pass/huỷ chưa xử lý xong"
             : string.Empty;
-        return $"@all Kèo {readiness.SessionName} đang {roster}, còn thiếu {slotLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì vào poll chốt giúp nha. Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người và slot sạch thì bot tự ngưng réo.";
+        return $"@all Kèo {readiness.SessionName} đang {roster}, còn thiếu {slotLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì vào poll chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người và slot sạch thì bot tự ngưng réo.";
     }
 }
 
@@ -119,7 +132,7 @@ public sealed partial class ZaloOverbookService
             if (sent >= settings.MaxSendsPerCycle) break;
 
             var cooldown = ZaloKeepRecruitingBroadcastPolicy.GetCooldown(configuration);
-            var prefix = ZaloKeepRecruitingBroadcastPolicy.MessagePrefix(session.Id);
+            var selectedIntent = ZaloKeepRecruitingBroadcastPolicy.SelectedIntent(session.Id);
             var recentBroadcast = await db.ZaloGroupMessages
                 .AsNoTracking()
                 .AnyAsync(message =>
@@ -127,7 +140,7 @@ public sealed partial class ZaloOverbookService
                     message.GroupId == session.ZaloGroupId &&
                     message.IsFromBot &&
                     message.ReplyOutcome == ZaloKeepRecruitingBroadcastPolicy.ReplyOutcome &&
-                    message.MessageId.StartsWith(prefix) &&
+                    message.SelectedIntent == selectedIntent &&
                     message.SentAt >= now - cooldown,
                     cancellationToken);
 
@@ -154,16 +167,23 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
+            // A named guest may have joined the group since the last cycle. Collapse
+            // that manual placeholder onto the unique poll-backed player before the
+            // recruitment capacity check so one human never consumes two slots.
+            await new ZaloGuestIdentityReconciler(db)
+                .ReconcileAsync(session.Id, cancellationToken);
+
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
             var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
+            // Keep the organizer's direction durable when the roster becomes full.
+            // A full clean roster suppresses messages, but if somebody later passes a
+            // slot the same KeepRecruiting decision can resume without forcing the
+            // organizer to repeat themselves.
             if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRisks == 0)
-            {
-                await decisionStore.ClearAsync(session.Id, cancellationToken);
                 continue;
-            }
 
             ZaloKeepRecruitingBroadcastResult result;
             if (recentBroadcast)
@@ -229,7 +249,7 @@ public sealed partial class ZaloOverbookService
             return ZaloKeepRecruitingBroadcastResult.ConnectionUnavailable;
 
         var cooldown = ZaloKeepRecruitingBroadcastPolicy.GetCooldown(configuration);
-        var prefix = ZaloKeepRecruitingBroadcastPolicy.MessagePrefix(session.Id);
+        var selectedIntent = ZaloKeepRecruitingBroadcastPolicy.SelectedIntent(session.Id);
         var recent = await db.ZaloGroupMessages
             .AsNoTracking()
             .AnyAsync(item =>
@@ -237,7 +257,7 @@ public sealed partial class ZaloOverbookService
                 item.GroupId == session.ZaloGroupId &&
                 item.IsFromBot &&
                 item.ReplyOutcome == ZaloKeepRecruitingBroadcastPolicy.ReplyOutcome &&
-                item.MessageId.StartsWith(prefix) &&
+                item.SelectedIntent == selectedIntent &&
                 item.SentAt >= now - cooldown,
                 cancellationToken);
         if (recent)
@@ -249,25 +269,27 @@ public sealed partial class ZaloOverbookService
             cooldown);
         try
         {
-            await bridge.SendGroupMessageAsync(
+            var send = await bridge.SendGroupMessageAsync(
                 connection.AccountZaloId,
                 session.ZaloGroupId!,
                 message,
                 [new BridgeOutgoingMention("-1", 0, 4)],
                 idempotencyKey: idempotencyKey);
+            var providerReplyId = NormalizeProviderMessageId(send.MessageId);
+            var persistedReplyId = providerReplyId ?? $"local:{idempotencyKey}";
 
             if (!await db.ZaloGroupMessages
                     .AsNoTracking()
                     .AnyAsync(item =>
                         item.ZaloConnectionId == connection.Id &&
-                        item.MessageId == idempotencyKey,
+                        item.MessageId == persistedReplyId,
                         cancellationToken))
             {
                 var stored = new ZaloGroupMessage
                 {
                     ZaloConnectionId = connection.Id,
                     GroupId = session.ZaloGroupId!,
-                    MessageId = idempotencyKey,
+                    MessageId = persistedReplyId,
                     SenderId = connection.AccountZaloId,
                     SenderName = connection.DisplayName,
                     Content = message,
@@ -276,6 +298,7 @@ public sealed partial class ZaloOverbookService
                     ReceivedAt = now,
                     FirstObservedAt = now,
                     LastObservedAt = now,
+                    SelectedIntent = selectedIntent,
                     ReplyOutcome = ZaloKeepRecruitingBroadcastPolicy.ReplyOutcome
                 };
                 db.ZaloGroupMessages.Add(stored);
@@ -287,6 +310,16 @@ public sealed partial class ZaloOverbookService
                 {
                     db.Entry(stored).State = EntityState.Detached;
                 }
+            }
+
+            if (providerReplyId is not null)
+            {
+                await new ZaloMessageGraphStore(db).RememberOutboundAsync(
+                    connection.Id,
+                    session.ZaloGroupId!,
+                    providerReplyId,
+                    null,
+                    cancellationToken);
             }
 
             return ZaloKeepRecruitingBroadcastResult.Sent;

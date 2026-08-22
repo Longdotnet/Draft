@@ -19,6 +19,20 @@ public sealed class ZaloOverbookWorker(
                 var sent = await overbook.ProcessDueAsync(stoppingToken);
                 if (sent > 0) logger.LogInformation("Overbook reminder cycle sent {SentCount} message(s)", sent);
 
+                // Non-mentioned replies such as "+1 bạn" are persisted by the normal
+                // webhook path even though V1 does not answer them. Resolve those turns
+                // against the recruitment anchor before another @all decision is made.
+                var guestTurns = await overbook.ProcessRecruitmentGuestTurnsDueAsync(stoppingToken);
+                if (guestTurns > 0)
+                    logger.LogInformation("Recruitment guest cycle handled {HandledCount} turn(s)", guestTurns);
+
+                // Guest overflow has its own sponsor-aware waitlist because the friend
+                // may not have a Zalo UID. Promote that queue before deciding whether
+                // the group still needs another recruitment broadcast.
+                var guestPromotions = await overbook.ProcessGuestWaitlistDueAsync(stoppingToken);
+                if (guestPromotions > 0)
+                    logger.LogInformation("Guest waitlist cycle announced {PromotionCount} promotion(s)", guestPromotions);
+
                 // KeepRecruiting owns group-wide recruiting once a live organizer has
                 // explicitly chosen that direction. Run it before the leader-aware V2
                 // reminder so a handled recruitment bucket is not duplicated by a
@@ -112,7 +126,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/recruitment-guest/guest-waitlist/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }

@@ -18,6 +18,18 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
         Assert.Contains("chưa vote", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("vào poll", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("tiếp tục kiếm thêm", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("reply thẳng tin này `+1` hoặc `+2`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần ở trong group Zalo", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RecruitmentSelectedIntent_RoundTripsSessionIdWithoutParsingMessageText()
+    {
+        var selectedIntent = ZaloKeepRecruitingBroadcastPolicy.SelectedIntent("session-a");
+
+        Assert.Equal("KeepRecruiting:session-a", selectedIntent);
+        Assert.Equal("session-a", ZaloKeepRecruitingBroadcastPolicy.TryReadSessionId(selectedIntent));
+        Assert.Null(ZaloKeepRecruitingBroadcastPolicy.TryReadSessionId("DraftAutopilot"));
     }
 
     [Fact]
