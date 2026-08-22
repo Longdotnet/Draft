@@ -167,6 +167,12 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
+            // A named guest may have joined the group since the last cycle. Collapse
+            // that manual placeholder onto the unique poll-backed player before the
+            // recruitment capacity check so one human never consumes two slots.
+            await new ZaloGuestIdentityReconciler(db)
+                .ReconcileAsync(session.Id, cancellationToken);
+
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
