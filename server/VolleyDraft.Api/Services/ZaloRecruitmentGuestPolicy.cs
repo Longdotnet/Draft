@@ -42,6 +42,10 @@ internal static class ZaloRecruitmentGuestPolicy
         @"(?:ban|dua|nguoi)?\s*#?(?<seq>\d{1,2})\s+(?<gender>nam|nu)(?:\s|$)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex NamedGender = new(
+        @"^(?<name>[a-z0-9][a-z0-9 ._-]{1,60})\s+(?:la\s+)?(?<gender>nam|nu)(?:\s+(?:nha|nhe))?$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     internal static ZaloRecruitmentGuestCommand? TryParse(string? content)
     {
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
@@ -85,6 +89,18 @@ internal static class ZaloRecruitmentGuestPolicy
                 Quantity: quantity,
                 GuestReference: string.IsNullOrWhiteSpace(name) ? null : name,
                 ApplyAll: quantity == 2 && (normalized.Contains("het", StringComparison.Ordinal) || normalized.Contains("ca 2", StringComparison.Ordinal)));
+        }
+
+        // Profile completion is intentionally evaluated after cancellation language so
+        // "Minh nghỉ" can never be mistaken for a profile update. Name-based gender
+        // updates are grounded later against this sender's own guest reservations.
+        var namedGender = NamedGender.Match(normalized);
+        if (namedGender.Success)
+        {
+            return new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.UpdateProfile,
+                GuestReference: CleanName(namedGender.Groups["name"].Value),
+                Gender: ParseGender(namedGender.Groups["gender"].Value));
         }
 
         var plus = PlusQuantity.Match(normalized);
@@ -168,7 +184,12 @@ internal static class ZaloRecruitmentGuestPolicy
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length is < 2 or > 80) return false;
         var normalized = ZaloBotIntelligence.Normalize(value);
-        return normalized is not "ban tui" and not "ban toi" and not "ban minh" and not "dua tui" and not "dua toi" and not "dua minh";
+        if (normalized is "tui" or "toi" or "minh" or "ban" or "dua" or "nguoi" or "khach" or
+            "ban tui" or "ban toi" or "ban minh" or "dua tui" or "dua toi" or "dua minh")
+            return false;
+        if (Regex.IsMatch(normalized, @"^(?:t[2-7]|cn|thu\s*[2-7]|chu\s*nhat)(?:\s|$)", RegexOptions.CultureInvariant))
+            return false;
+        return true;
     }
 
     private static string? CleanName(string? value)
