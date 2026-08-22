@@ -69,7 +69,9 @@ internal sealed class ZaloReadOnlyGroundingSnapshotBuilder(VolleyDraftDbContext 
         // can ground "Nam" to a stable Zalo/profile identity without inventing one.
         var groupMemberRows = await db.ZaloGroupMembers
             .AsNoTracking()
-            .Where(member => member.GroupId == groupId && member.IsCurrentMember)
+            .Where(member => member.ZaloConnectionId == connectionId &&
+                             member.GroupId == groupId &&
+                             member.IsCurrentMember)
             .Select(member => new { member.ZaloUserId, member.DisplayName, member.LastSeenAt })
             .ToListAsync(cancellationToken);
         var recentGroupMembers = groupMemberRows
@@ -82,13 +84,11 @@ internal sealed class ZaloReadOnlyGroundingSnapshotBuilder(VolleyDraftDbContext 
         var groupUids = recentGroupMembers
             .Select(member => member.ZaloUserId.Trim())
             .ToArray();
-        var groupProfiles = groupUids.Length == 0
-            ? []
-            : await db.PlayerProfiles
-                .AsNoTracking()
-                .Where(profile => groupUids.Contains(profile.ZaloUserId))
-                .Select(profile => new { profile.Id, profile.ZaloUserId, profile.DisplayName })
-                .ToArrayAsync(cancellationToken);
+        var groupProfiles = await db.PlayerProfiles
+            .AsNoTracking()
+            .Where(profile => groupUids.Contains(profile.ZaloUserId))
+            .Select(profile => new { profile.Id, profile.ZaloUserId, profile.DisplayName })
+            .ToArrayAsync(cancellationToken);
         var profileByUid = groupProfiles
             .GroupBy(profile => profile.ZaloUserId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
