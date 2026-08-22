@@ -16,10 +16,10 @@ internal static partial class ZaloConditionalGuestIntentPolicy
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
 
-    [GeneratedRegex(@"(?:^|\s)(?:neu|nếu)\s+(?<hour>\d{1,2})(?:(?:h|:)(?<minute>\d{1,2}))?\s*(?<evening>toi|tối|chieu|chiều)?\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:^|\s)(?:neu|nếu)\s+(?<hour>\d{1,2})(?:(?:h|:)(?<minute>\d{1,2})|h)?\s*(?<evening>toi|tối|chieu|chiều)?\b", RegexOptions.IgnoreCase)]
     private static partial Regex IfTimeRegex();
 
-    [GeneratedRegex(@"(?:^|\s)(?<hour>\d{1,2})(?:(?:h|:)(?<minute>\d{1,2}))?\s*(?<evening>toi|tối|chieu|chiều)?\s+(?:ma|mà)\s+(?:van|vẫn)\s+thieu\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"(?:^|\s)(?<hour>\d{1,2})(?:(?:h|:)(?<minute>\d{1,2})|h)?\s*(?<evening>toi|tối|chieu|chiều)?\s+(?:ma|mà)\s+(?:van|vẫn|con|còn)\s+thieu\b", RegexOptions.IgnoreCase)]
     private static partial Regex TimeIfMissingRegex();
 
     [GeneratedRegex(@"(?:\+|cho\s+|them\s+|thêm\s+)(?<quantity>[12])\s*(?:ban|bạn)?\b", RegexOptions.IgnoreCase)]
@@ -97,7 +97,7 @@ internal static partial class ZaloConditionalGuestIntentPolicy
             .Where(candidate => candidate > now && candidate < start)
             .OrderByDescending(candidate => candidate)
             .ToArray();
-        return candidates.FirstOrDefault() == default ? null : candidates[0].ToUniversalTime();
+        return candidates.Length == 0 ? null : candidates[0].ToUniversalTime();
     }
 
     internal static DateTimeOffset ResolveExecuteNotBefore(
