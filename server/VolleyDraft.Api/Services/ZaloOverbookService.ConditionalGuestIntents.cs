@@ -6,97 +6,6 @@ namespace VolleyDraft.Api.Services;
 
 public sealed partial class ZaloOverbookService
 {
-    private async Task<bool> TryHandleConditionalGuestIntentAsync(
-        string connectionId,
-        string accountId,
-        string botName,
-        string groupId,
-        ZaloIncomingMessageEvent incoming,
-        CancellationToken cancellationToken)
-    {
-        if (!ZaloConditionalGuestIntentPolicy.LooksConditional(incoming.Content)) return false;
-
-        var parsed = ZaloConditionalGuestIntentPolicy.TryParse(incoming.Content);
-        if (parsed is null)
-        {
-            await SendDeterministicPreRouteResponseAsync(
-                connectionId, accountId, botName, groupId, incoming,
-                "Tui hiểu ông đang đặt điều kiện + bạn nhưng chưa đọc chắc được mốc giờ/số lượng. Nói kiểu `nếu 19h vẫn thiếu thì +2` và reply đúng tin @all tuyển người của tui nha.",
-                "ConditionalGuestNeedsClarification",
-                cancellationToken);
-            return true;
-        }
-
-        var resolution = await ResolveReplyGatedRecruitmentGuestSessionAsync(
-            connectionId,
-            groupId,
-            ZaloOverbookLogic.NormalizeId(incoming.MessageId),
-            ZaloRecruitmentGuestCommandKind.Add,
-            cancellationToken);
-        if (resolution.Session is null ||
-            resolution.AnchorKind != ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast ||
-            string.IsNullOrWhiteSpace(resolution.RecruitmentMessageId))
-        {
-            await SendDeterministicPreRouteResponseAsync(
-                connectionId, accountId, botName, groupId, incoming,
-                "Tui chưa tạo điều kiện + guest từ câu này nha. Conditional + bạn chỉ có authority khi ông reply đúng tin `@all` tuyển người của tui, để khỏi gắn nhầm kèo.",
-                "ConditionalGuestRecruitmentReplyRequired",
-                cancellationToken);
-            return true;
-        }
-
-        var session = resolution.Session;
-        var now = DateTimeOffset.UtcNow;
-        var requested = ZaloConditionalGuestIntentPolicy.ResolveRequestedTrigger(
-            parsed,
-            now,
-            session.StartTime!.Value);
-        if (requested is null)
-        {
-            await SendDeterministicPreRouteResponseAsync(
-                connectionId, accountId, botName, groupId, incoming,
-                $"Mốc giờ đó không còn nằm trong khoảng từ bây giờ tới trước giờ chơi của {session.Name}. Nói lại mốc cụ thể trước giờ trận giúp tui nha.",
-                "ConditionalGuestInvalidTrigger",
-                cancellationToken);
-            return true;
-        }
-
-        var executeNotBefore = ZaloConditionalGuestIntentPolicy.ResolveExecuteNotBefore(
-            requested.Value,
-            session.StartTime.Value,
-            configuration);
-        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
-        var senderName = FriendlySponsorName(incoming.SenderName, senderId);
-        var intent = await new ZaloConditionalGuestIntentStore(db).CreateOrReuseAsync(
-            session.Id,
-            groupId,
-            senderId,
-            senderName,
-            ZaloOverbookLogic.NormalizeId(incoming.MessageId),
-            resolution.RecruitmentMessageId!,
-            requested.Value,
-            executeNotBefore,
-            parsed.MinimumMissingSlots,
-            parsed.Quantity,
-            ZaloConditionalGuestIntentPolicy.SerializeGuests(parsed.Guests),
-            cancellationToken);
-
-        var requestedLabel = ZaloConditionalGuestIntentPolicy.FormatLocalTime(intent.RequestedTriggerAt);
-        var executeLabel = ZaloConditionalGuestIntentPolicy.FormatLocalTime(intent.ExecuteNotBeforeAt);
-        var gateNote = intent.ExecuteNotBeforeAt > intent.RequestedTriggerAt
-            ? $" Do rule guest ngoài group, mốc kiểm tra thực tế sớm nhất là {executeLabel}."
-            : string.Empty;
-        var condition = intent.MinimumMissingSlots == 1
-            ? "nếu roster vẫn còn thiếu"
-            : $"nếu roster còn thiếu ít nhất {intent.MinimumMissingSlots} slot";
-        await SendDeterministicPreRouteResponseAsync(
-            connectionId, accountId, botName, groupId, incoming,
-            $"Ok, tui ghi condition cho {session.Name}: tới {requestedLabel} {condition} thì mới xét +{intent.Quantity}. Tới lúc đó tui sync poll thật trước; đủ người thì không cộng gì.{gateNote}",
-            "ConditionalGuestIntentScheduled",
-            cancellationToken);
-        return true;
-    }
-
     public async Task<int> ProcessConditionalGuestIntentsDueAsync(
         CancellationToken cancellationToken = default)
     {
@@ -161,19 +70,34 @@ public sealed partial class ZaloOverbookService
 
             if (missing < intent.MinimumMissingSlots)
             {
-                await store.SetStatusAsync(
-                    intent.Id,
-                    ZaloConditionalGuestIntentStatus.SkippedConditionFalse,
-                    null,
-                    now,
-                    cancellationToken);
-                await SendConditionalGuestResultAsync(
-                    session,
-                    intent,
-                    $"Tới mốc {ZaloConditionalGuestIntentPolicy.FormatLocalTime(intent.RequestedTriggerAt)} tui sync {session.Name}: roster đang {readiness.EffectiveSlotCount}/{readiness.Capacity}, không còn thiếu theo condition nên tui không + guest nào nha.",
-                    "condition-false",
-                    cancellationToken);
-                handled += 1;
+                try
+                {
+                    // Send first, then close the intent. If transport/persistence fails,
+                    // the Active row remains retryable and the stable idempotency key
+                    // prevents a duplicate visible message on a provider retry.
+                    await SendConditionalGuestResultAsync(
+                        session,
+                        intent,
+                        $"Tới mốc {ZaloConditionalGuestIntentPolicy.FormatLocalTime(intent.RequestedTriggerAt)} tui sync {session.Name}: roster đang {readiness.EffectiveSlotCount}/{readiness.Capacity}, không còn thiếu theo condition nên tui không + guest nào nha.",
+                        "condition-false",
+                        cancellationToken);
+                    await store.SetStatusAsync(
+                        intent.Id,
+                        ZaloConditionalGuestIntentStatus.SkippedConditionFalse,
+                        null,
+                        now,
+                        cancellationToken);
+                    handled += 1;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    await store.SetRetryErrorAsync(intent.Id, exception.Message, cancellationToken);
+                    logger.LogWarning(exception, "Conditional guest false-condition notification failed Intent={IntentId} Session={SessionId}", intent.Id, intent.SessionId);
+                }
                 continue;
             }
 
@@ -186,6 +110,10 @@ public sealed partial class ZaloOverbookService
                     guests.Count == intent.Quantity
                         ? guests
                         : Enumerable.Range(0, intent.Quantity).Select(_ => new ZaloRecruitmentGuestSpec()).ToArray());
+
+                // SourceMessageId is stable across retries. AddAsync is therefore the
+                // idempotent mutation boundary: a send failure can safely retry this
+                // whole block without adding another reservation/player.
                 var result = await new ZaloGuestReservationService(db).AddAsync(
                     session,
                     intent.SponsorZaloUserId,
@@ -202,7 +130,6 @@ public sealed partial class ZaloOverbookService
                     intent.SourceMessageId,
                     intent.RecruitmentMessageId,
                     cancellationToken);
-                await store.SetStatusAsync(intent.Id, ZaloConditionalGuestIntentStatus.Executed, null, now, cancellationToken);
 
                 var admitted = result.Added.Count;
                 var waiting = result.Waitlisted.Count;
@@ -215,12 +142,18 @@ public sealed partial class ZaloOverbookService
                 var profileNote = missingProfile > 0
                     ? $" Còn {missingProfile} guest thiếu giới tính, bổ sung trước draft giúp tui."
                     : string.Empty;
+
                 await SendConditionalGuestResultAsync(
                     session,
                     intent,
                     $"Condition đã tới hạn và roster thật còn thiếu ({readiness.EffectiveSlotCount}/{readiness.Capacity}) nên tui chạy +{intent.Quantity}: {placement}. Roster sau mutation {result.AfterEffectiveSlots}/{result.Capacity}.{profileNote}",
                     "executed",
                     cancellationToken);
+
+                // Mark terminal only after the result message has been persisted/sent.
+                // If anything above fails, the Active row retries through the same
+                // mutation and outbound idempotency keys.
+                await store.SetStatusAsync(intent.Id, ZaloConditionalGuestIntentStatus.Executed, null, now, cancellationToken);
                 handled += 1;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -246,7 +179,7 @@ public sealed partial class ZaloOverbookService
     {
         var connection = session.ZaloConnection;
         if (connection is null || connection.Status != ZaloConnectionStatus.Connected || string.IsNullOrWhiteSpace(session.ZaloGroupId))
-            return;
+            throw new InvalidOperationException("Zalo connection is unavailable for conditional guest result notification.");
 
         var label = $"@{intent.SponsorDisplayName}";
         var message = $"{label} {body}";
