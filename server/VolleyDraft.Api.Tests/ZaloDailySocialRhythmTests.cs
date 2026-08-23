@@ -207,7 +207,7 @@ public sealed class ZaloDailySocialRhythmTests
     }
 
     [Fact]
-    public void Dynamic_card_renderer_uses_each_embedded_background_and_returns_real_png()
+    public void Dynamic_card_renderer_uses_each_active_morning_background_and_returns_real_png()
     {
         var copy = new ZaloSocialCardCopy(
             "CHÀO NGÀY MỚI",
@@ -227,20 +227,29 @@ public sealed class ZaloDailySocialRhythmTests
     }
 
     [Fact]
-    public void Background_deck_uses_all_five_before_repeating_and_avoids_cycle_boundary_repeat()
+    public void Legacy_morning_background_five_resolves_to_background_one_resource()
+    {
+        Assert.Equal(
+            ZaloSocialCardBackgroundCatalog.LogicalResourceName(1),
+            ZaloSocialCardBackgroundCatalog.LogicalResourceName(5));
+        Assert.DoesNotContain(5, ZaloSocialCardBackgroundCatalog.ActiveIds);
+    }
+
+    [Fact]
+    public void Background_deck_uses_all_four_before_repeating_and_avoids_cycle_boundary_repeat()
     {
         var firstCycle = ZaloSocialCardDeckLogic.BuildShuffledDeck(null);
-        Assert.Equal(5, firstCycle.Count);
-        Assert.Equal(5, firstCycle.Distinct().Count());
-        Assert.All(firstCycle, id => Assert.InRange(id, 1, 5));
+        Assert.Equal(4, firstCycle.Count);
+        Assert.Equal(4, firstCycle.Distinct().Count());
+        Assert.All(firstCycle, id => Assert.InRange(id, 1, 4));
 
         var secondCycle = ZaloSocialCardDeckLogic.BuildShuffledDeck(firstCycle[^1]);
-        Assert.Equal(5, secondCycle.Distinct().Count());
+        Assert.Equal(4, secondCycle.Distinct().Count());
         Assert.NotEqual(firstCycle[^1], secondCycle[0]);
     }
 
     [Fact]
-    public async Task Social_card_memory_is_idempotent_and_rotates_without_repeat_for_first_five()
+    public async Task Social_card_memory_is_idempotent_and_rotates_without_repeat_for_first_four()
     {
         var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
             .UseSqlite("Data Source=:memory:")
@@ -249,7 +258,7 @@ public sealed class ZaloDailySocialRhythmTests
         await db.Database.OpenConnectionAsync();
 
         var assigned = new List<ZaloSocialCardMemory>();
-        for (var index = 1; index <= 5; index++)
+        for (var index = 1; index <= 4; index++)
         {
             assigned.Add(await ZaloSocialCardMemoryStore.RememberAsync(
                 db,
@@ -263,7 +272,7 @@ public sealed class ZaloDailySocialRhythmTests
                     $"Ribbon {index}")));
         }
 
-        Assert.Equal(5, assigned.Select(item => item.BackgroundId).Distinct().Count());
+        Assert.Equal(4, assigned.Select(item => item.BackgroundId).Distinct().Count());
         Assert.All(assigned, item => Assert.Equal(1, item.CycleNumber));
 
         var retry = await ZaloSocialCardMemoryStore.RememberAsync(
@@ -281,26 +290,26 @@ public sealed class ZaloDailySocialRhythmTests
         Assert.Equal(assigned[0].Headline, retry.Headline);
         Assert.Equal("CLB Test", retry.GroupName);
 
-        var sixth = await ZaloSocialCardMemoryStore.RememberAsync(
+        var fifth = await ZaloSocialCardMemoryStore.RememberAsync(
             db,
-            "occurrence-6",
+            "occurrence-5",
             "connection-1",
             "group-1",
             "CLB Test",
             new ZaloSocialCardCopy(
-                "Headline 6",
-                "Body copy number 6 đủ dài để hợp lệ.",
-                "Ribbon 6"));
+                "Headline 5",
+                "Body copy number 5 đủ dài để hợp lệ.",
+                "Ribbon 5"));
 
-        Assert.Equal(2, sixth.CycleNumber);
-        Assert.NotEqual(assigned[^1].BackgroundId, sixth.BackgroundId);
+        Assert.Equal(2, fifth.CycleNumber);
+        Assert.NotEqual(assigned[^1].BackgroundId, fifth.BackgroundId);
 
         var recent = await ZaloSocialCardMemoryStore.GetRecentAsync(
             db,
             "connection-1",
             "group-1",
-            take: 6);
-        Assert.Equal(6, recent.Count);
+            take: 5);
+        Assert.Equal(5, recent.Count);
     }
 
     [Theory]

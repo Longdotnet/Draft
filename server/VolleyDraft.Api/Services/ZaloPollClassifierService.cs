@@ -26,6 +26,9 @@ internal static class ZaloPollScheduleParser
     private static readonly Regex DayRegex = new(
         @"(?<![a-z0-9])(?:t|thu)\s*(?<weekday>[2-7])(?![0-9])|(?<![a-z0-9])cn(?![a-z0-9])|chu\s*nhat",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ExplicitDateRegex = new(
+        @"(?<!\d)(?<day>\d{1,2})\s*[/.-]\s*(?<month>\d{1,2})(?:\s*[/.-]\s*(?<year>\d{2,4}))?(?!\d)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitTimeRegex = new(
         @"(?<!\d)(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -44,27 +47,39 @@ internal static class ZaloPollScheduleParser
             .ToOffset(vietnamOffset);
         var nowLocal = (currentTime ?? DateTimeOffset.UtcNow).ToOffset(vietnamOffset);
         var staleBefore = nowLocal.AddHours(-6);
+        var pollDefaultMinutes = trackedGroup.DefaultStartMinutes;
+        if (TryReadTimeMinutes(
+                NormalizeText(poll.Question),
+                trackedGroup.AssumePmForHourUnder12,
+                out var questionMinutes))
+            pollDefaultMinutes = questionMinutes;
 
         foreach (var option in poll.Options)
         {
             var normalized = NormalizeText(option.Content);
-            if (!TryReadDay(normalized, out var dayKey, out var dayOfWeek)) continue;
+            var hasDay = TryReadDay(normalized, out var dayKey, out var dayOfWeek);
+            // Existing weekday options often also show a display date (for example
+            // "Thứ 4 8/7"). Keep weekday parsing authoritative there; explicit dates
+            // are a fallback for date-only options such as "25/8".
+            DateTime explicitDate = default;
+            var hasDate = !hasDay && TryReadDate(normalized, pollLocal, out explicitDate);
+            if (!hasDay && !hasDate) continue;
 
-            var minutes = trackedGroup.DefaultStartMinutes;
-            var timeMatch = ExplicitTimeRegex.Match(normalized);
-            if (timeMatch.Success &&
-                int.TryParse(timeMatch.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hour))
+            var minutes = pollDefaultMinutes;
+            if (TryReadTimeMinutes(normalized, trackedGroup.AssumePmForHourUnder12, out var optionMinutes))
+                minutes = optionMinutes;
+
+            DateTimeOffset start;
+            if (hasDate)
             {
-                var minute = 0;
-                if (timeMatch.Groups["minute"].Success)
-                    int.TryParse(timeMatch.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
-                hour = Math.Clamp(hour, 0, 23);
-                minute = Math.Clamp(minute, 0, 59);
-                if (trackedGroup.AssumePmForHourUnder12 && hour is >= 1 and <= 11) hour += 12;
-                minutes = hour * 60 + minute;
+                dayKey = DayKey(explicitDate.DayOfWeek);
+                start = new DateTimeOffset(explicitDate.Date.AddMinutes(minutes), vietnamOffset);
+            }
+            else
+            {
+                start = ResolveUpcoming(pollLocal, dayOfWeek, minutes);
             }
 
-            var start = ResolveUpcoming(pollLocal, dayOfWeek, minutes);
             if (start < staleBefore) continue;
             result.Add(new ZaloAutoSessionCandidate(
                 option.Id,
@@ -192,6 +207,71 @@ internal static class ZaloPollScheduleParser
         dayOfWeek = DayOfWeek.Sunday;
         return true;
     }
+
+    private static bool TryReadDate(
+        string normalized,
+        DateTimeOffset pollLocal,
+        out DateTime date)
+    {
+        var match = ExplicitDateRegex.Match(normalized);
+        if (!match.Success ||
+            !int.TryParse(match.Groups["day"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var day) ||
+            !int.TryParse(match.Groups["month"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var month))
+        {
+            date = default;
+            return false;
+        }
+
+        var year = pollLocal.Year;
+        var hasExplicitYear = match.Groups["year"].Success;
+        if (hasExplicitYear &&
+            int.TryParse(match.Groups["year"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedYear))
+            year = parsedYear < 100 ? 2000 + parsedYear : parsedYear;
+
+        try
+        {
+            date = new DateTime(year, month, day);
+            if (!hasExplicitYear && date < pollLocal.Date.AddDays(-14))
+                date = date.AddYears(1);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            date = default;
+            return false;
+        }
+    }
+
+    private static bool TryReadTimeMinutes(string normalized, bool assumePmForHourUnder12, out int minutes)
+    {
+        var timeMatch = ExplicitTimeRegex.Match(normalized);
+        if (!timeMatch.Success ||
+            !int.TryParse(timeMatch.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hour))
+        {
+            minutes = 0;
+            return false;
+        }
+
+        var minute = 0;
+        if (timeMatch.Groups["minute"].Success)
+            int.TryParse(timeMatch.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
+        hour = Math.Clamp(hour, 0, 23);
+        minute = Math.Clamp(minute, 0, 59);
+        if (assumePmForHourUnder12 && hour is >= 1 and <= 11) hour += 12;
+        minutes = hour * 60 + minute;
+        return true;
+    }
+
+    private static string DayKey(DayOfWeek dayOfWeek) => dayOfWeek switch
+    {
+        DayOfWeek.Monday => "T2",
+        DayOfWeek.Tuesday => "T3",
+        DayOfWeek.Wednesday => "T4",
+        DayOfWeek.Thursday => "T5",
+        DayOfWeek.Friday => "T6",
+        DayOfWeek.Saturday => "T7",
+        _ => "CN"
+    };
 
     private static DateTimeOffset ResolveUpcoming(DateTimeOffset pollLocal, DayOfWeek targetDay, int minutes)
     {
@@ -357,6 +437,14 @@ internal sealed class ZaloPollClassifierService(
         {
             score += 0.06;
             reasons.Add("weekday_pattern");
+        }
+        else if (poll.Options.Count(option => Regex.IsMatch(
+                     ZaloPollScheduleParser.NormalizeText(option.Content),
+                     @"(?<!\d)\d{1,2}\s*[/.-]\s*\d{1,2}(?!\d)",
+                     RegexOptions.CultureInvariant)) >= 2)
+        {
+            score += 0.06;
+            reasons.Add("date_pattern");
         }
         reason = string.Join(',', reasons);
         return Math.Clamp(score, 0, 0.98);
