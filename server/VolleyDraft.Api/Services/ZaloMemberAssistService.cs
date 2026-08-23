@@ -18,7 +18,8 @@ public enum ZaloMemberAssistKind
 {
     None,
     PassSlotHelp,
-    OpenSlotClaim
+    OpenSlotClaim,
+    PassSlotSummary
 }
 
 public sealed record ZaloMemberAssistReply(
@@ -31,6 +32,8 @@ public sealed record ZaloMemberAssistReply(
 /// a slot without explicitly addressing the bot. Opening/claiming an offer writes
 /// only coordination state. A real post-draft slot transfer is delegated to the
 /// existing confirmed domain service and pre-draft registration remains poll-owned.
+/// Read-only pass-slot summaries are resolved from durable offer state before any
+/// mutation-shaped pass/claim flow is considered.
 /// </summary>
 public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 {
@@ -68,6 +71,16 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        if (ZaloPassSlotHistoryFactService.LooksLikeQuery(incoming.Content))
+        {
+            var summary = await new ZaloPassSlotHistoryFactService(db).TryBuildAsync(
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken: cancellationToken);
+            if (summary is not null) return summary;
+        }
+
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         if (PossibleOpenSlotTurnPattern.IsMatch(normalizedIncoming))
         {
