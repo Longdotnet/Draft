@@ -81,6 +81,10 @@ export function ZaloGreetingTestPanel() {
   }, [token, connectionId]);
 
   useEffect(() => {
+    if (kind === "Morning" && backgroundId === 5) setBackgroundId(0);
+  }, [kind, backgroundId]);
+
+  useEffect(() => {
     setPreview(null);
     setMessage(null);
   }, [groupId, kind, backgroundId]);
@@ -89,6 +93,7 @@ export function ZaloGreetingTestPanel() {
     () => groups.find((item) => item.id === groupId) ?? null,
     [groups, groupId],
   );
+  const backgroundOptions = kind === "Morning" ? [1, 2, 3, 4] : [1, 2, 3, 4, 5];
 
   if (!token) return null;
 
@@ -286,7 +291,7 @@ export function ZaloGreetingTestPanel() {
           <span style={{ display: "block", marginBottom: 6, color: "#cbd5e1" }}>Background</span>
           <select value={backgroundId} onChange={(event) => setBackgroundId(Number(event.target.value))} style={inputStyle}>
             <option value={0}>Ngẫu nhiên như production</option>
-            {[1, 2, 3, 4, 5].map((id) => <option key={id} value={id}>Background {id}</option>)}
+            {backgroundOptions.map((id) => <option key={id} value={id}>Background {id}</option>)}
           </select>
         </label>
       </div>
