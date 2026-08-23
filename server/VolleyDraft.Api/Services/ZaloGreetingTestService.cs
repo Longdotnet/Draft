@@ -84,6 +84,11 @@ internal static class ZaloGreetingTestPolicy
     public static bool IsProductionGreetingMessage(string? message, ZaloDailyGreetingKind kind) =>
         ZaloDailyGreetingPhraseCatalog.IsKind(message, kind);
 
+    public static IReadOnlyList<int> BackgroundIds(ZaloDailyGreetingKind kind) =>
+        kind == ZaloDailyGreetingKind.Morning
+            ? [1, 2, 3, 4]
+            : ZaloNightGreetingBackgroundCatalog.ActiveIds;
+
     private static string StableToken(string connectionId, string groupId)
     {
         var material = $"{connectionId?.Trim()}:{groupId?.Trim()}";
@@ -136,12 +141,15 @@ public sealed class ZaloGreetingTestService(
         if (resolved.Error is not null)
             return ServiceResult<ZaloGreetingTestPreviewResponse>.Failure(resolved.StatusCode, resolved.Error);
 
-        var backgroundId = request.BackgroundId ?? RandomNumberGenerator.GetInt32(1, 6);
-        if (backgroundId is < 1 or > 5)
+        var allowedBackgroundIds = ZaloGreetingTestPolicy.BackgroundIds(kind);
+        var backgroundId = request.BackgroundId ??
+                           allowedBackgroundIds[RandomNumberGenerator.GetInt32(allowedBackgroundIds.Count)];
+        if (!allowedBackgroundIds.Contains(backgroundId))
         {
+            var allowed = string.Join(", ", allowedBackgroundIds);
             return ServiceResult<ZaloGreetingTestPreviewResponse>.Failure(
                 StatusCodes.Status400BadRequest,
-                "BackgroundId chỉ nhận giá trị từ 1 đến 5.");
+                $"BackgroundId {kind} chỉ nhận: {allowed}.");
         }
 
         var selector = RandomNumberGenerator.GetInt32(0, int.MaxValue);
