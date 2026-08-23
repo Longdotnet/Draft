@@ -25,7 +25,8 @@
     <Exec Condition="Exists('Assets/SocialCards/social-card-02-hd.png')" Command="base64 -w 0 Assets/SocialCards/social-card-02-hd.png &gt; Assets/SocialCards/social-card-02.b64" />
     <Exec Condition="Exists('Assets/SocialCards/social-card-03-hd.png')" Command="base64 -w 0 Assets/SocialCards/social-card-03-hd.png &gt; Assets/SocialCards/social-card-03.b64" />
     <Exec Condition="Exists('Assets/SocialCards/social-card-04-hd.png')" Command="base64 -w 0 Assets/SocialCards/social-card-04-hd.png &gt; Assets/SocialCards/social-card-04.b64" />
-    <Exec Condition="Exists('Assets/SocialCards/social-card-05-hd.png')" Command="base64 -w 0 Assets/SocialCards/social-card-05-hd.png &gt; Assets/SocialCards/social-card-05.b64" />
+    <!-- Compatibility alias for old persisted BackgroundId=5 rows. New Morning selection only uses 1..4. -->
+    <Exec Condition="Exists('Assets/SocialCards/social-card-01-hd.png')" Command="base64 -w 0 Assets/SocialCards/social-card-01-hd.png &gt; Assets/SocialCards/social-card-05.b64" />
   </Target>
 
   <Target Name="PrepareHdNightBackgrounds" BeforeTargets="BeforeBuild" Condition="'$(OS)' != 'Windows_NT'">
