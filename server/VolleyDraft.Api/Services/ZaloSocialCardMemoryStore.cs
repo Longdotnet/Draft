@@ -24,14 +24,16 @@ internal static class ZaloSocialCardBackgroundCatalog
 {
     public static readonly IReadOnlyList<int> ActiveIds = [1, 2, 3, 4];
 
-    public static bool IsActive(int id) => id is >= 1 and <= 4;
+    // ID 5 remains readable only for already-persisted Morning occurrences. It is not
+    // present in ActiveIds, so new Morning cards can never select it.
+    public static bool IsActive(int id) => id is >= 1 and <= 5;
 
     public static string LogicalResourceName(int id)
     {
         // Background 5 was retired from Morning. Keep old persisted occurrences readable
         // by mapping legacy id 5 to background 1, without embedding or selecting asset 5.
         var resourceId = id == 5 ? 1 : id;
-        if (!IsActive(resourceId))
+        if (resourceId is < 1 or > 4)
             throw new ArgumentOutOfRangeException(nameof(id));
         return $"VolleyDraft.Api.Assets.SocialCards.SocialCard{resourceId:00}.jpg";
     }
@@ -164,7 +166,10 @@ internal static class ZaloSocialCardMemoryStore
         IReadOnlyList<int>? activeBackgroundIds = null)
     {
         await EnsureSchemaAsync(db, cancellationToken);
-        var activeIds = activeBackgroundIds ?? ZaloSocialCardBackgroundCatalog.ActiveIds;
+        var activeIds = activeBackgroundIds ??
+                        (groupId.EndsWith(":night", StringComparison.Ordinal)
+                            ? ZaloNightGreetingBackgroundCatalog.ActiveIds
+                            : ZaloSocialCardBackgroundCatalog.ActiveIds);
 
         var rotationKey = $"{connectionId}:{groupId}";
         var gate = LocalGates.GetOrAdd(rotationKey, _ => new SemaphoreSlim(1, 1));
