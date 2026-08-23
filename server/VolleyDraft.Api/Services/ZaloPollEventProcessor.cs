@@ -32,7 +32,7 @@ public sealed class ZaloPollEventWorker(
     {
         await foreach (var incoming in queue.ReadAllAsync(stoppingToken))
         {
-            if (!string.Equals(incoming.EventType, "update_board", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!IsBoardChange(incoming.EventType)) continue;
             var accountId = NormalizeId(incoming.AccountId);
             var groupId = NormalizeId(incoming.GroupId);
             if (accountId.Length == 0 || groupId.Length == 0) continue;
@@ -55,8 +55,9 @@ public sealed class ZaloPollEventWorker(
 
                 try
                 {
+                    var discoveryEvent = NormalizeForAutoSession(incoming);
                     await ZaloAutoSessionV2Service.Create(scope.ServiceProvider)
-                        .ObservePollBoardEventAsync(incoming, stoppingToken);
+                        .ObservePollBoardEventAsync(discoveryEvent, stoppingToken);
                 }
                 catch (Exception exception)
                 {
@@ -165,6 +166,15 @@ public sealed class ZaloPollEventWorker(
             }
         }
     }
+
+    internal static bool IsBoardChange(string? eventType) =>
+        string.Equals(eventType, "update_board", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(eventType, "remove_board", StringComparison.OrdinalIgnoreCase);
+
+    internal static ZaloPollBoardEvent NormalizeForAutoSession(ZaloPollBoardEvent incoming) =>
+        string.Equals(incoming.EventType, "remove_board", StringComparison.OrdinalIgnoreCase)
+            ? incoming with { EventType = "update_board", BoardId = null }
+            : incoming;
 
     private static string NormalizeId(string? value)
     {
