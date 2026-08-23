@@ -37,7 +37,7 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
 
     private static readonly Regex SummaryQuestionPattern = new(
-        @"(?:bao\s+nhieu|may\s+nguoi|co\s+may|co\s+bao\s+nhieu|ai|danh\s+sach|list).{0,45}(?:pass|nhuong)|(?:pass|nhuong).{0,45}(?:bao\s+nhieu|may\s+nguoi|co\s+may|ai|danh\s+sach|list)",
+        @"(?:bao\s+nhieu|may\s+nguoi|co\s+may|co\s+bao\s+nhieu|danh\s+sach|list).{0,45}(?:pass|nhuong)|(?:pass|nhuong).{0,45}(?:bao\s+nhieu|may\s+nguoi|co\s+may|danh\s+sach|list)|(?<![a-z0-9])ai\s+(?:dang\s+)?(?:pass|nhuong)(?![a-z0-9])|(?:pass|nhuong)\s+(?:(?:slot|suat|keo)\s+)?(?:la\s+)?ai(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex CurrentOpenPattern = new(
