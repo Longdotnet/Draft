@@ -80,11 +80,35 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
         Assert.DoesNotContain("Anh Duy", reply.Text, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Current_open_excludes_stale_open_offer_for_past_session()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        await fixture.AddPastSessionAsync("yesterday", "Thứ 7 22/8");
+        await fixture.OpenAsync(store, "owner-old", "Tăng Minh Khang", "yesterday", "Thứ 7 22/8", "m-old");
+        await fixture.OpenAsync(store, "owner-live", "Hoàng Nguyễn", "today", "CN 23/8", "m-live");
+
+        var now = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
+        var reply = await new ZaloPassSlotHistoryFactService(fixture.Db).TryBuildAsync(
+            "conn",
+            "g1",
+            Message("q-stale", "client", "Long", "ai pass slot em lấy nha"),
+            now);
+
+        Assert.NotNull(reply);
+        Assert.Contains("1 slot", reply!.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Hoàng Nguyễn", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Tăng Minh Khang", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("22/8", reply.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("hôm nay có bao nhiêu người pass slot?")]
     [InlineData("ai pass slot hnay vậy?")]
     [InlineData("danh sách người pass slot hôm nay")]
     [InlineData("còn slot nào đang mở chưa ai nhận?")]
+    [InlineData("ai pass slot em lấy nha")]
     public void Natural_pass_slot_fact_questions_are_detected(string text)
     {
         Assert.True(ZaloPassSlotHistoryFactService.LooksLikeQuery(text));
@@ -190,6 +214,27 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
             return new Fixture(connection, db);
+        }
+
+        public async Task AddPastSessionAsync(string sessionId, string sessionName)
+        {
+            var admin = await Db.Users.SingleAsync(user => user.Id == "admin");
+            var zalo = await Db.ZaloConnections.SingleAsync(connection => connection.Id == "conn");
+            Db.MatchSessions.Add(new MatchSession
+            {
+                Id = sessionId,
+                Name = sessionName,
+                AdminUserId = admin.Id,
+                AdminUser = admin,
+                ZaloConnectionId = zalo.Id,
+                ZaloConnection = zalo,
+                ZaloGroupId = "g1",
+                BotEnabled = true,
+                Status = SessionStatus.Setup,
+                StartTime = DateTimeOffset.UtcNow.AddHours(-2)
+            });
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
         }
 
         public Task<ZaloOpenSlotOfferSnapshot> OpenAsync(
