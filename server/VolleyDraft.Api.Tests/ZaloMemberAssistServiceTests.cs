@@ -50,6 +50,57 @@ public sealed class ZaloMemberAssistServiceTests
     }
 
     [Fact]
+    public async Task Broadcast_all_mention_does_not_suppress_self_pass_help()
+    {
+        await using var fixture = await Fixture.CreateAsync(sessionCount: 1);
+        var content = "Em pass slot T6 tối nay nha mn @All";
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "m-all",
+            senderId: "user-nguyen",
+            senderName: "Đặng Thế Nguyễn",
+            content: content,
+            mentions: [new ZaloBridgeMention("broadcast-all", content.IndexOf("@All", StringComparison.Ordinal), "@All".Length)],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var reply = await new ZaloMemberAssistService(fixture.Db)
+            .TryBuildAsync("conn-1", "g1", incoming);
+
+        Assert.NotNull(reply);
+        Assert.Equal(ZaloMemberAssistKind.PassSlotHelp, reply!.Kind);
+        Assert.Equal("session-t6", reply.SessionId);
+        Assert.Contains("pass slot T6", reply.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Unmatched_pass_sender_gets_clarification_instead_of_silence()
+    {
+        await using var fixture = await Fixture.CreateAsync(sessionCount: 1);
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "m-unmatched",
+            senderId: "unknown-user",
+            senderName: "Anh Duy",
+            content: "Em pass slot tối nay nha",
+            mentions: [],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var reply = await new ZaloMemberAssistService(fixture.Db)
+            .TryBuildAsync("conn-1", "g1", incoming);
+
+        Assert.NotNull(reply);
+        Assert.Equal(ZaloMemberAssistKind.PassSlotHelp, reply!.Kind);
+        Assert.Null(reply.SessionId);
+        Assert.Contains("chưa match", reply.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Multiple_owned_sessions_asks_which_one_instead_of_guessing()
     {
         await using var fixture = await Fixture.CreateAsync(sessionCount: 2);
