@@ -24,6 +24,7 @@ internal sealed record ZaloPassSlotHistoryRow(
     string SessionName,
     string Status,
     string? ClaimantDisplayName,
+    DateTimeOffset ExpiresAt,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
@@ -93,7 +94,11 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         IEnumerable<ZaloPassSlotHistoryRow> filtered = rows;
         filtered = scope switch
         {
-            ZaloPassSlotHistoryScope.CurrentOpen => filtered.Where(row => row.Status == nameof(ZaloOpenSlotOfferStatus.Open)),
+            // "Current" is a business-state gate, not merely Status == Open. A stale
+            // record can remain Open in durable history after its TTL/session time has
+            // passed; never advertise that old slot as claimable to the group.
+            ZaloPassSlotHistoryScope.CurrentOpen => filtered.Where(row =>
+                IsCurrentlyOpen(row, sessionStarts.GetValueOrDefault(row.SessionId), referenceNow)),
             ZaloPassSlotHistoryScope.SessionToday => filtered.Where(row =>
                 sessionStarts.TryGetValue(row.SessionId, out var start) &&
                 start is not null &&
@@ -173,7 +178,7 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT "Id", "OwnerZaloUserId", "OwnerDisplayName", "SessionId", "SessionName",
-                   "Status", "ClaimantDisplayName", "CreatedAt", "UpdatedAt"
+                   "Status", "ClaimantDisplayName", "ExpiresAt", "CreatedAt", "UpdatedAt"
             FROM "ZaloOpenSlotOffers"
             WHERE "ConnectionId" = @connectionId AND "GroupId" = @groupId
             ORDER BY "UpdatedAt" DESC;
@@ -194,7 +199,8 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
                 ReadString(reader, 5),
                 ReadNullableString(reader, 6),
                 ReadDateTimeOffset(reader, 7),
-                ReadDateTimeOffset(reader, 8)));
+                ReadDateTimeOffset(reader, 8),
+                ReadDateTimeOffset(reader, 9)));
         }
         return rows;
     }
@@ -213,6 +219,16 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
                               sessionIds.Contains(session.Id))
             .Select(session => new { session.Id, session.StartTime })
             .ToDictionaryAsync(item => item.Id, item => item.StartTime, StringComparer.Ordinal, cancellationToken);
+    }
+
+    private static bool IsCurrentlyOpen(
+        ZaloPassSlotHistoryRow row,
+        DateTimeOffset? sessionStart,
+        DateTimeOffset referenceNow)
+    {
+        if (row.Status != nameof(ZaloOpenSlotOfferStatus.Open)) return false;
+        if (row.ExpiresAt <= referenceNow) return false;
+        return sessionStart is null || sessionStart.Value > referenceNow;
     }
 
     private static ZaloPassSlotHistoryScope ResolveScope(string normalized)
