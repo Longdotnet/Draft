@@ -86,10 +86,10 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 
         if (!IsPassSlotHelpOpportunity(incoming.Content)) return null;
 
-        if (incoming.Mentions.Any(mention =>
-                CleanId(mention.Uid).Length > 0 &&
-                !string.Equals(CleanId(mention.Uid), CleanId(incoming.BotId), StringComparison.Ordinal)))
-            return null;
+        // A broadcast mention such as @All is audience metadata, not evidence that
+        // another specific member owns the slot. Keep suppressing self-pass inference
+        // only when the message actually mentions a concrete human.
+        if (HasSpecificHumanMention(incoming)) return null;
 
         connectionId = CleanId(connectionId);
         groupId = CleanId(groupId);
@@ -115,7 +115,13 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             .Where(session => ResolveOwner(session, senderId, senderName) is not null)
             .OrderBy(session => session.StartTime ?? DateTimeOffset.MaxValue)
             .ToList();
-        if (owned.Count == 0) return null;
+        if (owned.Count == 0)
+        {
+            var who = FriendlyName(incoming.SenderName);
+            return new ZaloMemberAssistReply(
+                ZaloMemberAssistKind.PassSlotHelp,
+                $"{who} đang pass slot đúng không 👀 Tui nhận ra ý rồi nhưng chưa match chắc được slot của bạn trong roster. Nói T6/CN, ngày hoặc tên kèo để tui dò đúng nha.");
+        }
 
         var explicitMatches = owned.Where(session => MatchesExplicitSession(incoming.Content, session)).ToList();
         if (explicitMatches.Count == 1)
@@ -127,10 +133,10 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
 
         var choices = string.Join(" với ", owned.Take(4).Select(session => session.Name));
-        var who = FriendlyName(incoming.SenderName);
+        var friendly = FriendlyName(incoming.SenderName);
         return new ZaloMemberAssistReply(
             ZaloMemberAssistKind.PassSlotHelp,
-            $"Pass kèo nào á {who} 😆 Tui thấy bạn có slot {choices}; nói T6/CN hoặc tên kèo là tui phụ tiếp nha.");
+            $"Pass kèo nào á {friendly} 😆 Tui thấy bạn có slot {choices}; nói T6/CN hoặc tên kèo là tui phụ tiếp nha.");
     }
 
     private async Task<ZaloMemberAssistReply?> BuildSingleAsync(
@@ -175,6 +181,29 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             ZaloMemberAssistKind.PassSlotHelp,
             $"{who} pass slot {session.Name} nha 🥲 Tui mở rồi, ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp. Nếu tin bị trôi tui sẽ nhắc lại có chừng mực.",
             session.Id);
+    }
+
+    private static bool HasSpecificHumanMention(ZaloIncomingMessageEvent incoming)
+    {
+        var botId = CleanId(incoming.BotId);
+        return incoming.Mentions.Any(mention =>
+        {
+            var mentionId = CleanId(mention.Uid);
+            return mentionId.Length > 0 &&
+                   !string.Equals(mentionId, botId, StringComparison.Ordinal) &&
+                   !IsBroadcastMention(mention, incoming.Content);
+        });
+    }
+
+    internal static bool IsBroadcastMention(ZaloBridgeMention mention, string? content)
+    {
+        var value = content ?? string.Empty;
+        if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos > value.Length - mention.Len)
+            return false;
+
+        var token = value.Substring(mention.Pos, mention.Len).Trim();
+        return string.Equals(token, "@All", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(token, "@Everyone", StringComparison.OrdinalIgnoreCase);
     }
 
     private static SessionPlayer? ResolveOwner(MatchSession session, string senderId, string senderName)
