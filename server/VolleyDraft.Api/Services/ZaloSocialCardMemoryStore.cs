@@ -22,33 +22,39 @@ internal sealed record ZaloSocialCardMemory(
 
 internal static class ZaloSocialCardBackgroundCatalog
 {
-    public static readonly IReadOnlyList<int> ActiveIds = [1, 2, 3, 4, 5];
+    public static readonly IReadOnlyList<int> ActiveIds = [1, 2, 3, 4];
 
-    public static bool IsActive(int id) => id is >= 1 and <= 5;
+    public static bool IsActive(int id) => id is >= 1 and <= 4;
 
     public static string LogicalResourceName(int id)
     {
-        if (!IsActive(id))
+        // Background 5 was retired from Morning. Keep old persisted occurrences readable
+        // by mapping legacy id 5 to background 1, without embedding or selecting asset 5.
+        var resourceId = id == 5 ? 1 : id;
+        if (!IsActive(resourceId))
             throw new ArgumentOutOfRangeException(nameof(id));
-        return $"VolleyDraft.Api.Assets.SocialCards.SocialCard{id:00}.jpg";
+        return $"VolleyDraft.Api.Assets.SocialCards.SocialCard{resourceId:00}.jpg";
     }
 }
 
 internal static class ZaloSocialCardDeckLogic
 {
-    public static IReadOnlyList<int> BuildShuffledDeck(int? lastBackgroundId)
+    public static IReadOnlyList<int> BuildShuffledDeck(int? lastBackgroundId) =>
+        BuildShuffledDeck(lastBackgroundId, ZaloSocialCardBackgroundCatalog.ActiveIds);
+
+    public static IReadOnlyList<int> BuildShuffledDeck(
+        int? lastBackgroundId,
+        IReadOnlyList<int> activeBackgroundIds)
     {
-        var values = ZaloSocialCardBackgroundCatalog.ActiveIds.ToArray();
+        var values = NormalizeActiveIds(activeBackgroundIds).ToArray();
         for (var index = values.Length - 1; index > 0; index -= 1)
         {
             var target = RandomNumberGenerator.GetInt32(index + 1);
             (values[index], values[target]) = (values[target], values[index]);
         }
 
-        // The requirement only forbids repeats until all five are consumed, but also
-        // avoid an immediate cycle-boundary repeat when more than one background exists.
         if (lastBackgroundId.HasValue &&
-            ZaloSocialCardBackgroundCatalog.IsActive(lastBackgroundId.Value) &&
+            values.Contains(lastBackgroundId.Value) &&
             values.Length > 1 &&
             values[0] == lastBackgroundId.Value)
         {
@@ -60,12 +66,18 @@ internal static class ZaloSocialCardDeckLogic
         return values;
     }
 
-    internal static List<int> NormalizeRemainingDeck(string? json)
+    internal static List<int> NormalizeRemainingDeck(string? json) =>
+        NormalizeRemainingDeck(json, ZaloSocialCardBackgroundCatalog.ActiveIds);
+
+    internal static List<int> NormalizeRemainingDeck(
+        string? json,
+        IReadOnlyList<int> activeBackgroundIds)
     {
+        var active = NormalizeActiveIds(activeBackgroundIds).ToHashSet();
         try
         {
             return (JsonSerializer.Deserialize<List<int>>(json ?? "[]") ?? [])
-                .Where(ZaloSocialCardBackgroundCatalog.IsActive)
+                .Where(active.Contains)
                 .Distinct()
                 .ToList();
         }
@@ -74,12 +86,23 @@ internal static class ZaloSocialCardDeckLogic
             return [];
         }
     }
+
+    private static IReadOnlyList<int> NormalizeActiveIds(IReadOnlyList<int> activeBackgroundIds)
+    {
+        var result = activeBackgroundIds
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (result.Length == 0)
+            throw new ArgumentException("Social-card background catalog cannot be empty.", nameof(activeBackgroundIds));
+        return result;
+    }
 }
 
 /// <summary>
 /// Group-scoped persistent memory for dynamic social cards.
 /// One occurrence is immutable: retries reuse the same AI copy/background.
-/// Each group consumes a shuffled five-background deck before a new cycle begins.
+/// Each group consumes its configured shuffled background deck before a new cycle begins.
 /// </summary>
 internal static class ZaloSocialCardMemoryStore
 {
@@ -137,9 +160,11 @@ internal static class ZaloSocialCardMemoryStore
         string groupId,
         string groupName,
         ZaloSocialCardCopy copy,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<int>? activeBackgroundIds = null)
     {
         await EnsureSchemaAsync(db, cancellationToken);
+        var activeIds = activeBackgroundIds ?? ZaloSocialCardBackgroundCatalog.ActiveIds;
 
         var rotationKey = $"{connectionId}:{groupId}";
         var gate = LocalGates.GetOrAdd(rotationKey, _ => new SemaphoreSlim(1, 1));
@@ -180,12 +205,14 @@ internal static class ZaloSocialCardMemoryStore
                     rotationKey,
                     cancellationToken);
 
-                var remaining = ZaloSocialCardDeckLogic.NormalizeRemainingDeck(state.RemainingBackgroundIdsJson);
+                var remaining = ZaloSocialCardDeckLogic.NormalizeRemainingDeck(
+                    state.RemainingBackgroundIdsJson,
+                    activeIds);
                 var cycleNumber = state.CycleNumber;
                 if (remaining.Count == 0)
                 {
                     remaining = ZaloSocialCardDeckLogic
-                        .BuildShuffledDeck(state.LastBackgroundId)
+                        .BuildShuffledDeck(state.LastBackgroundId, activeIds)
                         .ToList();
                     cycleNumber += 1;
                 }
