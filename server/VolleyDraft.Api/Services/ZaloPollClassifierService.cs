@@ -61,7 +61,8 @@ internal static class ZaloPollScheduleParser
             // Existing weekday options often also show a display date (for example
             // "Thứ 4 8/7"). Keep weekday parsing authoritative there; explicit dates
             // are a fallback for date-only options such as "25/8".
-            var hasDate = !hasDay && TryReadDate(normalized, pollLocal, out var explicitDate);
+            DateTime explicitDate = default;
+            var hasDate = !hasDay && TryReadDate(normalized, pollLocal, out explicitDate);
             if (!hasDay && !hasDate) continue;
 
             var minutes = pollDefaultMinutes;
