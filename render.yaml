@@ -92,9 +92,9 @@ services:
       - key: ZaloActivitySync__MaxBoardPages
         value: "100"
       - key: ZaloActivitySync__IncrementalBoardPages
-        value: "2"
+        value: "5"
       - key: ZaloActivitySync__MessageHistoryCount
-        value: "500"
+        value: "2000"
       - key: ZaloActivitySync__RetryCount
         value: "4"
       - key: ZaloActivitySync__RetryDelayMs
@@ -102,7 +102,7 @@ services:
       - key: ZaloActivitySync__PauseBetweenRequestsMs
         value: "150"
       - key: ZaloActivitySync__IncrementalMinutes
-        value: "360"
+        value: "60"
       - key: ZaloActivitySync__LeaseMinutes
         value: "10"
 
@@ -121,7 +121,7 @@ services:
       - key: ZALO_BRIDGE_API_KEEP_ALIVE
         value: "true"
       - key: ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES
-        value: "15"
+        value: "8"
 
   - type: web
     name: volley-draft-web
