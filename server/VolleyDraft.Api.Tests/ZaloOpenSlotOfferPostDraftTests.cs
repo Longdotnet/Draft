@@ -23,6 +23,7 @@ public sealed class ZaloOpenSlotOfferPostDraftTests
         var claimed = await assist.TryBuildAsync("conn", "g1", Message("m2", "claimant", "Vivian", "tui nhận"));
         Assert.NotNull(claimed);
         Assert.Contains("chốt", claimed!.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(claimed.SessionId);
 
         fixture.Db.ChangeTracker.Clear();
         var beforeLink = await fixture.Db.DraftSlotPlayers
@@ -35,8 +36,10 @@ public sealed class ZaloOpenSlotOfferPostDraftTests
 
         var confirmed = await assist.TryBuildAsync("conn", "g1", Message("m3", "claimant", "Vivian", "chốt"));
         Assert.NotNull(confirmed);
-        Assert.Contains("Done", confirmed!.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ZaloMemberAssistKind.OpenSlotClaim, confirmed!.Kind);
+        Assert.Contains("Done", confirmed.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Vivian", confirmed.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("s1", confirmed.SessionId);
 
         fixture.Db.ChangeTracker.Clear();
         var afterLink = await fixture.Db.DraftSlotPlayers
