@@ -13,8 +13,13 @@ internal static class ZaloMatchBriefFormatter
     internal static string Append(
         string message,
         MatchLifecycleResponse lifecycle,
-        string? adminDeepLink = null) =>
-        $"{message.Trim()}\n\n{BuildStateLine(lifecycle)}\n{BuildGuidance(lifecycle, canOperate: true, adminDeepLink)}";
+        string? adminDeepLink = null)
+    {
+        // Existing proactive reminders already target authorized organizer roles.
+        // Keep that send lane unchanged and resolve the deployed frontend URL here.
+        var resolvedLink = adminDeepLink ?? ZaloAdminDeepLinkBuilder.BuildFromEnvironment(lifecycle);
+        return $"{message.Trim()}\n\n{BuildStateLine(lifecycle)}\n{BuildGuidance(lifecycle, canOperate: true, resolvedLink)}";
+    }
 
     internal static string Standalone(
         MatchLifecycleResponse lifecycle,
