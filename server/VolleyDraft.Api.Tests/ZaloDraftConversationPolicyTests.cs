@@ -40,6 +40,16 @@ public sealed class ZaloDraftConversationPolicyTests
     }
 
     [Theory]
+    [InlineData("T6 có team chưa?")]
+    [InlineData("khi nào T6 có đội hình vậy?")]
+    [InlineData("chưa draft hả?")]
+    public void Existing_readiness_questions_are_not_stolen_by_match_brief(string message)
+    {
+        Assert.True(ZaloDraftConversationPolicy.IsReadinessQuestion(message));
+        Assert.False(ZaloDraftConversationPolicy.IsMatchBriefQuestion(message));
+    }
+
+    [Theory]
     [InlineData("website đẹp không?")]
     [InlineData("web hôm nay lag ghê")]
     [InlineData("team B đánh căng đó")]
