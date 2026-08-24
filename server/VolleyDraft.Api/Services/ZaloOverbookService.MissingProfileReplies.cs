@@ -26,7 +26,8 @@ internal static class ZaloNaturalProfileReplyParser
         bool missingRole,
         bool missingLevel)
     {
-        var text = ZaloBotIntelligence.Normalize(content);
+        var raw = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        var text = NormalizeConversationalSeparators(raw);
         if (text.Length == 0)
             return new(null, null, null, false, false, false);
 
@@ -46,9 +47,10 @@ internal static class ZaloNaturalProfileReplyParser
 
         var setter = HasAny(text, "chuyen 2", "chuyen hai", "setter");
         var fullStack = HasAny(text, "toan dien", "fullstack", "full stack", "all round", "allround");
-        var defense = HasAny(text, "phong thu", "danh thu", "libero") || ContainsToken(text, "thu");
-        var attack = HasAny(text, "tan cong", "danh cong", "chu cong", "phu cong", "doi chuyen", "attack") ||
-                     ContainsToken(text, "cong");
+        var defense = HasAny(text, "phong thu", "danh thu", "choi thu", "libero") ||
+                      IsShortNaturalTokenAnswer(text, "thu");
+        var attack = HasAny(text, "tan cong", "danh cong", "choi cong", "chu cong", "phu cong", "doi chuyen", "attack") ||
+                     IsShortNaturalTokenAnswer(text, "cong");
         var roleCount = CountTrue(setter, fullStack, defense, attack);
         var roleConflict = roleCount > 1;
         PlayerRole? role = roleConflict
@@ -63,7 +65,7 @@ internal static class ZaloNaturalProfileReplyParser
         var good = HasAny(text, "choi tot", "trinh do tot", "level tot", "good") ||
                    ContainsToken(text, "tot") || ContainsToken(text, "kha");
         var newbie = HasAny(text, "moi choi", "newbie", "beginner", "trinh do moi", "level moi") ||
-                     (missingLevel && ContainsToken(text, "moi"));
+                     (missingLevel && IsShortNaturalTokenAnswer(text, "moi"));
         var levelCount = CountTrue(average, good, newbie);
         var levelConflict = levelCount > 1;
         PlayerLevel? level = levelConflict
@@ -80,10 +82,10 @@ internal static class ZaloNaturalProfileReplyParser
         if (!missingLevel) level = null;
 
         var hasConflict = genderConflict || roleConflict || levelConflict;
-        var recognized = (gender is null ? 0 : 1) + (role is null ? 0 : 1) + (level is null ? 0 : 1);
         var rawRecognized = male || female || setter || fullStack || defense || attack || average || good || newbie;
         var compact = text.Length <= 140 && text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 24;
-        var unrelated = UnrelatedDomainSignals.Any(signal => text.Contains(signal, StringComparison.Ordinal));
+        var unrelated = UnrelatedDomainSignals.Any(signal =>
+            raw.Contains(signal, StringComparison.Ordinal) || text.Contains(signal, StringComparison.Ordinal));
         var looksLikeProfileAnswer = rawRecognized && compact && !unrelated;
 
         return new(gender, role, level, hasConflict, looksLikeProfileAnswer, false);
@@ -98,6 +100,26 @@ internal static class ZaloNaturalProfileReplyParser
     {
         var padded = $" {text} ";
         return padded.Contains($" {token} ", StringComparison.Ordinal);
+    }
+
+    private static bool IsShortNaturalTokenAnswer(string text, string token)
+    {
+        if (!ContainsToken(text, token)) return false;
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length > 7 || tokens.Any(item => item.Any(char.IsDigit))) return false;
+        return true;
+    }
+
+    private static string NormalizeConversationalSeparators(string text)
+    {
+        if (text.Length == 0) return string.Empty;
+        var chars = text.Select(character =>
+                char.IsLetterOrDigit(character) || char.IsWhiteSpace(character)
+                    ? character
+                    : ' ')
+            .ToArray();
+        return string.Join(' ',
+            new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 }
 
