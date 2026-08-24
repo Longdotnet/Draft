@@ -60,9 +60,16 @@ public static class ZaloDraftConversationPolicy
     {
         var normalized = Normalize(content);
         if (normalized.Length == 0) return false;
+        if (MatchBriefWebQuestion.IsMatch(normalized)) return true;
+
+        // Keep the established team/draft readiness lane authoritative for questions
+        // such as "T6 có team chưa?". Match Brief adds broader status queries; it does
+        // not steal the existing escalation/approval conversation.
+        if (ReadinessSubject.IsMatch(normalized) && ReadinessQuestion.IsMatch(normalized))
+            return false;
+
         var hasMatchSubject = MatchBriefSubject.IsMatch(normalized) || MatchBriefSessionSubject.IsMatch(normalized);
-        return MatchBriefWebQuestion.IsMatch(normalized) ||
-               (hasMatchSubject && MatchBriefQuestion.IsMatch(normalized));
+        return hasMatchSubject && MatchBriefQuestion.IsMatch(normalized);
     }
 
     public static bool IsStrongDraftConfirmation(string? content) =>
