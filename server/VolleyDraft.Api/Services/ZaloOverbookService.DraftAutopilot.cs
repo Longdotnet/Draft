@@ -162,6 +162,27 @@ public sealed partial class ZaloOverbookService
         if (!settings.NaturalReadinessEnabled) return false;
         var selectionStore = new ZaloConversationStateV2Store(db);
         var selectionState = await selectionStore.LoadActiveAsync(groupId, senderId, cancellationToken);
+
+        var continuingMatchBrief = selectionState is not null &&
+                                   string.Equals(selectionState.Intent, MatchBriefSessionChoiceIntent, StringComparison.Ordinal);
+        var quoteContext = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+        var explicitMatchBrief = ZaloDraftConversationPolicy.IsMatchBriefQuestion(incoming.Content) &&
+                                 (incoming.MentionedBot ||
+                                  ZaloDraftConversationPolicy.ExplicitlyAddressesBot(incoming.Content) ||
+                                  quoteContext.RepliesToBot);
+        if (continuingMatchBrief || explicitMatchBrief)
+        {
+            return await HandleMatchBriefQuestionAsync(
+                connectionId,
+                accountId,
+                botName,
+                groupId,
+                incoming,
+                continuingMatchBrief ? selectionState : null,
+                settings,
+                cancellationToken);
+        }
+
         var continuingSelection = selectionState is not null &&
                                   string.Equals(selectionState.Intent, DraftSessionChoiceIntent, StringComparison.Ordinal);
         if (!continuingSelection && !ZaloDraftConversationPolicy.IsReadinessQuestion(incoming.Content))
