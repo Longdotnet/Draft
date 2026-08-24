@@ -712,8 +712,8 @@ public sealed partial class ZaloOverbookService
 
     internal static bool ReferencesProfileSession(string? content, string? sessionName)
     {
-        var text = ZaloBotIntelligence.Normalize(content ?? string.Empty);
-        var name = ZaloBotIntelligence.Normalize(sessionName ?? string.Empty);
+        var text = NormalizeProfileSessionReference(content);
+        var name = NormalizeProfileSessionReference(sessionName);
         if (text.Length == 0 || name.Length == 0) return false;
         if ($" {text} ".Contains($" {name} ", StringComparison.Ordinal)) return true;
 
@@ -724,6 +724,19 @@ public sealed partial class ZaloOverbookService
                 return true;
         }
         return false;
+    }
+
+    private static string NormalizeProfileSessionReference(string? value)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(value ?? string.Empty);
+        if (normalized.Length == 0) return string.Empty;
+        var chars = normalized.Select(character =>
+                char.IsLetterOrDigit(character) || char.IsWhiteSpace(character)
+                    ? character
+                    : ' ')
+            .ToArray();
+        return string.Join(' ',
+            new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
     private async Task AdvanceProfilePromptCursorAsync(
