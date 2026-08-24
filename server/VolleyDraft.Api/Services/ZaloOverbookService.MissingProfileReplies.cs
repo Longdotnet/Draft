@@ -17,7 +17,8 @@ internal static class ZaloNaturalProfileReplyParser
     private static readonly string[] UnrelatedDomainSignals =
     [
         "draft", "pass slot", "huy slot", "huy keo", "kiem them", "nhan slot",
-        "waitlist", "cho team", "doi team", "share slot", "+1", "+2", "qr", "chuyen khoan"
+        "waitlist", "cho team", "doi team", "share slot", "+1", "+2", "qr", "chuyen khoan",
+        "cong ty", "cong viec"
     ];
 
     internal static ZaloNaturalProfileValues Parse(
