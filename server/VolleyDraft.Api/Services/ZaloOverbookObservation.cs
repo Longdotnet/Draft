@@ -161,10 +161,11 @@ public sealed partial class ZaloOverbookService
             state.SuggestedTargetVoterIds.Contains(id, StringComparer.Ordinal),
             state.ConfirmedTargetVoterIds.Contains(id, StringComparer.Ordinal),
             false)).ToList();
-        return ToStatus(session, state, voters);
+        var status = ToStatus(session, state, voters);
+        return await AttachMatchLifecycleAsync(session, status, cancellationToken);
     }
 
-    private Task<ZaloOverbookStatusResponse> BuildStatusAsync(
+    private async Task<ZaloOverbookStatusResponse> BuildStatusAsync(
         OverbookObservation observation,
         ZaloOverbookStateData state,
         CancellationToken cancellationToken)
@@ -176,7 +177,8 @@ public sealed partial class ZaloOverbookService
             state.SuggestedTargetVoterIds.Contains(id, StringComparer.Ordinal),
             state.ConfirmedTargetVoterIds.Contains(id, StringComparer.Ordinal),
             observation.SharedSlotByVoter.ContainsKey(id))).ToList();
-        return Task.FromResult(ToStatus(observation.Session, state, voters));
+        var status = ToStatus(observation.Session, state, voters);
+        return await AttachMatchLifecycleAsync(observation.Session, status, cancellationToken);
     }
 
     private static ZaloOverbookStatusResponse ToStatus(
