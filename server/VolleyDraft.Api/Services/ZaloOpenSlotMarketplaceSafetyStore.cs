@@ -49,13 +49,17 @@ internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db
         CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow;
-        var active = (await store.ListOwnedActiveAsync(
-                connectionId,
-                groupId,
-                ownerZaloUserId,
-                cancellationToken))
-            .FirstOrDefault(item => string.Equals(item.SessionId, sessionId, StringComparison.Ordinal));
+        await EnsureSchemaAsync(cancellationToken);
+        var active = await LoadOwnerSessionAnyAsync(
+            connectionId,
+            groupId,
+            ownerZaloUserId,
+            sessionId,
+            cancellationToken);
 
+        // Applying is a critical section, not merely an active offer. Preserve it even
+        // when the coordination TTL has elapsed; crash recovery owns the decision after
+        // checking canonical roster/team state.
         if (active?.Status == ZaloOpenSlotOfferStatus.Applying)
             return new(active, ZaloOpenSlotOpenDisposition.ApplyingPreserved);
 
@@ -67,15 +71,15 @@ internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db
             if (!string.IsNullOrWhiteSpace(active.ClaimantZaloUserId))
                 await store.ReleaseClaimAsync(active.Id, active.ClaimantZaloUserId, cancellationToken);
 
-            active = (await store.ListOwnedActiveAsync(
-                    connectionId,
-                    groupId,
-                    ownerZaloUserId,
-                    cancellationToken))
-                .FirstOrDefault(item => string.Equals(item.SessionId, sessionId, StringComparison.Ordinal));
+            active = await LoadOwnerSessionAnyAsync(
+                connectionId,
+                groupId,
+                ownerZaloUserId,
+                sessionId,
+                cancellationToken);
         }
 
-        if (active?.Status == ZaloOpenSlotOfferStatus.Open)
+        if (active?.Status == ZaloOpenSlotOfferStatus.Open && active.ExpiresAt > now)
         {
             var refreshed = await TryRefreshOpenAsync(
                 active,
@@ -91,19 +95,19 @@ internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db
                 return new(refreshed, ZaloOpenSlotOpenDisposition.Refreshed);
 
             // The only expected reason for the CAS to lose is that a claimant reserved
-            // the offer between our read and refresh. Re-read instead of calling the
-            // legacy OpenAsync, because OpenAsync would intentionally reset the row.
-            var raced = (await store.ListOwnedActiveAsync(
-                    connectionId,
-                    groupId,
-                    ownerZaloUserId,
-                    cancellationToken))
-                .FirstOrDefault(item => string.Equals(item.SessionId, sessionId, StringComparison.Ordinal));
+            // the offer between our read and refresh. Re-read the raw row (without TTL
+            // filtering) instead of calling legacy OpenAsync, which intentionally resets.
+            var raced = await LoadOwnerSessionAnyAsync(
+                connectionId,
+                groupId,
+                ownerZaloUserId,
+                sessionId,
+                cancellationToken);
             if (raced?.Status == ZaloOpenSlotOfferStatus.ClaimPending)
                 return new(raced, ZaloOpenSlotOpenDisposition.ClaimPreserved);
             if (raced?.Status == ZaloOpenSlotOfferStatus.Applying)
                 return new(raced, ZaloOpenSlotOpenDisposition.ApplyingPreserved);
-            if (raced?.Status == ZaloOpenSlotOfferStatus.Open)
+            if (raced?.Status == ZaloOpenSlotOfferStatus.Open && raced.ExpiresAt > now)
                 return new(raced, ZaloOpenSlotOpenDisposition.Refreshed);
         }
 
@@ -126,9 +130,7 @@ internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db
         int limit = 100,
         CancellationToken cancellationToken = default)
     {
-        // Force the shared store to bootstrap/migrate the raw table first.
-        _ = await store.ListClaimableAsync("__schema__", "__schema__", "__schema__", cancellationToken);
-
+        await EnsureSchemaAsync(cancellationToken);
         var connection = db.Database.GetDbConnection();
         await OpenIfNeededAsync(connection, cancellationToken);
         await using var command = connection.CreateCommand();
@@ -140,6 +142,31 @@ internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db
             .Where(item => item.UpdatedAt <= staleBefore)
             .Take(Math.Clamp(limit, 1, 500))
             .ToList();
+    }
+
+    private async Task EnsureSchemaAsync(CancellationToken cancellationToken)
+    {
+        // The low-level store owns provider-specific schema bootstrap/migration.
+        _ = await store.ListClaimableAsync("__schema__", "__schema__", "__schema__", cancellationToken);
+    }
+
+    private async Task<ZaloOpenSlotOfferSnapshot?> LoadOwnerSessionAnyAsync(
+        string connectionId,
+        string groupId,
+        string ownerZaloUserId,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        var connection = db.Database.GetDbConnection();
+        await OpenIfNeededAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {Projection} FROM \"ZaloOpenSlotOffers\" WHERE \"ConnectionId\" = @connectionId AND \"GroupId\" = @groupId AND \"OwnerZaloUserId\" = @ownerId AND \"SessionId\" = @sessionId LIMIT 1;";
+        Add(command, "@connectionId", Clean(connectionId, 100));
+        Add(command, "@groupId", Clean(groupId, 100));
+        Add(command, "@ownerId", Clean(ownerZaloUserId, 100));
+        Add(command, "@sessionId", Clean(sessionId, 100));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? Read(reader) : null;
     }
 
     private async Task<ZaloOpenSlotOfferSnapshot?> TryRefreshOpenAsync(
