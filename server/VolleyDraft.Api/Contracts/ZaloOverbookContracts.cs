@@ -60,7 +60,8 @@ public sealed record ZaloOverbookStatusResponse(
     IReadOnlyList<string> CurrentSelectedOptionIds,
     IReadOnlyList<ZaloOverbookVoterResponse> Voters,
     IReadOnlyList<string> CurrentTargetZaloUserIds,
-    string? LastError);
+    string? LastError,
+    MatchLifecycleResponse? Lifecycle = null);
 
 public sealed record CopyZaloOverbookSettingsRequest(
     string SourceSessionId,

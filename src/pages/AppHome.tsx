@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Volleyball } from "lucide-react";
 import { DbDraftFlow } from "../components/DbDraftFlow";
+import { MatchAutopilotCenter } from "../components/MatchAutopilotCenter";
 import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
 import { ZaloAutoSessionAdminPanel } from "../components/ZaloAutoSessionAdminPanel";
 import { ZaloAutoSessionAuditPanel } from "../components/ZaloAutoSessionAuditPanel";
@@ -49,13 +50,20 @@ export function AppHome() {
         </>
       ) : (
         <>
-          <DbDraftFlow />
+          <MatchAutopilotCenter />
+          <div id="draft-workspace">
+            <DbDraftFlow />
+          </div>
           <ZaloGreetingTestPanel />
-          <ZaloAutoSessionAdminPanel />
+          <div id="auto-session-control">
+            <ZaloAutoSessionAdminPanel />
+          </div>
           <ZaloCommunityTipSettingsPanel />
           <ZaloAutoSessionOperationsPanel />
           <ZaloAutoSessionAuditPanel />
-          <ZaloOverbookAdminPanel />
+          <div id="bot-overbook-control">
+            <ZaloOverbookAdminPanel />
+          </div>
         </>
       )}
     </main>
