@@ -56,6 +56,14 @@ public sealed class ZaloOverbookWorker(
                 if (recruitingSent > 0)
                     logger.LogInformation("Keep-recruiting broadcast cycle sent {SentCount} message(s)", recruitingSent);
 
+                // If a full/locked roster is blocked only by missing profile fields,
+                // target the exact verified Zalo identities first. This lane marks the
+                // same draft-preparation bucket handled after a successful send, so the
+                // generic leader reminder does not immediately duplicate the prompt.
+                var profilePrompts = await overbook.ProcessMissingProfilePromptsDueAsync(stoppingToken);
+                if (profilePrompts > 0)
+                    logger.LogInformation("Missing-profile collection cycle sent {SentCount} targeted prompt(s)", profilePrompts);
+
                 // The leader-aware preparation lane owns proactive draft reminders.
                 // It always refreshes the exact poll/option linked to MatchSession and
                 // separates observed roster state from leader decisions such as
@@ -141,7 +149,7 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook reminder/recruitment-guest/guest-waitlist/conditional-guest/roster-change/keep-recruiting/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
+                logger.LogError(exception, "Overbook reminder/recruitment-guest/guest-waitlist/conditional-guest/roster-change/keep-recruiting/profile-collection/draft-preparation/community-nudge/V2 migration/trace/retention cycle failed");
             }
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
