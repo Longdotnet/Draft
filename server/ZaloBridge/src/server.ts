@@ -159,7 +159,9 @@ app.post("/v1/group-messages", async (request, response) => {
     groupId: String(body.groupId),
     message: String(body.message),
     mentions: Array.isArray(body.mentions) ? body.mentions : [],
-    imageUrl: body.imageUrl ? String(body.imageUrl) : null,
+    // Disable image attachments globally to protect Render's 5 GB Hobby bandwidth cap.
+    // Callers may still provide imageUrl, but the bridge never downloads or uploads it.
+    imageUrl: null,
     idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
   }));
 });
