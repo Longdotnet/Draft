@@ -49,6 +49,7 @@ public sealed partial class ZaloOverbookService
 
         var reminderStore = new ZaloDraftPreparationReminderStore(db);
         var decisionStore = new ZaloDraftPreparationDecisionStore(db);
+        var promptStore = new ZaloMissingProfilePromptStore(db);
         var sent = 0;
 
         foreach (var candidate in candidates)
@@ -134,9 +135,9 @@ public sealed partial class ZaloOverbookService
                 .Take(10)
                 .Select(FormatMissingProfileDetail)
                 .ToList();
-            var body = $"Kèo {session.Name} gần chốt draft rồi nhưng còn hồ sơ thiếu dữ liệu: {string.Join("; ", details)}. " +
-                       "Mấy ông được tag trả lời ngay trong group là được, không cần vào web. " +
-                       "Ví dụ: `nam, công, tốt` hoặc chỉ gửi phần đang thiếu. Tui chỉ cập nhật đúng người/field backend resolve được.";
+            var body = $"Kèo {session.Name} gần chốt draft rồi, còn thiếu chút hồ sơ: {string.Join("; ", details)}. " +
+                       "Mấy ông được tag cứ trả lời tự nhiên ngay trong group là được — ví dụ `nam`, `thủ`, `mới chơi`, " +
+                       "hoặc `tui nam, đánh công, tầm trung bình`. Không cần @bot, không cần vào web; biết phần nào nói phần đó 😎";
 
             var withoutVerifiedUid = incompletePlayers
                 .Where(player => string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId))
@@ -146,20 +147,55 @@ public sealed partial class ZaloOverbookService
                 .ToList();
             if (withoutVerifiedUid.Count > 0)
             {
-                body += $" Chưa tag an toàn được: {string.Join(", ", withoutVerifiedUid)}; bot không tự đoán UID theo tên.";
+                body += $" Còn {string.Join(", ", withoutVerifiedUid)} chưa có UID chắc chắn nên tui không tag bừa theo tên.";
             }
 
             var outgoing = BuildMentionMessage(ids, names, body);
             var idempotencyKey = $"missing-profile:{session.Id}:{bucket.Key}";
             try
             {
-                await bridge.SendGroupMessageAsync(
+                var send = await bridge.SendGroupMessageAsync(
                     session.ZaloConnection!.AccountZaloId,
                     session.ZaloGroupId!,
                     outgoing.Message,
                     outgoing.Mentions,
                     idempotencyKey: idempotencyKey);
-                await SaveBotMessageAsync(session, idempotencyKey, outgoing.Message, now, cancellationToken);
+                var providerMessageId = NormalizeProviderMessageId(send.MessageId);
+                await SaveBotMessageAsync(
+                    session,
+                    providerMessageId ?? idempotencyKey,
+                    outgoing.Message,
+                    now,
+                    cancellationToken);
+
+                var ttlMinutes = Math.Clamp(
+                    configuration.GetValue("ZaloBot:ProfilePromptTtlMinutes", 60),
+                    10,
+                    180);
+                var ttlExpiry = now.AddMinutes(ttlMinutes);
+                var expiresAt = session.StartTime is { } startTime && startTime > now && startTime < ttlExpiry
+                    ? startTime
+                    : ttlExpiry;
+                foreach (var player in mentionable)
+                {
+                    var uid = ZaloOverbookLogic.NormalizeId(player.PlayerProfile!.ZaloUserId);
+                    var missing = GetMissingProfileFlags(player);
+                    await promptStore.UpsertAsync(
+                        session.ZaloConnectionId!,
+                        session.ZaloGroupId!,
+                        session.Id,
+                        player.Id,
+                        uid,
+                        player.DisplayName,
+                        missing.Gender,
+                        missing.Role,
+                        missing.Level,
+                        providerMessageId,
+                        now,
+                        expiresAt,
+                        cancellationToken);
+                }
+
                 await reminderStore.MarkHandledAsync(
                     session.Id,
                     bucket.Key,
@@ -182,17 +218,23 @@ public sealed partial class ZaloOverbookService
         return sent;
     }
 
+    private static (bool Gender, bool Role, bool Level) GetMissingProfileFlags(SessionPlayer player)
+    {
+        var missingGender = player.Gender == PlayerGender.Unknown ||
+                            player.PlayerProfile?.Gender is null or PlayerGender.Unknown;
+        var missingRole = player.PlayerProfile is not null && player.PlayerProfile.DefaultRole is null;
+        var missingLevel = player.PlayerProfile is not null && player.PlayerProfile.DefaultLevel is null;
+        return (missingGender, missingRole, missingLevel);
+    }
+
     private static string FormatMissingProfileDetail(SessionPlayer player)
     {
-        var missing = new List<string>();
-        if (player.Gender == PlayerGender.Unknown ||
-            player.PlayerProfile?.Gender is null or PlayerGender.Unknown)
-            missing.Add("giới tính");
-        if (player.PlayerProfile is not null && player.PlayerProfile.DefaultRole is null)
-            missing.Add("vị trí");
-        if (player.PlayerProfile is not null && player.PlayerProfile.DefaultLevel is null)
-            missing.Add("trình độ");
-        if (missing.Count == 0) missing.Add("hồ sơ");
-        return $"{player.DisplayName} ({string.Join("/", missing)})";
+        var missing = GetMissingProfileFlags(player);
+        var fields = new List<string>();
+        if (missing.Gender) fields.Add("giới tính");
+        if (missing.Role) fields.Add("vị trí");
+        if (missing.Level) fields.Add("trình độ");
+        if (fields.Count == 0) fields.Add("hồ sơ");
+        return $"{player.DisplayName} ({string.Join("/", fields)})";
     }
 }
