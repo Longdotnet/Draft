@@ -45,6 +45,25 @@ public sealed class ZaloMatchBriefFormatterTests
     }
 
     [Fact]
+    public void Ordinary_member_sees_leader_ownership_but_not_admin_command()
+    {
+        var lifecycle = Snapshot(
+            MatchLifecycleStage.ReadyForDraft,
+            "Sẵn sàng chốt draft",
+            MatchLifecycleOwner.Leader,
+            needsWebsite: false,
+            effectiveSlots: 18,
+            capacity: 18,
+            suggestedCommand: "draft đi");
+
+        var text = ZaloMatchBriefFormatter.Standalone(lifecycle, canOperate: false);
+
+        Assert.Contains("trưởng/phó", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chưa có quyền", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("`draft đi`", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Authorized_web_exception_includes_direct_link()
     {
         var lifecycle = Snapshot(
