@@ -201,12 +201,12 @@ function classify(
     return {
       ...base,
       stage: "Recruiting",
-      stageLabel: `Đang gom người · thiếu ${missing}`,
-      statusText: `Roster hiện ${effectiveSlots}/${capacity}. Poll vẫn là nguồn dữ liệu chính.`,
-      nextStep: "Nếu trưởng/phó đã nói `kiếm thêm`, KeepRecruiting tự sync và nhắc. Client không cần canh website.",
+      stageLabel: `Roster dưới mốc · còn ${missing}`,
+      statusText: `Theo capacity chuẩn hiện có ${effectiveSlots}/${capacity} effective slot. Đây chưa phải lệnh bắt buộc phải tuyển thêm.`,
+      nextStep: "Nếu trưởng/phó đã chọn `kiếm thêm`, KeepRecruiting tự sync/nhắc. Nếu đã chốt chơi roster hiện tại (ví dụ 15 vẫn đánh), quyết định Zalo đó vẫn là authoritative và client không cần mở web chỉ vì chưa đủ 18.",
       needsWebsite: false,
       webTarget: null,
-      command: "kiếm thêm",
+      command: null,
     };
   }
 
@@ -226,9 +226,9 @@ function classify(
   return {
     ...base,
     stage: "ReadyForDraft",
-    stageLabel: "Sẵn sàng draft",
-    statusText: `Roster sạch ${effectiveSlots}/${capacity}; không còn blocker hồ sơ nhìn thấy từ client.`,
-    nextStep: "Trưởng/phó chỉ cần nói `draft đi` trên Zalo. Bot sẽ sync poll lần cuối và đi qua confirmation gate hiện có.",
+    stageLabel: "Có thể yêu cầu draft",
+    statusText: `Roster đang ${effectiveSlots}/${capacity} và client không thấy người có giới tính Unknown. Backend DraftAutopilot vẫn là cổng readiness cuối cùng.`,
+    nextStep: "Trưởng/phó có thể nói `draft đi` trên Zalo. Bot sẽ sync poll lần cuối, kiểm tra authoritative profile/slot state và đi qua confirmation gate trước khi mutation.",
     needsWebsite: false,
     webTarget: null,
     command: "draft đi",
