@@ -272,6 +272,14 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
+            // Reuse the same authoritative lifecycle snapshot the admin control room
+            // uses. This turns the reminder into an exception-first Match Brief without
+            // inventing a second state machine or another proactive message lane.
+            var lifecycle = await new MatchLifecycleCoordinator(db)
+                .GetAsync(session.AdminUserId, session.Id, cancellationToken);
+            if (lifecycle.IsSuccess && lifecycle.Value is not null)
+                body = ZaloMatchBriefFormatter.Append(body, lifecycle.Value);
+
             var resolved = await ResolveDraftApproversAsync(session, settings, cancellationToken);
             if (!resolved.RoleLookupSucceeded)
             {
