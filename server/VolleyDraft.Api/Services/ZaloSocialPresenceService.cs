@@ -164,19 +164,6 @@ public sealed class ZaloSocialPresenceService(
         if (!settings.Enabled) return;
 
         var now = DateTimeOffset.UtcNow;
-        var credentialProtector = new ZaloCredentialProtector(configuration);
-        var socialMedia = new ZaloSocialMediaAssetService(
-            db,
-            bridge,
-            configuration,
-            credentialProtector,
-            logger);
-        var nightSocialMedia = new ZaloNightGreetingMediaAssetService(
-            db,
-            bridge,
-            configuration,
-            credentialProtector,
-            logger);
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.BotEnabled &&
@@ -189,8 +176,6 @@ public sealed class ZaloSocialPresenceService(
                 GroupId = session.ZaloGroupId!,
                 ConnectionId = session.ZaloConnectionId!,
                 AccountId = session.ZaloConnection!.AccountZaloId,
-                AdminUserId = session.ZaloConnection!.AdminUserId,
-                GroupName = session.ZaloGroupName,
                 session.Name,
                 session.StartTime,
                 session.Status
@@ -198,7 +183,7 @@ public sealed class ZaloSocialPresenceService(
             .ToListAsync(cancellationToken);
 
         foreach (var group in sessionRows
-                     .GroupBy(item => new { item.GroupId, item.ConnectionId, item.AccountId, item.AdminUserId })
+                     .GroupBy(item => new { item.GroupId, item.ConnectionId, item.AccountId })
                      .Take(100))
         {
             var messages = await db.ZaloGroupMessages
@@ -252,72 +237,11 @@ public sealed class ZaloSocialPresenceService(
                 if (!settings.SendEnabled)
                 {
                     logger.LogInformation(
-                        "Daily greeting shadow Group={GroupId} Kind={Kind} Mood={Mood} Image={Image} RequiresImage={RequiresImage} Message={Message}",
+                        "Daily greeting shadow Group={GroupId} Kind={Kind} Mood={Mood} Message={Message}",
                         group.Key.GroupId,
                         greeting.Kind,
                         greeting.Mood,
-                        greeting.UseImage,
-                        greeting.RequiresImage,
                         greeting.Message);
-                    continue;
-                }
-
-                string? imageUrl = null;
-                if (greeting.UseImage)
-                {
-                    try
-                    {
-                        var persistedGroupName = group
-                            .Select(item => item.GroupName)
-                            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-                        if (greeting.Kind == ZaloDailyGreetingKind.Night)
-                        {
-                            imageUrl = await nightSocialMedia.GetOrCreateGreetingCardUrlAsync(
-                                group.Key.AdminUserId,
-                                group.Key.ConnectionId,
-                                group.Key.AccountId,
-                                group.Key.GroupId,
-                                persistedGroupName,
-                                greeting.Mood,
-                                greeting.ServiceDate,
-                                cancellationToken);
-                        }
-                        else
-                        {
-                            var hasMatchToday = group.Any(item =>
-                                item.StartTime is { } startTime &&
-                                DateOnly.FromDateTime(startTime.ToOffset(TimeSpan.FromHours(7)).Date) == greeting.ServiceDate &&
-                                item.Status != SessionStatus.Cancelled);
-                            imageUrl = await socialMedia.GetOrCreateGreetingCardUrlAsync(
-                                group.Key.AdminUserId,
-                                group.Key.ConnectionId,
-                                group.Key.AccountId,
-                                group.Key.GroupId,
-                                persistedGroupName,
-                                greeting.Kind,
-                                greeting.Mood,
-                                greeting.ServiceDate,
-                                hasMatchToday,
-                                cancellationToken);
-                        }
-                    }
-                    catch (Exception exception) when (exception is not OperationCanceledException)
-                    {
-                        logger.LogWarning(
-                            exception,
-                            "Daily greeting dynamic card failed Group={GroupId} Kind={Kind}",
-                            group.Key.GroupId,
-                            greeting.Kind);
-                    }
-                }
-
-                if (greeting.RequiresImage && string.IsNullOrWhiteSpace(imageUrl))
-                {
-                    logger.LogInformation(
-                        "Daily greeting deferred because required card is unavailable; a later reconcile will retry Group={GroupId} Kind={Kind} ServiceDate={ServiceDate}",
-                        group.Key.GroupId,
-                        greeting.Kind,
-                        greeting.ServiceDate);
                     continue;
                 }
 
@@ -328,14 +252,13 @@ public sealed class ZaloSocialPresenceService(
                         group.Key.GroupId,
                         greeting.Message,
                         [],
-                        imageUrl: imageUrl,
+                        imageUrl: null,
                         idempotencyKey: $"social-greeting:{group.Key.GroupId}:{greeting.ServiceDate:yyyyMMdd}:{greeting.Kind}");
                     logger.LogInformation(
-                        "Daily greeting sent Group={GroupId} Kind={Kind} Mood={Mood} Image={Image}",
+                        "Daily greeting sent as text only Group={GroupId} Kind={Kind} Mood={Mood}",
                         group.Key.GroupId,
                         greeting.Kind,
-                        greeting.Mood,
-                        imageUrl is not null);
+                        greeting.Mood);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
