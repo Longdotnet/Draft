@@ -15,6 +15,8 @@ public sealed record ZaloOpenSlotRescueRunResult(
 /// <summary>
 /// Scheduler-driven rescue for pass-slot coordination. It only changes coordination
 /// state. Roster/poll/team truth remains owned by the existing domain workflows.
+/// Applying is treated as a crash-recovery state: never time it out blindly; reconcile
+/// it against canonical roster/team data first.
 /// </summary>
 public sealed class ZaloOpenSlotRescueService(
     VolleyDraftDbContext db,
@@ -44,9 +46,22 @@ public sealed class ZaloOpenSlotRescueService(
             configuration.GetValue("ZaloBot:Ambient:MemberAssist:Rescue:RetryMinutes", 10),
             5,
             60));
+        var applyingStale = TimeSpan.FromMinutes(Math.Clamp(
+            configuration.GetValue("ZaloBot:Ambient:MemberAssist:Rescue:ApplyingStaleMinutes", 5),
+            2,
+            30));
 
         var store = new ZaloOpenSlotOfferStore(db);
-        var candidates = await store.ListDueRescueAsync(now, 100, cancellationToken);
+        var safetyStore = new ZaloOpenSlotMarketplaceSafetyStore(db);
+        var due = await store.ListDueRescueAsync(now, 100, cancellationToken);
+        var staleApplying = await safetyStore.ListStaleApplyingAsync(now - applyingStale, 100, cancellationToken);
+        var candidates = due
+            .Concat(staleApplying)
+            .DistinctBy(item => item.Id, StringComparer.Ordinal)
+            .OrderBy(item => item.UpdatedAt)
+            .Take(100)
+            .ToList();
+
         var nudged = 0;
         var released = 0;
         var closed = 0;
@@ -70,6 +85,118 @@ public sealed class ZaloOpenSlotRescueService(
             try
             {
                 var session = await LoadSessionAsync(candidate, cancellationToken);
+
+                // Once a claimant has confirmed and the offer entered Applying, the
+                // reservation deadline is irrelevant. A stale Applying row means an API
+                // process may have died between marketplace CAS and domain completion.
+                // Reconcile canonical truth instead of expiring/cancelling blindly.
+                if (candidate.Status == ZaloOpenSlotOfferStatus.Applying)
+                {
+                    if (candidate.UpdatedAt > now - applyingStale)
+                    {
+                        await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, null, cancellationToken);
+                        skipped += 1;
+                        continue;
+                    }
+
+                    if (session is null)
+                    {
+                        await store.CloseFromReminderAsync(
+                            candidate.Id,
+                            leaseToken,
+                            ZaloOpenSlotOfferStatus.Expired,
+                            "SessionMissingDuringApplyRecovery",
+                            now,
+                            cancellationToken);
+                        closed += 1;
+                        continue;
+                    }
+
+                    if (await IsCanonicalTransferCompleteAsync(session, candidate, cancellationToken))
+                    {
+                        await store.CloseFromReminderAsync(
+                            candidate.Id,
+                            leaseToken,
+                            ZaloOpenSlotOfferStatus.Completed,
+                            "RecoveredCompletedTransfer",
+                            now,
+                            cancellationToken);
+                        closed += 1;
+                        continue;
+                    }
+
+                    var ownerStillPresent = ZaloOpenSlotOfferService.ResolveOwner(session, candidate) is not null;
+                    if (ownerStillPresent &&
+                        session.BotEnabled &&
+                        session.Status != SessionStatus.Cancelled &&
+                        candidate.ExpiresAt > now &&
+                        (session.StartTime is null || session.StartTime > now))
+                    {
+                        // Domain transaction did not win. This is controlled internal
+                        // compensation, not a user cancellation during Applying.
+                        var claimantId = candidate.ClaimantZaloUserId ?? string.Empty;
+                        if (claimantId.Length > 0 &&
+                            await store.ReleaseClaimAsync(candidate.Id, claimantId, cancellationToken))
+                        {
+                            released += 1;
+                            if (session.ZaloConnection is not null &&
+                                session.ZaloConnection.Status == ZaloConnectionStatus.Connected &&
+                                !await HasRecentBotMessageAsync(candidate.ConnectionId, candidate.GroupId, now - groupCooldown, cancellationToken))
+                            {
+                                var owner = ZaloOpenSlotOfferService.FriendlyName(candidate.OwnerDisplayName);
+                                var claimant = ZaloOpenSlotOfferService.FriendlyName(candidate.ClaimantDisplayName);
+                                await SendAndRememberAsync(
+                                    session,
+                                    candidate,
+                                    $"Lượt chốt slot {owner} ở {candidate.SessionName} cho {claimant} bị gián đoạn nên tui đã đối chiếu roster: chưa chuyển. Tui mở lại slot an toàn nha 😅",
+                                    $"apply-recovered-open:{candidate.Version}",
+                                    now,
+                                    cancellationToken);
+                            }
+                            continue;
+                        }
+                    }
+
+                    if (!session.BotEnabled || session.Status == SessionStatus.Cancelled)
+                    {
+                        await store.CloseFromReminderAsync(
+                            candidate.Id,
+                            leaseToken,
+                            ZaloOpenSlotOfferStatus.Cancelled,
+                            session.Status == SessionStatus.Cancelled ? "SessionCancelledDuringApplyRecovery" : "BotDisabledDuringApplyRecovery",
+                            now,
+                            cancellationToken);
+                        closed += 1;
+                        continue;
+                    }
+
+                    if (candidate.ExpiresAt <= now || session.StartTime is { } applyStart && applyStart <= now)
+                    {
+                        await store.CloseFromReminderAsync(
+                            candidate.Id,
+                            leaseToken,
+                            ZaloOpenSlotOfferStatus.Expired,
+                            "SessionWindowEndedDuringApplyRecovery",
+                            now,
+                            cancellationToken);
+                        closed += 1;
+                        continue;
+                    }
+
+                    // Owner disappeared but the exact claimant is not canonically in the
+                    // transferred slot. That is ambiguous corruption; do not fabricate a
+                    // completion or reopen a slot another flow may own.
+                    await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, null, cancellationToken);
+                    logger.LogWarning(
+                        "Stale Applying open-slot offer needs manual attention Offer={OfferId} Session={SessionId} Owner={OwnerId} Claimant={ClaimantId}",
+                        candidate.Id,
+                        candidate.SessionId,
+                        candidate.OwnerZaloUserId,
+                        candidate.ClaimantZaloUserId);
+                    skipped += 1;
+                    continue;
+                }
+
                 if (session is null)
                 {
                     await store.CloseFromReminderAsync(
@@ -223,6 +350,42 @@ public sealed class ZaloOpenSlotRescueService(
         return matches.Count == 1 ? matches[0] : null;
     }
 
+    private async Task<bool> IsCanonicalTransferCompleteAsync(
+        MatchSession session,
+        ZaloOpenSlotOfferSnapshot offer,
+        CancellationToken cancellationToken)
+    {
+        if (ZaloOpenSlotOfferService.ResolveOwner(session, offer) is not null)
+            return false;
+        if (string.IsNullOrWhiteSpace(offer.ClaimantZaloUserId))
+            return false;
+
+        var claimantMatches = session.Players
+            .Where(player =>
+                player.IsPresent &&
+                string.Equals(
+                    NormalizeId(player.PlayerProfile?.ZaloUserId),
+                    NormalizeId(offer.ClaimantZaloUserId),
+                    StringComparison.Ordinal))
+            .Take(2)
+            .ToList();
+        if (claimantMatches.Count != 1) return false;
+        var claimant = claimantMatches[0];
+
+        if (session.Status is SessionStatus.Setup or SessionStatus.CaptainSelection)
+            return true;
+        if (session.Status != SessionStatus.Finished)
+            return false;
+
+        return await db.DraftSlotPlayers
+            .AsNoTracking()
+            .AnyAsync(link =>
+                link.SessionPlayerId == claimant.Id &&
+                link.DraftSlot.SessionId == session.Id &&
+                link.DraftSlot.AssignedTeamId != null,
+                cancellationToken);
+    }
+
     private async Task<bool> HasRecentBotMessageAsync(
         string connectionId,
         string groupId,
@@ -251,25 +414,30 @@ public sealed class ZaloOpenSlotRescueService(
         var connection = session.ZaloConnection
             ?? throw new InvalidOperationException("Zalo connection is unavailable for open-slot rescue.");
         var idempotencyKey = $"open-slot-rescue:{offer.Id}:{suffix}";
-        await bridge.SendGroupMessageAsync(
+        var send = await bridge.SendGroupMessageAsync(
             connection.AccountZaloId,
             offer.GroupId,
             text,
             [],
             idempotencyKey: idempotencyKey);
+        if (!send.Sent)
+            throw new InvalidOperationException("Zalo bridge did not confirm open-slot rescue send.");
 
+        var persistedMessageId = string.IsNullOrWhiteSpace(send.MessageId)
+            ? idempotencyKey
+            : send.MessageId!;
         if (!await db.ZaloGroupMessages
                 .AsNoTracking()
                 .AnyAsync(message =>
                     message.ZaloConnectionId == connection.Id &&
-                    message.MessageId == idempotencyKey,
+                    message.MessageId == persistedMessageId,
                     cancellationToken))
         {
             db.ZaloGroupMessages.Add(new ZaloGroupMessage
             {
                 ZaloConnectionId = connection.Id,
                 GroupId = offer.GroupId,
-                MessageId = idempotencyKey,
+                MessageId = persistedMessageId,
                 SenderId = connection.AccountZaloId,
                 SenderName = connection.DisplayName,
                 Content = text,
@@ -340,5 +508,11 @@ public sealed class ZaloOpenSlotRescueService(
         var hours = (int)Math.Floor(remaining.TotalHours);
         var minutes = remaining.Minutes;
         return minutes == 0 ? $"{hours}h" : $"{hours}h{minutes:00}";
+    }
+
+    private static string NormalizeId(string? value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        return text.EndsWith("_0", StringComparison.Ordinal) ? text[..^2] : text;
     }
 }
