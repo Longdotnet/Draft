@@ -178,7 +178,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         }
         if (nextNudgeAt >= expiresAt) nextNudgeAt = null;
 
-        await new ZaloOpenSlotOfferStore(db).OpenAsync(
+        var opened = await new ZaloOpenSlotMarketplaceSafetyStore(db).OpenOrRefreshAsync(
             connectionId,
             groupId,
             senderId,
@@ -191,9 +191,29 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             cancellationToken);
 
         var who = FriendlyName(owner.DisplayName);
+        if (opened.Disposition == ZaloOpenSlotOpenDisposition.ClaimPreserved)
+        {
+            var claimant = FriendlyName(opened.Offer.ClaimantDisplayName);
+            return new ZaloMemberAssistReply(
+                ZaloMemberAssistKind.PassSlotHelp,
+                $"Slot {who} ở {session.Name} đang được {claimant} giữ để chốt rồi nha 👌 Tui giữ nguyên reservation, không mở đè claim của người ta.",
+                session.Id);
+        }
+        if (opened.Disposition == ZaloOpenSlotOpenDisposition.ApplyingPreserved)
+        {
+            var claimant = FriendlyName(opened.Offer.ClaimantDisplayName);
+            return new ZaloMemberAssistReply(
+                ZaloMemberAssistKind.PassSlotHelp,
+                $"Slot {who} ở {session.Name} đang chốt cho {claimant} rồi ⏳ Tui không reset giữa lúc chuyển slot; chốt xong tui mới cập nhật trạng thái.",
+                session.Id);
+        }
+
+        var verb = opened.Disposition == ZaloOpenSlotOpenDisposition.Refreshed
+            ? "vẫn đang mở, tui vừa làm mới tin pass"
+            : "tui mở rồi";
         return new ZaloMemberAssistReply(
             ZaloMemberAssistKind.PassSlotHelp,
-            $"{who} pass slot {session.Name} nha 🥲 Tui mở rồi, ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp. Nếu tin bị trôi tui sẽ nhắc lại có chừng mực.",
+            $"{who} pass slot {session.Name} nha 🥲 Slot {verb}; ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp. Nếu tin bị trôi tui sẽ nhắc lại có chừng mực.",
             session.Id);
     }
 
