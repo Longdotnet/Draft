@@ -26,6 +26,27 @@ public sealed class ZaloDraftConversationPolicyTests
     }
 
     [Theory]
+    [InlineData("bot tình hình T6 sao rồi")]
+    [InlineData("NPC kèo CN tới đâu rồi?")]
+    [InlineData("@volleybot status roster T4")]
+    [InlineData("bot có cần vào web không")]
+    [InlineData("bot mở website không")]
+    public void Match_brief_questions_are_detected(string message)
+    {
+        Assert.True(ZaloDraftConversationPolicy.IsMatchBriefQuestion(message));
+    }
+
+    [Theory]
+    [InlineData("website đẹp không?")]
+    [InlineData("web hôm nay lag ghê")]
+    [InlineData("team B đánh căng đó")]
+    [InlineData("slot đẹp nha")]
+    public void Unrelated_chat_is_not_treated_as_match_brief(string message)
+    {
+        Assert.False(ZaloDraftConversationPolicy.IsMatchBriefQuestion(message));
+    }
+
+    [Theory]
     [InlineData("draft đi")]
     [InlineData("chạy draft")]
     [InlineData("xác nhận draft")]
