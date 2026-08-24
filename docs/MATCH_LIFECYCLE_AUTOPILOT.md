@@ -22,22 +22,38 @@ At every stage the product should be able to answer three questions without aski
 2. What will the bot/system do next?
 3. Does a human actually need to open the website?
 
-## V1: Match Autopilot Center
+## V1: authoritative lifecycle + Match Autopilot Center
 
-The desktop app now puts `MatchAutopilotCenter` before the manual admin tools. It derives a conservative lifecycle view from existing authoritative APIs; it does not create a second source of business truth and it does not mutate anything.
+V1 adds a read-only `MatchLifecycleCoordinator` on the backend and puts `MatchAutopilotCenter` before the manual desktop admin tools.
 
-The center refreshes every 30 seconds and classifies the latest admin sessions into these client-facing stages:
+For Zalo-linked sessions, the existing overbook status response now carries the lifecycle snapshot produced by the coordinator. The client prefers this backend snapshot. When the live Zalo/poll status cannot be read, or before a session is linked to Zalo, the client may render a deliberately conservative fallback card. Fallback state is UX guidance only and never grants mutation authority.
+
+The coordinator combines existing backend truth instead of inventing a parallel workflow:
+
+- `ZaloDraftReadinessService` for effective slots, profile blockers and draft readiness;
+- `ZaloDraftPreparationDecisionStore` for `KeepRecruiting`, exact-fingerprint `PlayCurrentRoster`, and `StopMatch`;
+- durable open-slot offers for active pass/claim risk;
+- stored overbook state for automatic handling vs ambiguous target confirmation;
+- `MatchSession` draft/status fields for setup, drafting, finished and cancelled states.
+
+This fixes an important product ambiguity: `15/18` is not automatically `Recruiting`. Poll state is observation; leader intent decides whether the group keeps recruiting or intentionally plays the current roster. A valid `chốt 15` decision can therefore move to a separately-confirmed draft path when the current fingerprint is unchanged and the engine can divide the effective slots evenly.
+
+The center refreshes every 30 seconds and supports these client-facing stages:
 
 | Stage | Normal owner | Website? |
 | --- | --- | --- |
 | `NeedsSetup` | admin | yes, one-time configuration |
+| `AwaitingLeaderDecision` | authorized leader | no; decide in Zalo |
 | `Recruiting` | Zalo/poll + existing recruiting lanes | no |
 | `ResolvingOverbook` | overbook automation, or admin when evidence is ambiguous | only on exception |
+| `ResolvingPassSlots` | pass-slot/rescue flow | no |
 | `AwaitingProfiles` | Zalo conversation | no |
 | `ReadyForDraft` | authorized leader confirmation on Zalo | no |
 | `Drafting` | current draft flow | no extra admin screen |
 | `Drafted` | post-draft bot/domain flows | no |
+| `Stopped` | leader decision | no irreversible delete implied |
 | `Cancelled` | none | no |
+| `NeedsAttention` | admin | yes, fail closed |
 
 Cards requiring web attention are sorted first. Normal cards explicitly say `KHÔNG CẦN WEBSITE` so an organizer does not open admin pages merely to check whether something changed.
 
@@ -54,13 +70,17 @@ This is deliberately different from a generic `Open admin` link. The product sho
 
 ## Safety boundary
 
-V1 does not grant AI or the dashboard any new mutation authority.
+V1 does not grant AI, the coordinator or the dashboard any new mutation authority.
 
 - poll/database remain authoritative;
 - current authorization/confirmation gates remain authoritative;
-- ambiguous overbook state remains a human exception;
-- the dashboard tolerates a temporarily unreadable overbook endpoint and falls back to session/roster facts instead of presenting a false success;
-- a client-side lifecycle label is UX guidance, never permission to mutate backend state.
+- `PlayCurrentRoster` is accepted only for its exact stored roster fingerprint/effective slot count;
+- active pass-slot offers block a clean draft state;
+- ambiguous overbook target selection remains a human exception;
+- partial-roster state never implies cancellation and never silently implies `KeepRecruiting`;
+- a partial roster still needs the separate `draft đi` confirmation before draft mutation;
+- final draft execution continues to re-sync and validate through the existing domain path;
+- the dashboard tolerates a temporarily unreadable live overbook endpoint and falls back conservatively instead of presenting fake certainty.
 
 ## UX copy rules
 
@@ -74,7 +94,15 @@ Good:
 
 ```text
 T6 đang 17/18.
-Nếu trưởng/phó đã chọn `kiếm thêm`, KeepRecruiting tiếp tục sync/nhắc.
+Trưởng/phó chưa chốt hướng.
+Chọn `kiếm thêm` hoặc chốt roster hiện tại ngay trên Zalo; chưa cần mở website.
+```
+
+Good automatic state:
+
+```text
+T6 đang 17/18 và trưởng/phó đã chọn `kiếm thêm`.
+KeepRecruiting tiếp tục sync/nhắc.
 Chưa cần mở website.
 ```
 
@@ -88,14 +116,14 @@ Admin cần xác nhận target dư slot tại khu vực Overbook.
 
 Avoid vague copy such as `Vào web kiểm tra giúp tui` because it sends the operator hunting through unrelated screens.
 
-## Next backend slices
+## Next slices
 
 V1 intentionally reuses existing automation instead of replacing it. Follow-up slices should remain incremental:
 
-1. expose one authoritative backend lifecycle snapshot built from `ZaloDraftReadinessService`, active pass-slot risks, recruiting decision and draft state;
-2. let reminder/KeepRecruiting/draft-autopilot lanes consume the same lifecycle snapshot so UI and Zalo wording cannot drift;
-3. add targeted missing-profile collection that mentions/resolves the exact Zalo identities when safe;
-4. regenerate and resend team-card automatically after a confirmed post-draft slot transfer;
-5. persist exception codes and deep-link hints so the website can open the exact session/action directly.
+1. let reminder/KeepRecruiting/draft-autopilot lanes consume the same lifecycle snapshot so UI and Zalo wording cannot drift;
+2. add targeted missing-profile collection that mentions/resolves the exact Zalo identities when safe;
+3. regenerate and resend team-card automatically after a confirmed post-draft slot transfer;
+4. persist richer exception/deep-link context so the website can open the exact session/action directly;
+5. add lifecycle transition/eval coverage from real production conversation cases.
 
 The invariant is unchanged: orchestration may decide **which existing safe lane should run next**, but it does not bypass domain validation, authorization, idempotency, leases, or explicit confirmation requirements.
