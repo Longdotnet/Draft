@@ -93,7 +93,8 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             {
                 return new ZaloMemberAssistReply(
                     ZaloMemberAssistKind.OpenSlotClaim,
-                    offerTurn.Response!);
+                    offerTurn.Response!,
+                    offerTurn.SessionId);
             }
         }
 
