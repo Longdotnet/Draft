@@ -16,6 +16,10 @@ public static class ZaloDraftConversationPolicy
         @"(?<![a-z0-9])(?:tinh\s*hinh|keo|tran|roster|slot|doi\s*hinh|team|draft)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex MatchBriefSessionSubject = new(
+        @"(?<![a-z0-9])(?:t[2-7]|cn|thu\s*(?:[2-7]|hai|ba|tu|nam|sau|bay)|chu\s*nhat|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex MatchBriefQuestion = new(
         @"\?|(?<![a-z0-9])(?:tinh\s*hinh|sao\s*roi|dang\s*sao|the\s*nao|on\s*khong|toi\s*dau|status|cap\s*nhat|update|can\s*lam\s*gi|co\s*can)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -56,8 +60,9 @@ public static class ZaloDraftConversationPolicy
     {
         var normalized = Normalize(content);
         if (normalized.Length == 0) return false;
+        var hasMatchSubject = MatchBriefSubject.IsMatch(normalized) || MatchBriefSessionSubject.IsMatch(normalized);
         return MatchBriefWebQuestion.IsMatch(normalized) ||
-               (MatchBriefSubject.IsMatch(normalized) && MatchBriefQuestion.IsMatch(normalized));
+               (hasMatchSubject && MatchBriefQuestion.IsMatch(normalized));
     }
 
     public static bool IsStrongDraftConfirmation(string? content) =>
