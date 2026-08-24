@@ -4,36 +4,52 @@ namespace VolleyDraft.Api.Services;
 
 /// <summary>
 /// Builds a direct admin URL only for lifecycle states that genuinely require the
-/// website. Production prefers an explicit AdminWeb:BaseUrl and falls back to the
-/// configured CORS origins, which already point at the deployed frontend on Render.
+/// website. Production prefers an explicit AdminWeb base URL and falls back to the
+/// configured frontend CORS origin already required by the Render deployment.
 /// </summary>
 internal sealed class ZaloAdminDeepLinkBuilder(IConfiguration configuration)
 {
     internal string? Build(MatchLifecycleResponse lifecycle)
     {
+        var origins = configuration.GetSection("Cors:Origins")
+            .GetChildren()
+            .Select(item => item.Value);
+        return Build(lifecycle, configuration["AdminWeb:BaseUrl"], origins);
+    }
+
+    /// <summary>
+    /// Proactive reminder formatters do not own IConfiguration. Render exposes the
+    /// same settings as environment variables, so this keeps old reminder plumbing
+    /// untouched while still producing a one-tap exception link in production.
+    /// </summary>
+    internal static string? BuildFromEnvironment(MatchLifecycleResponse lifecycle) =>
+        Build(
+            lifecycle,
+            Environment.GetEnvironmentVariable("AdminWeb__BaseUrl"),
+            [Environment.GetEnvironmentVariable("Cors__Origins__0")]);
+
+    private static string? Build(
+        MatchLifecycleResponse lifecycle,
+        string? explicitBase,
+        IEnumerable<string?> fallbackOrigins)
+    {
         if (!lifecycle.NeedsWebsite || string.IsNullOrWhiteSpace(lifecycle.WebTarget))
             return null;
 
-        var origin = ResolveFrontendOrigin();
+        var origin = NormalizePublicOrigin(explicitBase);
+        if (origin is null)
+        {
+            foreach (var value in fallbackOrigins)
+            {
+                origin = NormalizePublicOrigin(value);
+                if (origin is not null) break;
+            }
+        }
         if (origin is null) return null;
 
         var focus = Uri.EscapeDataString(lifecycle.WebTarget.Trim());
         var sessionId = Uri.EscapeDataString(lifecycle.SessionId);
         return $"{origin}/app?focus={focus}&sessionId={sessionId}#{focus}";
-    }
-
-    private string? ResolveFrontendOrigin()
-    {
-        var explicitBase = NormalizePublicOrigin(configuration["AdminWeb:BaseUrl"]);
-        if (explicitBase is not null) return explicitBase;
-
-        foreach (var value in configuration.GetSection("Cors:Origins").GetChildren().Select(item => item.Value))
-        {
-            var normalized = NormalizePublicOrigin(value);
-            if (normalized is not null) return normalized;
-        }
-
-        return null;
     }
 
     private static string? NormalizePublicOrigin(string? value)
