@@ -27,6 +27,9 @@ public sealed class ZaloDraftConversationPolicyTests
 
     [Theory]
     [InlineData("bot tình hình T6 sao rồi")]
+    [InlineData("bot T6 sao rồi?")]
+    [InlineData("NPC CN đang sao rồi")]
+    [InlineData("bot 28/08 tới đâu rồi?")]
     [InlineData("NPC kèo CN tới đâu rồi?")]
     [InlineData("@volleybot status roster T4")]
     [InlineData("bot có cần vào web không")]
@@ -41,6 +44,7 @@ public sealed class ZaloDraftConversationPolicyTests
     [InlineData("web hôm nay lag ghê")]
     [InlineData("team B đánh căng đó")]
     [InlineData("slot đẹp nha")]
+    [InlineData("bot sao rồi?")]
     public void Unrelated_chat_is_not_treated_as_match_brief(string message)
     {
         Assert.False(ZaloDraftConversationPolicy.IsMatchBriefQuestion(message));
