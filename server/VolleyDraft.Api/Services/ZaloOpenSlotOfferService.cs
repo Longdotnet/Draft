@@ -60,7 +60,9 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             return new(false, null);
 
         var pending = await store.LoadPendingClaimAsync(connectionId, groupId, senderId, cancellationToken);
-        if (pending?.ClaimExpiresAt is { } existingClaimExpiresAt && existingClaimExpiresAt <= DateTimeOffset.UtcNow)
+        if (pending?.Status == ZaloOpenSlotOfferStatus.ClaimPending &&
+            pending.ClaimExpiresAt is { } existingClaimExpiresAt &&
+            existingClaimExpiresAt <= DateTimeOffset.UtcNow)
         {
             await store.ReleaseClaimAsync(pending.Id, senderId, cancellationToken);
             pending = null;
@@ -70,8 +72,18 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         {
             if (ZaloBotIntelligence.IsCancel(incoming.Content ?? string.Empty))
             {
-                await store.ReleaseClaimAsync(pending.Id, senderId, cancellationToken);
-                return new(true, $"Oke, tui nhả slot {pending.OwnerDisplayName} ở {pending.SessionName} lại nha 😆 Ai khác vẫn có thể nhận.");
+                if (pending.Status == ZaloOpenSlotOfferStatus.Applying)
+                {
+                    return new(
+                        true,
+                        $"Slot {FriendlyName(pending.OwnerDisplayName)} ở {pending.SessionName} đang chốt vào roster rồi ⏳ Tui không nhả giữa lúc cập nhật để tránh một slot thành hai trạng thái. Nếu thao tác bị gián đoạn, worker sẽ đối chiếu roster rồi tự recovery.",
+                        ZaloBotIntent.SlotTransfer.ToString());
+                }
+
+                var released = await store.ReleaseClaimAsync(pending.Id, senderId, cancellationToken);
+                return released
+                    ? new(true, $"Oke, tui nhả slot {pending.OwnerDisplayName} ở {pending.SessionName} lại nha 😆 Ai khác vẫn có thể nhận.")
+                    : new(true, $"Slot {pending.SessionName} vừa đổi trạng thái ở lượt khác nên tui không báo huỷ bừa nha. Tui giữ theo trạng thái mới nhất.");
             }
 
             var normalized = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
@@ -82,7 +94,9 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             {
                 return new(
                     true,
-                    $"Ông đang giữ slot {FriendlyName(pending.OwnerDisplayName)} ở {pending.SessionName} rồi á 😆 Muốn đổi sang slot khác thì huỷ nhận kèo này trước nha.");
+                    pending.Status == ZaloOpenSlotOfferStatus.Applying
+                        ? $"Ông đang được chốt slot {FriendlyName(pending.OwnerDisplayName)} ở {pending.SessionName} rồi ⏳ Tui không chạy thêm claim khác giữa lúc cập nhật."
+                        : $"Ông đang giữ slot {FriendlyName(pending.OwnerDisplayName)} ở {pending.SessionName} rồi á 😆 Muốn đổi sang slot khác thì huỷ nhận kèo này trước nha.");
             }
         }
 
@@ -189,14 +203,21 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         CancellationToken cancellationToken)
     {
         var claimantId = CleanId(incoming.SenderId);
+
+        // Applying is intentionally non-interruptible. ClaimExpiresAt is the user's
+        // reservation deadline before confirmation; once the CAS enters Applying, the
+        // domain transfer owns the critical section and rescue handles only stale crash
+        // recovery by checking canonical roster state.
+        if (offer.Status == ZaloOpenSlotOfferStatus.Applying)
+            return new(true, "Tui đang chốt slot này vào roster rồi ⏳ Không chạy lại hay huỷ ngang để tránh nhân đôi thao tác nha.", ZaloBotIntent.SlotTransfer.ToString());
+
         if (offer.ClaimExpiresAt is { } claimExpiresAt && claimExpiresAt <= DateTimeOffset.UtcNow)
         {
-            await store.ReleaseClaimAsync(offer.Id, claimantId, cancellationToken);
-            return new(true, $"Claim slot {offer.SessionName} vừa hết thời gian giữ rồi 😅 Tui mở lại cho cả nhóm nha.");
+            var released = await store.ReleaseClaimAsync(offer.Id, claimantId, cancellationToken);
+            return released
+                ? new(true, $"Claim slot {offer.SessionName} vừa hết thời gian giữ rồi 😅 Tui mở lại cho cả nhóm nha.")
+                : new(true, $"Slot {offer.SessionName} vừa đổi trạng thái ở lượt khác; tui không tự mở lại khi chưa chắc nha.");
         }
-
-        if (offer.Status == ZaloOpenSlotOfferStatus.Applying)
-            return new(true, "Tui đang chốt slot này rồi, đợi xíu nha 😆", ZaloBotIntent.SlotTransfer.ToString());
 
         var session = await LoadSessionAsync(connectionId, groupId, offer.SessionId, cancellationToken);
         if (session is null || session.Status == SessionStatus.Cancelled ||
@@ -260,6 +281,9 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             new ShareSlotParticipantInput(incoming.SenderName, claimantId));
         if (!transferred.IsSuccess || transferred.Value is null)
         {
+            // Internal compensation is allowed after the domain transaction reports a
+            // failure. User-driven cancel is blocked during Applying; this is the one
+            // controlled path that may reopen it because the roster write did not win.
             await store.ReleaseClaimAsync(offer.Id, claimantId, cancellationToken);
             return new(true, transferred.Error ?? "Tui chưa chuyển được slot này, dữ liệu chưa đổi nha.");
         }
@@ -302,7 +326,25 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         }
 
         var offer = offers[0];
-        await store.CancelAsync(offer.Id, senderId, cancellationToken);
+        if (offer.Status == ZaloOpenSlotOfferStatus.Applying)
+        {
+            var claimant = FriendlyName(offer.ClaimantDisplayName);
+            return new(
+                true,
+                $"Slot {offer.SessionName} đang chốt cho {claimant} vào roster rồi ⏳ Giờ tui không huỷ ngang; làm vậy có thể khiến marketplace và đội hình lệch nhau. Chờ lượt chốt kết thúc nha.");
+        }
+
+        var cancelled = await store.CancelAsync(offer.Id, senderId, cancellationToken);
+        if (!cancelled)
+            return new(true, $"Slot {offer.SessionName} vừa đổi trạng thái ở lượt khác nên tui chưa huỷ bừa nha.");
+
+        if (offer.Status == ZaloOpenSlotOfferStatus.ClaimPending && !string.IsNullOrWhiteSpace(offer.ClaimantDisplayName))
+        {
+            return new(
+                true,
+                $"Oke, huỷ pass slot {offer.SessionName} nha 👌 Reservation của {FriendlyName(offer.ClaimantDisplayName)} cũng dừng vì chủ slot đã đổi ý trước lúc chốt.");
+        }
+
         return new(true, $"Oke, huỷ pass slot {offer.SessionName} nha 👌");
     }
 
