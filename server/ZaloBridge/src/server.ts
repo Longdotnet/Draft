@@ -159,7 +159,7 @@ app.post("/v1/group-messages", async (request, response) => {
     groupId: String(body.groupId),
     message: String(body.message),
     mentions: Array.isArray(body.mentions) ? body.mentions : [],
-    imageUrl: null,
+    imageUrl: body.imageUrl ? String(body.imageUrl) : null,
     idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
   }));
 });
