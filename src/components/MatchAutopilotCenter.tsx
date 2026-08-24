@@ -9,6 +9,43 @@ import {
   type SessionResponse,
 } from "../api/dbClient";
 
+type LifecycleStage =
+  | "NeedsSetup"
+  | "AwaitingLeaderDecision"
+  | "Recruiting"
+  | "ResolvingOverbook"
+  | "ResolvingPassSlots"
+  | "AwaitingProfiles"
+  | "ReadyForDraft"
+  | "Drafting"
+  | "Drafted"
+  | "Stopped"
+  | "Cancelled"
+  | "NeedsAttention";
+
+type BackendLifecycle = {
+  sessionId: string;
+  sessionName: string;
+  stage: LifecycleStage;
+  stageLabel: string;
+  headline: string;
+  nextStep: string;
+  owner: "System" | "ZaloBot" | "Leader" | "AdminWebsite" | "None";
+  needsWebsite: boolean;
+  webTarget: string | null;
+  suggestedZaloCommand: string | null;
+  startTime: string | null;
+  presentPlayerCount: number;
+  effectiveSlotCount: number;
+  capacity: number;
+  missingProfileCount: number;
+  missingProfileNames: string[];
+  activeSlotRiskCount: number;
+  leaderDecision: string | null;
+  reasonCode: string;
+  evaluatedAt: string;
+};
+
 type OverbookStatusLite = {
   enabled: boolean;
   capacity: number;
@@ -16,17 +53,10 @@ type OverbookStatusLite = {
   excessSlotCount: number;
   needsConfirmation: boolean;
   lastError: string | null;
+  lifecycle?: BackendLifecycle | null;
 };
 
-type LifecycleStage =
-  | "NeedsSetup"
-  | "Recruiting"
-  | "ResolvingOverbook"
-  | "AwaitingProfiles"
-  | "ReadyForDraft"
-  | "Drafting"
-  | "Drafted"
-  | "Cancelled";
+type WebTarget = "draft-workspace" | "auto-session-control" | "bot-overbook-control" | null;
 
 type LifecycleCard = {
   id: string;
@@ -40,19 +70,25 @@ type LifecycleCard = {
   capacity: number;
   missingProfiles: string[];
   needsWebsite: boolean;
-  webTarget: "draft-workspace" | "auto-session-control" | "bot-overbook-control" | null;
+  webTarget: WebTarget;
   command: string | null;
+  authoritative: boolean;
+  reasonCode: string;
 };
 
 const stageRank: Record<LifecycleStage, number> = {
   NeedsSetup: 0,
-  ResolvingOverbook: 1,
-  AwaitingProfiles: 2,
-  Recruiting: 3,
-  ReadyForDraft: 4,
-  Drafting: 5,
-  Drafted: 6,
-  Cancelled: 7,
+  NeedsAttention: 1,
+  ResolvingOverbook: 2,
+  ResolvingPassSlots: 3,
+  AwaitingProfiles: 4,
+  AwaitingLeaderDecision: 5,
+  Recruiting: 6,
+  ReadyForDraft: 7,
+  Drafting: 8,
+  Drafted: 9,
+  Stopped: 10,
+  Cancelled: 11,
 };
 
 function formatStart(value: string | null) {
@@ -66,12 +102,40 @@ function formatStart(value: string | null) {
   }).format(new Date(value));
 }
 
-function classify(
+function normalizeWebTarget(value: string | null): WebTarget {
+  return value === "draft-workspace" || value === "auto-session-control" || value === "bot-overbook-control"
+    ? value
+    : null;
+}
+
+function fromBackend(lifecycle: BackendLifecycle): LifecycleCard {
+  return {
+    id: lifecycle.sessionId,
+    name: lifecycle.sessionName,
+    stage: lifecycle.stage,
+    stageLabel: lifecycle.stageLabel,
+    statusText: lifecycle.headline,
+    nextStep: lifecycle.nextStep,
+    startTime: lifecycle.startTime,
+    effectiveSlots: lifecycle.effectiveSlotCount,
+    capacity: lifecycle.capacity,
+    missingProfiles: lifecycle.missingProfileNames,
+    needsWebsite: lifecycle.needsWebsite,
+    webTarget: normalizeWebTarget(lifecycle.webTarget),
+    command: lifecycle.suggestedZaloCommand,
+    authoritative: true,
+    reasonCode: lifecycle.reasonCode,
+  };
+}
+
+function classifyFallback(
   summary: AdminSessionSummaryResponse,
   session: SessionResponse,
   players: SessionPlayerResponse[],
   overbook: OverbookStatusLite | null,
 ): LifecycleCard {
+  if (overbook?.lifecycle) return fromBackend(overbook.lifecycle);
+
   const presentPlayers = players.filter((player) => player.isPresent);
   const capacity = overbook?.capacity ?? Math.max(1, session.teamCount * session.teamSize);
   const effectiveSlots = overbook?.effectiveSlotCount ?? summary.playerCount;
@@ -87,6 +151,7 @@ function classify(
     effectiveSlots,
     capacity,
     missingProfiles,
+    authoritative: false,
   };
 
   if (session.status === "Cancelled") {
@@ -99,6 +164,7 @@ function classify(
       needsWebsite: false,
       webTarget: null,
       command: null,
+      reasonCode: "fallback_session_cancelled",
     };
   }
 
@@ -112,6 +178,7 @@ function classify(
       needsWebsite: false,
       webTarget: null,
       command: null,
+      reasonCode: "fallback_draft_completed",
     };
   }
 
@@ -125,6 +192,7 @@ function classify(
       needsWebsite: false,
       webTarget: null,
       command: null,
+      reasonCode: "fallback_draft_in_progress",
     };
   }
 
@@ -138,6 +206,7 @@ function classify(
       needsWebsite: true,
       webTarget: "auto-session-control",
       command: null,
+      reasonCode: "fallback_zalo_group_not_linked",
     };
   }
 
@@ -151,6 +220,7 @@ function classify(
       needsWebsite: true,
       webTarget: "draft-workspace",
       command: null,
+      reasonCode: "fallback_start_time_missing",
     };
   }
 
@@ -164,6 +234,7 @@ function classify(
       needsWebsite: true,
       webTarget: "bot-overbook-control",
       command: null,
+      reasonCode: "fallback_bot_disabled",
     };
   }
 
@@ -177,6 +248,7 @@ function classify(
       needsWebsite: true,
       webTarget: "bot-overbook-control",
       command: null,
+      reasonCode: "fallback_overbook_confirmation_required",
     };
   }
 
@@ -193,6 +265,7 @@ function classify(
       needsWebsite: !automatic,
       webTarget: automatic ? null : "bot-overbook-control",
       command: null,
+      reasonCode: automatic ? "fallback_overbook_automatic" : "fallback_overbook_manual",
     };
   }
 
@@ -200,13 +273,14 @@ function classify(
     const missing = capacity - effectiveSlots;
     return {
       ...base,
-      stage: "Recruiting",
+      stage: "AwaitingLeaderDecision",
       stageLabel: `Roster dưới mốc · còn ${missing}`,
-      statusText: `Theo capacity chuẩn hiện có ${effectiveSlots}/${capacity} effective slot. Đây chưa phải lệnh bắt buộc phải tuyển thêm.`,
-      nextStep: "Nếu trưởng/phó đã chọn `kiếm thêm`, KeepRecruiting tự sync/nhắc. Nếu đã chốt chơi roster hiện tại (ví dụ 15 vẫn đánh), quyết định Zalo đó vẫn là authoritative và client không cần mở web chỉ vì chưa đủ 18.",
+      statusText: `Theo capacity chuẩn hiện có ${effectiveSlots}/${capacity} effective slot. Client fallback không tự suy ra phải tuyển thêm hay dừng kèo.`,
+      nextStep: "Dùng quyết định trên Zalo (`kiếm thêm` hoặc chốt roster hiện tại). Khi backend lifecycle đọc được, card này sẽ tự chuyển sang state authoritative.",
       needsWebsite: false,
       webTarget: null,
       command: null,
+      reasonCode: "fallback_partial_roster",
     };
   }
 
@@ -215,11 +289,12 @@ function classify(
       ...base,
       stage: "AwaitingProfiles",
       stageLabel: `Thiếu hồ sơ · ${missingProfiles.length}`,
-      statusText: `Đủ ${effectiveSlots}/${capacity} slot nhưng còn hồ sơ chưa xác nhận: ${missingProfiles.slice(0, 5).join(", ")}${missingProfiles.length > 5 ? "…" : ""}.`,
-      nextStep: "Xử lý ngay trong Zalo bằng lệnh hỏi người thiếu hồ sơ; không cần mở form web.",
+      statusText: `Đủ ${effectiveSlots}/${capacity} slot nhưng client còn thấy giới tính Unknown: ${missingProfiles.slice(0, 5).join(", ")}${missingProfiles.length > 5 ? "…" : ""}.`,
+      nextStep: "Hỏi/cập nhật trên Zalo. Backend readiness vẫn là cổng cuối vì có thể còn role/level/profile blocker mà client không nhìn đủ.",
       needsWebsite: false,
       webTarget: null,
       command: `ai chưa cập nhật hồ sơ ${session.name}`,
+      reasonCode: "fallback_profiles_incomplete",
     };
   }
 
@@ -227,15 +302,16 @@ function classify(
     ...base,
     stage: "ReadyForDraft",
     stageLabel: "Có thể yêu cầu draft",
-    statusText: `Roster đang ${effectiveSlots}/${capacity} và client không thấy người có giới tính Unknown. Backend DraftAutopilot vẫn là cổng readiness cuối cùng.`,
-    nextStep: "Trưởng/phó có thể nói `draft đi` trên Zalo. Bot sẽ sync poll lần cuối, kiểm tra authoritative profile/slot state và đi qua confirmation gate trước khi mutation.",
+    statusText: `Roster đang ${effectiveSlots}/${capacity}; client fallback không thấy giới tính Unknown.`,
+    nextStep: "Có thể nói `draft đi`; backend DraftAutopilot vẫn re-sync và kiểm tra authoritative readiness trước mutation.",
     needsWebsite: false,
     webTarget: null,
     command: "draft đi",
+    reasonCode: "fallback_draft_candidate",
   };
 }
 
-function scrollToTarget(target: LifecycleCard["webTarget"]) {
+function scrollToTarget(target: WebTarget) {
   if (!target) return;
   document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -270,11 +346,12 @@ export function MatchAutopilotCenter() {
 
   const stats = useMemo(() => {
     const needsWebsite = cards.filter((card) => card.needsWebsite).length;
-    const done = cards.filter((card) => card.stage === "Drafted" || card.stage === "Cancelled").length;
+    const done = cards.filter((card) => card.stage === "Drafted" || card.stage === "Cancelled" || card.stage === "Stopped").length;
     return {
       needsWebsite,
       noWebsite: Math.max(0, cards.length - needsWebsite - done),
       done,
+      authoritative: cards.filter((card) => card.authoritative).length,
     };
   }, [cards]);
 
@@ -304,10 +381,10 @@ export function MatchAutopilotCenter() {
               });
             } catch {
               // A missing/temporarily unreadable poll must not make the whole control center unusable.
-              // Session + roster data still gives the operator a useful lifecycle view.
+              // Session + roster data remains a deliberately conservative fallback.
             }
           }
-          return classify(summary, session, players, overbook);
+          return classifyFallback(summary, session, players, overbook);
         }),
       );
 
@@ -356,8 +433,8 @@ export function MatchAutopilotCenter() {
             <h2 style={{ margin: 0 }}>Match Autopilot Center</h2>
           </div>
           <p style={{ margin: "8px 0 0", color: "#cbd5e1", lineHeight: 1.55 }}>
-            Mục tiêu: client làm việc trên Zalo trước. Website chỉ sáng cảnh báo khi có exception mà bot không nên tự quyết.
-            Trạng thái tự làm mới mỗi 30 giây.
+            Client làm việc trên Zalo trước. Website chỉ sáng cảnh báo khi có exception mà bot không nên tự quyết.
+            Trạng thái tự làm mới mỗi 30 giây; session đã link Zalo ưu tiên lifecycle authoritative từ backend.
           </p>
         </div>
         <button
@@ -384,7 +461,8 @@ export function MatchAutopilotCenter() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginTop: 16 }}>
         <Stat label="Bot/Zalo xử lý tiếp" value={stats.noWebsite} helper="Không cần mở thêm màn web" />
         <Stat label="Cần admin trên web" value={stats.needsWebsite} helper="Exception thật sự cần người quyết" attention={stats.needsWebsite > 0} />
-        <Stat label="Đã xong / đã hủy" value={stats.done} helper="Không còn việc chuẩn bị" />
+        <Stat label="Đã xong / đã dừng" value={stats.done} helper="Không còn việc chuẩn bị tự động" />
+        <Stat label="Backend authoritative" value={stats.authoritative} helper="Card lấy lifecycle từ backend" />
       </div>
 
       {cards.length === 0 && !loading ? (
@@ -411,6 +489,9 @@ export function MatchAutopilotCenter() {
                   <strong style={{ fontSize: 17 }}>{card.name}</strong>
                   <span style={{ padding: "3px 8px", borderRadius: 999, background: "rgba(148,163,184,.15)", fontSize: 12, fontWeight: 800 }}>
                     {card.stageLabel}
+                  </span>
+                  <span style={{ color: card.authoritative ? "#7dd3fc" : "#94a3b8", fontSize: 11, fontWeight: 800 }}>
+                    {card.authoritative ? "BACKEND" : "FALLBACK"}
                   </span>
                 </div>
                 <div style={{ marginTop: 6, color: "#94a3b8", fontSize: 13 }}>
@@ -465,6 +546,10 @@ export function MatchAutopilotCenter() {
                   Đi tới đúng chỗ xử lý
                 </button>
               ) : null}
+            </div>
+
+            <div style={{ marginTop: 10, color: "#64748b", fontSize: 11 }}>
+              reason: {card.reasonCode}
             </div>
           </article>
         ))}
