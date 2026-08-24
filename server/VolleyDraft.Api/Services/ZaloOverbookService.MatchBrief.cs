@@ -68,20 +68,33 @@ public sealed partial class ZaloOverbookService
             var candidates = matches.Count > 1 ? matches : sessions;
             var stateStore = new ZaloConversationStateV2Store(db);
             var currentState = await stateStore.LoadActiveAsync(groupId, incoming.SenderId, cancellationToken);
-            if (currentState is null || string.Equals(currentState.Intent, MatchBriefSessionChoiceIntent, StringComparison.Ordinal))
+            if (currentState is not null &&
+                !string.Equals(currentState.Intent, MatchBriefSessionChoiceIntent, StringComparison.Ordinal))
             {
-                await stateStore.SaveActiveAsync(
+                await SendDraftReplyAsync(
+                    connectionId,
+                    accountId,
+                    botName,
                     groupId,
-                    ZaloOverbookLogic.NormalizeId(incoming.SenderId),
-                    MatchBriefSessionChoiceIntent,
-                    "{}",
-                    "[]",
-                    JsonSerializer.Serialize(candidates.Take(8).Select(item => item.Id).ToList()),
-                    incoming.MessageId,
-                    incoming.MessageId,
-                    now.AddMinutes(settings.RequesterConsentMinutes),
+                    incoming,
+                    "Ông đang có một việc bot khác chờ trả lời nên tui không mở thêm lựa chọn T4/T6 rồi làm rối pending đó nha. Xử lý hoặc huỷ việc đang chờ trước, rồi hỏi tình hình lại; tui không đụng dữ liệu hiện tại.",
+                    [],
+                    "match_brief_pending_conflict",
                     cancellationToken);
+                return true;
             }
+
+            await stateStore.SaveActiveAsync(
+                groupId,
+                ZaloOverbookLogic.NormalizeId(incoming.SenderId),
+                MatchBriefSessionChoiceIntent,
+                "{}",
+                "[]",
+                JsonSerializer.Serialize(candidates.Take(8).Select(item => item.Id).ToList()),
+                incoming.MessageId,
+                incoming.MessageId,
+                now.AddMinutes(settings.RequesterConsentMinutes),
+                cancellationToken);
 
             var choices = string.Join(", ", candidates.Take(4).Select(FormatDraftSessionChoice));
             await SendDraftReplyAsync(
