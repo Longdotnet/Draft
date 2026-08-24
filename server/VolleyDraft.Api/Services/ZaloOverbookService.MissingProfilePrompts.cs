@@ -8,8 +8,8 @@ public sealed partial class ZaloOverbookService
     /// <summary>
     /// When a full roster (or an explicitly locked partial roster) is blocked only by
     /// missing player profile data, ask the actual affected members in Zalo instead of
-    /// making an organizer open the website. This shares the existing draft-prep bucket
-    /// with the leader reminder so one bucket produces one useful message, not two.
+    /// making an organizer hunt through admin screens. This shares the existing draft-
+    /// prep bucket with the leader reminder so one bucket produces one useful message.
     /// </summary>
     public async Task<int> ProcessMissingProfilePromptsDueAsync(
         CancellationToken cancellationToken = default)
@@ -106,23 +106,15 @@ public sealed partial class ZaloOverbookService
             if (incompletePlayers.Count == 0)
                 continue;
 
-            var mentionable = incompletePlayers
+            var mentionableAll = incompletePlayers
                 .Where(player => !string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId))
                 .GroupBy(
                     player => ZaloOverbookLogic.NormalizeId(player.PlayerProfile!.ZaloUserId),
                     StringComparer.Ordinal)
                 .Where(group => group.Key.Length > 0)
                 .Select(group => group.First())
-                .Take(8)
                 .ToList();
-            if (mentionable.Count == 0)
-            {
-                // No verified Zalo identity means this lane cannot safely target a human.
-                // Leave the bucket untouched so the existing leader reminder can explain
-                // the blocker without fabricating a mention from display-name matching.
-                continue;
-            }
-
+            var mentionable = mentionableAll.Take(8).ToList();
             var ids = mentionable
                 .Select(player => ZaloOverbookLogic.NormalizeId(player.PlayerProfile!.ZaloUserId))
                 .ToList();
@@ -131,23 +123,63 @@ public sealed partial class ZaloOverbookService
                 player => player.DisplayName,
                 StringComparer.Ordinal);
 
-            var details = incompletePlayers
-                .Take(10)
-                .Select(FormatMissingProfileDetail)
-                .ToList();
-            var body = $"Kèo {session.Name} gần chốt draft rồi, còn thiếu chút hồ sơ: {string.Join("; ", details)}. " +
-                       "Mấy ông được tag cứ trả lời tự nhiên ngay trong group là được — ví dụ `nam`, `thủ`, `mới chơi`, " +
-                       "hoặc `tui nam, đánh công, tầm trung bình`. Không cần @bot, không cần vào web; biết phần nào nói phần đó 😎";
-
             var withoutVerifiedUid = incompletePlayers
                 .Where(player => string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId))
                 .Select(player => player.DisplayName)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(5)
+                .Take(8)
                 .ToList();
+            var deferredMentionNames = mentionableAll
+                .Skip(8)
+                .Select(player => player.DisplayName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .ToList();
+            var needsOrganizerHelp = withoutVerifiedUid.Count > 0 || deferredMentionNames.Count > 0;
+
+            DraftApproverCandidate? organizer = null;
+            if (needsOrganizerHelp)
+            {
+                var resolved = await ResolveDraftApproversAsync(session, settings, cancellationToken);
+                if (resolved.RoleLookupSucceeded)
+                {
+                    organizer = resolved.Candidates.FirstOrDefault(candidate =>
+                        !ids.Contains(candidate.ZaloUserId, StringComparer.Ordinal));
+                    if (organizer is not null)
+                    {
+                        ids.Add(organizer.ZaloUserId);
+                        names[organizer.ZaloUserId] = organizer.DisplayName;
+                    }
+                }
+            }
+
+            // If nobody can be safely addressed, leave this bucket untouched. The
+            // existing leader reminder remains the fallback rather than fabricating a
+            // UID from display-name similarity.
+            if (ids.Count == 0)
+                continue;
+
+            var details = incompletePlayers
+                .Take(10)
+                .Select(FormatMissingProfileDetail)
+                .ToList();
+            var body = $"Kèo {session.Name} gần chốt draft rồi, còn thiếu chút hồ sơ: {string.Join("; ", details)}. ";
+            if (mentionable.Count > 0)
+            {
+                body += "Mấy ông được tag cứ trả lời tự nhiên ngay trong group — ví dụ `nam`, `thủ`, `mới chơi`, " +
+                        "hoặc `tui nam, đánh công, tầm trung bình`. Không cần @bot; biết phần nào nói phần đó 😎";
+            }
+
             if (withoutVerifiedUid.Count > 0)
             {
-                body += $" Còn {string.Join(", ", withoutVerifiedUid)} chưa có UID chắc chắn nên tui không tag bừa theo tên.";
+                body += $" Còn {string.Join(", ", withoutVerifiedUid)} chưa map được UID chắc chắn nên tui không tag bừa theo tên.";
+                body += organizer is null
+                    ? " Khi map được đúng người tui mới hỏi tiếp."
+                    : " Trưởng/phó được tag giúp gọi đúng người vào trả lời một lần nha.";
+            }
+            if (deferredMentionNames.Count > 0)
+            {
+                body += $" Lượt này tui chưa tag hết để khỏi spam; còn {string.Join(", ", deferredMentionNames)} sẽ được xử lý ở lượt kế tiếp nếu vẫn thiếu.";
             }
 
             var outgoing = BuildMentionMessage(ids, names, body);
@@ -160,6 +192,9 @@ public sealed partial class ZaloOverbookService
                     outgoing.Message,
                     outgoing.Mentions,
                     idempotencyKey: idempotencyKey);
+                if (!send.Sent)
+                    throw new InvalidOperationException("Zalo bridge did not confirm missing-profile prompt send.");
+
                 var providerMessageId = NormalizeProviderMessageId(send.MessageId);
                 await SaveBotMessageAsync(
                     session,

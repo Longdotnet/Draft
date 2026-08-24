@@ -72,6 +72,21 @@ public sealed class ZaloNaturalProfileReplyTests
     }
 
     [Fact]
+    public void Parser_AcceptsVerboseAnswerWhenItRepliesToExactPrompt()
+    {
+        var parsed = ZaloNaturalProfileReplyParser.Parse(
+            "chắc chủ công, dạo này tầm trung bình á",
+            true,
+            true,
+            true,
+            repliedToPrompt: true);
+
+        Assert.True(parsed.LooksLikeProfileAnswer);
+        Assert.Equal(PlayerRole.Attack, parsed.Role);
+        Assert.Equal(PlayerLevel.Average, parsed.Level);
+    }
+
+    [Fact]
     public void Parser_OnlyReturnsFieldsCurrentPromptStillNeeds()
     {
         var parsed = ZaloNaturalProfileReplyParser.Parse(
@@ -100,12 +115,26 @@ public sealed class ZaloNaturalProfileReplyTests
     [Theory]
     [InlineData("để sau")]
     [InlineData("chưa biết")]
-    [InlineData("bỏ qua đi")]
-    public void Parser_AllowsMemberToDeclineWithoutPressure(string text)
+    public void Parser_TreatsTemporaryDeclineAsDefer(string text)
     {
         var parsed = ZaloNaturalProfileReplyParser.Parse(text, true, true, true);
 
         Assert.True(parsed.WantsToSkip);
+        Assert.True(parsed.WantsToDefer);
+        Assert.False(parsed.WantsToDismiss);
+    }
+
+    [Theory]
+    [InlineData("bỏ qua đi")]
+    [InlineData("khỏi hỏi")]
+    [InlineData("skip")]
+    public void Parser_TreatsExplicitStopAsDismissForThisPrompt(string text)
+    {
+        var parsed = ZaloNaturalProfileReplyParser.Parse(text, true, true, true);
+
+        Assert.True(parsed.WantsToSkip);
+        Assert.False(parsed.WantsToDefer);
+        Assert.True(parsed.WantsToDismiss);
     }
 
     [Theory]
@@ -115,6 +144,12 @@ public sealed class ZaloNaturalProfileReplyTests
     [InlineData("hello ae")]
     [InlineData("thứ 6 tui đi nha")]
     [InlineData("công ty nay vui ghê")]
+    [InlineData("năm nay tui mới chơi lại")]
+    [InlineData("tui công nhận nay vui ghê")]
+    [InlineData("tốt nghiệp rồi")]
+    [InlineData("mới về nha")]
+    [InlineData("thủ môn bắt hay ghê")]
+    [InlineData("tui thấy Nam đánh công hay")]
     public void Parser_DoesNotHijackOtherConversation(string text)
     {
         var parsed = ZaloNaturalProfileReplyParser.Parse(text, true, true, true);
