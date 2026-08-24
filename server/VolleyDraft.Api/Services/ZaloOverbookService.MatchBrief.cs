@@ -108,7 +108,7 @@ public sealed partial class ZaloOverbookService
         var readinessBeforeRefresh = await new ZaloDraftReadinessService(db)
             .BuildAsync(selected.Id, now, cancellationToken);
         if (readinessBeforeRefresh?.HasLinkedPoll == true &&
-            selected.Status is SessionStatus.Setup or SessionStatus.CaptainSelection)
+            (selected.Status is SessionStatus.Setup or SessionStatus.CaptainSelection))
         {
             var synced = await integration.SyncLatestPollAsync(selected.AdminUserId, selected.Id);
             if (!synced.IsSuccess)
