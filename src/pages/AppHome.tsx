@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Volleyball } from "lucide-react";
+import { AdminExceptionFocus, type ExceptionFocus } from "../components/AdminExceptionFocus";
 import { DbDraftFlow } from "../components/DbDraftFlow";
 import { MatchAutopilotCenter } from "../components/MatchAutopilotCenter";
 import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
@@ -10,12 +11,28 @@ import { ZaloCommunityTipSettingsPanel } from "../components/ZaloCommunityTipSet
 import { ZaloGreetingTestPanel } from "../components/ZaloGreetingTestPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
+const exceptionFocusValues = new Set<ExceptionFocus>([
+  "bot-overbook-control",
+  "auto-session-control",
+  "draft-workspace",
+]);
+
 function getIsMobileViewport() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches;
 }
 
+function getExceptionTarget() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const focus = params.get("focus") as ExceptionFocus | null;
+  const sessionId = params.get("sessionId")?.trim() ?? "";
+  if (!focus || !exceptionFocusValues.has(focus) || !sessionId) return null;
+  return { focus, sessionId };
+}
+
 export function AppHome() {
   const [isMobileViewport, setIsMobileViewport] = useState(getIsMobileViewport);
+  const [exceptionTarget] = useState(getExceptionTarget);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 640px)");
@@ -39,11 +56,13 @@ export function AppHome() {
           </div>
         </div>
         <div className="header-meta">
-          <span>Chúc mọi người chơi vui vẻ</span>
+          <span>{exceptionTarget ? "Exception từ Zalo" : "Chúc mọi người chơi vui vẻ"}</span>
         </div>
       </header>
 
-      {isMobileViewport ? (
+      {exceptionTarget ? (
+        <AdminExceptionFocus focus={exceptionTarget.focus} sessionId={exceptionTarget.sessionId} />
+      ) : isMobileViewport ? (
         <>
           <MobilePublicDraftFlow />
           <ZaloCommunityTipSettingsPanel />
