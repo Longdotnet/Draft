@@ -72,6 +72,9 @@ internal static class ZaloMatchBriefFormatter
 
         if (lifecycle.Owner == MatchLifecycleOwner.Leader)
         {
+            if (!canOperate)
+                return "✅ KHÔNG CẦN WEBSITE — bước tiếp theo thuộc trưởng/phó và làm ngay trong Zalo; ông chưa có quyền chốt nên tui không đưa lệnh admin cho ông.";
+
             var command = string.IsNullOrWhiteSpace(lifecycle.SuggestedZaloCommand)
                 ? string.Empty
                 : $" Nếu muốn tiếp tục, có thể nói `{lifecycle.SuggestedZaloCommand}`.";
