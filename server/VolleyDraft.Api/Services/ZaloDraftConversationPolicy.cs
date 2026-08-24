@@ -12,6 +12,14 @@ public static class ZaloDraftConversationPolicy
         @"\?|(?<![a-z0-9])(?:khi\s*nao|bao\s*gio|dau\s*roi|dau|co\s*chua|chua\s*co|xong\s*chua|chua\s*xong|sao\s*chua|chua\s*(?:chia|draft)|sap\s*(?:danh|choi)|may\s*gio)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex MatchBriefSubject = new(
+        @"(?<![a-z0-9])(?:tinh\s*hinh|keo|tran|roster|slot|doi\s*hinh|team|draft|web|website)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex MatchBriefQuestion = new(
+        @"\?|(?<![a-z0-9])(?:tinh\s*hinh|sao\s*roi|dang\s*sao|the\s*nao|on\s*khong|toi\s*dau|status|cap\s*nhat|update|can\s*lam\s*gi|co\s*can|can\s*(?:vao|mo)\s*(?:web|website)|(?:web|website)\s*(?:khong|ko|k))(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex StrongConfirmation = new(
         @"(?<![a-z0-9])(?:draft\s*(?:di|luon|nha)|chay\s*draft|trien\s*draft|xac\s*nhan\s*draft|chia\s*(?:team|doi)\s*(?:di|luon|nha)|chot\s*team(?:\s*(?:di|luon|nha))?)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -38,6 +46,14 @@ public static class ZaloDraftConversationPolicy
         return normalized.Length > 0 &&
                ReadinessSubject.IsMatch(normalized) &&
                ReadinessQuestion.IsMatch(normalized);
+    }
+
+    public static bool IsMatchBriefQuestion(string? content)
+    {
+        var normalized = Normalize(content);
+        return normalized.Length > 0 &&
+               MatchBriefSubject.IsMatch(normalized) &&
+               MatchBriefQuestion.IsMatch(normalized);
     }
 
     public static bool IsStrongDraftConfirmation(string? content) =>
