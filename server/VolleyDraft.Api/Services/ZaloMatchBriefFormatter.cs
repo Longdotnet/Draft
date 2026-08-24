@@ -4,9 +4,9 @@ namespace VolleyDraft.Api.Services;
 
 /// <summary>
 /// Formats lifecycle state for Zalo without inventing another source of truth.
-/// Proactive leader reminders get a compact footer; explicit status questions get a
-/// standalone brief with the authoritative headline/next step. Admin links are only
-/// surfaced when the caller is allowed to operate the match.
+/// User-facing copy is action-first: show the current match state and the next useful
+/// step. The website remains an implementation detail; an exception link only appears
+/// when a human action is genuinely required.
 /// </summary>
 internal static class ZaloMatchBriefFormatter
 {
@@ -15,10 +15,24 @@ internal static class ZaloMatchBriefFormatter
         MatchLifecycleResponse lifecycle,
         string? adminDeepLink = null)
     {
-        // Existing proactive reminders already target authorized organizer roles.
-        // Keep that send lane unchanged and resolve the deployed frontend URL here.
-        var resolvedLink = adminDeepLink ?? ZaloAdminDeepLinkBuilder.BuildFromEnvironment(lifecycle);
-        return $"{message.Trim()}\n\n{BuildStateLine(lifecycle)}\n{BuildGuidance(lifecycle, canOperate: true, resolvedLink)}";
+        // Existing proactive reminders already contain their domain-specific action.
+        // Add only the authoritative compact state and, for a genuine exception, the
+        // one-tap resolution link. Do not narrate whether the website is needed.
+        var lines = new List<string>
+        {
+            message.Trim(),
+            string.Empty,
+            BuildStateLine(lifecycle)
+        };
+
+        if (lifecycle.NeedsWebsite)
+        {
+            var resolvedLink = adminDeepLink ?? ZaloAdminDeepLinkBuilder.BuildFromEnvironment(lifecycle);
+            if (!string.IsNullOrWhiteSpace(resolvedLink))
+                lines.Add($"🔗 Xử lý bước đang vướng: {resolvedLink}");
+        }
+
+        return string.Join("\n", lines);
     }
 
     internal static string Standalone(
@@ -32,10 +46,13 @@ internal static class ZaloMatchBriefFormatter
             lifecycle.Headline.Trim()
         };
 
-        if (!string.IsNullOrWhiteSpace(lifecycle.NextStep))
-            lines.Add($"➡️ {lifecycle.NextStep.Trim()}");
+        var action = BuildAction(lifecycle, canOperate);
+        if (!string.IsNullOrWhiteSpace(action))
+            lines.Add($"➡️ {action}");
 
-        lines.Add(BuildGuidance(lifecycle, canOperate, adminDeepLink));
+        if (lifecycle.NeedsWebsite && canOperate && !string.IsNullOrWhiteSpace(adminDeepLink))
+            lines.Add($"🔗 Xử lý ngay: {adminDeepLink}");
+
         return string.Join("\n", lines.Where(line => !string.IsNullOrWhiteSpace(line)));
     }
 
@@ -49,46 +66,39 @@ internal static class ZaloMatchBriefFormatter
         return state;
     }
 
-    private static string BuildGuidance(
+    private static string? BuildAction(
         MatchLifecycleResponse lifecycle,
-        bool canOperate,
-        string? adminDeepLink)
+        bool canOperate)
     {
         if (lifecycle.NeedsWebsite)
         {
             if (!canOperate)
-            {
-                return "⚠️ Kèo này cần trưởng/phó xử lý một exception trên web. Tui đã dừng trước phần không đủ chắc; ông chưa cần tự vào web.";
-            }
+                return "Bước này cần trưởng/phó xử lý; tui giữ nguyên dữ liệu để tránh tự quyết sai.";
 
-            var link = string.IsNullOrWhiteSpace(adminDeepLink)
-                ? string.Empty
-                : $"\n🔗 Mở đúng exception: {adminDeepLink}";
-            return $"⚠️ CẦN WEBSITE — {DescribeWebTarget(lifecycle.WebTarget)}. Bot dừng trước phần không đủ chắc để tự quyết.{link}";
+            return DescribeHumanAction(lifecycle.WebTarget);
         }
 
         if (lifecycle.Owner is MatchLifecycleOwner.ZaloBot or MatchLifecycleOwner.System)
-            return "✅ CHƯA CẦN MỞ WEBSITE — bot đang xử lý tiếp; chưa có thao tác web nào cần người làm.";
+            return "Bot tiếp tục xử lý theo trạng thái hiện tại; chưa có gì ông cần làm.";
 
         if (lifecycle.Owner == MatchLifecycleOwner.Leader)
         {
             if (!canOperate)
-                return "✅ KHÔNG CẦN WEBSITE — bước tiếp theo thuộc trưởng/phó và làm ngay trong Zalo; ông chưa có quyền chốt nên tui không đưa lệnh admin cho ông.";
+                return "Chờ trưởng/phó chốt bước tiếp theo; tui không đưa lệnh admin cho người chưa có quyền.";
 
-            var command = string.IsNullOrWhiteSpace(lifecycle.SuggestedZaloCommand)
-                ? string.Empty
-                : $" Nếu muốn tiếp tục, có thể nói `{lifecycle.SuggestedZaloCommand}`.";
-            return $"✅ KHÔNG CẦN WEBSITE — phần còn lại xử lý ngay trong Zalo.{command}";
+            return string.IsNullOrWhiteSpace(lifecycle.SuggestedZaloCommand)
+                ? "Trưởng/phó có thể chốt bước tiếp theo ngay trong Zalo."
+                : $"Có thể nói `{lifecycle.SuggestedZaloCommand}` ngay trong Zalo.";
         }
 
-        return "✅ KHÔNG CẦN WEBSITE.";
+        return null;
     }
 
-    private static string DescribeWebTarget(string? webTarget) => webTarget switch
+    private static string DescribeHumanAction(string? webTarget) => webTarget switch
     {
-        "bot-overbook-control" => "mở đúng khu vực Overbook để xác nhận target dư slot",
-        "auto-session-control" => "mở Auto Session/Zalo để sửa liên kết group",
-        "draft-workspace" => "mở đúng session/draft workspace để kiểm tra exception",
-        _ => "mở đúng session được bot báo để xử lý exception"
+        "bot-overbook-control" => "Xác nhận đúng người đang dư slot để automation tiếp tục.",
+        "auto-session-control" => "Sửa liên kết Zalo/group cho đúng kèo để bot tiếp tục theo dõi.",
+        "draft-workspace" => "Kiểm tra và bổ sung dữ liệu còn thiếu của đúng session này.",
+        _ => "Xử lý bước đang vướng của đúng session này rồi bot sẽ tiếp tục."
     };
 }
