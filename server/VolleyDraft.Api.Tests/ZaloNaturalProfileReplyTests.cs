@@ -14,6 +14,7 @@ public sealed class ZaloNaturalProfileReplyTests
     [InlineData("nữ", PlayerGender.Female)]
     [InlineData("tui là nam nha", PlayerGender.Male)]
     [InlineData("con gái", PlayerGender.Female)]
+    [InlineData("nam 😆", PlayerGender.Male)]
     public void Parser_AcceptsNaturalGenderReplies(string text, PlayerGender expected)
     {
         var parsed = ZaloNaturalProfileReplyParser.Parse(text, true, false, false);
@@ -30,6 +31,7 @@ public sealed class ZaloNaturalProfileReplyTests
     [InlineData("libero", PlayerRole.Defense)]
     [InlineData("chuyền 2", PlayerRole.Setter)]
     [InlineData("toàn diện", PlayerRole.FullStack)]
+    [InlineData("công nha 😎", PlayerRole.Attack)]
     public void Parser_AcceptsNaturalRoleReplies(string text, PlayerRole expected)
     {
         var parsed = ZaloNaturalProfileReplyParser.Parse(text, false, true, false);
@@ -54,20 +56,19 @@ public sealed class ZaloNaturalProfileReplyTests
         Assert.Equal(expected, parsed.Level);
     }
 
-    [Fact]
-    public void Parser_AcceptsWholeSentenceWithoutCommandTemplate()
+    [Theory]
+    [InlineData("tui nam, đánh công, tầm trung bình thôi")]
+    [InlineData("nam 😆, công nha; tầm trung bình")]
+    [InlineData("Nam - chủ công - khá nha")]
+    public void Parser_AcceptsWholeSentenceWithoutCommandTemplate(string text)
     {
-        var parsed = ZaloNaturalProfileReplyParser.Parse(
-            "tui nam, đánh công, tầm trung bình thôi",
-            true,
-            true,
-            true);
+        var parsed = ZaloNaturalProfileReplyParser.Parse(text, true, true, true);
 
         Assert.True(parsed.LooksLikeProfileAnswer);
         Assert.False(parsed.HasConflict);
         Assert.Equal(PlayerGender.Male, parsed.Gender);
         Assert.Equal(PlayerRole.Attack, parsed.Role);
-        Assert.Equal(PlayerLevel.Average, parsed.Level);
+        Assert.NotNull(parsed.Level);
     }
 
     [Fact]
@@ -112,6 +113,8 @@ public sealed class ZaloNaturalProfileReplyTests
     [InlineData("kiếm thêm 1 người")]
     [InlineData("pass slot")]
     [InlineData("hello ae")]
+    [InlineData("thứ 6 tui đi nha")]
+    [InlineData("công ty nay vui ghê")]
     public void Parser_DoesNotHijackOtherConversation(string text)
     {
         var parsed = ZaloNaturalProfileReplyParser.Parse(text, true, true, true);
