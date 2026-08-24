@@ -292,12 +292,16 @@ public sealed partial class ZaloOverbookService
                     cancellationToken);
                 if (assist is not null)
                 {
+                    var assistIntent = assist.Kind == ZaloMemberAssistKind.OpenSlotClaim &&
+                                       !string.IsNullOrWhiteSpace(assist.SessionId)
+                        ? ZaloBotIntent.SlotTransferConfirm
+                        : ZaloBotIntent.SlotTransfer;
                     var assistDecision = decision with
                     {
                         WouldReply = true,
                         Score = Math.Max(decision.Score, 98),
                         Kind = ZaloAmbientParticipationKind.Fact,
-                        Intent = ZaloBotIntent.SlotTransfer.ToString(),
+                        Intent = assistIntent.ToString(),
                         IntentConfidence = 1,
                         Signals = decision.Signals
                             .Append("member_assist_pass_slot")
@@ -311,7 +315,7 @@ public sealed partial class ZaloOverbookService
                         incoming,
                         assistDecision,
                         new ZaloAmbientFactReply(
-                            ZaloBotIntent.SlotTransfer,
+                            assistIntent,
                             assist.Text,
                             assist.SessionId),
                         cancellationToken);
@@ -430,6 +434,7 @@ public sealed partial class ZaloOverbookService
 
         var accountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
         var idempotencyKey = $"ambient-fact:{accountId}:{messageId}";
+        var imageUrl = BuildAmbientFactImageUrl(fact);
         BridgeSendMessageResponse send;
         try
         {
@@ -438,7 +443,8 @@ public sealed partial class ZaloOverbookService
                 groupId,
                 fact.Text,
                 [],
-                idempotencyKey: idempotencyKey);
+                imageUrl,
+                idempotencyKey);
         }
         catch (Exception sendException)
         {
@@ -783,6 +789,24 @@ public sealed partial class ZaloOverbookService
             ReplyOutcome = "sent"
         });
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private string? BuildAmbientFactImageUrl(ZaloAmbientFactReply fact)
+    {
+        if (fact.Intent != ZaloBotIntent.SlotTransferConfirm || string.IsNullOrWhiteSpace(fact.SessionId))
+            return null;
+
+        var configured = configuration["Public:BaseUrl"]?.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(configured) &&
+            Uri.TryCreate(configuration["Zalo:WebhookUrl"], UriKind.Absolute, out var webhook))
+        {
+            configured = webhook.GetLeftPart(UriPartial.Authority).TrimEnd('/');
+        }
+        if (!Uri.TryCreate(configured, UriKind.Absolute, out var publicBase) ||
+            publicBase.Scheme is not ("http" or "https"))
+            return null;
+
+        return $"{publicBase.GetLeftPart(UriPartial.Authority).TrimEnd('/')}/api/public/sessions/{Uri.EscapeDataString(fact.SessionId)}/team-card.png?v={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
     }
 
     private static string? NormalizeProviderMessageId(string? value)
