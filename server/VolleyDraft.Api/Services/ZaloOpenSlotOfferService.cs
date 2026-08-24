@@ -10,7 +10,8 @@ namespace VolleyDraft.Api.Services;
 public sealed record ZaloOpenSlotOfferHandleResult(
     bool Handled,
     string? Response,
-    string Intent = "OpenSlotOffer");
+    string Intent = "OpenSlotOffer",
+    string? SessionId = null);
 
 /// <summary>
 /// Turns a previously opened member-owned pass-slot offer into a safe multi-user
@@ -279,7 +280,8 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         return new(
             true,
             $"Done 😆 {transferred.Value.ToPlayerName} hốt slot {transferred.Value.FromPlayerName} ở {session.Name} rồi, vào {transferred.Value.TeamName}.{profileNote}",
-            ZaloBotIntent.SlotTransferConfirm.ToString());
+            ZaloBotIntent.SlotTransferConfirm.ToString(),
+            session.Id);
     }
 
     private async Task<ZaloOpenSlotOfferHandleResult> CancelOwnedOfferAsync(
