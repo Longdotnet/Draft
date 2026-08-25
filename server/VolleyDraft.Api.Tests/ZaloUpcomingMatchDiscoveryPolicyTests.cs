@@ -66,6 +66,39 @@ public sealed class ZaloUpcomingMatchDiscoveryPolicyTests
     }
 
     [Fact]
+    public void Live_organizer_conversation_is_not_interrupted_by_safety_net()
+    {
+        var now = Local(2026, 8, 25, 12, 0);
+
+        Assert.True(ZaloUpcomingMatchDiscoveryPolicy.IsConversationStillActive(
+            ZaloAutoSessionConversationState.ReadyToConfirm,
+            now.AddHours(2),
+            now));
+    }
+
+    [Fact]
+    public void Expired_organizer_conversation_is_eligible_for_near_match_recovery()
+    {
+        var now = Local(2026, 8, 25, 12, 0);
+
+        Assert.False(ZaloUpcomingMatchDiscoveryPolicy.IsConversationStillActive(
+            ZaloAutoSessionConversationState.PreviewSent,
+            now.AddMinutes(-1),
+            now));
+    }
+
+    [Fact]
+    public void Terminal_conversation_is_not_considered_live_even_if_expiry_is_in_future()
+    {
+        var now = Local(2026, 8, 25, 12, 0);
+
+        Assert.False(ZaloUpcomingMatchDiscoveryPolicy.IsConversationStillActive(
+            ZaloAutoSessionConversationState.Expired,
+            now.AddHours(4),
+            now));
+    }
+
+    [Fact]
     public void Prompt_is_action_first_and_explains_missing_session_without_web_status_labels()
     {
         var now = Local(2026, 8, 25, 12, 0);
