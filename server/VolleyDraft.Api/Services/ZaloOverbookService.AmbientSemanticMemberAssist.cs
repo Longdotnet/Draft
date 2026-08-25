@@ -30,10 +30,15 @@ public sealed partial class ZaloOverbookService
             return true;
 
         // Natural leader/deputy decisions get a context-first semantic pass after the
-        // deterministic fast path had its chance. The semantic interpreter never
-        // writes state: it promotes only a grounded intent back into the existing
-        // draft-preparation lane, which revalidates role/poll/fingerprint/slot truth.
-        if (await TryHandleContextFirstDraftPreparationAsync(
+        // deterministic fast path had its chance. Keep this lane completely inert
+        // when AI is not configured so existing ambient/read-only paths do not gain
+        // new DB/role dependencies merely because the feature exists.
+        var semanticDraftConfigured =
+            !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
+            !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
+            !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
+        if (semanticDraftConfigured &&
+            await TryHandleContextFirstDraftPreparationAsync(
                 connectionId,
                 groupId,
                 senderId,
