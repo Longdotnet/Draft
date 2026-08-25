@@ -29,6 +29,24 @@ public sealed partial class ZaloOverbookService
                 cancellationToken))
             return true;
 
+        // Natural leader/deputy decisions get a context-first semantic pass after the
+        // deterministic fast path had its chance. Keep this lane completely inert
+        // when AI is not configured so existing ambient/read-only paths do not gain
+        // new DB/role dependencies merely because the feature exists.
+        var semanticDraftConfigured =
+            !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
+            !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
+            !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
+        if (semanticDraftConfigured &&
+            await TryHandleContextFirstDraftPreparationAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         var memberAssistSettings = ZaloMemberAssistSettings.FromConfiguration(configuration);
         var actionSettings = ZaloSemanticActionSettings.FromConfiguration(configuration);
         if (!memberAssistSettings.Enabled ||
