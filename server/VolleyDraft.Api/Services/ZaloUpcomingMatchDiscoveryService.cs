@@ -1,5 +1,4 @@
 using System.Data;
-using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -19,11 +18,14 @@ internal sealed record ZaloUpcomingMatchDiscoveryRunResult(
 ///
 /// Auto Session V2 deliberately ignores polls that its classifier cannot identify
 /// with enough confidence. That is safe, but it can leave a real organizer-created
-/// match silent forever. This service revisits only those already-parsed, ignored
-/// proposals when a schedule option enters the configured lead window (two days by
-/// default, at noon Vietnam time). It never creates a session itself: it opens the
-/// existing organizer conversation so the proven Auto Session action executor keeps
-/// ownership of the final transaction and poll/session link.
+/// match silent forever. An otherwise valid proposal can also become silent when its
+/// original organizer conversation expires without an answer. This service revisits
+/// those two recoverable cases when a schedule option enters the configured lead
+/// window (two days by default, at noon Vietnam time).
+///
+/// It never creates a session itself: it opens or revives the existing organizer
+/// conversation so the proven Auto Session action executor keeps ownership of the
+/// final transaction and poll/session link.
 /// </summary>
 internal sealed class ZaloUpcomingMatchDiscoveryService(
     VolleyDraftDbContext db,
@@ -32,7 +34,6 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
     IConfiguration configuration,
     ILogger<ZaloUpcomingMatchDiscoveryService> logger)
 {
-    private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly ZaloAutoSessionStore autoSessions = new(db);
@@ -63,7 +64,7 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         if (!(await runtimeStore.GetRuntimeAsync(cancellationToken)).GlobalEnabled)
             return new(0, 0, 1, 0);
 
-        var keys = await GetIgnoredProposalKeysAsync(cancellationToken);
+        var keys = await GetCandidateProposalKeysAsync(cancellationToken);
         var prompted = 0;
         var skipped = 0;
         var failed = 0;
@@ -102,11 +103,10 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         CancellationToken cancellationToken)
     {
         var proposal = await autoSessions.GetProposalAsync(trackedGroupId, pollId, cancellationToken);
-        if (proposal is null ||
-            proposal.Status != ZaloPollSessionProposalStatus.Ignored ||
-            !string.IsNullOrWhiteSpace(proposal.ProposalMessageId) ||
-            !ZaloUpcomingMatchDiscoveryPolicy.IsRecoverableIgnoredReason(proposal.ClassifierReason))
-            return false;
+        if (proposal is null) return false;
+
+        var existingConversation = await conversations.GetByProposalAsync(proposal.Id, cancellationToken);
+        if (!IsProposalRecoverable(proposal, existingConversation, now)) return false;
 
         var tracked = await autoSessions.GetTrackedGroupAsync(trackedGroupId, cancellationToken);
         if (tracked is null || !tracked.AutoSessionEnabled) return false;
@@ -203,13 +203,14 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         proposal.LastError = null;
         proposal = await autoSessions.UpsertProposalAsync(proposal, cancellationToken);
 
-        await CreateConversationAsync(
+        await CreateOrReviveConversationAsync(
             proposal,
             tracked,
             unlinked,
             primaryOrganizerId,
             sent.MessageId.Trim(),
             now,
+            existingConversation,
             cancellationToken);
 
         logger.LogInformation(
@@ -221,13 +222,44 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         return true;
     }
 
-    private async Task CreateConversationAsync(
+    private static bool IsProposalRecoverable(
+        ZaloPollSessionProposalData proposal,
+        ZaloAutoSessionConversationData? existingConversation,
+        DateTimeOffset now)
+    {
+        if (proposal.Status == ZaloPollSessionProposalStatus.Ignored)
+        {
+            return string.IsNullOrWhiteSpace(proposal.ProposalMessageId) &&
+                   ZaloUpcomingMatchDiscoveryPolicy.IsRecoverableIgnoredReason(proposal.ClassifierReason);
+        }
+
+        if (proposal.Status != ZaloPollSessionProposalStatus.AwaitingApproval)
+            return false;
+
+        // A discovery prompt is the one near-match recovery pass. If that prompt is
+        // itself ignored until it expires, do not keep tagging the group repeatedly.
+        if (proposal.ClassifierReason.StartsWith("upcoming_discovery:", StringComparison.Ordinal))
+            return false;
+
+        if (existingConversation is not null)
+            return !ZaloUpcomingMatchDiscoveryPolicy.IsConversationStillActive(
+                existingConversation.State,
+                existingConversation.ExpiresAt,
+                now);
+
+        // V2 and Conversation V3 normally create the conversation in the same pass.
+        // Give that path time to converge before treating a missing row as abandoned.
+        return now - proposal.UpdatedAt >= TimeSpan.FromHours(6);
+    }
+
+    private async Task CreateOrReviveConversationAsync(
         ZaloPollSessionProposalData proposal,
         ZaloTrackedGroupData tracked,
         IReadOnlyList<ZaloAutoSessionCandidate> candidates,
         string primaryOrganizerId,
         string messageId,
         DateTimeOffset now,
+        ZaloAutoSessionConversationData? existingConversation,
         CancellationToken cancellationToken)
     {
         var draft = new ZaloAutoSessionConversationDraft(
@@ -252,29 +284,54 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         if (nextFollowUp >= expiry) nextFollowUp = expiry.AddMinutes(-30);
         DateTimeOffset? safeFollowUp = nextFollowUp > now ? nextFollowUp : null;
 
-        var conversation = await conversations.CreateIfMissingAsync(
-            new ZaloAutoSessionConversationData
-            {
-                ProposalId = proposal.Id,
-                TrackedGroupId = tracked.Id,
-                PollId = proposal.PollId,
-                GroupId = tracked.GroupId,
-                OriginalOrganizerId = primaryOrganizerId,
-                ActiveOrganizerId = primaryOrganizerId,
-                State = ZaloAutoSessionConversationState.PreviewSent,
-                InitialDraftJson = draftJson,
-                DraftJson = draftJson,
-                PreviewMessageId = messageId,
-                CurrentBotMessageId = messageId,
-                Version = 0,
-                ReminderCount = 0,
-                LastBotMessageAt = now,
-                NextFollowUpAt = safeFollowUp,
-                ExpiresAt = expiry,
-                CreatedAt = now,
-                UpdatedAt = now
-            },
-            cancellationToken);
+        ZaloAutoSessionConversationData conversation;
+        if (existingConversation is null)
+        {
+            conversation = await conversations.CreateIfMissingAsync(
+                new ZaloAutoSessionConversationData
+                {
+                    ProposalId = proposal.Id,
+                    TrackedGroupId = tracked.Id,
+                    PollId = proposal.PollId,
+                    GroupId = tracked.GroupId,
+                    OriginalOrganizerId = primaryOrganizerId,
+                    ActiveOrganizerId = primaryOrganizerId,
+                    State = ZaloAutoSessionConversationState.PreviewSent,
+                    InitialDraftJson = draftJson,
+                    DraftJson = draftJson,
+                    PreviewMessageId = messageId,
+                    CurrentBotMessageId = messageId,
+                    Version = 0,
+                    ReminderCount = 0,
+                    LastBotMessageAt = now,
+                    NextFollowUpAt = safeFollowUp,
+                    ExpiresAt = expiry,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                },
+                cancellationToken);
+        }
+        else
+        {
+            // Same poll structure, same proposal identity. Revive the durable V3
+            // conversation instead of creating a competing state machine. The new bot
+            // turn below makes reply-to-new-prompt routing work even though the original
+            // preview message remains part of the audit trail.
+            existingConversation.ActiveOrganizerId = primaryOrganizerId;
+            existingConversation.State = ZaloAutoSessionConversationState.PreviewSent;
+            existingConversation.DraftJson = draftJson;
+            existingConversation.CurrentBotMessageId = messageId;
+            existingConversation.LastQuestionType = null;
+            existingConversation.LastIntent = null;
+            existingConversation.Version += 1;
+            existingConversation.ReminderCount = 0;
+            existingConversation.LastOrganizerMessageAt = null;
+            existingConversation.LastBotMessageAt = now;
+            existingConversation.NextFollowUpAt = safeFollowUp;
+            existingConversation.ExpiresAt = expiry;
+            existingConversation.LastError = null;
+            conversation = await conversations.SaveAsync(existingConversation, cancellationToken);
+        }
 
         await conversations.AddTurnAsync(
             conversation.Id,
@@ -329,7 +386,7 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         }
     }
 
-    private async Task<IReadOnlyList<ProposalKey>> GetIgnoredProposalKeysAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<ProposalKey>> GetCandidateProposalKeysAsync(CancellationToken cancellationToken)
     {
         var connection = db.Database.GetDbConnection();
         if (connection.State != ConnectionState.Open)
@@ -338,7 +395,7 @@ internal sealed class ZaloUpcomingMatchDiscoveryService(
         command.CommandText = """
             SELECT "TrackedGroupId", "PollId"
             FROM "ZaloPollSessionProposals"
-            WHERE "Status" = 'Ignored' AND "ProposalMessageId" IS NULL
+            WHERE "Status" IN ('Ignored', 'AwaitingApproval')
             ORDER BY "UpdatedAt" DESC
             LIMIT 200;
             """;
@@ -410,6 +467,16 @@ internal static class ZaloUpcomingMatchDiscoveryPolicy
             and not "poll_creator_is_not_group_organizer"
             and not "all_schedule_options_already_linked";
     }
+
+    internal static bool IsConversationStillActive(
+        ZaloAutoSessionConversationState state,
+        DateTimeOffset expiresAt,
+        DateTimeOffset now) =>
+        expiresAt > now &&
+        state is ZaloAutoSessionConversationState.PreviewSent
+            or ZaloAutoSessionConversationState.Discussing
+            or ZaloAutoSessionConversationState.Clarifying
+            or ZaloAutoSessionConversationState.ReadyToConfirm;
 
     internal static bool IsDue(
         DateTimeOffset now,
