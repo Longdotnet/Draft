@@ -704,16 +704,16 @@ public sealed class AiAssistantService(
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             using var response = await httpClient.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
                 logger.LogWarning(
                     "AI provider returned {StatusCode}: {ErrorBody}",
                     (int)response.StatusCode,
-                    errorBody.Length <= 500 ? errorBody : errorBody[..500]);
+                    Truncate(body, 500));
                 return "Mình đang không kết nối được dịch vụ AI. Bạn thử gõ help hoặc hỏi lại sau nhé.";
             }
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
+            using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
             if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0 &&
                 choices[0].TryGetProperty("message", out var message) &&
@@ -725,6 +725,11 @@ public sealed class AiAssistantService(
             {
                 return GetSafeGeneralAnswer(outputText.GetString());
             }
+
+            logger.LogWarning(
+                "AI provider returned HTTP {StatusCode} with unexpected payload shape: {ResponseBody}",
+                (int)response.StatusCode,
+                Truncate(body, 1500));
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
@@ -800,7 +805,14 @@ public sealed class AiAssistantService(
             if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0 &&
                 choices[0].TryGetProperty("message", out var message) &&
                 message.TryGetProperty("content", out var content)) return content.GetString()?.Trim();
-            return root.TryGetProperty("output_text", out var outputText) ? outputText.GetString()?.Trim() : null;
+            if (root.TryGetProperty("output_text", out var outputText)) return outputText.GetString()?.Trim();
+
+            logger.LogWarning(
+                "AI {Operation} returned HTTP {StatusCode} with unexpected payload shape: {ResponseBody}",
+                operation,
+                (int)response.StatusCode,
+                Truncate(body, 1500));
+            return null;
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
