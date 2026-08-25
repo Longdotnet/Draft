@@ -19,7 +19,7 @@ public sealed class ZaloShareSessionScopingTests
 
         var scoped = ZaloBotService.ScopeShareSessionCandidateIds(candidates, "ngày mai", Now);
 
-        Assert.Equal(["tomorrow"], scoped);
+        Assert.Equal(new[] { "tomorrow" }, scoped);
     }
 
     [Theory]
@@ -39,7 +39,7 @@ public sealed class ZaloShareSessionScopingTests
 
         var scoped = ZaloBotService.ScopeShareSessionCandidateIds(candidates, selector, Now);
 
-        Assert.Equal(["target"], scoped);
+        Assert.Equal(new[] { "target" }, scoped);
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public sealed class ZaloShareSessionScopingTests
 
         var scoped = ZaloBotService.ScopeShareSessionCandidateIds(candidates, null, Now);
 
-        Assert.Equal(["future", "unscheduled"], scoped);
+        Assert.Equal(new[] { "future", "unscheduled" }, scoped);
     }
 
     [Fact]
