@@ -162,6 +162,8 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
                 await scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>()
                     .EnsureAllAsync(stoppingToken);
                 await autoSessions.ReconcileAsync(stoppingToken);
+                await ZaloUpcomingMatchDiscoveryService.Create(scope.ServiceProvider)
+                    .RunAsync(stoppingToken);
                 await ZaloAutoSessionConversationService.Create(scope.ServiceProvider)
                     .ReconcileAsync(stoppingToken);
                 await ZaloSocialPresenceService.Create(scope.ServiceProvider)
