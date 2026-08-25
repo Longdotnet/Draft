@@ -213,6 +213,7 @@ internal sealed class ZaloDraftPreparationSemanticInterpreter
             var confidence = ReadConfidence(root, "confidence");
             int? requestedSlotCount = null;
             if (root.TryGetProperty("requestedSlotCount", out var countNode) &&
+                countNode.ValueKind == JsonValueKind.Number &&
                 countNode.TryGetInt32(out var count) && count is >= 1 and <= 90)
                 requestedSlotCount = count;
 
