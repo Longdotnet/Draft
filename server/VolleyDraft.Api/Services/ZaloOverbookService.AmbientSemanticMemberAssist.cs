@@ -29,6 +29,19 @@ public sealed partial class ZaloOverbookService
                 cancellationToken))
             return true;
 
+        // Natural leader/deputy decisions get a context-first semantic pass after the
+        // deterministic fast path had its chance. The semantic interpreter never
+        // writes state: it promotes only a grounded intent back into the existing
+        // draft-preparation lane, which revalidates role/poll/fingerprint/slot truth.
+        if (await TryHandleContextFirstDraftPreparationAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming,
+                ambientSettings,
+                cancellationToken))
+            return true;
+
         var memberAssistSettings = ZaloMemberAssistSettings.FromConfiguration(configuration);
         var actionSettings = ZaloSemanticActionSettings.FromConfiguration(configuration);
         if (!memberAssistSettings.Enabled ||
