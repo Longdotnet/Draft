@@ -2,10 +2,14 @@ namespace VolleyDraft.Api.Services;
 
 public sealed partial class ZaloOverbookService
 {
-    // Keep the public worker entry point stable while the real-world conversation
-    // engine lives in its own file. This makes the safety/routing policy independently
-    // testable without changing the scheduler contract.
-    public Task<int> ProcessMissingProfileRepliesDueAsync(
-        CancellationToken cancellationToken = default) =>
-        ProcessMissingProfileRepliesDueV2Async(cancellationToken);
+    // Context-first semantic interpretation gets first chance on targeted profile
+    // replies so users can speak naturally. Anything uncertain/unconfigured remains
+    // untouched and falls through to the hardened deterministic V2 parser.
+    public async Task<int> ProcessMissingProfileRepliesDueAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var semanticHandled = await ProcessMissingProfileRepliesContextFirstAsync(cancellationToken);
+        var deterministicHandled = await ProcessMissingProfileRepliesDueV2Async(cancellationToken);
+        return semanticHandled + deterministicHandled;
+    }
 }
