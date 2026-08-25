@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
@@ -20,6 +21,77 @@ public sealed partial class ZaloBotService
                NormalizeText(senderPlayerName) == NormalizeText(resolvedAnchor);
     }
 
+    /// <summary>
+    /// Share-slot is a mutation-shaped flow, so stale/started sessions must never win
+    /// identity ranking. When the parsed command carries an explicit session selector
+    /// (today/tomorrow, weekday, calendar date or a concrete session name), scope to
+    /// that selector before comparing roster identities. This keeps a strong match in
+    /// an old session from overriding the user's requested future match.
+    /// </summary>
+    internal static IReadOnlyList<string> ScopeShareSessionCandidateIds(
+        IReadOnlyList<ZaloSessionReference> candidates,
+        string? sessionReference,
+        DateTimeOffset? now = null)
+    {
+        var current = now ?? DateTimeOffset.UtcNow;
+        var actionable = candidates
+            .Where(candidate => candidate.StartTime is null || candidate.StartTime > current)
+            .ToList();
+        if (string.IsNullOrWhiteSpace(sessionReference))
+            return actionable.Select(candidate => candidate.Id).ToList();
+
+        var selector = NormalizeText(sessionReference);
+        if (selector.Length == 0)
+            return actionable.Select(candidate => candidate.Id).ToList();
+
+        return actionable
+            .Where(candidate => ShareSessionReferenceMatches(candidate, selector, current))
+            .Select(candidate => candidate.Id)
+            .ToList();
+    }
+
+    private static bool ShareSessionReferenceMatches(
+        ZaloSessionReference session,
+        string selector,
+        DateTimeOffset now)
+    {
+        var normalizedName = NormalizeText(session.Name);
+        if (normalizedName.Length > 0 && selector.Contains(normalizedName, StringComparison.Ordinal))
+            return true;
+        if (session.StartTime is null) return false;
+
+        var local = session.StartTime.Value.ToOffset(VietnamOffset);
+        var today = now.ToOffset(VietnamOffset).Date;
+        if (HasAny(selector, "hom nay", "bua nay") && local.Date == today) return true;
+        if (HasAny(selector, "ngay mai", "mai nay") && local.Date == today.AddDays(1)) return true;
+
+        foreach (Match dateMatch in Regex.Matches(
+                     selector,
+                     @"(?<!\d)(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?(?!\d)"))
+        {
+            if (!int.TryParse(dateMatch.Groups[1].Value, out var day) ||
+                !int.TryParse(dateMatch.Groups[2].Value, out var month) ||
+                day != local.Day || month != local.Month)
+                continue;
+            if (!dateMatch.Groups[3].Success) return true;
+            if (!int.TryParse(dateMatch.Groups[3].Value, out var year)) continue;
+            if (year < 100) year += 2000;
+            if (year == local.Year) return true;
+        }
+
+        var dayTokens = local.DayOfWeek switch
+        {
+            DayOfWeek.Monday => new[] { "t2", "thu 2", "thu hai" },
+            DayOfWeek.Tuesday => new[] { "t3", "thu 3", "thu ba" },
+            DayOfWeek.Wednesday => new[] { "t4", "thu 4", "thu tu" },
+            DayOfWeek.Thursday => new[] { "t5", "thu 5", "thu nam" },
+            DayOfWeek.Friday => new[] { "t6", "thu 6", "thu sau" },
+            DayOfWeek.Saturday => new[] { "t7", "thu 7", "thu bay" },
+            _ => new[] { "cn", "chu nhat" }
+        };
+        return dayTokens.Any(token => ContainsToken(selector, token));
+    }
+
     private static List<SessionSnapshot> RankShareSessionCandidates(
         IReadOnlyList<SessionSnapshot> candidates,
         string rawAnchor,
@@ -29,7 +101,15 @@ public sealed partial class ZaloBotService
         ZaloShareSlotCommand command,
         IReadOnlyList<ZaloMentionedUser> mentionedUsers)
     {
-        var scored = candidates.Select(session =>
+        var scopedIds = ScopeShareSessionCandidateIds(
+                candidates.Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime)).ToList(),
+                command.SessionReference)
+            .ToHashSet(StringComparer.Ordinal);
+        var scopedCandidates = candidates
+            .Where(session => scopedIds.Contains(session.Id))
+            .ToList();
+
+        var scored = scopedCandidates.Select(session =>
         {
             var anchorMatches = (anchorZaloUserId.Length > 0 &&
                                  session.PlayerNamesByZaloUserId.ContainsKey(anchorZaloUserId)) ||
