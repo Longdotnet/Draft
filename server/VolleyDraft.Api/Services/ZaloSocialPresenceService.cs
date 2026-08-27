@@ -91,16 +91,17 @@ internal static class ZaloGroupEngagementDirector
         ZaloSocialPresenceSettings settings)
     {
         if (!settings.Enabled) return null;
+
         var localNow = snapshot.Now.ToOffset(VietnamOffset);
         if (!IsInsideWindow(localNow.Hour, settings.StartHour, settings.EndHour)) return null;
         if (snapshot.RecentTwoMinuteMessageCount >= 6) return null;
         if (snapshot.BotMessagesToday >= settings.MaxProactivePerDay) return null;
 
         var history = snapshot.ProactiveHistory ?? [];
-        var lastProactive = history
+        var latestDurable = history
             .OrderByDescending(item => item.SentAt)
-            .FirstOrDefault();
-        var lastBotOrProactive = Max(snapshot.LastBotMessageAt, lastProactive?.SentAt);
+            .FirstOrDefault()?.SentAt;
+        var lastBotOrProactive = Max(snapshot.LastBotMessageAt, latestDurable);
         if (lastBotOrProactive is { } lastBot &&
             snapshot.Now - lastBot < TimeSpan.FromMinutes(settings.MinBotIntervalMinutes))
             return null;
@@ -113,13 +114,13 @@ internal static class ZaloGroupEngagementDirector
             var until = upcoming - snapshot.Now;
             if (until >= TimeSpan.FromMinutes(30) && until <= TimeSpan.FromHours(8))
             {
-                var key = EventContentKey("pregame", snapshot.UpcomingSessionName, upcoming);
-                if (!HasContentKey(history, key))
+                var contentKey = EventContentKey("pregame", snapshot.UpcomingSessionName, upcoming);
+                if (!HasContentKey(history, contentKey))
                 {
                     return new(
                         ZaloEngagementMoveKind.PregameBanter,
                         BuildPregame(settings.TrashTalkLevel),
-                        key);
+                        contentKey);
                 }
             }
         }
@@ -127,43 +128,34 @@ internal static class ZaloGroupEngagementDirector
         if (snapshot.RecentFinishedSessionAt is { } finished &&
             snapshot.Now - finished <= TimeSpan.FromHours(4))
         {
-            var key = EventContentKey("postgame", snapshot.RecentFinishedSessionName, finished);
-            if (!HasContentKey(history, key))
+            var contentKey = EventContentKey("postgame", snapshot.RecentFinishedSessionName, finished);
+            if (!HasContentKey(history, contentKey))
             {
                 return new(
                     ZaloEngagementMoveKind.PostgameDebrief,
                     BuildPostgame(settings.TrashTalkLevel),
-                    key);
+                    contentKey);
             }
         }
 
-        // Ambient trash/debate is intentionally a once-per-local-day lane. Event-specific
-        // pre/post-game banter above has its own occurrence key and does not consume this.
+        // Ambient trash/debate is a once-per-local-day lane. Session-specific pre/post
+        // banter above has an occurrence key of its own and does not consume this slot.
         if (snapshot.LegacyAmbientTrashSentToday || history.Any(item =>
                 string.Equals(item.Lane, ZaloProactiveLane.SocialPresence, StringComparison.Ordinal) &&
                 IsAmbientKind(item.Kind) &&
                 item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date))
             return null;
 
-        var selector = StableIndex($"{snapshot.GroupId}:{localNow:yyyy-MM-dd}:ambient-kind", 2);
-        if (selector == 0)
-        {
-            var phrase = SelectAmbientPhrase(
-                snapshot.GroupId,
-                localNow.Date,
-                ZaloEngagementMoveKind.QuietWake,
-                settings.TrashTalkLevel,
-                history);
-            return new(ZaloEngagementMoveKind.QuietWake, phrase.Message, phrase.ContentKey);
-        }
-
-        var hotTake = SelectAmbientPhrase(
+        var kind = StableIndex($"{snapshot.GroupId}:{localNow:yyyy-MM-dd}:ambient-kind", 2) == 0
+            ? ZaloEngagementMoveKind.QuietWake
+            : ZaloEngagementMoveKind.HotTake;
+        var phrase = SelectAmbientPhrase(
             snapshot.GroupId,
             localNow.Date,
-            ZaloEngagementMoveKind.HotTake,
+            kind,
             settings.TrashTalkLevel,
             history);
-        return new(ZaloEngagementMoveKind.HotTake, hotTake.Message, hotTake.ContentKey);
+        return new(kind, phrase.Message, phrase.ContentKey);
     }
 
     internal static bool IsAmbientTrashMessage(string? message)
@@ -190,22 +182,23 @@ internal static class ZaloGroupEngagementDirector
             _ => HotTakeMild
         };
         var family = kind == ZaloEngagementMoveKind.QuietWake ? "quiet" : "hot";
+        var tone = level >= 3 ? "street" : "mild";
 
         var ranked = pool
             .Select((message, index) =>
             {
-                var contentKey = $"ambient:{family}:{(level >= 3 ? "street" : "mild")}:{index}";
+                var contentKey = $"ambient:{family}:{tone}:{index}";
                 var matching = history
                     .Where(item =>
                         string.Equals(item.Lane, ZaloProactiveLane.SocialPresence, StringComparison.Ordinal) &&
                         string.Equals(item.ContentKey, contentKey, StringComparison.Ordinal))
-                    .ToList();
+                    .ToArray();
                 return new
                 {
                     Message = message,
                     ContentKey = contentKey,
-                    Usage = matching.Count,
-                    LastSentAt = matching.Count == 0
+                    Usage = matching.Length,
+                    LastSentAt = matching.Length == 0
                         ? DateTimeOffset.MinValue
                         : matching.Max(item => item.SentAt)
                 };
@@ -215,7 +208,7 @@ internal static class ZaloGroupEngagementDirector
             .ThenBy(item => StableIndex(
                 $"{groupId}:{localDate:yyyy-MM-dd}:{item.ContentKey}",
                 10000))
-            .ToList();
+            .ToArray();
 
         var selected = ranked[0];
         return (selected.Message, selected.ContentKey);
@@ -336,7 +329,7 @@ public sealed class ZaloSocialPresenceService(
                 500,
                 cancellationToken);
 
-            var vietnamNow = now.ToOffset(VietnamOffset);
+            var localNow = now.ToOffset(VietnamOffset);
             var lastUser = messages
                 .Where(item => !item.IsFromBot)
                 .Select(item => (DateTimeOffset?)item.SentAt)
@@ -347,44 +340,25 @@ public sealed class ZaloSocialPresenceService(
                 .FirstOrDefault();
             var presenceToday = proactiveHistory.Count(item =>
                 string.Equals(item.Lane, ZaloProactiveLane.SocialPresence, StringComparison.Ordinal) &&
-                item.SentAt.ToOffset(VietnamOffset).Date == vietnamNow.Date);
+                item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date);
             var legacyBotToday = messages.Count(item =>
-                item.IsFromBot && item.SentAt.ToOffset(VietnamOffset).Date == vietnamNow.Date);
+                item.IsFromBot && item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date);
             var recentTwoMinutes = messages.Count(item => now - item.SentAt <= TimeSpan.FromMinutes(2));
             var legacyTrashSentToday = messages.Any(item =>
                 item.IsFromBot &&
-                item.SentAt.ToOffset(VietnamOffset).Date == vietnamNow.Date &&
+                item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date &&
                 ZaloGroupEngagementDirector.IsAmbientTrashMessage(item.Content));
             var effectiveLastBot = Max(
                 lastBot,
                 proactiveHistory.OrderByDescending(item => item.SentAt).FirstOrDefault()?.SentAt);
 
-            var greetingHistory = Array.Empty<ZaloSocialHistoryMessage>();
-            if (dailySettings.Enabled && ZaloDailyGreetingEngine.IsSoftGreetingZone(now))
-            {
-                var echoedGreetingHistory = await db.ZaloGroupMessages
-                    .AsNoTracking()
-                    .Where(item => item.ZaloConnectionId == group.Key.ConnectionId &&
-                                   item.GroupId == group.Key.GroupId &&
-                                   item.IsFromBot &&
-                                   item.SentAt >= now.AddDays(-dailySettings.GreetingRepeatDays))
-                    .OrderByDescending(item => item.SentAt)
-                    .Take(500)
-                    .Select(item => new ZaloSocialHistoryMessage(item.Content, item.SentAt))
-                    .ToArrayAsync(cancellationToken);
-                var durableGreetingHistory = proactiveHistory
-                    .Where(item =>
-                        string.Equals(item.Lane, ZaloProactiveLane.DailyGreeting, StringComparison.Ordinal) &&
-                        item.SentAt >= now.AddDays(-dailySettings.GreetingRepeatDays))
-                    .Select(item => new ZaloSocialHistoryMessage(item.MessageText, item.SentAt));
-
-                greetingHistory = echoedGreetingHistory
-                    .Concat(durableGreetingHistory)
-                    .GroupBy(item => $"{item.SentAt:O}\n{item.Text}", StringComparer.Ordinal)
-                    .Select(grouping => grouping.First())
-                    .OrderByDescending(item => item.SentAt)
-                    .ToArray();
-            }
+            var greetingHistory = await LoadGreetingHistoryAsync(
+                group.Key.ConnectionId,
+                group.Key.GroupId,
+                proactiveHistory,
+                dailySettings,
+                now,
+                cancellationToken);
 
             var greeting = ZaloDailyGreetingEngine.Plan(
                 new ZaloDailyGreetingSnapshot(
@@ -408,77 +382,24 @@ public sealed class ZaloSocialPresenceService(
                     continue;
                 }
 
-                var idempotencyKey =
+                var greetingIdempotencyKey =
                     $"social-greeting:{group.Key.ConnectionId}:{group.Key.GroupId}:{greeting.ServiceDate:yyyyMMdd}:{greeting.Kind}";
-                if (!await proactiveStore.TryAcquireLeaseAsync(
-                        group.Key.ConnectionId,
-                        group.Key.GroupId,
-                        idempotencyKey,
-                        now,
-                        SendLeaseDuration,
-                        cancellationToken))
-                    continue;
-
-                var accepted = false;
-                try
-                {
-                    var response = await bridge.SendGroupMessageAsync(
-                        group.Key.AccountId,
-                        group.Key.GroupId,
-                        greeting.Message,
-                        [],
-                        imageUrl: null,
-                        idempotencyKey: idempotencyKey);
-                    if (!response.Sent)
-                    {
-                        await proactiveStore.ReleaseLeaseAsync(
-                            group.Key.ConnectionId,
-                            group.Key.GroupId,
-                            idempotencyKey,
-                            cancellationToken);
-                        continue;
-                    }
-
-                    accepted = true;
-                    await RememberAcceptedProactiveAsync(
-                        group.Key.ConnectionId,
-                        group.Key.GroupId,
-                        ZaloProactiveLane.DailyGreeting,
-                        greeting.Kind.ToString(),
-                        $"greeting:{greeting.ServiceDate:yyyy-MM-dd}:{greeting.Kind}",
-                        null,
-                        null,
-                        greeting.Message,
-                        response.MessageId,
-                        idempotencyKey,
-                        now,
-                        settings.MinBotIntervalMinutes,
-                        cancellationToken);
-                    logger.LogInformation(
-                        "Daily greeting sent as text only Group={GroupId} Kind={Kind} Mood={Mood}",
-                        group.Key.GroupId,
-                        greeting.Kind,
-                        greeting.Mood);
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    if (!accepted)
-                    {
-                        await TryReleaseLeaseAsync(
-                            group.Key.ConnectionId,
-                            group.Key.GroupId,
-                            idempotencyKey,
-                            cancellationToken);
-                    }
-                    logger.LogWarning(exception, "Daily greeting send failed Group={GroupId}", group.Key.GroupId);
-                }
+                await TrySendProactiveAsync(
+                    group.Key.AccountId,
+                    group.Key.ConnectionId,
+                    group.Key.GroupId,
+                    ZaloProactiveLane.DailyGreeting,
+                    greeting.Kind.ToString(),
+                    $"greeting:{greeting.ServiceDate:yyyy-MM-dd}:{greeting.Kind}",
+                    greeting.Message,
+                    greetingIdempotencyKey,
+                    now,
+                    settings.MinBotIntervalMinutes,
+                    cancellationToken);
                 continue;
             }
 
             // Morning and bedtime should feel warm, not like the street-trash persona.
-            // If today is not a greeting day we stay quiet in these soft zones instead
-            // of sending a trashy QuietWake/HotTake. Direct mentions are handled by the
-            // normal realtime bot pipeline and remain available at any hour.
             if (ZaloDailyGreetingEngine.IsSoftGreetingZone(now)) continue;
 
             var upcoming = group
@@ -520,84 +441,147 @@ public sealed class ZaloSocialPresenceService(
                 continue;
             }
 
-            var local = now.ToOffset(VietnamOffset);
             var occurrence = move.Kind is ZaloEngagementMoveKind.QuietWake or ZaloEngagementMoveKind.HotTake
                 ? "ambient-trash"
                 : move.ContentKey;
-            var idempotencyKey =
-                $"social-presence:{group.Key.ConnectionId}:{group.Key.GroupId}:{local:yyyyMMdd}:{occurrence}";
-            if (!await proactiveStore.TryAcquireLeaseAsync(
-                    group.Key.ConnectionId,
-                    group.Key.GroupId,
-                    idempotencyKey,
-                    now,
-                    SendLeaseDuration,
-                    cancellationToken))
-                continue;
-
-            var socialAccepted = false;
-            try
+            var socialIdempotencyKey =
+                $"social-presence:{group.Key.ConnectionId}:{group.Key.GroupId}:{localNow:yyyyMMdd}:{occurrence}";
+            var sent = await TrySendProactiveAsync(
+                group.Key.AccountId,
+                group.Key.ConnectionId,
+                group.Key.GroupId,
+                ZaloProactiveLane.SocialPresence,
+                move.Kind.ToString(),
+                move.ContentKey,
+                move.Message,
+                socialIdempotencyKey,
+                now,
+                settings.MinBotIntervalMinutes,
+                cancellationToken);
+            if (sent)
             {
-                var response = await bridge.SendGroupMessageAsync(
-                    group.Key.AccountId,
-                    group.Key.GroupId,
-                    move.Message,
-                    [],
-                    idempotencyKey: idempotencyKey);
-                if (!response.Sent)
-                {
-                    await proactiveStore.ReleaseLeaseAsync(
-                        group.Key.ConnectionId,
-                        group.Key.GroupId,
-                        idempotencyKey,
-                        cancellationToken);
-                    continue;
-                }
-
-                socialAccepted = true;
-                await RememberAcceptedProactiveAsync(
-                    group.Key.ConnectionId,
-                    group.Key.GroupId,
-                    ZaloProactiveLane.SocialPresence,
-                    move.Kind.ToString(),
-                    move.ContentKey,
-                    null,
-                    null,
-                    move.Message,
-                    response.MessageId,
-                    idempotencyKey,
-                    now,
-                    settings.MinBotIntervalMinutes,
-                    cancellationToken);
                 logger.LogInformation(
                     "Social presence sent Group={GroupId} Move={Move} ContentKey={ContentKey}",
                     group.Key.GroupId,
                     move.Kind,
                     move.ContentKey);
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                if (!socialAccepted)
-                {
-                    await TryReleaseLeaseAsync(
-                        group.Key.ConnectionId,
-                        group.Key.GroupId,
-                        idempotencyKey,
-                        cancellationToken);
-                }
-                logger.LogWarning(exception, "Social presence send failed Group={GroupId}", group.Key.GroupId);
-            }
         }
     }
 
-    private async Task RememberAcceptedProactiveAsync(
+    private async Task<IReadOnlyList<ZaloSocialHistoryMessage>> LoadGreetingHistoryAsync(
+        string connectionId,
+        string groupId,
+        IReadOnlyList<ZaloProactiveMessageHistoryData> proactiveHistory,
+        ZaloDailySocialSettings dailySettings,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (!dailySettings.Enabled || !ZaloDailyGreetingEngine.IsSoftGreetingZone(now))
+            return [];
+
+        var echoed = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .Where(item => item.ZaloConnectionId == connectionId &&
+                           item.GroupId == groupId &&
+                           item.IsFromBot &&
+                           item.SentAt >= now.AddDays(-dailySettings.GreetingRepeatDays))
+            .OrderByDescending(item => item.SentAt)
+            .Take(500)
+            .Select(item => new ZaloSocialHistoryMessage(item.Content, item.SentAt))
+            .ToArrayAsync(cancellationToken);
+        var durable = proactiveHistory
+            .Where(item =>
+                string.Equals(item.Lane, ZaloProactiveLane.DailyGreeting, StringComparison.Ordinal) &&
+                item.SentAt >= now.AddDays(-dailySettings.GreetingRepeatDays))
+            .Select(item => new ZaloSocialHistoryMessage(item.MessageText, item.SentAt));
+
+        return echoed
+            .Concat(durable)
+            .GroupBy(item => $"{item.SentAt:O}\n{item.Content}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderByDescending(item => item.SentAt)
+            .ToArray();
+    }
+
+    private async Task<bool> TrySendProactiveAsync(
+        string accountId,
         string connectionId,
         string groupId,
         string lane,
         string kind,
         string contentKey,
-        string? subjectUserId,
-        string? subjectName,
+        string message,
+        string idempotencyKey,
+        DateTimeOffset now,
+        int cooldownMinutes,
+        CancellationToken cancellationToken)
+    {
+        if (!await proactiveStore.TryAcquireLeaseAsync(
+                connectionId,
+                groupId,
+                idempotencyKey,
+                now,
+                SendLeaseDuration,
+                cancellationToken))
+            return false;
+
+        var providerAccepted = false;
+        try
+        {
+            var response = await bridge.SendGroupMessageAsync(
+                accountId,
+                groupId,
+                message,
+                [],
+                imageUrl: null,
+                idempotencyKey: idempotencyKey);
+            if (!response.Sent)
+            {
+                await proactiveStore.ReleaseLeaseAsync(
+                    connectionId,
+                    groupId,
+                    idempotencyKey,
+                    cancellationToken);
+                return false;
+            }
+
+            providerAccepted = true;
+            await PersistAcceptedSendBestEffortAsync(
+                connectionId,
+                groupId,
+                lane,
+                kind,
+                contentKey,
+                message,
+                response.MessageId,
+                idempotencyKey,
+                now,
+                cooldownMinutes,
+                cancellationToken);
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            if (!providerAccepted)
+                await TryReleaseLeaseAsync(connectionId, groupId, idempotencyKey, cancellationToken);
+
+            logger.LogWarning(
+                exception,
+                "Proactive send failed Group={GroupId} Lane={Lane} Kind={Kind}",
+                groupId,
+                lane,
+                kind);
+            return false;
+        }
+    }
+
+    private async Task PersistAcceptedSendBestEffortAsync(
+        string connectionId,
+        string groupId,
+        string lane,
+        string kind,
+        string contentKey,
         string message,
         string? providerMessageId,
         string idempotencyKey,
@@ -634,8 +618,8 @@ public sealed class ZaloSocialPresenceService(
                     lane,
                     kind,
                     contentKey,
-                    subjectUserId,
-                    subjectName,
+                    null,
+                    null,
                     message,
                     sentAt,
                     NormalizeProviderMessageId(providerMessageId),
