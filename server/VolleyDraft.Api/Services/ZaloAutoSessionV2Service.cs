@@ -374,6 +374,7 @@ internal sealed class ZaloAutoSessionV2Service(
         if (reason.StartsWith("preview_only:", StringComparison.Ordinal) ||
             reason is "anonymous_poll" or
                 "closed_poll" or
+                "no_current_schedule_option" or
                 "poll_creator_is_not_group_organizer" or
                 "all_schedule_options_already_linked" or
                 "website_matches_already_exist")
