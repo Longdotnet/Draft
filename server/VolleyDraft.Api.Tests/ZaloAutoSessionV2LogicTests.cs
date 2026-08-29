@@ -83,6 +83,26 @@ public sealed class ZaloAutoSessionV2LogicTests
     }
 
     [Fact]
+    public void PastSchedulePoll_DoesNotRetryAfterItHasNoCurrentOption()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 20, 15, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll("Bóng tuần này", new BridgePollOption("o1", "27/8 17h30", 8, []));
+        var existing = new ZaloPollSessionProposalData
+        {
+            Status = ZaloPollSessionProposalStatus.Ignored,
+            ClassifierReason = "no_current_schedule_option",
+            PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs - 1,
+            UpdatedAt = now.AddHours(-2)
+        };
+
+        Assert.False(ZaloAutoSessionV2Service.ShouldRetryIgnoredProposal(
+            existing,
+            poll,
+            now,
+            TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
     public void ApprovedDayDefault_ChangesOnlyOptionsWithoutExplicitTime()
     {
         var day = new DateTimeOffset(2026, 8, 23, 17, 30, 0, TimeSpan.FromHours(7));
