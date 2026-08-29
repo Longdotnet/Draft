@@ -36,9 +36,70 @@ public sealed class ZaloAutoSessionV2LogicTests
         Assert.Contains("8/18 người", live);
         Assert.DoesNotContain("4 set", live);
         Assert.DoesNotContain("đội ×", live);
+        Assert.Contains("Tui đã kiểm tra website", live);
         Assert.Contains("Website CHƯA được tạo", live);
         Assert.Contains("CANARY PREVIEW", previewOnly);
         Assert.Contains("KHÔNG tạo website", previewOnly);
+    }
+
+    [Fact]
+    public void IgnoredClassifierDecision_RetriesAfterNewPollActivity()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 20, 15, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll("Bóng tuần này", new BridgePollOption("o1", "T4 17h30", 8, []));
+        var existing = new ZaloPollSessionProposalData
+        {
+            Status = ZaloPollSessionProposalStatus.Ignored,
+            ClassifierReason = "rule_score_below_threshold",
+            PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs - 1,
+            UpdatedAt = now.AddMinutes(-3)
+        };
+
+        Assert.True(ZaloAutoSessionV2Service.ShouldRetryIgnoredProposal(
+            existing,
+            poll,
+            now,
+            TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
+    public void PermanentIgnoredDecision_DoesNotRetry()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 20, 15, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll("Bóng tuần này", new BridgePollOption("o1", "T4 17h30", 8, []));
+        var existing = new ZaloPollSessionProposalData
+        {
+            Status = ZaloPollSessionProposalStatus.Ignored,
+            ClassifierReason = "poll_creator_is_not_group_organizer",
+            PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs - 1,
+            UpdatedAt = now.AddHours(-1)
+        };
+
+        Assert.False(ZaloAutoSessionV2Service.ShouldRetryIgnoredProposal(
+            existing,
+            poll,
+            now,
+            TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
+    public void PastSchedulePoll_DoesNotRetryAfterItHasNoCurrentOption()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 20, 15, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll("Bóng tuần này", new BridgePollOption("o1", "27/8 17h30", 8, []));
+        var existing = new ZaloPollSessionProposalData
+        {
+            Status = ZaloPollSessionProposalStatus.Ignored,
+            ClassifierReason = "no_current_schedule_option",
+            PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs - 1,
+            UpdatedAt = now.AddHours(-2)
+        };
+
+        Assert.False(ZaloAutoSessionV2Service.ShouldRetryIgnoredProposal(
+            existing,
+            poll,
+            now,
+            TimeSpan.FromMinutes(15)));
     }
 
     [Fact]

@@ -205,7 +205,16 @@ internal sealed class ZaloAutoSessionV2Service(
             }
             else if (!existingPreviewOnly && existing.Status == ZaloPollSessionProposalStatus.Ignored)
             {
-                return;
+                var retryMinutes = Math.Clamp(
+                    configuration.GetValue("AutoSession:IgnoredRetryMinutes", 15),
+                    2,
+                    1440);
+                if (!ShouldRetryIgnoredProposal(
+                        existing,
+                        poll,
+                        DateTimeOffset.UtcNow,
+                        TimeSpan.FromMinutes(retryMinutes)))
+                    return;
             }
         }
 
@@ -281,6 +290,20 @@ internal sealed class ZaloAutoSessionV2Service(
             return;
         }
 
+        candidates = await FilterCandidatesMissingWebsiteMatchAsync(tracked, candidates, cancellationToken);
+        proposal.CandidatesJson = JsonSerializer.Serialize(candidates, JsonOptions);
+        if (candidates.Count == 0)
+        {
+            proposal.Status = ZaloPollSessionProposalStatus.Ignored;
+            proposal.ClassifierReason = "website_matches_already_exist";
+            await store.UpsertProposalAsync(proposal, cancellationToken);
+            logger.LogInformation(
+                "Auto-session skipped organizer prompt because website matches already exist Group={GroupId} Poll={PollId}",
+                tracked.GroupId,
+                poll.Id);
+            return;
+        }
+
         var targetIds = new[] { pollCreatorId };
         var names = await ResolveNamesAsync(credentials, targetIds);
         var body = BuildOrganizerPreview(
@@ -338,6 +361,56 @@ internal sealed class ZaloAutoSessionV2Service(
             await store.UpsertProposalAsync(proposal, cancellationToken);
             throw;
         }
+    }
+
+    internal static bool ShouldRetryIgnoredProposal(
+        ZaloPollSessionProposalData existing,
+        BridgePoll poll,
+        DateTimeOffset now,
+        TimeSpan retryAfter)
+    {
+        if (existing.Status != ZaloPollSessionProposalStatus.Ignored) return false;
+        var reason = existing.ClassifierReason ?? string.Empty;
+        if (reason.StartsWith("preview_only:", StringComparison.Ordinal) ||
+            reason is "anonymous_poll" or
+                "closed_poll" or
+                "no_current_schedule_option" or
+                "poll_creator_is_not_group_organizer" or
+                "all_schedule_options_already_linked" or
+                "website_matches_already_exist")
+            return false;
+
+        var age = now - existing.UpdatedAt;
+        var pollChangedSinceLastDecision = poll.UpdatedAtUnixMs > existing.PollUpdatedAtUnixMs;
+        return age >= retryAfter ||
+               pollChangedSinceLastDecision && age >= TimeSpan.FromMinutes(2);
+    }
+
+    private async Task<List<ZaloAutoSessionCandidate>> FilterCandidatesMissingWebsiteMatchAsync(
+        ZaloTrackedGroupData tracked,
+        IReadOnlyList<ZaloAutoSessionCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (candidates.Count == 0) return [];
+
+        var earliest = candidates.Min(candidate => candidate.StartTime).AddMinutes(-5);
+        var latest = candidates.Max(candidate => candidate.StartTime).AddMinutes(5);
+        var existingStarts = await db.MatchSessions
+            .AsNoTracking()
+            .Where(session =>
+                session.AdminUserId == tracked.AdminUserId &&
+                session.ZaloGroupId == tracked.GroupId &&
+                session.Status != SessionStatus.Cancelled &&
+                session.StartTime != null &&
+                session.StartTime >= earliest &&
+                session.StartTime <= latest)
+            .Select(session => session.StartTime!.Value)
+            .ToListAsync(cancellationToken);
+
+        return candidates
+            .Where(candidate => !existingStarts.Any(start =>
+                Math.Abs((start - candidate.StartTime).TotalMinutes) <= 5))
+            .ToList();
     }
 
     private async Task CaptureLearningSignalsAsync(
@@ -460,7 +533,7 @@ internal sealed class ZaloAutoSessionV2Service(
         var locationText = string.IsNullOrWhiteSpace(location) ? "chưa đặt sân mặc định" : location.Trim();
         var modeLine = rollout == ZaloAutoSessionRolloutMode.PreviewOnly
             ? "🧪 CANARY PREVIEW: hiện chỉ xem trước, reply sẽ KHÔNG tạo website. Khi test ổn, admin chuyển group sang Live."
-            : "✅ Website CHƯA được tạo. Bạn cứ reply tin này và nói tự nhiên phần muốn tạo/sửa; bot sẽ chốt lại trước khi ghi website.";
+            : "✅ Tui đã kiểm tra website: chưa có trận trùng lịch cho các ngày dưới đây. Website CHƯA được tạo. Bạn cứ reply tin này và nói tự nhiên phần muốn tạo/sửa; bot sẽ chốt lại trước khi ghi website.";
         return $"Tui hiểu poll “{Truncate(poll.Question, 180)}” là poll đăng ký lịch bóng chuyền.\n\n" +
                $"PREVIEW WEBSITE\n{string.Join("\n", lines)}\n" +
                $"• Địa điểm: {locationText}\n\n" +
