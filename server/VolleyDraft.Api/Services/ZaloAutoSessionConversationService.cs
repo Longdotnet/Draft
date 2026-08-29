@@ -77,6 +77,7 @@ internal sealed class ZaloAutoSessionConversationService(
             ? await conversations.GetActiveForGroupAsync(groupId, cancellationToken)
             : [];
         var implicitContext = false;
+        var lateCreateRecovery = false;
 
         if (conversation is null)
         {
@@ -93,7 +94,12 @@ internal sealed class ZaloAutoSessionConversationService(
             {
                 implicitContext = IsImplicitFollowUpWindow(conversation, senderId) &&
                                   LooksLikeImplicitConversationReply(incoming.Content);
-                if (!implicitContext) return false;
+                lateCreateRecovery = !implicitContext &&
+                                     ZaloAutoSessionOrganizerRouting.IsSafeUnaddressedCreateRecovery(
+                                         senderId,
+                                         NormalizeId(conversation.ActiveOrganizerId),
+                                         incoming.Content);
+                if (!implicitContext && !lateCreateRecovery) return false;
             }
         }
 
@@ -321,6 +327,22 @@ internal sealed class ZaloAutoSessionConversationService(
             conversation.State = ZaloAutoSessionConversationState.ReadyToConfirm;
             await conversations.SaveAsync(conversation, cancellationToken);
             return await ExecuteAsync(conversation.Id, senderId, incoming.SenderName, accountId, cancellationToken);
+        }
+
+        if (lateCreateRecovery && interpretation.Intent == ZaloAutoSessionConversationIntent.Confirm)
+        {
+            conversation.State = ZaloAutoSessionConversationState.ReadyToConfirm;
+            await conversations.SaveAsync(conversation, cancellationToken);
+            await SendConversationTextAsync(
+                conversation,
+                incoming.SenderId,
+                incoming.SenderName,
+                BuildDraftSummary(
+                    draft,
+                    tracked,
+                    "Tui thấy bạn muốn tạo lịch này. Vì “tạo đi” vừa được gửi như tin nhắn thường trong group nên tui chưa tạo ngay; tui kéo bản nháp lên lại để bạn xác nhận an toàn."),
+                cancellationToken);
+            return true;
         }
 
         if (implicitContext && interpretation.Intent == ZaloAutoSessionConversationIntent.Confirm)
