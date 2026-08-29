@@ -1,3 +1,4 @@
+using SkiaSharp;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -45,6 +46,28 @@ public sealed class ZaloGreetingCardRenderQualityTests
 
         Assert.True(IsJpeg(bytes));
         Assert.InRange(bytes.Length, 10_001, 1_500_000);
+    }
+
+    [Fact]
+    public void Uploaded_image_optimizer_caps_dimensions_and_outputs_jpeg()
+    {
+        using var sourceBitmap = new SKBitmap(2400, 1200, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using (var canvas = new SKCanvas(sourceBitmap))
+        {
+            canvas.Clear(SKColors.CornflowerBlue);
+            using var paint = new SKPaint { Color = SKColors.White, TextSize = 120, IsAntialias = true };
+            canvas.DrawText("Volley Draft", 140, 600, paint);
+        }
+        using var sourceImage = SKImage.FromBitmap(sourceBitmap);
+        using var sourceData = sourceImage.Encode(SKEncodedImageFormat.Png, 100);
+
+        var optimized = ZaloBotImageService.OptimizeForDelivery(sourceData.ToArray());
+
+        Assert.True(IsJpeg(optimized));
+        using var decoded = SKBitmap.Decode(optimized);
+        Assert.NotNull(decoded);
+        Assert.Equal(1600, decoded.Width);
+        Assert.Equal(800, decoded.Height);
     }
 
     private static bool IsJpeg(byte[] bytes) =>
