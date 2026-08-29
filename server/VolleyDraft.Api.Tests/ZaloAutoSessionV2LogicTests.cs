@@ -36,6 +36,7 @@ public sealed class ZaloAutoSessionV2LogicTests
         Assert.Contains("8/18 người", live);
         Assert.DoesNotContain("4 set", live);
         Assert.DoesNotContain("đội ×", live);
+        Assert.Contains("Tui đã kiểm tra website", live);
         Assert.Contains("Website CHƯA được tạo", live);
         Assert.Contains("CANARY PREVIEW", previewOnly);
         Assert.Contains("KHÔNG tạo website", previewOnly);
