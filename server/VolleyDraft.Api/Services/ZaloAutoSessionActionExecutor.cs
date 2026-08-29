@@ -80,7 +80,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                     ZaloConnectionId = tracked.ZaloConnectionId,
                     ZaloGroupId = tracked.GroupId,
                     ZaloGroupName = tracked.GroupName,
-                    StartTime = candidate.StartTime,
+                    StartTime = candidate.StartTime.ToUniversalTime(),
                     Location = effectiveLocation,
                     BotEnabled = tracked.BotEnabledForCreatedSessions,
                     BotOperatorZaloUserIdsJson = JsonSerializer.Serialize(organizerIds, JsonOptions),
