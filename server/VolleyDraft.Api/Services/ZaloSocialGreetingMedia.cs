@@ -326,7 +326,7 @@ internal sealed class ZaloSocialMediaAssetService(
 
         var occurrenceKey = $"{connectionId}:{groupId}:{serviceDate:yyyyMMdd}:{kind}";
         var fileName =
-            $"social-card-{StableToken(connectionId, groupId)}-{serviceDate:yyyyMMdd}-{kind.ToString().ToLowerInvariant()}-v3.png";
+            $"social-card-{StableToken(connectionId, groupId)}-{serviceDate:yyyyMMdd}-{kind.ToString().ToLowerInvariant()}-v4.jpg";
 
         var existing = await db.ZaloBotImageAssets
             .AsNoTracking()
@@ -390,7 +390,7 @@ internal sealed class ZaloSocialMediaAssetService(
         {
             AdminUserId = adminUserId,
             FileName = fileName,
-            ContentType = "image/png",
+            ContentType = "image/jpeg",
             Size = rendered.LongLength,
             Data = rendered,
             CreatedAt = DateTimeOffset.UtcNow
@@ -478,6 +478,7 @@ internal static class ZaloSocialGreetingCardRenderer
 {
     public const int Width = 1254;
     public const int Height = 1254;
+    private const int JpegQuality = 82;
 
     private static readonly SKTypeface RegularTypeface = FindTypeface(SKFontStyle.Normal);
     private static readonly SKTypeface BoldTypeface = FindTypeface(SKFontStyle.Bold);
@@ -494,7 +495,7 @@ internal static class ZaloSocialGreetingCardRenderer
 
         using var background = ReadBackground(backgroundId);
         using var surface = SKSurface.Create(
-            new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul))
+            new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Opaque))
             ?? throw new InvalidOperationException("Could not create dynamic social-card canvas.");
         var canvas = surface.Canvas;
         canvas.Clear(SKColors.White);
@@ -504,7 +505,7 @@ internal static class ZaloSocialGreetingCardRenderer
         DrawCopy(canvas, backgroundId, copy);
 
         using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        using var data = image.Encode(SKEncodedImageFormat.Jpeg, JpegQuality);
         return data.ToArray();
     }
 
