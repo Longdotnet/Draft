@@ -23,7 +23,7 @@ public sealed class ZaloGreetingCardRenderQualityTests
     }
 
     [Fact]
-    public void Morning_renderer_outputs_lossless_png()
+    public void Morning_renderer_outputs_bandwidth_friendly_jpeg()
     {
         var copy = ZaloSocialCardCopyGenerator.CreateFallback(
             ZaloDailyGreetingKind.Morning,
@@ -32,29 +32,25 @@ public sealed class ZaloGreetingCardRenderQualityTests
 
         var bytes = ZaloSocialGreetingCardRenderer.Render(3, "CLB Tân bình-The First Spike", copy);
 
-        Assert.True(IsPng(bytes));
-        Assert.True(bytes.Length > 10_000);
+        Assert.True(IsJpeg(bytes));
+        Assert.InRange(bytes.Length, 10_001, 1_500_000);
     }
 
     [Fact]
-    public void Night_renderer_outputs_lossless_png()
+    public void Night_renderer_outputs_bandwidth_friendly_jpeg()
     {
         var copy = ZaloNightGreetingCardCopyGenerator.CreateFallback(ZaloDailyGreetingMood.TenderRomantic);
 
         var bytes = ZaloNightGreetingCardRenderer.Render(1, "CLB Tân bình-The First Spike", copy);
 
-        Assert.True(IsPng(bytes));
-        Assert.True(bytes.Length > 10_000);
+        Assert.True(IsJpeg(bytes));
+        Assert.InRange(bytes.Length, 10_001, 1_500_000);
     }
 
-    private static bool IsPng(byte[] bytes) =>
-        bytes.Length >= 8 &&
-        bytes[0] == 0x89 &&
-        bytes[1] == 0x50 &&
-        bytes[2] == 0x4E &&
-        bytes[3] == 0x47 &&
-        bytes[4] == 0x0D &&
-        bytes[5] == 0x0A &&
-        bytes[6] == 0x1A &&
-        bytes[7] == 0x0A;
+    private static bool IsJpeg(byte[] bytes) =>
+        bytes.Length >= 4 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[^2] == 0xFF &&
+        bytes[^1] == 0xD9;
 }
