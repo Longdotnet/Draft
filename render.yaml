@@ -87,6 +87,8 @@ services:
         value: "8"
       - key: ZaloBot__Ambient__SocialPilot__MaxReplyChars
         value: "180"
+      - key: ZaloBot__Ambient__DailyRhythm__GreetingImagesEnabled
+        value: "false"
       - key: ZaloActivitySync__BoardPageSize
         value: "50"
       - key: ZaloActivitySync__MaxBoardPages
