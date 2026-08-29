@@ -43,6 +43,46 @@ public sealed class ZaloAutoSessionV2LogicTests
     }
 
     [Fact]
+    public void IgnoredClassifierDecision_RetriesAfterNewPollActivity()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 20, 15, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll("Bóng tuần này", new BridgePollOption("o1", "T4 17h30", 8, []));
+        var existing = new ZaloPollSessionProposalData
+        {
+            Status = ZaloPollSessionProposalStatus.Ignored,
+            ClassifierReason = "rule_score_below_threshold",
+            PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs - 1,
+            UpdatedAt = now.AddMinutes(-3)
+        };
+
+        Assert.True(ZaloAutoSessionV2Service.ShouldRetryIgnoredProposal(
+            existing,
+            poll,
+            now,
+            TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
+    public void PermanentIgnoredDecision_DoesNotRetry()
+    {
+        var now = new DateTimeOffset(2026, 8, 29, 20, 15, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll("Bóng tuần này", new BridgePollOption("o1", "T4 17h30", 8, []));
+        var existing = new ZaloPollSessionProposalData
+        {
+            Status = ZaloPollSessionProposalStatus.Ignored,
+            ClassifierReason = "poll_creator_is_not_group_organizer",
+            PollUpdatedAtUnixMs = poll.UpdatedAtUnixMs - 1,
+            UpdatedAt = now.AddHours(-1)
+        };
+
+        Assert.False(ZaloAutoSessionV2Service.ShouldRetryIgnoredProposal(
+            existing,
+            poll,
+            now,
+            TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
     public void ApprovedDayDefault_ChangesOnlyOptionsWithoutExplicitTime()
     {
         var day = new DateTimeOffset(2026, 8, 23, 17, 30, 0, TimeSpan.FromHours(7));
