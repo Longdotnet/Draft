@@ -25,6 +25,15 @@ internal static class ZaloAutoSessionOrganizerRouting
         @"(?<![a-z0-9])(?:(?:t|thu)\s*[2-7]|cn|chu\s*nhat|\d{1,2}\s*(?:h|:)|san\b|tao\b|lam\s+di\b|chot\b|trien\b|bo\b|khoi\b|them\b|doi\b|reset\b|nhu\s+ban\s+dau)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    // A plain group-chat message must never execute Auto Session. However, when there is
+    // exactly one active conversation, the current owner may come back long after the
+    // three-minute implicit window and type an unmistakable create phrase. The service can
+    // use this narrow matcher only to resurface the draft and ask for an explicit reply/@bot
+    // confirmation. It is deliberately stricter than the normal addressed command parser.
+    private static readonly Regex SafeUnaddressedCreateRecovery = new(
+        @"^(?:tao(?: di| nha| nhe| luon| website)?|ok\s+tao(?:\s+di)?|xac\s+nhan\s+tao|chot\s+tao(?:\s+di)?)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     internal static ZaloAutoSessionOrganizerRoute Evaluate(
         string senderId,
         string activeOrganizerId,
@@ -79,5 +88,20 @@ internal static class ZaloAutoSessionOrganizerRouting
         var normalized = ZaloPollScheduleParser.NormalizeText(content);
         if (normalized.Length == 0 || normalized.Length > 160) return false;
         return SubstantiveAction.IsMatch(normalized);
+    }
+
+    internal static bool IsSafeUnaddressedCreateRecovery(
+        string senderId,
+        string activeOrganizerId,
+        string? content)
+    {
+        if (!string.Equals(senderId, activeOrganizerId, StringComparison.Ordinal))
+            return false;
+
+        var normalized = ZaloPollScheduleParser.NormalizeText(content);
+        if (normalized.Length == 0 || normalized.Length > 40)
+            return false;
+
+        return SafeUnaddressedCreateRecovery.IsMatch(normalized);
     }
 }
