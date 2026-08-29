@@ -302,7 +302,7 @@ internal sealed class ZaloNightGreetingMediaAssetService(
             return null;
 
         var occurrenceKey = $"night:{connectionId}:{groupId}:{serviceDate:yyyyMMdd}";
-        var fileName = $"social-card-{StableToken(connectionId, groupId)}-{serviceDate:yyyyMMdd}-night-v2.png";
+        var fileName = $"social-card-{StableToken(connectionId, groupId)}-{serviceDate:yyyyMMdd}-night-v3.jpg";
         var existing = await db.ZaloBotImageAssets
             .AsNoTracking()
             .Where(item => item.AdminUserId == adminUserId && item.FileName == fileName)
@@ -360,7 +360,7 @@ internal sealed class ZaloNightGreetingMediaAssetService(
         {
             AdminUserId = adminUserId,
             FileName = fileName,
-            ContentType = "image/png",
+            ContentType = "image/jpeg",
             Size = rendered.LongLength,
             Data = rendered,
             CreatedAt = DateTimeOffset.UtcNow
@@ -447,6 +447,7 @@ internal static class ZaloNightGreetingCardRenderer
 {
     public const int Width = 1254;
     public const int Height = 1254;
+    private const int JpegQuality = 82;
 
     private static readonly SKTypeface RegularTypeface = FindTypeface(SKFontStyle.Normal);
     private static readonly SKTypeface BoldTypeface = FindTypeface(SKFontStyle.Bold);
@@ -460,7 +461,7 @@ internal static class ZaloNightGreetingCardRenderer
 
         using var background = ReadBackground(backgroundId);
         using var surface = SKSurface.Create(
-            new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Premul))
+            new SKImageInfo(Width, Height, SKColorType.Rgba8888, SKAlphaType.Opaque))
             ?? throw new InvalidOperationException("Could not create Night greeting canvas.");
         var canvas = surface.Canvas;
         canvas.Clear(SKColors.Black);
@@ -470,7 +471,7 @@ internal static class ZaloNightGreetingCardRenderer
         DrawCopy(canvas, copy);
 
         using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        using var data = image.Encode(SKEncodedImageFormat.Jpeg, JpegQuality);
         return data.ToArray();
     }
 
