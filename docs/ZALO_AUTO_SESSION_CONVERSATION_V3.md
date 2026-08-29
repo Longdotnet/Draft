@@ -103,6 +103,18 @@ It explicitly rejects obvious chatter such as:
 
 An implicitly associated message can never perform the final write. Final creation requires an explicitly addressed bot message (reply/quote or @bot).
 
+### Late plain `tạo đi` recovery
+
+If the preview/reminder has scrolled away and there is **exactly one** active Auto Session conversation in the group, the current active organizer may later type a narrow, unmistakable create phrase such as `tạo đi`, `tạo luôn`, `ok tạo đi`, or `xác nhận tạo` as a normal group message.
+
+That message still **does not create the website**. V3 only uses it to resurface the current draft, mention the active organizer, move the conversation to `ReadyToConfirm`, and give them a fresh bot message to reply to. The organizer must then reply to that bot message (or explicitly @mention the bot) to perform the final write.
+
+This recovery path is deliberately strict:
+- it is available only to the current active organizer
+- it is disabled when multiple active conversations make the target ambiguous
+- vague group chatter such as `ok`, `ừ`, `chốt`, `triển`, `làm đi`, or messages that merely contain `tạo đi` inside a longer sentence do not qualify
+- it never bypasses the normal final authorization and idempotency checks
+
 ## Final confirmation
 
 Safe write rules:
