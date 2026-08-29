@@ -115,6 +115,14 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        // Auto Session V3 owns replies/mentions tied to a pending poll conversation.
+        // Give it first refusal so an explicit "tạo đi" cannot fall through to the
+        // generic NPC router and lose the poll/organizer context.
+        if (serviceProvider is not null &&
+            await ZaloAutoSessionConversationService.Create(serviceProvider)
+                .TryHandleIncomingAsync(incoming, cancellationToken))
+            return true;
+
         // Draft preparation decisions are deterministic domain state. Route them
         // before mention/Ambient gating so a live leader can naturally say
         // "15 vẫn đánh", "kiếm thêm", or the follow-up "draft đi" with or without @bot.
