@@ -207,7 +207,7 @@ public sealed class ZaloDailySocialRhythmTests
     }
 
     [Fact]
-    public void Dynamic_card_renderer_uses_each_active_morning_background_and_returns_real_png()
+    public void Dynamic_card_renderer_uses_each_active_morning_background_and_returns_real_jpeg()
     {
         var copy = new ZaloSocialCardCopy(
             "CHÀO NGÀY MỚI",
@@ -222,7 +222,7 @@ public sealed class ZaloDailySocialRhythmTests
                 copy);
 
             Assert.True(image.Length > 100_000);
-            Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, image.Take(4).ToArray());
+            Assert.Equal(new byte[] { 0xFF, 0xD8, 0xFF }, image.Take(3).ToArray());
         }
     }
 
