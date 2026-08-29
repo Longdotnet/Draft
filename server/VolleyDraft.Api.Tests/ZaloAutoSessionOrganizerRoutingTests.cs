@@ -156,4 +156,52 @@ public sealed class ZaloAutoSessionOrganizerRoutingTests
 
         Assert.Equal(ZaloAutoSessionOrganizerRoute.IgnoreBystander, route);
     }
+
+    [Theory]
+    [InlineData("tạo đi")]
+    [InlineData("tao di")]
+    [InlineData("tạo luôn")]
+    [InlineData("ok tạo đi")]
+    [InlineData("xác nhận tạo")]
+    [InlineData("tạo website")]
+    [InlineData("chốt tạo")]
+    public void ActiveOrganizer_PlainExplicitCreate_CanResurfaceConversation(string message)
+    {
+        var allowed = ZaloAutoSessionOrganizerRouting.IsSafeUnaddressedCreateRecovery(
+            "admin-a",
+            "admin-a",
+            message);
+
+        Assert.True(allowed);
+    }
+
+    [Theory]
+    [InlineData("ok")]
+    [InlineData("ừ")]
+    [InlineData("chốt")]
+    [InlineData("triển")]
+    [InlineData("làm đi")]
+    [InlineData("T6 thôi")]
+    [InlineData("tạo đi nha mọi người")]
+    [InlineData("haha tạo đi")]
+    public void PlainGroupChatter_DoesNotQualifyForLateCreateRecovery(string message)
+    {
+        var allowed = ZaloAutoSessionOrganizerRouting.IsSafeUnaddressedCreateRecovery(
+            "admin-a",
+            "admin-a",
+            message);
+
+        Assert.False(allowed);
+    }
+
+    [Fact]
+    public void DifferentOrganizer_CannotUsePlainCreateToTakeOver()
+    {
+        var allowed = ZaloAutoSessionOrganizerRouting.IsSafeUnaddressedCreateRecovery(
+            "admin-b",
+            "admin-a",
+            "tạo đi");
+
+        Assert.False(allowed);
+    }
 }
