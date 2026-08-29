@@ -42,12 +42,11 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
         await fixture.OpenAsync(store, "owner-a", "Anh Duy", "today", "CN", "m1");
         await fixture.OpenAsync(store, "owner-b", "Pin", "tomorrow", "T2", "m2");
 
-        var now = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
         var reply = await new ZaloPassSlotHistoryFactService(fixture.Db).TryBuildAsync(
             "conn",
             "g1",
             Message("q2", "client", "Long", "kèo hôm nay có ai pass slot không?"),
-            now);
+            fixture.ReferenceNow);
 
         Assert.NotNull(reply);
         Assert.Contains("1 người", reply!.Text, StringComparison.OrdinalIgnoreCase);
@@ -72,7 +71,8 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
         var reply = await new ZaloPassSlotHistoryFactService(fixture.Db).TryBuildAsync(
             "conn",
             "g1",
-            Message("q3", "client", "Long", "còn slot nào đang mở chưa ai nhận?"));
+            Message("q3", "client", "Long", "còn slot nào đang mở chưa ai nhận?"),
+            fixture.ReferenceNow);
 
         Assert.NotNull(reply);
         Assert.Contains("1 slot", reply!.Text, StringComparison.OrdinalIgnoreCase);
@@ -89,12 +89,11 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
         await fixture.OpenAsync(store, "owner-old", "Tăng Minh Khang", "yesterday", "Thứ 7 22/8", "m-old");
         await fixture.OpenAsync(store, "owner-live", "Hoàng Nguyễn", "today", "CN 23/8", "m-live");
 
-        var now = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
         var reply = await new ZaloPassSlotHistoryFactService(fixture.Db).TryBuildAsync(
             "conn",
             "g1",
             Message("q-stale", "client", "Long", "ai pass slot em lấy nha"),
-            now);
+            fixture.ReferenceNow);
 
         Assert.NotNull(reply);
         Assert.Contains("1 slot", reply!.Text, StringComparison.OrdinalIgnoreCase);
@@ -142,14 +141,16 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private Fixture(SqliteConnection connection, VolleyDraftDbContext db)
+        private Fixture(SqliteConnection connection, VolleyDraftDbContext db, DateTimeOffset referenceNow)
         {
             Connection = connection;
             Db = db;
+            ReferenceNow = referenceNow;
         }
 
         public SqliteConnection Connection { get; }
         public VolleyDraftDbContext Db { get; }
+        public DateTimeOffset ReferenceNow { get; }
 
         public static async Task<Fixture> CreateAsync()
         {
@@ -177,9 +178,26 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
                 EncryptedCredentials = "x"
             };
 
+            // Keep date-sensitive scenarios deterministic even when CI runs near midnight.
+            // The old fixture used now+2h after 20:00, which could silently turn the
+            // session named "today" into tomorrow and make SessionToday tests flaky.
             var nowLocal = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
-            var todayStart = new DateTimeOffset(nowLocal.Year, nowLocal.Month, nowLocal.Day, 20, 0, 0, VietnamOffset);
-            if (todayStart <= nowLocal) todayStart = nowLocal.AddHours(2);
+            var referenceNow = new DateTimeOffset(
+                nowLocal.Year,
+                nowLocal.Month,
+                nowLocal.Day,
+                12,
+                0,
+                0,
+                VietnamOffset);
+            var todayStart = new DateTimeOffset(
+                nowLocal.Year,
+                nowLocal.Month,
+                nowLocal.Day,
+                20,
+                0,
+                0,
+                VietnamOffset);
             var tomorrowStart = todayStart.AddDays(1);
 
             db.Users.Add(admin);
@@ -213,7 +231,7 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
                 });
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
-            return new Fixture(connection, db);
+            return new Fixture(connection, db, referenceNow);
         }
 
         public async Task AddPastSessionAsync(string sessionId, string sessionName)
@@ -231,7 +249,7 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
                 ZaloGroupId = "g1",
                 BotEnabled = true,
                 Status = SessionStatus.Setup,
-                StartTime = DateTimeOffset.UtcNow.AddHours(-2)
+                StartTime = ReferenceNow.AddHours(-2)
             });
             await Db.SaveChangesAsync();
             Db.ChangeTracker.Clear();
