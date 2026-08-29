@@ -220,8 +220,10 @@ internal sealed class ZaloAutoSessionV2Service(
 
         var learnedRules = await v2Store.GetApprovedDayTimeRulesAsync(tracked.Id, cancellationToken);
         var parsed = ApplyLearnedDayDefaults(
-            ZaloPollScheduleParser.ExtractCandidates(poll, tracked),
-            learnedRules);
+                ZaloPollScheduleParser.ExtractCandidates(poll, tracked),
+                learnedRules)
+            .Select(candidate => candidate with { StartTime = candidate.StartTime.ToUniversalTime() })
+            .ToList();
         var proposal = existing ?? new ZaloPollSessionProposalData
         {
             Id = Guid.NewGuid().ToString("n"),
@@ -393,8 +395,8 @@ internal sealed class ZaloAutoSessionV2Service(
     {
         if (candidates.Count == 0) return [];
 
-        var earliest = candidates.Min(candidate => candidate.StartTime).AddMinutes(-5);
-        var latest = candidates.Max(candidate => candidate.StartTime).AddMinutes(5);
+        var earliest = candidates.Min(candidate => candidate.StartTime).AddMinutes(-5).ToUniversalTime();
+        var latest = candidates.Max(candidate => candidate.StartTime).AddMinutes(5).ToUniversalTime();
         var existingStarts = await db.MatchSessions
             .AsNoTracking()
             .Where(session =>
