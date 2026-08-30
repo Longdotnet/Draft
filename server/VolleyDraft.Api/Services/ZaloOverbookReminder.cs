@@ -115,10 +115,16 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
-        // Auto Session V3 owns replies/mentions tied to a pending poll conversation.
-        // Give it first refusal so an explicit "tạo đi" cannot fall through to the
-        // generic NPC router and lose the poll/organizer context.
-        if (serviceProvider is not null &&
+        // Exact numeric NPC menu commands are deterministic and must keep precedence
+        // over Auto Session V3. Otherwise an active poll conversation can swallow
+        // commands such as @bot 10 before TeamImage reaches the generic NPC router.
+        var isExactNpcCommand = incoming.MentionedBot &&
+                                ZaloBotIntelligence.TryGetExactCommand(incoming.Content, out _);
+
+        // Auto Session V3 owns replies/mentions tied to a pending poll conversation,
+        // except for exact numeric NPC commands which remain owned by the NPC router.
+        if (!isExactNpcCommand &&
+            serviceProvider is not null &&
             await ZaloAutoSessionConversationService.Create(serviceProvider)
                 .TryHandleIncomingAsync(incoming, cancellationToken))
             return true;
