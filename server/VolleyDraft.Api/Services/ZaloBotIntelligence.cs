@@ -188,7 +188,10 @@ public static class ZaloBotIntelligence
                 RegexOptions.CultureInvariant);
         });
 
-        if (hasCalendarDate || hasRelativeDate || hasCompleteSessionName)
+        if (hasCalendarDate)
+            return ResolveSessionReference(q, candidates, now);
+
+        if (hasRelativeDate || hasCompleteSessionName)
             return candidates.Select(candidate => candidate.Id).ToList();
 
         var cutoff = (now ?? DateTimeOffset.UtcNow).AddHours(-4);
