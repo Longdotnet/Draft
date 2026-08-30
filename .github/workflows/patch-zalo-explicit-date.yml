@@ -1,0 +1,45 @@
+name: Patch Zalo explicit-date session selection
+
+on:
+  push:
+    branches:
+      - fix/zalo-explicit-date-session-filter
+    paths:
+      - .github/workflows/patch-zalo-explicit-date.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/zalo-explicit-date-session-filter
+      - name: Patch candidate selection
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs")
+          text = path.read_text(encoding="utf-8")
+          old = '''        if (hasCalendarDate || hasRelativeDate || hasCompleteSessionName)
+              return candidates.Select(candidate => candidate.Id).ToList();
+'''
+          new = '''        if (hasCalendarDate)
+              return ResolveSessionReference(q, candidates, now);
+
+          if (hasRelativeDate || hasCompleteSessionName)
+              return candidates.Select(candidate => candidate.Id).ToList();
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one target block, found {text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs
+          git commit -m "fix: scope explicit session dates to matching match"
+          git push origin HEAD:fix/zalo-explicit-date-session-filter
