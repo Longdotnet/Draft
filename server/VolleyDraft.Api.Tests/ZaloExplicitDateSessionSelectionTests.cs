@@ -20,7 +20,7 @@ public sealed class ZaloExplicitDateSessionSelectionTests
     {
         var result = ZaloBotIntelligence.SelectOperationalSessionCandidateIds("30/8", Sessions, Now);
 
-        Assert.Equal(["cn-30"], result);
+        Assert.Equal(new[] { "cn-30" }, result);
     }
 
     [Fact]
@@ -28,6 +28,6 @@ public sealed class ZaloExplicitDateSessionSelectionTests
     {
         var result = ZaloBotIntelligence.SelectOperationalSessionCandidateIds("16/8", Sessions, Now);
 
-        Assert.Equal(["cn-16"], result);
+        Assert.Equal(new[] { "cn-16" }, result);
     }
 }
