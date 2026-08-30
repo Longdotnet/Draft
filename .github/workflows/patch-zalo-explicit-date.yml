@@ -1,11 +1,9 @@
 name: Patch Zalo explicit-date session selection
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/zalo-explicit-date-session-filter
-    paths:
-      - .github/workflows/patch-zalo-explicit-date.yml
+      - main
 
 permissions:
   contents: write
@@ -26,7 +24,7 @@ jobs:
           path = Path("server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs")
           text = path.read_text(encoding="utf-8")
           old = """        if (hasCalendarDate || hasRelativeDate || hasCompleteSessionName)
-              return candidates.Select(candidate => candidate.Id).ToList();
+            return candidates.Select(candidate => candidate.Id).ToList();
 """
           new = """        if (hasCalendarDate)
             return ResolveSessionReference(q, candidates, now);
