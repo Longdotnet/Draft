@@ -18,25 +18,28 @@ jobs:
         with:
           ref: fix/zalo-explicit-date-session-filter
       - name: Patch candidate selection
-        shell: python
+        shell: bash
         run: |
+          python3 - <<'PY'
           from pathlib import Path
 
           path = Path("server/VolleyDraft.Api/Services/ZaloBotIntelligence.cs")
           text = path.read_text(encoding="utf-8")
-          old = '''        if (hasCalendarDate || hasRelativeDate || hasCompleteSessionName)
+          old = """        if (hasCalendarDate || hasRelativeDate || hasCompleteSessionName)
               return candidates.Select(candidate => candidate.Id).ToList();
-'''
-          new = '''        if (hasCalendarDate)
-              return ResolveSessionReference(q, candidates, now);
+"""
+          new = """        if (hasCalendarDate)
+            return ResolveSessionReference(q, candidates, now);
 
-          if (hasRelativeDate || hasCompleteSessionName)
-              return candidates.Select(candidate => candidate.Id).ToList();
-'''
+        if (hasRelativeDate || hasCompleteSessionName)
+            return candidates.Select(candidate => candidate.Id).ToList();
+"""
           if text.count(old) != 1:
               raise SystemExit(f"expected exactly one target block, found {text.count(old)}")
           path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
       - name: Commit patch
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
