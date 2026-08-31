@@ -43,6 +43,98 @@ public sealed class ZaloAmbientSocialPilotTests
         Assert.Equal(expected, ZaloAmbientSocialResponder.IsSafeCandidate(candidate, 180));
     }
 
+    [Theory]
+    [InlineData("Bot ơi chửi bạn Thịnh thử xem", true)]
+    [InlineData("npc roast thằng Nam coi", true)]
+    [InlineData("bot cà khịa Huy một câu đi", true)]
+    [InlineData("bot ơi trêu tui thử", true)]
+    [InlineData("bot ơi đừng chửi bạn Thịnh", false)]
+    [InlineData("bot không được roast Nam", false)]
+    [InlineData("Bot ơi thằng Nam chửi Thịnh ghê", false)]
+    public void Playful_roast_request_detector_understands_genz_phrasing(
+        string content,
+        bool expected)
+    {
+        Assert.Equal(expected, ZaloAmbientSocialResponder.LooksLikePlayfulRoastRequest(content));
+    }
+
+    [Fact]
+    public async Task Explicit_playful_roast_request_uses_ai_and_returns_varied_social_reply()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("Thịnh nay gáy căng vl, vô sân nhớ bật luôn chế độ nhận bóng nha =))");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("roast-1", "user-long", "Long", "Bot ơi chửi bạn Thịnh thử xem"),
+            SocialDecision("roast-1") with
+            {
+                Kind = ZaloAmbientParticipationKind.None,
+                Intent = ZaloBotIntent.Unknown.ToString(),
+                Score = 5,
+                Signals = ["quiet_group"]
+            },
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("requested_playful_roast_ai", result!.AddressReason);
+        Assert.Contains("Thịnh", result.Text);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task Explicit_roast_request_can_use_quoted_member_context_without_hijacking_generic_replies()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("Thịnh vừa gáy xong mà bóng còn chưa qua lưới kìa cha =))");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var quote = new ZaloBridgeMessageQuote(
+            "human-thinh-1",
+            "user-thinh",
+            "Thịnh",
+            "nay tui cân cả sân",
+            "chat",
+            DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds(),
+            null);
+        var decision = SocialDecision("roast-quote") with
+        {
+            Kind = ZaloAmbientParticipationKind.None,
+            Intent = ZaloBotIntent.Unknown.ToString(),
+            Score = 5,
+            Signals = ["reply_to_member", "bot_cooldown"]
+        };
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message(
+                "roast-quote",
+                "user-long",
+                "Long",
+                "Bot ơi cà khịa bạn này thử xem",
+                quote),
+            decision,
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("requested_playful_roast_ai", result!.AddressReason);
+        Assert.Equal(1, handler.CallCount);
+    }
+
     [Fact]
     public async Task Direct_bot_banter_can_generate_short_social_candidate_without_domain_write()
     {
@@ -212,7 +304,8 @@ public sealed class ZaloAmbientSocialPilotTests
         string messageId,
         string senderId,
         string senderName,
-        string content) => new(
+        string content,
+        ZaloBridgeMessageQuote? quote = null) => new(
         accountId: "bot-account",
         botId: "bot-account",
         groupId: "g1",
@@ -222,7 +315,8 @@ public sealed class ZaloAmbientSocialPilotTests
         content: content,
         mentions: [],
         mentionedBot: false,
-        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        quote: quote);
 
     private sealed class StaticAiHandler(string answer) : HttpMessageHandler
     {
