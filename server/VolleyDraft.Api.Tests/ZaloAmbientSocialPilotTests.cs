@@ -44,6 +44,160 @@ public sealed class ZaloAmbientSocialPilotTests
     }
 
     [Fact]
+    public async Task Direct_social_question_uses_ai_even_during_cooldown_and_busy_group()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("Ai hỏi câu này chắc đang tự ứng cử rồi đó =))");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var decision = SocialDecision("social-direct") with
+        {
+            Score = 5,
+            Signals = ["question", "bot_cooldown", "busy_group"]
+        };
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("social-direct", "user-long", "Long", "Bot ơi ai đẹp trai nhất nhóm?"),
+            decision,
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("direct_social_ai", result!.AddressReason);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task Free_form_playful_roast_is_understood_by_model_without_phrase_detector()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("Thịnh nay gáy căng vl, vô sân nhớ bật luôn chế độ nhận bóng nha =))");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("roast-1", "user-long", "Long", "Bot ơi chửi bạn Thịnh thử xem"),
+            SocialDecision("roast-1") with
+            {
+                Kind = ZaloAmbientParticipationKind.None,
+                Intent = ZaloBotIntent.Unknown.ToString(),
+                Score = 5,
+                Signals = ["quiet_group"]
+            },
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("direct_social_ai", result!.AddressReason);
+        Assert.Contains("Thịnh", result.Text);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public async Task Direct_social_question_can_use_quoted_member_as_ai_grounding()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("Thịnh vừa gáy xong mà bóng còn chưa qua lưới kìa cha =))");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var quote = new ZaloBridgeMessageQuote(
+            "human-thinh-1",
+            "user-thinh",
+            "Thịnh",
+            "nay tui cân cả sân",
+            "chat",
+            DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds(),
+            null);
+        var decision = SocialDecision("social-quote") with
+        {
+            Kind = ZaloAmbientParticipationKind.None,
+            Intent = ZaloBotIntent.Unknown.ToString(),
+            Score = 5,
+            Signals = ["reply_to_member", "bot_cooldown"]
+        };
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message(
+                "social-quote",
+                "user-long",
+                "Long",
+                "Bot ơi bạn này sao, cho một câu coi",
+                quote),
+            decision,
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("direct_social_ai", result!.AddressReason);
+        Assert.Equal(1, handler.CallCount);
+        Assert.NotNull(handler.LastRequestBody);
+        using var requestDocument = JsonDocument.Parse(handler.LastRequestBody!);
+        var userContent = requestDocument.RootElement
+            .GetProperty("messages")[1]
+            .GetProperty("content")
+            .GetString();
+        Assert.NotNull(userContent);
+        using var userDocument = JsonDocument.Parse(userContent!);
+        var quotedMessage = userDocument.RootElement.GetProperty("QuotedMessage");
+        Assert.Equal("Thịnh", quotedMessage.GetProperty("SenderName").GetString());
+        Assert.Equal("nay tui cân cả sân", quotedMessage.GetProperty("Content").GetString());
+    }
+
+    [Fact]
+    public async Task Human_reply_without_direct_bot_address_remains_suppressed()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var handler = new StaticAiHandler("không được gọi");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var quote = new ZaloBridgeMessageQuote(
+            "human-thinh-2",
+            "user-thinh",
+            "Thịnh",
+            "nay tui cân cả sân",
+            "chat",
+            DateTimeOffset.UtcNow.AddSeconds(-5).ToUnixTimeMilliseconds(),
+            null);
+        var decision = SocialDecision("human-thread") with
+        {
+            Signals = ["reply_to_member"]
+        };
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("human-thread", "user-long", "Long", "gáy dữ vậy cha", quote),
+            decision,
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Fact]
     public async Task Direct_bot_banter_can_generate_short_social_candidate_without_domain_write()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -95,11 +249,8 @@ public sealed class ZaloAmbientSocialPilotTests
         Assert.Equal(0, handler.CallCount);
     }
 
-    [Theory]
-    [InlineData("ack_or_emoji_only")]
-    [InlineData("bot_cooldown")]
-    [InlineData("busy_group")]
-    public async Task Ambient_hard_suppression_beats_high_confidence_bot_address(string signal)
+    [Fact]
+    public async Task Acknowledgement_signal_still_suppresses_social_ai()
     {
         await using var fixture = await Fixture.CreateAsync();
         var handler = new StaticAiHandler("không được gọi");
@@ -111,7 +262,7 @@ public sealed class ZaloAmbientSocialPilotTests
             httpClient);
         var decision = SocialDecision("m-suppressed") with
         {
-            Signals = [signal],
+            Signals = ["ack_or_emoji_only"],
             Score = 100
         };
 
@@ -212,7 +363,8 @@ public sealed class ZaloAmbientSocialPilotTests
         string messageId,
         string senderId,
         string senderName,
-        string content) => new(
+        string content,
+        ZaloBridgeMessageQuote? quote = null) => new(
         accountId: "bot-account",
         botId: "bot-account",
         groupId: "g1",
@@ -222,17 +374,22 @@ public sealed class ZaloAmbientSocialPilotTests
         content: content,
         mentions: [],
         mentionedBot: false,
-        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        quote: quote);
 
     private sealed class StaticAiHandler(string answer) : HttpMessageHandler
     {
         public int CallCount { get; private set; }
+        public string? LastRequestBody { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             CallCount++;
+            LastRequestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken);
             var payload = JsonSerializer.Serialize(new
             {
                 choices = new[]
@@ -243,10 +400,10 @@ public sealed class ZaloAmbientSocialPilotTests
                     }
                 }
             });
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
-            });
+            };
         }
     }
 
