@@ -11,6 +11,7 @@ public sealed class ZaloOverbookWorker(
         await Task.Delay(TimeSpan.FromSeconds(25), stoppingToken);
         var nextV2RetentionAt = DateTimeOffset.MinValue;
         var nextHeavyCycleAt = DateTimeOffset.MinValue;
+        var nextCommunityCycleAt = DateTimeOffset.MinValue;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -90,13 +91,6 @@ public sealed class ZaloOverbookWorker(
                         logger.LogInformation("Draft preparation reminder cycle sent {SentCount} message(s)", draftSent);
 
                     var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
-                    var bridge = scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>();
-                    var nudgeLogger = scope.ServiceProvider.GetRequiredService<ILogger<ZaloCommunityNudgeService>>();
-                    var communitySent = await new ZaloCommunityNudgeService(db, bridge, nudgeLogger)
-                        .ProcessDueAsync(stoppingToken);
-                    if (communitySent > 0)
-                        logger.LogInformation("Community nudge cycle sent {SentCount} message(s)", communitySent);
-
                     var canonicalization = await new ZaloLegacyOutboundCanonicalizer(db)
                         .CanonicalizeAsync(500, stoppingToken);
                     if (canonicalization.Canonicalized > 0 || canonicalization.Ambiguous > 0)
@@ -167,7 +161,37 @@ public sealed class ZaloOverbookWorker(
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Overbook/profile-reply/recruitment/draft/community/V2 background cycle failed");
+                logger.LogError(exception, "Overbook/profile-reply/recruitment/draft/V2 background cycle failed");
+            }
+
+            // Community/STT is intentionally isolated from the match-orchestration lane.
+            // A failure in overbook, guest handling, draft preparation or V2 projections
+            // must not consume the day's scheduled community hint opportunities.
+            var communityNow = DateTimeOffset.UtcNow;
+            if (communityNow >= nextCommunityCycleAt)
+            {
+                nextCommunityCycleAt = communityNow.AddMinutes(2);
+                try
+                {
+                    await using var communityScope = scopeFactory.CreateAsyncScope();
+                    var services = communityScope.ServiceProvider;
+                    var communitySent = await new ZaloCommunityNudgeService(
+                            services.GetRequiredService<VolleyDraftDbContext>(),
+                            services.GetRequiredService<ZaloBridgeClient>(),
+                            services.GetRequiredService<ILogger<ZaloCommunityNudgeService>>(),
+                            services.GetRequiredService<IConfiguration>())
+                        .ProcessDueAsync(stoppingToken);
+                    if (communitySent > 0)
+                        logger.LogInformation("Community nudge cycle sent {SentCount} message(s)", communitySent);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "Community nudge background cycle failed");
+                }
             }
 
             await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
