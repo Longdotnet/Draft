@@ -24,7 +24,7 @@ internal static class ZaloDailyGreetingRecoveryPolicy
         if (!TryGetRecoveryPlanningNow(snapshot.Now, out var planningNow)) return null;
 
         var elapsed = snapshot.Now - planningNow;
-        var recoveredLastBot = snapshot.LastBotMessageAt is { } lastBot
+        DateTimeOffset? recoveredLastBot = snapshot.LastBotMessageAt is { } lastBot
             ? lastBot - elapsed
             : null;
         var recoverySnapshot = snapshot with
