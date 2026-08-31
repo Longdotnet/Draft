@@ -148,8 +148,17 @@ public sealed class ZaloAmbientSocialPilotTests
         Assert.NotNull(result);
         Assert.Equal("direct_social_ai", result!.AddressReason);
         Assert.Equal(1, handler.CallCount);
-        Assert.Contains("Thịnh", handler.LastRequestBody ?? string.Empty);
-        Assert.Contains("nay tui cân cả sân", handler.LastRequestBody ?? string.Empty);
+        Assert.NotNull(handler.LastRequestBody);
+        using var requestDocument = JsonDocument.Parse(handler.LastRequestBody!);
+        var userContent = requestDocument.RootElement
+            .GetProperty("messages")[1]
+            .GetProperty("content")
+            .GetString();
+        Assert.NotNull(userContent);
+        using var userDocument = JsonDocument.Parse(userContent!);
+        var quotedMessage = userDocument.RootElement.GetProperty("QuotedMessage");
+        Assert.Equal("Thịnh", quotedMessage.GetProperty("SenderName").GetString());
+        Assert.Equal("nay tui cân cả sân", quotedMessage.GetProperty("Content").GetString());
     }
 
     [Fact]
