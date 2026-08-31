@@ -101,8 +101,6 @@ public sealed class ZaloAmbientSocialResponder
         var userInitiatedSocialTurn = directlyAddressed || leaseTurn;
         var directTrashTalk = ZaloTrashTalkPolicy.LooksLikeDirectTrashTalk(incoming.Content, address, leaseTurn);
 
-        // "Nam ơi con bot..." remains a human-thread message. A social bot must not
-        // hijack a member-to-member thread just because the word bot appears later.
         if (!wakeTurn &&
             HumanVocativePattern.IsMatch(normalizedIncoming) &&
             !BotVocativePattern.IsMatch(normalizedIncoming))
