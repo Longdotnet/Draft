@@ -55,6 +55,15 @@ public sealed class ZaloAmbientSocialResponder
     private static readonly Regex CapabilityQuestionPattern = new(
         @"(?:(?<![a-z0-9])(?:bot|npc)(?![a-z0-9]).*(?:kha\s+nang|chuc\s+nang|lam\s+duoc\s+gi|giup\s+duoc\s+gi|co\s+the\s+lam\s+gi))|(?:(?:kha\s+nang|chuc\s+nang).*(?:gi|nao))",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PlayfulRoastImperativePattern = new(
+        @"^(?:(?:bot|npc|con\s+bot|thang\s+bot|cai\s+bot)(?:\s+oi)?\s+)?(?:chui|ca\s+khia|khia|roast|diss|choc|gheo|treu)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PlayfulRoastRequestCuePattern = new(
+        @"(?<![a-z0-9])(?:chui|ca\s+khia|khia|roast|diss|choc|gheo|treu)(?![a-z0-9]).{0,80}(?<![a-z0-9])(?:di|coi|xem|thu|mot\s+cau|1\s+cau|giup|ho|nha|nhe)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PlayfulRoastNegationPattern = new(
+        @"(?<![a-z0-9])(?:dung|khong|ko|k)\s+(?:(?:co|duoc|dc)\s+)?(?:chui|ca\s+khia|khia|roast|diss|choc|gheo|treu)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> AlwaysHardSuppressionSignals = new(StringComparer.Ordinal)
     {
         "ack_or_emoji_only",
@@ -105,6 +114,7 @@ public sealed class ZaloAmbientSocialResponder
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
         var directlyAddressed = address.Target == ZaloConversationalTarget.Bot && address.Confidence >= .9;
         var directTrashTalk = ZaloTrashTalkPolicy.LooksLikeDirectTrashTalk(incoming.Content, address, leaseTurn);
+        var playfulRoastRequest = directlyAddressed && LooksLikePlayfulRoastRequest(incoming.Content);
 
         // "Nam ơi con bot..." remains a human-thread message. A social bot must not
         // hijack a member-to-member thread just because the word bot appears later.
@@ -113,28 +123,31 @@ public sealed class ZaloAmbientSocialResponder
             !BotVocativePattern.IsMatch(normalizedIncoming))
             return null;
 
-        if (decision.Signals.Any(AlwaysHardSuppressionSignals.Contains))
+        if (decision.Signals.Any(signal =>
+                AlwaysHardSuppressionSignals.Contains(signal) &&
+                !(playfulRoastRequest && string.Equals(signal, "reply_to_member", StringComparison.Ordinal))))
             return null;
         // Cooldown/busy-group suppress unsolicited banter, but they do not silence a
-        // member who directly starts a trash-talk exchange with the bot.
-        if (!wakeTurn && !leaseTurn && !directTrashTalk &&
+        // member who directly starts a trash-talk exchange or explicitly asks the bot
+        // for a playful roast.
+        if (!wakeTurn && !leaseTurn && !directTrashTalk && !playfulRoastRequest &&
             decision.Signals.Any(AmbientOnlySuppressionSignals.Contains))
             return null;
 
         if (!leaseTurn && !directlyAddressed)
             return null;
-        if (!wakeTurn && !leaseTurn && !directTrashTalk &&
+        if (!wakeTurn && !leaseTurn && !directTrashTalk && !playfulRoastRequest &&
             address.SpeechAct != ZaloConversationalSpeechAct.Unknown)
             return null;
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content ?? string.Empty);
-        if (quote.HasQuote && !quote.RepliesToBot)
+        if (quote.HasQuote && !quote.RepliesToBot && !playfulRoastRequest)
             return null;
 
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(incoming.Content ?? string.Empty);
         var actionShapedSocialCandidate = !wakeTurn &&
                                           ZaloAmbientSocialMeaningResolver.LooksActionShaped(incoming.Content);
-        if (!actionShapedSocialCandidate && !wakeTurn && !leaseTurn && !directTrashTalk &&
+        if (!actionShapedSocialCandidate && !wakeTurn && !leaseTurn && !directTrashTalk && !playfulRoastRequest &&
             deterministic.Intent is not (ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat))
             return null;
 
@@ -179,11 +192,13 @@ public sealed class ZaloAmbientSocialResponder
             settings.MaxTrashTalkLevel,
             settings.AllowProfanity,
             settings.AllowHardRoast);
-        var insideJokes = trashTalk.CanRoastBack
+        if (playfulRoastRequest)
+            trashTalk = BuildRequestedRoastPlan(settings);
+        var insideJokes = trashTalk.CanRoastBack && !playfulRoastRequest
             ? ZaloInsideJokeRetriever.FindHints(incoming.Content, speakerHistory)
             : [];
 
-        var banterTurn = directTrashTalk;
+        var banterTurn = directTrashTalk || playfulRoastRequest;
         if (actionShapedSocialCandidate)
         {
             var meaning = await new ZaloAmbientSocialMeaningResolver(configuration, logger, httpClient)
@@ -207,6 +222,7 @@ public sealed class ZaloAmbientSocialResponder
             wakeTurn,
             leaseTurn,
             banterTurn,
+            playfulRoastRequest,
             trashTalk,
             profile,
             situation,
@@ -219,15 +235,48 @@ public sealed class ZaloAmbientSocialResponder
         return new ZaloAmbientSocialReply(
             candidate!.Trim(),
             effectiveScore,
-            trashTalk.CanRoastBack
-                ? $"trash_talk_level_{(int)trashTalk.Level}"
-                : banterTurn
-                    ? "social_meaning_banter_ai"
-                    : wakeTurn
-                        ? "plain_text_wake_ai"
-                        : leaseTurn
-                            ? "active_conversation_lease_ai"
-                            : address.Reason);
+            playfulRoastRequest
+                ? "requested_playful_roast_ai"
+                : trashTalk.CanRoastBack
+                    ? $"trash_talk_level_{(int)trashTalk.Level}"
+                    : banterTurn
+                        ? "social_meaning_banter_ai"
+                        : wakeTurn
+                            ? "plain_text_wake_ai"
+                            : leaseTurn
+                                ? "active_conversation_lease_ai"
+                                : address.Reason);
+    }
+
+    internal static bool LooksLikePlayfulRoastRequest(string? content)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        if (normalized.Length == 0 ||
+            PlayfulRoastNegationPattern.IsMatch(normalized))
+            return false;
+
+        var imperative = PlayfulRoastImperativePattern.IsMatch(normalized);
+        var explicitCue = PlayfulRoastRequestCuePattern.IsMatch(normalized);
+        if (!imperative && !explicitCue) return false;
+
+        // This detector only identifies the social meaning. TryBuildAsync still
+        // requires the conversational resolver to prove the user addressed the bot.
+        return true;
+    }
+
+    private static ZaloTrashTalkPlan BuildRequestedRoastPlan(ZaloAmbientSocialPilotSettings settings)
+    {
+        var configuredMax = Math.Clamp(settings.MaxTrashTalkLevel, 0, (int)ZaloTrashTalkLevel.Street);
+        var level = (ZaloTrashTalkLevel)configuredMax;
+        var allowProfanity = settings.AllowProfanity && level >= ZaloTrashTalkLevel.Street;
+
+        return new ZaloTrashTalkPlan(
+            CanRoastBack: false,
+            Level: level,
+            AllowProfanity: allowProfanity,
+            AllowHardRoast: false,
+            PileOnRisk: false,
+            Reason: "explicit_playful_roast_request");
     }
 
     internal static bool IsSafeCandidate(string? candidate, int maxReplyChars)
@@ -352,6 +401,7 @@ public sealed class ZaloAmbientSocialResponder
         bool wakeTurn,
         bool leaseTurn,
         bool banterTurn,
+        bool playfulRoastRequest,
         ZaloTrashTalkPlan trashTalk,
         ZaloSocialVibeProfile profile,
         ZaloSocialSituation situation,
@@ -361,21 +411,32 @@ public sealed class ZaloAmbientSocialResponder
         var endpoint = configuration["Ai:Endpoint"]!;
         var apiKey = configuration["Ai:ApiKey"]!;
         var model = configuration["Ai:Model"]!;
-        var mode = trashTalk.CanRoastBack
-            ? $"Người dùng vừa chủ động cà khịa/chửi bot theo kiểu bạn bè. Được roast-back ở level {(int)trashTalk.Level}/4: mirror vibe và one-up nhẹ cho hài, không biến thành thù địch thật."
-            : banterTurn
-                ? "Bộ phân loại social-meaning đã xác định đây là câu cà khịa/nói quá chứ không phải lệnh thao tác thật. Hãy bắt vibe và đáp lại vui như một member trong group, nhưng tuyệt đối không giả vờ đã kick/xóa/đổi dữ liệu."
-                : wakeTurn
-                    ? "Người dùng vừa gọi bot bằng chữ thường. Hãy đáp lại tự nhiên như một member trong nhóm và mời họ nói tiếp."
-                    : leaseTurn
-                        ? "Đây là câu tiếp theo của chính người dùng trong một cuộc trò chuyện vừa được bot trả lời. Hãy tiếp tục tự nhiên, không bắt họ gọi lại bot hay @mention."
-                        : "Người dùng đang nói trực tiếp với bot. Hãy đáp lại tự nhiên như một member trong nhóm.";
-        var profanityRule = trashTalk.AllowProfanity
-            ? "Được mirror slang/từ tục chung mà chính người này vừa dùng với bot (ví dụ đm, vl, cha nội, mõm) nếu làm câu hài hơn; không cần tự làm sạch thành giọng trợ lý."
-            : "Không dùng từ tục hoặc lời hạ nhục trong lượt này.";
-        var hardRoastRule = trashTalk.AllowHardRoast
-            ? "Hard-roast đã được bật cho direct mutual banter; vẫn chỉ one-up nhẹ và không kéo người thứ ba vào."
-            : "Không nâng quá mức chợ búa hiện tại; đừng escalates sang xúc phạm nặng hơn người dùng.";
+        var mode = playfulRoastRequest
+            ? $"Người dùng vừa chủ động nhờ bot roast/cà khịa một người theo kiểu bạn bè Gen-Z. Được tạo một câu trash-talk vui ở level {(int)trashTalk.Level}/4, ưu tiên joke dựa trên CurrentMessage/RecentMessages thật sự có trong context; không bịa chuyện xấu về người bị roast."
+            : trashTalk.CanRoastBack
+                ? $"Người dùng vừa chủ động cà khịa/chửi bot theo kiểu bạn bè. Được roast-back ở level {(int)trashTalk.Level}/4: mirror vibe và one-up nhẹ cho hài, không biến thành thù địch thật."
+                : banterTurn
+                    ? "Bộ phân loại social-meaning đã xác định đây là câu cà khịa/nói quá chứ không phải lệnh thao tác thật. Hãy bắt vibe và đáp lại vui như một member trong group, nhưng tuyệt đối không giả vờ đã kick/xóa/đổi dữ liệu."
+                    : wakeTurn
+                        ? "Người dùng vừa gọi bot bằng chữ thường. Hãy đáp lại tự nhiên như một member trong nhóm và mời họ nói tiếp."
+                        : leaseTurn
+                            ? "Đây là câu tiếp theo của chính người dùng trong một cuộc trò chuyện vừa được bot trả lời. Hãy tiếp tục tự nhiên, không bắt họ gọi lại bot hay @mention."
+                            : "Người dùng đang nói trực tiếp với bot. Hãy đáp lại tự nhiên như một member trong nhóm.";
+        var profanityRule = playfulRoastRequest
+            ? trashTalk.AllowProfanity
+                ? "Được dùng slang/từ tục mức nhẹ kiểu Gen-Z (ví dụ vl, mõm, gáy, gà) nếu hợp vibe; không dùng từ nhục mạ nặng, không tục về gia đình/cơ thể."
+                : "Roast bằng wordplay/slang nhẹ, không dùng từ tục hoặc lời nhục mạ nặng."
+            : trashTalk.AllowProfanity
+                ? "Được mirror slang/từ tục chung mà chính người này vừa dùng với bot (ví dụ đm, vl, cha nội, mõm) nếu làm câu hài hơn; không cần tự làm sạch thành giọng trợ lý."
+                : "Không dùng từ tục hoặc lời hạ nhục trong lượt này.";
+        var hardRoastRule = playfulRoastRequest
+            ? "Không hard-roast người khác: chỉ cà khịa kiểu bạn bè, punchline ngắn, không dehumanize và không biến thành công kích thật."
+            : trashTalk.AllowHardRoast
+                ? "Hard-roast đã được bật cho direct mutual banter; vẫn chỉ one-up nhẹ và không kéo người thứ ba vào."
+                : "Không nâng quá mức chợ búa hiện tại; đừng escalates sang xúc phạm nặng hơn người dùng.";
+        var targetRule = playfulRoastRequest
+            ? "Được roast đúng người mà CurrentMessage yêu cầu hoặc người được quote. Có thể cà khịa về pha bóng, phong độ, gáy/mõm, game/chat hoặc tình huống đang nói nếu context có căn cứ; không bịa fact, không kéo thêm người khác vào. Nếu yêu cầu hợp các rule này thì tạo punchline luôn, đừng từ chối kiểu trợ lý và đừng trả __NO_REPLY__ chỉ vì target là người thứ ba."
+            : "Không chửi hay hạ nhục người thứ ba. Không pile-on một member đang bị nhiều người dí.";
         var prompt = $"""
             Bạn là SOCIAL NPC trong group bóng chuyền, nói như một thằng bạn Gen-Z mồm hỗn có duyên chứ không phải trợ lý lịch sự. {mode}
 
@@ -394,7 +455,7 @@ public sealed class ZaloAmbientSocialResponder
             3. Không tạo hay khẳng định memory. InsideJokeHints chỉ được dùng như callback nếu câu hiện tại thật sự lặp lại chuyện cũ; không bịa thêm chi tiết.
             4. {profanityRule}
             5. {hardRoastRule}
-            6. Không chửi hay hạ nhục người thứ ba. Không pile-on một member đang bị nhiều người dí. Không lôi gia đình, ngoại hình, bệnh tật, khuyết tật, giới/giới tính, xu hướng tính dục, chủng tộc, tôn giáo hay dữ liệu riêng ra đùa.
+            6. {targetRule} Không lôi gia đình, ngoại hình, bệnh tật, khuyết tật, giới/giới tính, xu hướng tính dục, chủng tộc, tôn giáo hay dữ liệu riêng ra đùa.
             7. Không đe dọa đánh/giết, không khuyến khích tự hại. Nếu vibe chuyển từ đùa sang căng thật thì hạ nhiệt hoặc trả {NoReply}.
             8. Facts nghiệp vụ vẫn phải đi authoritative responder. Nếu đây không phải banter mà cần dữ kiện hoặc thao tác thật, trả đúng {NoReply}.
             9. Chỉ một câu tiếng Việt ngắn, tự nhiên, tối đa {maxReplyChars} ký tự. Không markdown, không URL, không @all, không mở đầu kiểu "với tư cách AI".
@@ -418,7 +479,7 @@ public sealed class ZaloAmbientSocialResponder
         var payload = new
         {
             model,
-            temperature = trashTalk.CanRoastBack ? 0.92 : 0.78,
+            temperature = playfulRoastRequest ? 0.96 : trashTalk.CanRoastBack ? 0.92 : 0.78,
             max_tokens = 180,
             messages = new object[]
             {
