@@ -79,25 +79,10 @@ public sealed class ZaloCommunityNudgeService(
         if (localNow.TimeOfDay < TimeSpan.FromHours(9.5) || localNow.TimeOfDay > TimeSpan.FromHours(21))
             return 0;
 
-        var rows = await db.MatchSessions
-            .AsNoTracking()
-            .Where(item => item.BotEnabled &&
-                           item.ZaloConnectionId != null &&
-                           item.ZaloGroupId != null &&
-                           item.ZaloConnection != null &&
-                           item.ZaloConnection.Status == ZaloConnectionStatus.Connected)
-            .Select(item => new
-            {
-                ConnectionId = item.ZaloConnectionId!,
-                GroupId = item.ZaloGroupId!,
-                AccountId = item.ZaloConnection!.AccountZaloId,
-                item.UpdatedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        var targets = rows
-            .GroupBy(item => $"{CleanId(item.ConnectionId)}\n{CleanId(item.GroupId)}", StringComparer.Ordinal)
-            .Select(group => group.OrderByDescending(item => item.UpdatedAt).First())
+        // Configuration, not the existence of a current MatchSession, owns proactive
+        // eligibility. The resolver also keeps legacy session-linked groups as fallback.
+        var targets = (await new ZaloProactiveTargetResolver(db)
+                .GetTargetsAsync(cancellationToken))
             .Take(100)
             .ToList();
 
