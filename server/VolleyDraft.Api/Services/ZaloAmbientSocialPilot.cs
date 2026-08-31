@@ -108,17 +108,12 @@ public sealed class ZaloAmbientSocialResponder
             !BotVocativePattern.IsMatch(normalizedIncoming))
             return null;
 
-        // A bare acknowledgement stays silent. A reply-to-member is only suppressed
-        // when the current turn is not explicitly directed back to the bot. This lets
-        // quoted human messages become grounding for questions like "bot ơi bạn này sao?".
         if (decision.Signals.Contains("ack_or_emoji_only", StringComparer.Ordinal))
             return null;
         if (!userInitiatedSocialTurn &&
             decision.Signals.Contains("reply_to_member", StringComparer.Ordinal))
             return null;
 
-        // Cooldown/busy-group apply to unsolicited ambient participation only. They
-        // must never silence somebody who is actively talking to the bot.
         if (!wakeTurn && !userInitiatedSocialTurn && !directTrashTalk &&
             decision.Signals.Any(AmbientOnlySuppressionSignals.Contains))
             return null;
@@ -246,9 +241,6 @@ public sealed class ZaloAmbientSocialResponder
         if (existing.CanRoastBack || !userInitiatedSocialTurn)
             return existing;
 
-        // This is a safety/style ceiling, not an intent classifier. The model decides
-        // whether the turn is a joke, ranking, nickname request, roast, comparison, etc.
-        // Default configuration permits light Gen-Z slang while hard-roast stays off.
         var level = (ZaloTrashTalkLevel)Math.Clamp(
             settings.MaxTrashTalkLevel,
             (int)ZaloTrashTalkLevel.Normal,
