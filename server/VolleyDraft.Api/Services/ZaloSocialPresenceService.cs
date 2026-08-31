@@ -135,8 +135,8 @@ internal static class ZaloGroupEngagementDirector
                     ZaloEngagementMoveKind.PostgameDebrief,
                     BuildPostgame(settings.TrashTalkLevel),
                     contentKey);
+                }
             }
-        }
 
         // Ambient trash/debate is a once-per-local-day lane. Session-specific pre/post
         // banter above has an occurrence key of its own and does not consume this slot.
@@ -382,7 +382,7 @@ public sealed class ZaloSocialPresenceService(
                 now,
                 cancellationToken);
 
-            var greeting = ZaloDailyGreetingEngine.Plan(
+            var greeting = ZaloDailyGreetingRecoveryPolicy.Plan(
                 new ZaloDailyGreetingSnapshot(
                     group.Key.GroupId,
                     now,
@@ -421,8 +421,9 @@ public sealed class ZaloSocialPresenceService(
                 continue;
             }
 
-            // Morning and bedtime should feel warm, not like the street-trash persona.
-            if (ZaloDailyGreetingEngine.IsSoftGreetingZone(now)) continue;
+            // Morning and bedtime (including bounded recovery) should feel warm,
+            // not like the street-trash persona.
+            if (ZaloDailyGreetingRecoveryPolicy.IsGreetingZone(now)) continue;
 
             var upcoming = group
                 .Where(item => item.StartTime is not null &&
@@ -499,7 +500,7 @@ public sealed class ZaloSocialPresenceService(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        if (!dailySettings.Enabled || !ZaloDailyGreetingEngine.IsSoftGreetingZone(now))
+        if (!dailySettings.Enabled || !ZaloDailyGreetingRecoveryPolicy.IsGreetingZone(now))
             return [];
 
         var echoed = await db.ZaloGroupMessages
