@@ -154,6 +154,24 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Daily greetings/social presence are timing-sensitive. Keep their failure
+            // boundary independent from Auto Session reconciliation so a poll/parser/
+            // discovery regression cannot make Morning/Night silently miss its window.
+            try
+            {
+                await using var socialScope = scopeFactory.CreateAsyncScope();
+                await ZaloSocialPresenceService.Create(socialScope.ServiceProvider)
+                    .ReconcileAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Zalo social-presence reconciliation failed");
+            }
+
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
@@ -166,12 +184,14 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
                     .RunAsync(stoppingToken);
                 await ZaloAutoSessionConversationService.Create(scope.ServiceProvider)
                     .ReconcileAsync(stoppingToken);
-                await ZaloSocialPresenceService.Create(scope.ServiceProvider)
-                    .ReconcileAsync(stoppingToken);
             }
-            catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                logger.LogError(exception, "Zalo listener/auto-session/social-presence reconciliation failed");
+                break;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Zalo listener/auto-session reconciliation failed");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken);
