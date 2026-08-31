@@ -268,6 +268,14 @@ internal static class ZaloGroupEngagementDirector
     }
 }
 
+internal sealed record ZaloSocialPresenceTargetSession(
+    string GroupId,
+    string ConnectionId,
+    string AccountId,
+    string? Name,
+    DateTimeOffset? StartTime,
+    SessionStatus? Status);
+
 public sealed class ZaloSocialPresenceService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
@@ -299,16 +307,30 @@ public sealed class ZaloSocialPresenceService(
                               session.ZaloConnectionId != null &&
                               session.ZaloConnection != null &&
                               session.ZaloConnection.Status == ZaloConnectionStatus.Connected)
-            .Select(session => new
-            {
-                GroupId = session.ZaloGroupId!,
-                ConnectionId = session.ZaloConnectionId!,
-                AccountId = session.ZaloConnection!.AccountZaloId,
+            .Select(session => new ZaloSocialPresenceTargetSession(
+                session.ZaloGroupId!,
+                session.ZaloConnectionId!,
+                session.ZaloConnection!.AccountZaloId,
                 session.Name,
                 session.StartTime,
-                session.Status
-            })
+                session.Status))
             .ToListAsync(cancellationToken);
+
+        // A configured Zalo group is a proactive target even when no current MatchSession
+        // exists. MatchSessions below remain useful only as optional pre/post-game context.
+        var configuredTargets = await new ZaloProactiveTargetResolver(db)
+            .GetTargetsAsync(cancellationToken);
+        sessionRows.AddRange(configuredTargets
+            .Where(target => !sessionRows.Any(row =>
+                string.Equals(row.ConnectionId, target.ConnectionId, StringComparison.Ordinal) &&
+                string.Equals(row.GroupId, target.GroupId, StringComparison.Ordinal)))
+            .Select(target => new ZaloSocialPresenceTargetSession(
+                target.GroupId,
+                target.ConnectionId,
+                target.AccountId,
+                null,
+                null,
+                null)));
 
         foreach (var group in sessionRows
                      .GroupBy(item => new { item.GroupId, item.ConnectionId, item.AccountId })
