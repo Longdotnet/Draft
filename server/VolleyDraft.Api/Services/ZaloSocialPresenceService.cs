@@ -135,8 +135,8 @@ internal static class ZaloGroupEngagementDirector
                     ZaloEngagementMoveKind.PostgameDebrief,
                     BuildPostgame(settings.TrashTalkLevel),
                     contentKey);
-                }
             }
+        }
 
         // Ambient trash/debate is a once-per-local-day lane. Session-specific pre/post
         // banter above has an occurrence key of its own and does not consume this slot.
