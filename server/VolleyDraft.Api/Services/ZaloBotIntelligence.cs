@@ -138,6 +138,9 @@ public sealed record ZaloSessionReference(string Id, string Name, DateTimeOffset
 public static class ZaloBotIntelligence
 {
     private static readonly Regex ExactCommandRegex = new("^(?:[1-9]|10|12)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex MenuCommandWithSessionReferenceRegex = new(
+        @"^(?:(?:@?[a-z0-9._-]*bot|npc|volley\s*bot)\s+)?(?<command>9|10)(?:\s+(?<reference>(?:t[2-7]|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu\s+nhat|hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)))?$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "ai", "hoi", "hay", "la", "thi", "cho", "minh", "tui", "toi", "em", "anh", "chi",
@@ -259,6 +262,30 @@ public static class ZaloBotIntelligence
         if (ExactCommandRegex.IsMatch(normalized) && int.TryParse(normalized, out command)) return true;
         command = 0;
         return false;
+    }
+
+    /// <summary>
+    /// Parses deterministic numeric menu commands while allowing commands 9 and 10
+    /// to carry an explicit session reference such as "T4", "CN" or "2/9".
+    /// The optional bot prefix is accepted because inbound Zalo payloads can expose
+    /// either the mention-stripped question or the original visible content.
+    /// </summary>
+    public static bool TryGetMenuCommand(string value, out int command, out string? sessionReference)
+    {
+        sessionReference = null;
+        var normalized = Normalize(value);
+        if (TryGetExactCommand(normalized, out command)) return true;
+
+        var match = MenuCommandWithSessionReferenceRegex.Match(normalized);
+        if (!match.Success || !int.TryParse(match.Groups["command"].Value, out command))
+        {
+            command = 0;
+            return false;
+        }
+
+        var reference = match.Groups["reference"].Value.Trim();
+        sessionReference = reference.Length == 0 ? null : reference;
+        return true;
     }
 
     public static ZaloBotIntent IntentForCommand(int command) => command switch
@@ -439,8 +466,14 @@ public static class ZaloBotIntelligence
     public static ZaloIntentDecision ClassifyDeterministically(string value)
     {
         var q = Normalize(value);
-        if (TryGetExactCommand(q, out var command))
-            return new(IntentForCommand(command), 1, null, false, null, "exact_numeric_command");
+        if (TryGetMenuCommand(q, out var command, out var menuSessionReference))
+            return new(
+                IntentForCommand(command),
+                1,
+                menuSessionReference,
+                false,
+                null,
+                menuSessionReference is null ? "exact_numeric_command" : "numeric_command_with_session_reference");
         if (ZaloNaturalCommandParser.TryParseSlotTransfer(value, out _))
             return new(ZaloBotIntent.SlotTransfer, .99, q, false, null, "slot_transfer_phrase");
         if (Has(q, "nhuong nguoi sau", "nhuong slot", "bo qua slot", "khong nhan slot", "tu choi slot"))

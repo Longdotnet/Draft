@@ -119,7 +119,7 @@ public sealed partial class ZaloOverbookService
         // over Auto Session V3. Otherwise an active poll conversation can swallow
         // commands such as @bot 10 before TeamImage reaches the generic NPC router.
         var isExactNpcCommand = incoming.MentionedBot &&
-                                ZaloBotIntelligence.TryGetExactCommand(incoming.Content, out _);
+                                ZaloBotIntelligence.TryGetMenuCommand(incoming.Content, out _, out _);
 
         // Auto Session V3 owns replies/mentions tied to a pending poll conversation,
         // except for exact numeric NPC commands which remain owned by the NPC router.
