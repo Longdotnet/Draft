@@ -80,6 +80,9 @@ public sealed partial class ZaloOverbookService
 
         try
         {
+            var generationFallback = string.IsNullOrWhiteSpace(social.GenerationFallbackReason)
+                ? "none"
+                : social.GenerationFallbackReason;
             await new ZaloBotTraceStore(db).WriteAsync(new ZaloBotTraceEntry(
                 MessageId: ZaloOverbookLogic.NormalizeId(incoming.MessageId),
                 GroupId: groupId,
@@ -89,8 +92,8 @@ public sealed partial class ZaloOverbookService
                 Intent: ZaloBotIntent.GeneralChat.ToString(),
                 Confidence: social.EffectiveScore / 100d,
                 ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
-                AiCalled: true,
-                FallbackReason: $"candidate_generated|{social.AddressReason}|send_enabled:{socialSettings.SendEnabled}|shadow_mode:{ambientSettings.ShadowMode}"),
+                AiCalled: social.AiCalled,
+                FallbackReason: $"candidate_generated|{social.AddressReason}|generation_fallback:{generationFallback}|send_enabled:{socialSettings.SendEnabled}|shadow_mode:{ambientSettings.ShadowMode}"),
                 cancellationToken);
         }
         catch (Exception traceException)
@@ -335,7 +338,7 @@ public sealed partial class ZaloOverbookService
                 .ExecuteUpdateAsync(update => update
                     .SetProperty(item => item.BotReplySentAt, DateTimeOffset.UtcNow)
                     .SetProperty(item => item.SelectedIntent, ZaloBotIntent.GeneralChat.ToString())
-                    .SetProperty(item => item.AiCalled, true)
+                    .SetProperty(item => item.AiCalled, social.AiCalled)
                     .SetProperty(item => item.ReplyOutcome, "ambient_social_sent")
                     .SetProperty(item => item.ProcessingToken, (string?)null),
                     cancellationToken);
@@ -352,6 +355,9 @@ public sealed partial class ZaloOverbookService
 
         try
         {
+            var sentFallbackReason = string.IsNullOrWhiteSpace(social.GenerationFallbackReason)
+                ? social.AddressReason
+                : $"{social.AddressReason}|{social.GenerationFallbackReason}";
             await new ZaloBotTraceStore(db).WriteAsync(new ZaloBotTraceEntry(
                 MessageId: messageId,
                 GroupId: groupId,
@@ -361,9 +367,9 @@ public sealed partial class ZaloOverbookService
                 Intent: ZaloBotIntent.GeneralChat.ToString(),
                 Confidence: social.EffectiveScore / 100d,
                 ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
-                AiCalled: true,
+                AiCalled: social.AiCalled,
                 ReplyMessageId: persistedReplyId,
-                FallbackReason: social.AddressReason),
+                FallbackReason: sentFallbackReason),
                 cancellationToken);
         }
         catch (Exception traceException)
