@@ -16,7 +16,8 @@ public sealed record ZaloAmbientSocialPilotSettings(
     int MaxReplyChars,
     int MaxTrashTalkLevel = 3,
     bool AllowProfanity = true,
-    bool AllowHardRoast = false)
+    bool AllowHardRoast = false,
+    int DirectMaxReplyChars = 420)
 {
     public static ZaloAmbientSocialPilotSettings FromConfiguration(IConfiguration configuration) => new(
         Enabled: configuration.GetValue("ZaloBot:Ambient:SocialPilot:Enabled", false),
@@ -26,13 +27,16 @@ public sealed record ZaloAmbientSocialPilotSettings(
         MaxReplyChars: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:MaxReplyChars", 180), 80, 280),
         MaxTrashTalkLevel: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:MaxTrashTalkLevel", 3), 0, 4),
         AllowProfanity: configuration.GetValue("ZaloBot:Ambient:SocialPilot:AllowProfanity", true),
-        AllowHardRoast: configuration.GetValue("ZaloBot:Ambient:SocialPilot:AllowHardRoast", false));
+        AllowHardRoast: configuration.GetValue("ZaloBot:Ambient:SocialPilot:AllowHardRoast", false),
+        DirectMaxReplyChars: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:DirectMaxReplyChars", 420), 180, 600));
 }
 
 public sealed record ZaloAmbientSocialReply(
     string Text,
     int EffectiveScore,
-    string AddressReason);
+    string AddressReason,
+    bool AiCalled = true,
+    string? GenerationFallbackReason = null);
 
 /// <summary>
 /// AI-only social responder. Social meaning is model-led once a user is confidently
@@ -44,6 +48,10 @@ public sealed class ZaloAmbientSocialResponder
     private const string NoReply = "__NO_REPLY__";
     private const string CapabilityOverview =
         "Tui xem lịch/sân, slot/roster, vote/waitlist, draft/cân team, nhắc lịch và hỗ trợ chơi chung team. Đăng ký vẫn theo vote poll; việc đổi dữ liệu tui sẽ hỏi xác nhận.";
+    private const string DirectAiUnavailableReply =
+        "Tui nghe nè 😵‍💫 não AI đang khựng chút, quăng lại câu đó phát.";
+    private const string DirectSafetyFallbackReply =
+        "Tui nghe rồi 😄 miếng này để tui né cú quá tay; quăng góc khác tui quậy tiếp.";
 
     private static readonly Regex HumanVocativePattern = new(
         @"^[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40}\s+oi\b",
@@ -147,10 +155,25 @@ public sealed class ZaloAmbientSocialResponder
             return new ZaloAmbientSocialReply(
                 CapabilityOverview,
                 effectiveScore,
-                "deterministic_capability_overview");
+                "deterministic_capability_overview",
+                AiCalled: false);
         }
 
-        if (!IsAiConfigured()) return null;
+        if (!IsAiConfigured())
+        {
+            logger.LogWarning(
+                "Ambient social AI is not configured for direct turn Group={GroupId} Message={MessageId}",
+                groupId,
+                incoming.MessageId);
+            return userInitiatedSocialTurn
+                ? new ZaloAmbientSocialReply(
+                    DirectAiUnavailableReply,
+                    effectiveScore,
+                    "direct_social_ai_unavailable",
+                    AiCalled: false,
+                    GenerationFallbackReason: "ai_not_configured")
+                : null;
+        }
 
         var recent = await LoadRecentContextAsync(
             connectionId,
@@ -196,11 +219,14 @@ public sealed class ZaloAmbientSocialResponder
             banterTurn = true;
         }
 
-        var candidate = await GenerateAsync(
+        var replyCharBudget = userInitiatedSocialTurn
+            ? Math.Max(settings.MaxReplyChars, settings.DirectMaxReplyChars)
+            : settings.MaxReplyChars;
+        var rawCandidate = await GenerateAsync(
             incoming,
             recent,
             quote,
-            settings.MaxReplyChars,
+            replyCharBudget,
             wakeTurn,
             leaseTurn,
             banterTurn,
@@ -210,12 +236,46 @@ public sealed class ZaloAmbientSocialResponder
             situation,
             insideJokes,
             cancellationToken);
-        if (!IsSafeCandidate(candidate, settings.MaxReplyChars) ||
+
+        if (string.IsNullOrWhiteSpace(rawCandidate))
+        {
+            logger.LogWarning(
+                "Ambient social AI returned no candidate Group={GroupId} Message={MessageId} Direct={Direct}",
+                groupId,
+                incoming.MessageId,
+                userInitiatedSocialTurn);
+            return userInitiatedSocialTurn
+                ? new ZaloAmbientSocialReply(
+                    DirectAiUnavailableReply,
+                    effectiveScore,
+                    "direct_social_ai_generation_fallback",
+                    AiCalled: true,
+                    GenerationFallbackReason: "ai_generation_failed")
+                : null;
+        }
+
+        var candidate = PrepareCandidate(rawCandidate, replyCharBudget);
+        if (!IsSafeCandidate(candidate, replyCharBudget) ||
             !ZaloSocialSafetyPolicy.IsSafeCandidate(candidate, socialSafetyPlan))
-            return null;
+        {
+            logger.LogWarning(
+                "Ambient social AI candidate rejected Group={GroupId} Message={MessageId} Direct={Direct} Length={Length}",
+                groupId,
+                incoming.MessageId,
+                userInitiatedSocialTurn,
+                candidate?.Length ?? 0);
+            return userInitiatedSocialTurn
+                ? new ZaloAmbientSocialReply(
+                    DirectSafetyFallbackReply,
+                    effectiveScore,
+                    "direct_social_ai_safety_fallback",
+                    AiCalled: true,
+                    GenerationFallbackReason: "candidate_rejected")
+                : null;
+        }
 
         return new ZaloAmbientSocialReply(
-            candidate!.Trim(),
+            candidate!,
             effectiveScore,
             trashTalk.CanRoastBack
                 ? $"trash_talk_level_{(int)trashTalk.Level}"
@@ -252,13 +312,34 @@ public sealed class ZaloAmbientSocialResponder
             Reason: "direct_social_ai_safety_envelope");
     }
 
+    internal static string? PrepareCandidate(string? candidate, int maxReplyChars)
+    {
+        var text = candidate?.Trim();
+        if (string.IsNullOrWhiteSpace(text) || LooksLikeNoReplySentinel(text))
+            return text;
+
+        text = Regex.Replace(text, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        if (text.Length <= maxReplyChars) return text;
+
+        var slice = text[..maxReplyChars].TrimEnd();
+        var sentenceCut = Math.Max(
+            Math.Max(slice.LastIndexOf('.'), slice.LastIndexOf('!')),
+            slice.LastIndexOf('?'));
+        if (sentenceCut >= Math.Max(60, maxReplyChars / 2))
+            return slice[..(sentenceCut + 1)].Trim();
+
+        var wordCut = slice.LastIndexOf(' ');
+        if (wordCut >= Math.Max(40, maxReplyChars / 2))
+            slice = slice[..wordCut].TrimEnd();
+        return slice.TrimEnd(',', ';', ':', '-', '—') + "…";
+    }
+
     internal static bool IsSafeCandidate(string? candidate, int maxReplyChars)
     {
         var text = candidate?.Trim();
         if (string.IsNullOrWhiteSpace(text) ||
             LooksLikeNoReplySentinel(text) ||
-            text.Length > maxReplyChars ||
-            text.Count(ch => ch == '\n') > 1)
+            text.Length > maxReplyChars)
             return false;
 
         var normalized = ZaloBotIntelligence.Normalize(text);
@@ -399,6 +480,9 @@ public sealed class ZaloAmbientSocialResponder
         var profanityRule = socialSafetyPlan.AllowProfanity
             ? "Được dùng slang/từ tục mức nhẹ nếu chính ý nghĩa cuộc trò chuyện hợp vibe (ví dụ roast/cà khịa bạn bè); đừng tự chèn tục vào câu bình thường và không dùng nhục mạ nặng."
             : "Không dùng từ tục hoặc lời hạ nhục nặng trong lượt này.";
+        var responseShapeRule = userInitiatedSocialTurn
+            ? $"Được trả lời 1-3 câu ngắn nếu nội dung cần kể/chém gió; tối đa {maxReplyChars} ký tự. Đừng tự cắt cụt câu chuyện chỉ để ép thành một câu."
+            : $"Chỉ một câu tiếng Việt ngắn, tự nhiên, tối đa {maxReplyChars} ký tự.";
         var prompt = $"""
             Bạn là SOCIAL NPC trong group bóng chuyền, nói như một thằng bạn Gen-Z có duyên chứ không phải trợ lý lịch sự. {mode}
 
@@ -420,8 +504,8 @@ public sealed class ZaloAmbientSocialResponder
             6. Không lôi gia đình, ngoại hình/cơ thể theo hướng hạ nhục, bệnh tật, khuyết tật, giới/giới tính, xu hướng tính dục, chủng tộc, tôn giáo hay dữ liệu riêng ra đùa. Không đe dọa đánh/giết, không khuyến khích tự hại.
             7. Không gọi tool, không thực hiện hành động, không đăng ký/rút vote, không đổi roster/team/slot/draft/waitlist/profile/reminder và không nói như thể đã làm. Không tạo hay khẳng định memory.
             8. Facts nghiệp vụ và hành động thật vẫn phải đi authoritative responder. Nếu câu hiện tại thực chất cần dữ kiện nghiệp vụ hoặc thao tác thật, trả đúng {NoReply}.
-            9. Chỉ một câu tiếng Việt ngắn, tự nhiên, tối đa {maxReplyChars} ký tự. Không markdown, không URL, không @all, không mở đầu kiểu “với tư cách AI”.
-            10. Mục tiêu là làm người ta muốn rep tiếp; ưu tiên punchline mới theo context, tránh lặp một câu template.
+            9. {responseShapeRule} Không markdown, không URL, không @all, không mở đầu kiểu “với tư cách AI”.
+            10. Mục tiêu là làm người ta muốn rep tiếp; ưu tiên punchline/nội dung mới theo context, tránh lặp một câu template.
             """;
         var userPayload = new
         {
@@ -454,7 +538,7 @@ public sealed class ZaloAmbientSocialResponder
         {
             model,
             temperature = socialSafetyPlan.CanRoastBack ? 0.92 : userInitiatedSocialTurn ? 0.90 : 0.78,
-            max_tokens = 180,
+            max_tokens = userInitiatedSocialTurn ? 240 : 180,
             messages = new object[]
             {
                 new { role = "system", content = prompt },
