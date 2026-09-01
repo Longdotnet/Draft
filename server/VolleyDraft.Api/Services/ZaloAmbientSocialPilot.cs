@@ -50,8 +50,6 @@ public sealed class ZaloAmbientSocialResponder
         "Tui xem lịch/sân, slot/roster, vote/waitlist, draft/cân team, nhắc lịch và hỗ trợ chơi chung team. Đăng ký vẫn theo vote poll; việc đổi dữ liệu tui sẽ hỏi xác nhận.";
     private const string DirectAiUnavailableReply =
         "Tui nghe nè 😵‍💫 não AI đang khựng chút, quăng lại câu đó phát.";
-    private const string DirectSafetyFallbackReply =
-        "Tui nghe rồi 😄 miếng này để tui né cú quá tay; quăng góc khác tui quậy tiếp.";
 
     private static readonly Regex HumanVocativePattern = new(
         @"^[\p{L}\p{N}][\p{L}\p{N}\s._-]{0,40}\s+oi\b",
@@ -264,14 +262,7 @@ public sealed class ZaloAmbientSocialResponder
                 incoming.MessageId,
                 userInitiatedSocialTurn,
                 candidate?.Length ?? 0);
-            return userInitiatedSocialTurn
-                ? new ZaloAmbientSocialReply(
-                    DirectSafetyFallbackReply,
-                    effectiveScore,
-                    "direct_social_ai_safety_fallback",
-                    AiCalled: true,
-                    GenerationFallbackReason: "candidate_rejected")
-                : null;
+            return null;
         }
 
         return new ZaloAmbientSocialReply(
