@@ -16,9 +16,9 @@ public static class ZaloPendingTurnPolicy
         if (IsNaturalCancel(currentQuestion))
             return ZaloPendingTurnDisposition.CancelPending;
 
-        if (ZaloSessionResolver.LooksLikeSelector(currentQuestion) || IsStrongConfirmation(currentQuestion))
-            return ZaloPendingTurnDisposition.ContinuePending;
-
+        // Exact deterministic commands own the current turn even when their suffix is
+        // also a valid session selector (for example `8 T4`). A stale clarification
+        // must never reinterpret a new command as its own short answer.
         if (ZaloMenuCommandParser.TryParse(currentQuestion, out _, out _))
             return ZaloPendingTurnDisposition.SwitchToNewIntent;
 
@@ -26,6 +26,19 @@ public static class ZaloPendingTurnPolicy
             freshConfidence >= .85 &&
             !string.Equals(pendingIntent, freshIntent, StringComparison.OrdinalIgnoreCase))
             return ZaloPendingTurnDisposition.SwitchToNewIntent;
+
+        if (ZaloSessionResolver.LooksLikeSelector(currentQuestion))
+            return ZaloPendingTurnDisposition.ContinuePending;
+
+        // A session-choice prompt requires an actual session selector. A bare
+        // confirmation cannot safely choose among T4/T6 and therefore must not let
+        // old pending state consume a fresh bot-addressed action.
+        if (IsStrongConfirmation(currentQuestion))
+        {
+            return mentionedBot
+                ? ZaloPendingTurnDisposition.SwitchToNewIntent
+                : ZaloPendingTurnDisposition.IgnoreCurrentTurn;
+        }
 
         return mentionedBot
             ? ZaloPendingTurnDisposition.SwitchToNewIntent
