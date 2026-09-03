@@ -114,9 +114,8 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
         }
 
         // Decode the encoded pixel matrix through SKCodec so EXIF orientation remains explicit.
-        // SKImage.FromEncodedData does not guarantee that raster pixels are physically re-oriented
-        // before a later bitmap conversion/re-encode on every SkiaSharp path, so normalize all eight
-        // encoded origins ourselves before resizing and stripping metadata.
+        // Rasterize the orientation ourselves before resize/re-encode; otherwise metadata can be
+        // stripped while the underlying pixels remain in camera orientation.
         using var codecData = SKData.CreateCopy(sourceBytes);
         using var codec = SKCodec.Create(codecData)
             ?? throw new InvalidOperationException("Image could not be decoded.");
@@ -148,7 +147,8 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
 
     private static SKBitmap NormalizeEncodedOrigin(SKBitmap source, SKEncodedOrigin origin)
     {
-        if (origin is SKEncodedOrigin.Default or SKEncodedOrigin.TopLeft)
+        // Default is an alias of TopLeft, so checking TopLeft covers both values.
+        if (origin == SKEncodedOrigin.TopLeft)
             return source.Copy();
 
         var swapsAxes = origin is SKEncodedOrigin.LeftTop or
@@ -169,7 +169,7 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
 
     private static SKMatrix CreateEncodedOriginMatrix(SKEncodedOrigin origin, int width, int height) => origin switch
     {
-        SKEncodedOrigin.TopLeft or SKEncodedOrigin.Default => SKMatrix.Identity,
+        SKEncodedOrigin.TopLeft => SKMatrix.Identity,
         SKEncodedOrigin.TopRight => new SKMatrix(-1, 0, width, 0, 1, 0, 0, 0, 1),
         SKEncodedOrigin.BottomRight => new SKMatrix(-1, 0, width, 0, -1, height, 0, 0, 1),
         SKEncodedOrigin.BottomLeft => new SKMatrix(1, 0, 0, 0, -1, height, 0, 0, 1),
