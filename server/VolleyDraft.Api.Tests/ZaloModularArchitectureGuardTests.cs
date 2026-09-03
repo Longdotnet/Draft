@@ -61,6 +61,40 @@ public sealed class ZaloModularArchitectureGuardTests
     }
 
     [Fact]
+    public void Feature_modules_must_not_own_ai_provider_transport()
+    {
+        var root = FindRepoRoot();
+        var features = Path.Combine(root, "server", "VolleyDraft.Api", "Services", "Zalo", "Features");
+        var forbiddenMarkers = new[]
+        {
+            "Ai:Endpoint",
+            "Ai:ApiKey",
+            "Ai:Model",
+            "AuthenticationHeaderValue(\"Bearer\"",
+            "System.Net.Http.Headers",
+            "System.Net.Http.Json"
+        };
+
+        var violations = Directory
+            .GetFiles(features, "*.cs", SearchOption.AllDirectories)
+            .Select(path => new
+            {
+                Path = path,
+                Content = File.ReadAllText(path)
+            })
+            .SelectMany(file => forbiddenMarkers
+                .Where(marker => file.Content.Contains(marker, StringComparison.Ordinal))
+                .Select(marker => $"{Path.GetRelativePath(features, file.Path)} -> {marker}"))
+            .OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        Assert.True(
+            violations.Length == 0,
+            "Feature code must call IZaloAiGateway and must not know provider transport/configuration: " +
+            string.Join("; ", violations));
+    }
+
+    [Fact]
     public void Legacy_orchestrators_may_not_keep_growing()
     {
         var root = FindRepoRoot();
