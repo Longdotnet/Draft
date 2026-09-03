@@ -110,6 +110,36 @@ public sealed class ZaloConversationCoreRegressionTests
     }
 
     [Theory]
+    [InlineData("8 T4")]
+    [InlineData("@Npc 8 thứ 4")]
+    [InlineData("9 T4 02/09")]
+    [InlineData("10 CN")]
+    public void Numeric_session_command_supersedes_stale_session_choice(string text)
+    {
+        var disposition = ZaloConversationCore.ClassifyPendingSessionTurn(
+            "DraftReadinessSessionChoice",
+            text,
+            mentionedBot: text.Contains("@Npc", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(ZaloPendingTurnDisposition.SwitchToNewIntent, disposition);
+    }
+
+    [Theory]
+    [InlineData("draft đi", "AutoDraft")]
+    [InlineData("xác nhận draft", "AutoDraft")]
+    public void Fresh_deterministic_action_supersedes_stale_session_choice(string text, string freshIntent)
+    {
+        var disposition = ZaloConversationCore.ClassifyPendingSessionTurn(
+            "DraftReadinessSessionChoice",
+            text,
+            mentionedBot: true,
+            freshIntent,
+            freshConfidence: 1);
+
+        Assert.Equal(ZaloPendingTurnDisposition.SwitchToNewIntent, disposition);
+    }
+
+    [Theory]
     [InlineData("T4")]
     [InlineData("02/09")]
     [InlineData("T4 02/09")]
@@ -122,6 +152,32 @@ public sealed class ZaloConversationCoreRegressionTests
             mentionedBot: text.Contains("@Npc", StringComparison.OrdinalIgnoreCase));
 
         Assert.Equal(ZaloPendingTurnDisposition.ContinuePending, disposition);
+    }
+
+    [Theory]
+    [InlineData("Mai pass slot không?")]
+    [InlineData("Mai mới vô group nên chưa kịp vote")]
+    [InlineData("ai tag Mai vô giúp tui")]
+    public void Person_named_Mai_is_not_a_tomorrow_selector(string text)
+    {
+        Assert.False(ZaloConversationCore.LooksLikeSessionSelector(text));
+    }
+
+    [Theory]
+    [InlineData("mai")]
+    [InlineData("mai?")]
+    [InlineData("ngày mai có kèo nào?")]
+    public void Explicit_tomorrow_language_still_resolves_tomorrow(string text)
+    {
+        IReadOnlyList<ZaloSessionReference> sessions =
+        [
+            new("today", "T4 02/09", new DateTimeOffset(2026, 9, 2, 10, 30, 0, TimeSpan.Zero)),
+            new("tomorrow", "T5 03/09", new DateTimeOffset(2026, 9, 3, 10, 30, 0, TimeSpan.Zero))
+        ];
+
+        var result = ZaloConversationCore.ResolveSessionReference(text, sessions, Now);
+
+        Assert.Equal(["tomorrow"], result);
     }
 
     [Fact]
