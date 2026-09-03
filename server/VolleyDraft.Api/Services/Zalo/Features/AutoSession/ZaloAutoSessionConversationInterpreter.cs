@@ -1,8 +1,7 @@
 using System.Globalization;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -68,6 +67,8 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly IZaloAiGateway aiGateway =
+        ZaloAiGatewayFactory.Create(httpClientFactory.CreateClient(), configuration, logger);
 
     public async Task<ZaloAutoSessionConversationInterpretation> InterpretAsync(
         string text,
@@ -358,78 +359,68 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
         string? lastQuestionType,
         CancellationToken cancellationToken)
     {
-        var endpoint = configuration["Ai:Endpoint"];
-        var apiKey = configuration["Ai:ApiKey"];
-        var model = configuration["Ai:Model"];
-        if (string.IsNullOrWhiteSpace(endpoint) ||
-            string.IsNullOrWhiteSpace(apiKey) ||
-            string.IsNullOrWhiteSpace(model))
+        if (!aiGateway.IsConfigured)
             return null;
 
-        var payload = new
-        {
-            model,
-            temperature = 0,
-            max_tokens = 220,
-            messages = new object[]
+        const string systemPrompt = """
+            Bạn chỉ diễn giải câu trả lời của trưởng/phó nhóm cho bản nháp lịch bóng chuyền.
+            TUYỆT ĐỐI không quyết định quyền tạo và không tự thực thi.
+            Trả đúng JSON:
             {
-                new
-                {
-                    role = "system",
-                    content = """
-                        Bạn chỉ diễn giải câu trả lời của trưởng/phó nhóm cho bản nháp lịch bóng chuyền.
-                        TUYỆT ĐỐI không quyết định quyền tạo và không tự thực thi.
-                        Trả đúng JSON:
-                        {
-                          "intent":"modify|confirm|cancel|reset|uncertain|none",
-                          "selectionMode":"replace|add|remove|none",
-                          "days":["T6","CN"],
-                          "timeOverrides":{"T6":"18:00"},
-                          "location":null,
-                          "teamSize":null,
-                          "confidence":0.90,
-                          "needsClarification":false,
-                          "clarification":null
-                        }
-                        Nếu câu nói mơ hồ, needsClarification=true. Không suy diễn ngày/giờ không có căn cứ.
-                        """
-                },
-                new
-                {
-                    role = "user",
-                    content = JsonSerializer.Serialize(new
-                    {
-                        message = text,
-                        state = state.ToString(),
-                        lastQuestionType,
-                        draft = draft.Items.Select(item => new
-                        {
-                            item.DayKey,
-                            item.OptionContent,
-                            item.StartTime,
-                            item.Selected
-                        }),
-                        draft.Location,
-                        draft.TeamSize
-                    }, JsonOptions)
-                }
+              "intent":"modify|confirm|cancel|reset|uncertain|none",
+              "selectionMode":"replace|add|remove|none",
+              "days":["T6","CN"],
+              "timeOverrides":{"T6":"18:00"},
+              "location":null,
+              "teamSize":null,
+              "confidence":0.90,
+              "needsClarification":false,
+              "clarification":null
             }
-        };
+            Nếu câu nói mơ hồ, needsClarification=true. Không suy diễn ngày/giờ không có căn cứ.
+            """;
+
+        var userPayload = JsonSerializer.Serialize(new
+        {
+            message = text,
+            state = state.ToString(),
+            lastQuestionType,
+            draft = draft.Items.Select(item => new
+            {
+                item.DayKey,
+                item.OptionContent,
+                item.StartTime,
+                item.Selected
+            }),
+            draft.Location,
+            draft.TeamSize
+        }, JsonOptions);
+
+        var result = await aiGateway.CompleteAsync(
+            new ZaloAiCompletionRequest(
+                ZaloAiWorkload.StructuredExtraction,
+                [
+                    new ZaloAiChatMessage("system", systemPrompt),
+                    new ZaloAiChatMessage("user", userPayload)
+                ],
+                Temperature: 0,
+                MaxTokens: 220,
+                CorrelationId: "auto-session-conversation"),
+            cancellationToken);
+
+        if (!result.Success || string.IsNullOrWhiteSpace(result.Content))
+        {
+            logger.LogDebug(
+                "Auto Session V3 AI interpretation failed Kind={FailureKind} Provider={Provider} Model={Model}; rules remain authoritative",
+                result.FailureKind,
+                result.Provider,
+                result.Model);
+            return null;
+        }
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-            {
-                Content = JsonContent.Create(payload)
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            using var response = await httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode) return null;
-
-            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken));
-            var content = ReadContent(document.RootElement);
-            if (string.IsNullOrWhiteSpace(content)) return null;
-            using var parsed = JsonDocument.Parse(StripCodeFence(content));
+            using var parsed = JsonDocument.Parse(StripCodeFence(result.Content));
             var root = parsed.RootElement;
 
             var intent = ParseIntent(ReadString(root, "intent"));
@@ -468,7 +459,6 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
                                      clarificationFlag.ValueKind == JsonValueKind.True;
             var clarification = ReadString(root, "clarification");
 
-            // AI may interpret/clarify only. Explicit execution is intentionally always false.
             return new(
                 intent,
                 days,
@@ -483,9 +473,13 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
                 confidence,
                 "ai");
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+        catch (JsonException exception)
         {
-            logger.LogDebug(exception, "Auto Session V3 AI interpretation failed; rules remain authoritative");
+            logger.LogDebug(
+                exception,
+                "Auto Session V3 AI returned malformed structured output Provider={Provider} Model={Model}; rules remain authoritative",
+                result.Provider,
+                result.Model);
             return null;
         }
     }
@@ -616,18 +610,6 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
             "remove" => ZaloAutoSessionSelectionMode.Remove,
             _ => ZaloAutoSessionSelectionMode.None
         };
-
-    private static string? ReadContent(JsonElement root)
-    {
-        if (root.TryGetProperty("choices", out var choices) &&
-            choices.ValueKind == JsonValueKind.Array &&
-            choices.GetArrayLength() > 0 &&
-            choices[0].TryGetProperty("message", out var message) &&
-            message.TryGetProperty("content", out var content) &&
-            content.ValueKind == JsonValueKind.String)
-            return content.GetString();
-        return null;
-    }
 
     private static string? ReadString(JsonElement root, string name) =>
         root.TryGetProperty(name, out var node) && node.ValueKind == JsonValueKind.String
