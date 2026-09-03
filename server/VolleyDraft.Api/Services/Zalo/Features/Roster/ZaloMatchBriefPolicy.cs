@@ -32,8 +32,6 @@ internal static class ZaloMatchBriefPolicy
         if (normalized.Length == 0) return false;
         if (WebQuestion.IsMatch(normalized)) return true;
 
-        // Preserve the established Draft Readiness lane for questions such as
-        // "T6 có team chưa?". Match Brief answers broader operational status only.
         if (ZaloDraftConversationPolicy.IsReadinessQuestion(content))
             return false;
 
@@ -49,5 +47,5 @@ internal static class ZaloMatchBriefPolicy
     }
 
     internal static string Normalize(string? content) =>
-        ZaloConversationCore.Normalize(content ?? string.Empty).Trim();
+        ZaloBotIntelligence.Normalize(content ?? string.Empty).Trim();
 }
