@@ -48,24 +48,16 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         if (file.Length <= 0)
-        {
             return ServiceResult<ZaloBotImageAssetResponse>.Failure(StatusCodes.Status400BadRequest, "Ảnh rỗng, hãy chọn lại ảnh.");
-        }
         if (file.Length > MaxImageBytes)
-        {
             return ServiceResult<ZaloBotImageAssetResponse>.Failure(StatusCodes.Status413PayloadTooLarge, "Ảnh không được lớn hơn 10 MB.");
-        }
         if (!AllowedContentTypes.Contains(file.ContentType))
-        {
             return ServiceResult<ZaloBotImageAssetResponse>.Failure(StatusCodes.Status400BadRequest, "Chỉ hỗ trợ ảnh JPG, PNG hoặc WEBP.");
-        }
 
         await using var stream = new MemoryStream();
         await file.CopyToAsync(stream, cancellationToken);
         if (stream.Length > MaxImageBytes)
-        {
             return ServiceResult<ZaloBotImageAssetResponse>.Failure(StatusCodes.Status413PayloadTooLarge, "Ảnh không được lớn hơn 10 MB.");
-        }
 
         byte[] optimized;
         try
@@ -121,10 +113,12 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
             throw new InvalidOperationException("Image dimensions exceed the safe decode budget.");
         }
 
-        // Skia codecs do not all support arbitrary decode-time scaling (PNG is a common example).
-        // Validate encoded bounds before allocating the full bitmap so compressed inputs cannot request
-        // unbounded native memory, then resize the bounded bitmap to the delivery dimensions.
-        using var source = SKBitmap.Decode(sourceBytes)
+        // SKBitmap.Decode exposes the encoded pixel matrix and can discard EXIF orientation when the
+        // optimized image is re-encoded. SKImage.FromEncodedData preserves the display orientation,
+        // which keeps portrait phone photos upright while still bounding the encoded source first.
+        using var sourceImage = SKImage.FromEncodedData(sourceBytes)
+            ?? throw new InvalidOperationException("Image could not be decoded.");
+        using var source = SKBitmap.FromImage(sourceImage)
             ?? throw new InvalidOperationException("Image could not be decoded.");
 
         var scale = Math.Min(1d, (double)MaxStoredDimension / Math.Max(source.Width, source.Height));

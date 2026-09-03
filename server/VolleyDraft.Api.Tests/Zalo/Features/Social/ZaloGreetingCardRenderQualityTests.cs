@@ -72,6 +72,38 @@ public sealed class ZaloGreetingCardRenderQualityTests
     }
 
     [Fact]
+    public void Uploaded_image_optimizer_preserves_exif_display_orientation()
+    {
+        using var sourceBitmap = new SKBitmap(120, 60, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using (var canvas = new SKCanvas(sourceBitmap))
+        {
+            canvas.Clear(SKColors.Red);
+            using var paint = new SKPaint { Color = SKColors.Blue };
+            canvas.DrawRect(new SKRect(60, 0, 120, 60), paint);
+        }
+        using var sourceImage = SKImage.FromBitmap(sourceBitmap);
+        using var sourceData = sourceImage.Encode(SKEncodedImageFormat.Jpeg, 95);
+        var orientedJpeg = AddExifOrientation(sourceData.ToArray(), orientation: 6);
+
+        using var codecData = SKData.CreateCopy(orientedJpeg);
+        using var codec = SKCodec.Create(codecData);
+        Assert.NotNull(codec);
+        Assert.Equal(SKEncodedOrigin.RightTop, codec.EncodedOrigin);
+
+        var optimized = ZaloBotImageService.OptimizeForDelivery(orientedJpeg);
+
+        using var decoded = SKBitmap.Decode(optimized);
+        Assert.NotNull(decoded);
+        Assert.Equal(60, decoded.Width);
+        Assert.Equal(120, decoded.Height);
+
+        var top = decoded.GetPixel(decoded.Width / 2, decoded.Height / 4);
+        var bottom = decoded.GetPixel(decoded.Width / 2, decoded.Height * 3 / 4);
+        Assert.True(top.Red > top.Blue, $"Expected red-dominant top half but got {top}.");
+        Assert.True(bottom.Blue > bottom.Red, $"Expected blue-dominant bottom half but got {bottom}.");
+    }
+
+    [Fact]
     public void Uploaded_image_optimizer_rejects_extreme_declared_dimensions_before_full_decode()
     {
         using var sourceBitmap = new SKBitmap(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul);
@@ -87,6 +119,33 @@ public sealed class ZaloGreetingCardRenderQualityTests
         var error = Assert.Throws<InvalidOperationException>(
             () => ZaloBotImageService.OptimizeForDelivery(oversizedHeader));
         Assert.Contains("safe decode budget", error.Message);
+    }
+
+    private static byte[] AddExifOrientation(byte[] jpeg, ushort orientation)
+    {
+        Assert.True(IsJpeg(jpeg));
+        Assert.InRange(orientation, (ushort)1, (ushort)8);
+
+        // APP1 payload: Exif header + little-endian TIFF header + one Orientation tag.
+        var payload = new byte[]
+        {
+            0x45, 0x78, 0x69, 0x66, 0x00, 0x00,
+            0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+            0x01, 0x00,
+            0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00,
+            (byte)orientation, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        };
+        var segmentLength = payload.Length + 2;
+        var result = new byte[jpeg.Length + payload.Length + 4];
+        result[0] = 0xFF;
+        result[1] = 0xD8;
+        result[2] = 0xFF;
+        result[3] = 0xE1;
+        BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(4, 2), (ushort)segmentLength);
+        payload.CopyTo(result.AsSpan(6));
+        jpeg.AsSpan(2).CopyTo(result.AsSpan(6 + payload.Length));
+        return result;
     }
 
     private static byte[] RewritePngDimensions(byte[] png, int width, int height)
