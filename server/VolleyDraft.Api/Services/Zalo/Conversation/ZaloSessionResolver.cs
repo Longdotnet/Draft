@@ -27,6 +27,10 @@ public static class ZaloSessionResolver
         @"(?<![a-z0-9])(?<weekday>t[2-7]|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu\s+nhat)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex WeekModifierRegex = new(
+        @"(?<![a-z0-9])tuan\s+(?<modifier>nay|truoc|sau|toi)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     public static IReadOnlyList<string> SelectOperationalCandidateIds(
         string value,
         IReadOnlyList<ZaloSessionReference> candidates,
@@ -52,14 +56,35 @@ public static class ZaloSessionResolver
         if (normalized.Length == 0 || candidates.Count == 0)
             return new([], "no_selector", false, false);
 
-        var localNow = (now ?? DateTimeOffset.UtcNow).ToOffset(VietnamOffset);
+        var referenceNow = now ?? DateTimeOffset.UtcNow;
+        var localNow = referenceNow.ToOffset(VietnamOffset);
 
         var dateMatches = CalendarDateRegex.Matches(normalized);
         if (dateMatches.Count > 0)
         {
-            var ids = candidates
+            var matchingCandidates = candidates
                 .Where(candidate => candidate.StartTime is not null && dateMatches.Any(match =>
                     MatchesCalendarDate(match, candidate.StartTime!.Value.ToOffset(VietnamOffset), localNow.Year)))
+                .ToList();
+
+            // A day/month without a year normally means the nearest occurrence of that
+            // calendar date. This prevents retained annual history (for example 2/1 in
+            // 2026, 2027 and 2028) from turning one explicit request into ambiguity.
+            if (dateMatches.Count == 1 &&
+                dateMatches[0].Groups["year"].Value.Length == 0 &&
+                matchingCandidates.Count > 1)
+            {
+                var nearestDate = matchingCandidates
+                    .Select(candidate => candidate.StartTime!.Value.ToOffset(VietnamOffset).Date)
+                    .Distinct()
+                    .OrderBy(date => Math.Abs((date - localNow.Date).TotalDays))
+                    .First();
+                matchingCandidates = matchingCandidates
+                    .Where(candidate => candidate.StartTime!.Value.ToOffset(VietnamOffset).Date == nearestDate)
+                    .ToList();
+            }
+
+            var ids = matchingCandidates
                 .Select(candidate => candidate.Id)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
@@ -107,6 +132,27 @@ public static class ZaloSessionResolver
             return new([], "no_selector", false, false);
 
         var targetDay = ParseWeekday(weekdayMatch.Groups["weekday"].Value);
+        var weekModifier = WeekModifierRegex.Match(normalized);
+        if (weekModifier.Success)
+        {
+            var weekDelta = weekModifier.Groups["modifier"].Value switch
+            {
+                "truoc" => -1,
+                "sau" or "toi" => 1,
+                _ => 0
+            };
+            var targetDate = StartOfWeek(localNow.Date)
+                .AddDays(weekDelta * 7 + DayOffsetFromMonday(targetDay));
+            var ids = candidates
+                .Where(candidate => candidate.StartTime is not null &&
+                                    candidate.StartTime.Value.ToOffset(VietnamOffset).Date == targetDate)
+                .Select(candidate => candidate.Id)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            return new(ids, "relative_weekday", true, ids.Count == 1);
+        }
+
         var datedMatches = candidates
             .Where(candidate => candidate.StartTime is not null &&
                                 candidate.StartTime.Value.ToOffset(VietnamOffset).DayOfWeek == targetDay)
@@ -131,7 +177,7 @@ public static class ZaloSessionResolver
                 undatedIds.Count == 1);
         }
 
-        var cutoff = (now ?? DateTimeOffset.UtcNow).AddHours(-4);
+        var cutoff = referenceNow.AddHours(-4);
         var upcoming = datedMatches
             .Where(candidate => candidate.StartTime >= cutoff)
             .ToList();
@@ -181,6 +227,14 @@ public static class ZaloSessionResolver
 
         return year == localSession.Year;
     }
+
+    private static DateTime StartOfWeek(DateTime date)
+    {
+        var daysSinceMonday = ((int)date.DayOfWeek + 6) % 7;
+        return date.AddDays(-daysSinceMonday);
+    }
+
+    private static int DayOffsetFromMonday(DayOfWeek day) => day == DayOfWeek.Sunday ? 6 : (int)day - 1;
 
     private static bool IsGenericWeekdayName(string name) =>
         Regex.IsMatch(
