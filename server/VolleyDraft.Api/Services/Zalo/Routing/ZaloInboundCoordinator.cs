@@ -15,14 +15,25 @@ public sealed class ZaloInboundCoordinator(
     ZaloOverbookService overbookService,
     ZaloBotService botService)
 {
-    public async Task<ZaloInboundHandlingResult> HandleAsync(
+    public Task<ZaloInboundHandlingResult> HandleAsync(
         ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken = default) =>
+        DispatchAsync(
+            incoming,
+            overbookService.TryHandleZaloConfirmationAsync,
+            async (message, token) => await botService.HandleIncomingAsync(message, token),
+            cancellationToken);
+
+    internal static async Task<ZaloInboundHandlingResult> DispatchAsync(
+        ZaloIncomingMessageEvent incoming,
+        Func<ZaloIncomingMessageEvent, CancellationToken, Task<bool>> tryHandleOverbook,
+        Func<ZaloIncomingMessageEvent, CancellationToken, Task> handleBot,
         CancellationToken cancellationToken = default)
     {
-        if (await overbookService.TryHandleZaloConfirmationAsync(incoming, cancellationToken))
+        if (await tryHandleOverbook(incoming, cancellationToken))
             return new(true, "overbook-confirmation");
 
-        await botService.HandleIncomingAsync(incoming, cancellationToken);
+        await handleBot(incoming, cancellationToken);
         return new(true, "bot");
     }
 }
