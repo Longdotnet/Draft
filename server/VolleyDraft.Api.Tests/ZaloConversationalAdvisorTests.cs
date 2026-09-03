@@ -23,10 +23,7 @@ public sealed class ZaloConversationalAdvisorTests
     public void Natural_question_about_the_bot_becomes_capability_fact()
     {
         var decision = ZaloAmbientParticipationEngine.Evaluate(
-            Incoming("capability", "con bot này sài sao vậy mn"),
-            QuietSituation(),
-            Settings,
-            DateTimeOffset.UtcNow);
+            Incoming("capability", "con bot này sài sao vậy mn"), QuietSituation(), Settings, DateTimeOffset.UtcNow);
 
         Assert.True(decision.WouldReply);
         Assert.Equal(ZaloAmbientParticipationKind.Fact, decision.Kind);
@@ -39,10 +36,7 @@ public sealed class ZaloConversationalAdvisorTests
     public void Exact_team_feasibility_shorthand_is_a_read_only_advisor_turn()
     {
         var decision = ZaloAmbientParticipationEngine.Evaluate(
-            Incoming("advisor", "tui muốn choi chung với To An thì bạn xếp đc ko"),
-            QuietSituation(),
-            Settings,
-            DateTimeOffset.UtcNow);
+            Incoming("advisor", "tui muốn choi chung với To An thì bạn xếp đc ko"), QuietSituation(), Settings, DateTimeOffset.UtcNow);
 
         Assert.True(decision.WouldReply);
         Assert.Equal(ZaloAmbientParticipationKind.Fact, decision.Kind);
@@ -56,11 +50,7 @@ public sealed class ZaloConversationalAdvisorTests
     {
         var incoming = Incoming("human-thread", "Nam ơi bạn chơi chung với To An không");
         var address = ZaloConversationalAddressResolver.Resolve(incoming);
-        var decision = ZaloAmbientParticipationEngine.Evaluate(
-            incoming,
-            QuietSituation(),
-            Settings,
-            DateTimeOffset.UtcNow);
+        var decision = ZaloAmbientParticipationEngine.Evaluate(incoming, QuietSituation(), Settings, DateTimeOffset.UtcNow);
 
         Assert.Equal(ZaloConversationalTarget.AnotherMember, address.Target);
         Assert.False(decision.WouldReply);
@@ -70,10 +60,7 @@ public sealed class ZaloConversationalAdvisorTests
     public void Untagged_imperative_team_mutation_stays_blocked()
     {
         var decision = ZaloAmbientParticipationEngine.Evaluate(
-            Incoming("mutation", "xếp tui với To An chung team đi"),
-            QuietSituation(),
-            Settings,
-            DateTimeOffset.UtcNow);
+            Incoming("mutation", "xếp tui với To An chung team đi"), QuietSituation(), Settings, DateTimeOffset.UtcNow);
 
         Assert.Equal(ZaloAmbientParticipationKind.Action, decision.Kind);
         Assert.False(decision.WouldReply);
@@ -85,11 +72,7 @@ public sealed class ZaloConversationalAdvisorTests
     {
         await using var fixture = await Fixture.CreateAsync(withSessions: false);
         var incoming = Incoming("capability-live", "con bot này sài sao vậy mn");
-        var decision = ZaloAmbientParticipationEngine.Evaluate(
-            incoming,
-            QuietSituation(),
-            Settings,
-            DateTimeOffset.UtcNow);
+        var decision = ZaloAmbientParticipationEngine.Evaluate(incoming, QuietSituation(), Settings, DateTimeOffset.UtcNow);
 
         var reply = await new ZaloAmbientFactResponder(fixture.Db).TryBuildAsync(
             "bot-account", "g1", incoming, decision, minimumScore: 85);
@@ -106,11 +89,7 @@ public sealed class ZaloConversationalAdvisorTests
     {
         await using var fixture = await Fixture.CreateAsync(withSessions: true);
         var first = Incoming("team-first", "tui muốn choi chung với To An thì bạn xếp đc ko");
-        var firstDecision = ZaloAmbientParticipationEngine.Evaluate(
-            first,
-            QuietSituation(),
-            Settings,
-            DateTimeOffset.UtcNow);
+        var firstDecision = ZaloAmbientParticipationEngine.Evaluate(first, QuietSituation(), Settings, DateTimeOffset.UtcNow);
 
         var firstReply = await new ZaloAmbientFactResponder(fixture.Db).TryBuildAsync(
             "bot-account", "g1", first, firstDecision, minimumScore: 85);
@@ -191,10 +170,8 @@ public sealed class ZaloConversationalAdvisorTests
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
-            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
-                .UseSqlite(connection)
-                .Options;
-            var db = new VolleyDraftDbContext(options);
+            var db = new VolleyDraftDbContext(
+                new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options);
             await db.Database.EnsureCreatedAsync();
 
             var admin = new User
@@ -253,23 +230,15 @@ public sealed class ZaloConversationalAdvisorTests
                         IsCurrentMember = true
                     });
 
-                var now = DateTimeOffset.UtcNow;
                 db.MatchSessions.AddRange(
-                    Session("session-t6", "T6", NextWeekday(now, DayOfWeek.Friday), zalo, longProfile, toAnProfile),
-                    Session("session-cn", "CN", NextWeekday(now, DayOfWeek.Sunday), zalo, longProfile, toAnProfile));
+                    Session("session-t6", "T6", ZaloTestDates.Next(DayOfWeek.Friday), zalo, longProfile, toAnProfile),
+                    Session("session-cn", "CN", ZaloTestDates.Next(DayOfWeek.Sunday), zalo, longProfile, toAnProfile));
             }
 
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
             return new Fixture(connection, db);
         }
-
-        private static DateTimeOffset NextWeekday(DateTimeOffset from, DayOfWeek target)
-{
-    var days = ((int)target - (int)from.DayOfWeek + 7) % 7;
-    if (days == 0) days = 7;
-    return from.AddDays(days);
-}
 
         private static MatchSession Session(
             string id,
