@@ -35,7 +35,7 @@ public static class ZaloConversationCore
         @"(?<![a-z0-9])(?<weekday>t[2-7]|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu\s+nhat)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex MenuCommandRegex = new(
-        @"^(?:(?:@?[a-z0-9._-]*bot|npc|volley\s*bot)\s+)?(?<command>10|12|[1-9])(?:\s+(?<reference>.+))?$",
+        @"^(?:@?(?:[a-z0-9._-]*bot|npc|volley\s*bot)\s+)?(?<command>10|12|[1-9])(?:\s+(?<reference>.+))?$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static IReadOnlyList<string> SelectOperationalSessionCandidateIds(
@@ -184,10 +184,11 @@ public static class ZaloConversationCore
         var q = ZaloBotIntelligence.Normalize(value ?? string.Empty).Trim(' ', '.', '!', '?', ',', ';', ':');
         if (q.Length == 0) return false;
         return q is "huy" or "cancel" or "thoi" or "bo qua" or "khong can nua" or
-               "thoi khoi" or "thoi khoi di" or "khoi" or "khoi di" or "bo di" or "khong lam nua" ||
+               "thoi khoi" or "thoi khoi di" or "hoi khoi di" or "khoi" or "khoi di" or "bo di" or "khong lam nua" ||
                q.StartsWith("huy ", StringComparison.Ordinal) ||
                q.StartsWith("cancel ", StringComparison.Ordinal) ||
                q.StartsWith("thoi khoi", StringComparison.Ordinal) ||
+               q.StartsWith("hoi khoi", StringComparison.Ordinal) ||
                q.StartsWith("khoi di", StringComparison.Ordinal) ||
                q.StartsWith("bo qua ", StringComparison.Ordinal) ||
                q.Contains("khong can nua", StringComparison.Ordinal);
