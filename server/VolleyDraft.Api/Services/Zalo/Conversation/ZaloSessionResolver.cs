@@ -74,13 +74,13 @@ public static class ZaloSessionResolver
                 dateMatches[0].Groups["year"].Value.Length == 0 &&
                 matchingCandidates.Count > 1)
             {
-                var nearestDate = matchingCandidates
+                var nearestCalendarDate = matchingCandidates
                     .Select(candidate => candidate.StartTime!.Value.ToOffset(VietnamOffset).Date)
                     .Distinct()
                     .OrderBy(date => Math.Abs((date - localNow.Date).TotalDays))
                     .First();
                 matchingCandidates = matchingCandidates
-                    .Where(candidate => candidate.StartTime!.Value.ToOffset(VietnamOffset).Date == nearestDate)
+                    .Where(candidate => candidate.StartTime!.Value.ToOffset(VietnamOffset).Date == nearestCalendarDate)
                     .ToList();
             }
 
