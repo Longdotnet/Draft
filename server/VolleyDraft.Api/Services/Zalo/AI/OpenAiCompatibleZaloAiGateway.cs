@@ -150,8 +150,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     return lastFailure;
                 }
 
-                var content = ExtractContent(body);
-                if (string.IsNullOrWhiteSpace(content))
+                var completion = ExtractCompletion(body);
+                if (string.IsNullOrWhiteSpace(completion.Content))
                 {
                     lastFailure = Failure(
                         ZaloAiFailureKind.InvalidResponse,
@@ -172,14 +172,15 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
                 return new ZaloAiCompletionResult(
                     true,
-                    content.Trim(),
+                    completion.Content.Trim(),
                     ZaloAiFailureKind.None,
                     profile.Name,
                     model,
                     attempt,
                     (int)response.StatusCode,
                     TimeSpan.Zero,
-                    usedFallback);
+                    usedFallback,
+                    completion.FinishReason);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -345,22 +346,30 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         await Task.Delay(delay, cancellationToken);
     }
 
-    private static string? ExtractContent(string body)
+    private static (string? Content, string? FinishReason) ExtractCompletion(string body)
     {
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
 
         if (root.TryGetProperty("choices", out var choices) &&
             choices.ValueKind == JsonValueKind.Array &&
-            choices.GetArrayLength() > 0 &&
-            choices[0].TryGetProperty("message", out var message) &&
-            message.TryGetProperty("content", out var content))
-            return content.GetString();
+            choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            string? finishReason = null;
+            if (first.TryGetProperty("finish_reason", out var finishReasonNode) &&
+                finishReasonNode.ValueKind == JsonValueKind.String)
+                finishReason = finishReasonNode.GetString();
+
+            if (first.TryGetProperty("message", out var message) &&
+                message.TryGetProperty("content", out var content))
+                return (content.GetString(), finishReason);
+        }
 
         if (root.TryGetProperty("output_text", out var outputText))
-            return outputText.GetString();
+            return (outputText.GetString(), null);
 
-        return null;
+        return (null, null);
     }
 
     private static ZaloAiCompletionResult Failure(
