@@ -15,6 +15,10 @@ public static class ZaloSessionResolver
         @"(?<!\d)(?<day>\d{1,2})[/-](?<month>\d{1,2})(?:[/-](?<year>\d{2,4}))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    private static readonly Regex SessionTimeRegex = new(
+        @"(?<!\d)(?<hour>[01]?\d|2[0-3])(?::(?<minute>[0-5]\d)|h\s*(?<minuteH>[0-5]\d)?)(?!\d)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex RelativeDateRegex = new(
         @"(?<![a-z0-9])(?:hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -59,6 +63,23 @@ public static class ZaloSessionResolver
         var referenceNow = now ?? DateTimeOffset.UtcNow;
         var localNow = referenceNow.ToOffset(VietnamOffset);
 
+        // Preserve exact legacy/canonical names before inspecting embedded dates.
+        // Some legacy rows have no StartTime but still carry the authoritative date/time
+        // in the display name, so date-only matching cannot resolve them.
+        var exactNameMatches = candidates
+            .Where(candidate =>
+            {
+                var name = ZaloTextNormalizer.Normalize(candidate.Name);
+                return name.Length >= 3 &&
+                       !IsGenericWeekdayName(name) &&
+                       string.Equals(name, normalized, StringComparison.Ordinal);
+            })
+            .Select(candidate => candidate.Id)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (exactNameMatches.Count > 0)
+            return new(exactNameMatches, "canonical_name_exact", true, exactNameMatches.Count == 1);
+
         var dateMatches = CalendarDateRegex.Matches(normalized);
         if (dateMatches.Count > 0)
         {
@@ -66,6 +87,18 @@ public static class ZaloSessionResolver
                 .Where(candidate => candidate.StartTime is not null && dateMatches.Any(match =>
                     MatchesCalendarDate(match, candidate.StartTime!.Value.ToOffset(VietnamOffset), localNow.Year)))
                 .ToList();
+
+            var timeMatches = SessionTimeRegex.Matches(normalized);
+            if (timeMatches.Count == 1 && TryParseSessionTime(timeMatches[0], out var hour, out var minute))
+            {
+                matchingCandidates = matchingCandidates
+                    .Where(candidate =>
+                    {
+                        var local = candidate.StartTime!.Value.ToOffset(VietnamOffset);
+                        return local.Hour == hour && local.Minute == minute;
+                    })
+                    .ToList();
+            }
 
             // A day/month without a year normally means the nearest occurrence of that
             // calendar date. This prevents retained annual history (for example 2/1 in
@@ -226,6 +259,20 @@ public static class ZaloSessionResolver
             year += currentYear / 100 * 100;
 
         return year == localSession.Year;
+    }
+
+    private static bool TryParseSessionTime(Match match, out int hour, out int minute)
+    {
+        hour = 0;
+        minute = 0;
+        if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out hour))
+            return false;
+
+        var minuteText = match.Groups["minute"].Success
+            ? match.Groups["minute"].Value
+            : match.Groups["minuteH"].Value;
+        return minuteText.Length == 0 ||
+               int.TryParse(minuteText, NumberStyles.None, CultureInfo.InvariantCulture, out minute);
     }
 
     private static DateTime StartOfWeek(DateTime date)
