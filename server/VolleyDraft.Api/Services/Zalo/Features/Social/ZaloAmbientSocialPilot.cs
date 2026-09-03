@@ -1,10 +1,9 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -67,9 +66,8 @@ public sealed class ZaloAmbientSocialResponder
     };
 
     private readonly VolleyDraftDbContext db;
-    private readonly IConfiguration configuration;
     private readonly ILogger logger;
-    private readonly HttpClient httpClient;
+    private readonly IZaloAiGateway aiGateway;
 
     public ZaloAmbientSocialResponder(
         VolleyDraftDbContext db,
@@ -78,9 +76,8 @@ public sealed class ZaloAmbientSocialResponder
         HttpClient? httpClient = null)
     {
         this.db = db;
-        this.configuration = configuration;
         this.logger = logger;
-        this.httpClient = httpClient ?? SharedHttpClient.Instance;
+        aiGateway = ZaloAiGatewayFactory.Create(httpClient ?? SharedHttpClient.Instance, configuration, logger);
     }
 
     public async Task<ZaloAmbientSocialReply?> TryBuildAsync(
@@ -157,7 +154,7 @@ public sealed class ZaloAmbientSocialResponder
                 AiCalled: false);
         }
 
-        if (!IsAiConfigured())
+        if (!aiGateway.IsConfigured)
         {
             logger.LogWarning(
                 "Ambient social AI is not configured for direct turn Group={GroupId} Message={MessageId}",
@@ -203,7 +200,7 @@ public sealed class ZaloAmbientSocialResponder
         var banterTurn = directTrashTalk;
         if (actionShapedSocialCandidate)
         {
-            var meaning = await new ZaloAmbientSocialMeaningResolver(configuration, logger, httpClient)
+            var meaning = await new ZaloAmbientSocialMeaningResolver(aiGateway, logger)
                 .ResolveAsync(incoming, recent, cancellationToken);
             if (meaning.Kind != ZaloAmbientSocialMeaningKind.Banter || meaning.Confidence < .80)
             {
@@ -366,11 +363,6 @@ public sealed class ZaloAmbientSocialResponder
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
-    private bool IsAiConfigured() =>
-        !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
-
     private async Task<IReadOnlyList<ZaloAmbientSocialContextMessage>> LoadRecentContextAsync(
         string connectionId,
         string groupId,
@@ -454,9 +446,6 @@ public sealed class ZaloAmbientSocialResponder
         IReadOnlyList<ZaloInsideJokeHint> insideJokes,
         CancellationToken cancellationToken)
     {
-        var endpoint = configuration["Ai:Endpoint"]!;
-        var apiKey = configuration["Ai:ApiKey"]!;
-        var model = configuration["Ai:Model"]!;
         var mode = socialSafetyPlan.CanRoastBack
             ? $"Người dùng vừa chủ động cà khịa/chửi bot theo kiểu bạn bè. Được roast-back ở level {(int)socialSafetyPlan.Level}/4: mirror vibe và one-up nhẹ cho hài, không biến thành thù địch thật."
             : banterTurn
@@ -525,62 +514,40 @@ public sealed class ZaloAmbientSocialResponder
                 SentAt = item.SentAt
             }).ToArray()
         };
-        var payload = new
+
+        var result = await aiGateway.CompleteAsync(
+            new ZaloAiCompletionRequest(
+                ZaloAiWorkload.SocialReply,
+                [
+                    new ZaloAiChatMessage("system", prompt),
+                    new ZaloAiChatMessage("user", JsonSerializer.Serialize(userPayload))
+                ],
+                Temperature: socialSafetyPlan.CanRoastBack ? 0.92 : userInitiatedSocialTurn ? 0.90 : 0.78,
+                MaxTokens: userInitiatedSocialTurn ? 240 : 180,
+                CorrelationId: incoming.MessageId),
+            cancellationToken);
+
+        if (!result.Success)
         {
-            model,
-            temperature = socialSafetyPlan.CanRoastBack ? 0.92 : userInitiatedSocialTurn ? 0.90 : 0.78,
-            max_tokens = userInitiatedSocialTurn ? 240 : 180,
-            messages = new object[]
-            {
-                new { role = "system", content = prompt },
-                new { role = "user", content = JsonSerializer.Serialize(userPayload) }
-            }
-        };
-
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-            {
-                Content = JsonContent.Create(payload)
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.LogWarning(
-                    "Ambient social AI returned {StatusCode}; candidate suppressed.",
-                    (int)response.StatusCode);
-                return null;
-            }
-
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
-            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
-            {
-                var first = choices[0];
-                if (first.TryGetProperty("finish_reason", out var finishReason) &&
-                    finishReason.ValueKind == JsonValueKind.String &&
-                    IsTruncationFinishReason(finishReason.GetString()))
-                {
-                    logger.LogDebug("Ambient social AI candidate suppressed because generation was truncated.");
-                    return null;
-                }
-
-                if (first.TryGetProperty("message", out var message) &&
-                    message.TryGetProperty("content", out var content))
-                    return content.GetString();
-            }
-
-            return root.TryGetProperty("output_text", out var outputText)
-                ? outputText.GetString()
-                : null;
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
-        {
-            logger.LogWarning(exception, "Ambient social AI failed; candidate suppressed.");
+            logger.LogWarning(
+                "Ambient social AI failed Kind={FailureKind} Provider={Provider} Model={Model}; candidate suppressed.",
+                result.FailureKind,
+                result.Provider,
+                result.Model);
             return null;
         }
+
+        if (IsTruncationFinishReason(result.FinishReason))
+        {
+            logger.LogDebug(
+                "Ambient social AI candidate suppressed because generation was truncated Provider={Provider} Model={Model} FinishReason={FinishReason}.",
+                result.Provider,
+                result.Model,
+                result.FinishReason);
+            return null;
+        }
+
+        return result.Content;
     }
 
     private static bool IsTruncationFinishReason(string? reason) =>
