@@ -87,6 +87,14 @@ It owns only shared conversation semantics:
 
 A pending feature state must never consume a new turn merely because it exists. The current turn must satisfy the feature's continuation grammar or be explicitly correlated to the previous bot prompt.
 
+The following invariants are product behavior, not parser implementation details:
+
+- an exact deterministic menu command always owns the current turn, even when its suffix is also a valid session selector such as `8 T4`;
+- a pending session-choice prompt only consumes an actual session selector; a bare `ok`, `chốt` or unrelated new action cannot choose a session;
+- explicit calendar dates dominate weekday aliases and retained history must not make a day/month request ambiguous across different years;
+- `T4/T6/CN tuần trước|này|sau|tới` resolves to that explicit Vietnam calendar week, including across month/year boundaries;
+- bare `mai` is treated as tomorrow only when it is the standalone selector (punctuation is allowed); longer text must use explicit temporal wording such as `ngày mai`, so a member named `Mai` is not silently interpreted as a date.
+
 ## AI boundary
 
 Feature code must not read `Ai:Endpoint`, `Ai:ApiKey` or `Ai:Model` directly.
