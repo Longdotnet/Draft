@@ -115,24 +115,15 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
-        // Exact numeric NPC menu commands are deterministic and must keep precedence
-        // over Auto Session V3. Otherwise an active poll conversation can swallow
-        // commands such as @bot 10 before TeamImage reaches the generic NPC router.
         var isExactNpcCommand = incoming.MentionedBot &&
                                 ZaloBotIntelligence.TryGetMenuCommand(incoming.Content, out _, out _);
 
-        // Auto Session V3 owns replies/mentions tied to a pending poll conversation,
-        // except for exact numeric NPC commands which remain owned by the NPC router.
         if (!isExactNpcCommand &&
             serviceProvider is not null &&
             await ZaloAutoSessionConversationService.Create(serviceProvider)
                 .TryHandleIncomingAsync(incoming, cancellationToken))
             return true;
 
-        // Draft preparation decisions are deterministic domain state. Route them
-        // before mention/Ambient gating so a live leader can naturally say
-        // "15 vẫn đánh", "kiếm thêm", or the follow-up "draft đi" with or without @bot.
-        // Slot-level "huỷ slot" is deliberately not matched by this lane.
         var draftAccountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
         var draftGroupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
         if (draftAccountId.Length > 0 && draftGroupId.Length > 0)
@@ -156,9 +147,18 @@ public sealed partial class ZaloOverbookService
                         cancellationToken))
                     return true;
 
-                // Draft-autopilot still owns its narrow natural-readiness/escalation
-                // turns. The new preparation lane replaces only proactive scheduling,
-                // not the existing interactive safety/approval router.
+                // Match Brief is a read-only Roster feature. It owns explicit operational
+                // status questions and its own session-choice continuation before Draft
+                // readiness so neither feature can steal the other's pending turn.
+                if (await TryHandleMatchBriefAsync(
+                        draftConnection.Id,
+                        draftConnection.AccountZaloId,
+                        draftConnection.DisplayName,
+                        draftGroupId,
+                        incoming,
+                        cancellationToken))
+                    return true;
+
                 if (await TryHandleDraftAutopilotAsync(
                         draftConnection.Id,
                         draftConnection.AccountZaloId,
@@ -168,9 +168,6 @@ public sealed partial class ZaloOverbookService
                         cancellationToken))
                     return true;
 
-                // Guest turns are grounded by reply graph / durable semantic checkpoints
-                // and must run before V2 Ambient/legacy GeneralChat. This prevents a
-                // conversational model from ever claiming a mutation it did not do.
                 try
                 {
                     await new ZaloMessageGraphStore(db)
