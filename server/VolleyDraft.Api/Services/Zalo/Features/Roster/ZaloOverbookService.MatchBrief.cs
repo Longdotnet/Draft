@@ -9,6 +9,70 @@ public sealed partial class ZaloOverbookService
 {
     private const string MatchBriefSessionChoiceIntent = "MatchBriefSessionChoice";
 
+    private async Task<bool> TryHandleMatchBriefAsync(
+        string connectionId,
+        string accountId,
+        string botName,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        var settings = DraftAutopilotSettings.FromConfiguration(configuration);
+        if (!settings.NaturalReadinessEnabled) return false;
+
+        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        if (senderId.Length == 0 || senderId == ZaloOverbookLogic.NormalizeId(incoming.BotId))
+            return false;
+
+        var stateStore = new ZaloConversationStateV2Store(db);
+        var state = await stateStore.LoadActiveAsync(groupId, senderId, cancellationToken);
+        var continuing = state is not null &&
+                         string.Equals(state.Intent, MatchBriefSessionChoiceIntent, StringComparison.Ordinal);
+
+        if (continuing)
+        {
+            var fresh = ZaloBotIntelligence.ClassifyDeterministically(incoming.Content);
+            var disposition = ZaloConversationCore.ClassifyPendingSessionTurn(
+                MatchBriefSessionChoiceIntent,
+                incoming.Content,
+                incoming.MentionedBot,
+                fresh.Intent == ZaloBotIntent.Unknown ? null : fresh.Intent.ToString(),
+                fresh.Confidence);
+            switch (disposition)
+            {
+                case ZaloPendingTurnDisposition.CancelPending:
+                    await stateStore.CancelAsync(groupId, senderId, cancellationToken);
+                    await SendDraftReplyAsync(
+                        connectionId, accountId, botName, groupId, incoming,
+                        "Ok, tui bỏ câu hỏi chọn kèo này nha. Khi nào cần cứ hỏi tình hình lại.",
+                        [], "match_brief_session_choice_cancelled", cancellationToken);
+                    return true;
+                case ZaloPendingTurnDisposition.SwitchToNewIntent:
+                    await stateStore.CompleteAsync(groupId, senderId, cancellationToken);
+                    return false;
+                case ZaloPendingTurnDisposition.IgnoreCurrentTurn:
+                    return false;
+                case ZaloPendingTurnDisposition.ContinuePending:
+                    break;
+            }
+        }
+
+        var explicitQuestion = ZaloMatchBriefPolicy.IsQuestion(incoming.Content) &&
+                               ZaloMatchBriefPolicy.IsExplicitlyAddressed(incoming);
+        if (!continuing && !explicitQuestion)
+            return false;
+
+        return await HandleMatchBriefQuestionAsync(
+            connectionId,
+            accountId,
+            botName,
+            groupId,
+            incoming,
+            continuing ? state : null,
+            settings,
+            cancellationToken);
+    }
+
     private async Task<bool> HandleMatchBriefQuestionAsync(
         string connectionId,
         string accountId,
@@ -116,8 +180,6 @@ public sealed partial class ZaloOverbookService
                 .CompleteAsync(groupId, ZaloOverbookLogic.NormalizeId(incoming.SenderId), cancellationToken);
         }
 
-        // Match Brief promises current state. Poll-backed setup/captain-selection sessions
-        // must refresh before we present a snapshot as "now".
         var readinessBeforeRefresh = await new ZaloDraftReadinessService(db)
             .BuildAsync(selected.Id, now, cancellationToken);
         if (readinessBeforeRefresh?.HasLinkedPoll == true &&
