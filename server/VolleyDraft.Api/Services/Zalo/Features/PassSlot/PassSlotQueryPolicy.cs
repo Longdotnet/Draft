@@ -50,14 +50,19 @@ internal static class ZaloPassSlotQueryPolicy
     public static ZaloPassSlotHistoryScope ResolveScope(string normalized)
     {
         normalized = ZaloTextNormalizer.Normalize(normalized);
+        var hasSessionSelector = ZaloSessionResolver.LooksLikeSelector(normalized);
 
         if (CurrentOpenPattern.IsMatch(normalized))
-            return ZaloPassSlotHistoryScope.CurrentOpen;
+        {
+            return hasSessionSelector
+                ? ZaloPassSlotHistoryScope.SessionCurrentOpen
+                : ZaloPassSlotHistoryScope.CurrentOpen;
+        }
         if (SessionTodayPattern.IsMatch(normalized))
             return ZaloPassSlotHistoryScope.SessionToday;
         if (TodayPattern.IsMatch(normalized))
             return ZaloPassSlotHistoryScope.EventToday;
-        if (ZaloSessionResolver.LooksLikeSelector(normalized))
+        if (hasSessionSelector)
         {
             return HistoryCuePattern.IsMatch(normalized)
                 ? ZaloPassSlotHistoryScope.SpecificSession
