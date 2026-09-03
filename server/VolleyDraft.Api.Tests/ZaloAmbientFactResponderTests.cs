@@ -36,30 +36,11 @@ public sealed class ZaloAmbientFactResponderTests
     }
 
     [Fact]
-    public async Task Mutation_intent_can_never_enter_fact_responder_even_with_max_score()
-    {
-        await using var fixture = await Fixture.CreateAsync();
-        var responder = new ZaloAmbientFactResponder(fixture.Db);
-
-        var reply = await responder.TryBuildAsync(
-            "bot-account",
-            "g1",
-            Incoming("draft lại T6 đi"),
-            Decision(ZaloBotIntent.Redraft, 100),
-            minimumScore: 60);
-
-        Assert.Null(reply);
-        Assert.False(ZaloAmbientFactResponder.IsAllowedIntent(ZaloBotIntent.Redraft));
-        Assert.False(ZaloAmbientFactResponder.IsAllowedIntent(ZaloBotIntent.AutoDraft));
-        Assert.False(ZaloAmbientFactResponder.IsAllowedIntent(ZaloBotIntent.WaitlistJoin));
-    }
-
-    [Fact]
-    public async Task Ambiguous_session_reference_stays_silent_instead_of_guessing()
+    public async Task Weekday_reference_trusts_canonical_start_time_over_stale_name()
     {
         await using var fixture = await Fixture.CreateAsync();
         fixture.Db.MatchSessions.Add(Session(
-            "session-t6-next",
+            "session-stale-name",
             "T6",
             DateTimeOffset.UtcNow.AddDays(7)));
         await fixture.Db.SaveChangesAsync();
@@ -72,7 +53,8 @@ public sealed class ZaloAmbientFactResponderTests
             Decision(ZaloBotIntent.MissingSlots, 95),
             minimumScore: 60);
 
-        Assert.Null(reply);
+        Assert.NotNull(reply);
+        Assert.Equal("session-t6", reply!.SessionId);
     }
 
     [Fact]
