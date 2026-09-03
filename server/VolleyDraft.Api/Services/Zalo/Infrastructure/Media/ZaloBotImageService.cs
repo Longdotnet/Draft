@@ -11,7 +11,7 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
     private const long MaxImageBytes = 10 * 1024 * 1024;
     private const int MaxStoredDimension = 1600;
     private const int MaxSourceDimension = 32768;
-    private const long MaxSourcePixels = 100_000_000;
+    private const long MaxSourcePixels = 25_000_000;
     private const int JpegQuality = 82;
     private static readonly HashSet<string> AllowedContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -121,15 +121,15 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
             throw new InvalidOperationException("Image dimensions exceed the safe decode budget.");
         }
 
-        var scale = Math.Min(1d, (double)MaxStoredDimension / Math.Max(sourceInfo.Width, sourceInfo.Height));
-        var targetWidth = Math.Max(1, (int)Math.Round(sourceInfo.Width * scale));
-        var targetHeight = Math.Max(1, (int)Math.Round(sourceInfo.Height * scale));
-        var decodeInfo = new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
-
-        // Decode directly into the delivery-sized bitmap. Decoding the original dimensions first can
-        // allocate hundreds of MB for a small, highly compressed upload before we get a chance to resize it.
-        using var source = SKBitmap.Decode(sourceBytes, decodeInfo)
+        // Skia codecs do not all support arbitrary decode-time scaling (PNG is a common example).
+        // Validate encoded bounds before allocating the full bitmap so compressed inputs cannot request
+        // unbounded native memory, then resize the bounded bitmap to the delivery dimensions.
+        using var source = SKBitmap.Decode(sourceBytes)
             ?? throw new InvalidOperationException("Image could not be decoded.");
+
+        var scale = Math.Min(1d, (double)MaxStoredDimension / Math.Max(source.Width, source.Height));
+        var targetWidth = Math.Max(1, (int)Math.Round(source.Width * scale));
+        var targetHeight = Math.Max(1, (int)Math.Round(source.Height * scale));
 
         using var surface = SKSurface.Create(
             new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888, SKAlphaType.Opaque))
