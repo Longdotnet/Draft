@@ -16,7 +16,11 @@ public static class ZaloSessionResolver
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex RelativeDateRegex = new(
-        @"(?<![a-z0-9])(?:hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay|mai)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex BareTomorrowRegex = new(
+        @"^mai\s*[.!?,;:]*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex WeekdayRegex = new(
@@ -78,14 +82,13 @@ public static class ZaloSessionResolver
         if (nameMatches.Count > 0)
             return new(nameMatches, "canonical_name", true, nameMatches.Count == 1);
 
-        if (RelativeDateRegex.IsMatch(normalized))
+        var hasRelativeDate = RelativeDateRegex.IsMatch(normalized);
+        var isBareTomorrow = BareTomorrowRegex.IsMatch(normalized);
+        if (hasRelativeDate || isBareTomorrow)
         {
-            var targetDate = normalized.Contains("ngay mai", StringComparison.Ordinal) ||
-                             normalized.Contains("mai nay", StringComparison.Ordinal) ||
-                             Regex.IsMatch(
-                                 normalized,
-                                 @"(?<![a-z0-9])mai(?![a-z0-9])",
-                                 RegexOptions.CultureInvariant)
+            var targetDate = isBareTomorrow ||
+                             normalized.Contains("ngay mai", StringComparison.Ordinal) ||
+                             normalized.Contains("mai nay", StringComparison.Ordinal)
                 ? localNow.Date.AddDays(1)
                 : localNow.Date;
 
@@ -153,6 +156,7 @@ public static class ZaloSessionResolver
         var normalized = ZaloTextNormalizer.Normalize(value);
         return CalendarDateRegex.IsMatch(normalized) ||
                RelativeDateRegex.IsMatch(normalized) ||
+               BareTomorrowRegex.IsMatch(normalized) ||
                WeekdayRegex.IsMatch(normalized);
     }
 
