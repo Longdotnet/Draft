@@ -10,6 +10,8 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
 {
     private const long MaxImageBytes = 10 * 1024 * 1024;
     private const int MaxStoredDimension = 1600;
+    private const int MaxSourceDimension = 32768;
+    private const long MaxSourcePixels = 100_000_000;
     private const int JpegQuality = 82;
     private static readonly HashSet<string> AllowedContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -107,14 +109,27 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
 
     internal static byte[] OptimizeForDelivery(byte[] sourceBytes)
     {
-        using var source = SKBitmap.Decode(sourceBytes)
-            ?? throw new InvalidOperationException("Image could not be decoded.");
-        if (source.Width <= 0 || source.Height <= 0)
+        var sourceInfo = SKBitmap.DecodeBounds(sourceBytes);
+        if (sourceInfo.Width <= 0 || sourceInfo.Height <= 0)
             throw new InvalidOperationException("Image dimensions are invalid.");
 
-        var scale = Math.Min(1d, (double)MaxStoredDimension / Math.Max(source.Width, source.Height));
-        var targetWidth = Math.Max(1, (int)Math.Round(source.Width * scale));
-        var targetHeight = Math.Max(1, (int)Math.Round(source.Height * scale));
+        var sourcePixels = (long)sourceInfo.Width * sourceInfo.Height;
+        if (sourceInfo.Width > MaxSourceDimension ||
+            sourceInfo.Height > MaxSourceDimension ||
+            sourcePixels > MaxSourcePixels)
+        {
+            throw new InvalidOperationException("Image dimensions exceed the safe decode budget.");
+        }
+
+        var scale = Math.Min(1d, (double)MaxStoredDimension / Math.Max(sourceInfo.Width, sourceInfo.Height));
+        var targetWidth = Math.Max(1, (int)Math.Round(sourceInfo.Width * scale));
+        var targetHeight = Math.Max(1, (int)Math.Round(sourceInfo.Height * scale));
+        var decodeInfo = new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888, SKAlphaType.Premul);
+
+        // Decode directly into the delivery-sized bitmap. Decoding the original dimensions first can
+        // allocate hundreds of MB for a small, highly compressed upload before we get a chance to resize it.
+        using var source = SKBitmap.Decode(sourceBytes, decodeInfo)
+            ?? throw new InvalidOperationException("Image could not be decoded.");
 
         using var surface = SKSurface.Create(
             new SKImageInfo(targetWidth, targetHeight, SKColorType.Rgba8888, SKAlphaType.Opaque))
