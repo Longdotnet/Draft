@@ -118,22 +118,40 @@ public static class ZaloConversationCore
         if (weekdayMatch.Success)
         {
             var targetDay = ParseWeekday(weekdayMatch.Groups["weekday"].Value);
-            var sameDayCandidates = candidates
+            var datedMatches = candidates
                 .Where(candidate => candidate.StartTime is not null &&
                                     candidate.StartTime.Value.ToOffset(VietnamOffset).DayOfWeek == targetDay)
                 .OrderBy(candidate => candidate.StartTime)
                 .ToList();
-            if (sameDayCandidates.Count == 0)
-                return new([], "weekday_no_match", true, false);
+
+            // Some configured sessions intentionally have no StartTime yet and are
+            // named simply "T6" / "CN". They must remain resolvable by that alias.
+            var undatedAliasMatches = candidates
+                .Where(candidate => candidate.StartTime is null &&
+                                    GenericWeekdayNameMatches(candidate.Name, targetDay))
+                .ToList();
+
+            if (datedMatches.Count == 0)
+            {
+                var undatedIds = undatedAliasMatches
+                    .Select(candidate => candidate.Id)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                return new(
+                    undatedIds,
+                    undatedIds.Count > 0 ? "undated_weekday_name" : "weekday_no_match",
+                    true,
+                    undatedIds.Count == 1);
+            }
 
             // Operational weekday references mean the nearest still-relevant occurrence.
             // Keep sessions on the nearest local date together in case the group has two
             // courts/times on that date, but never drag previous weeks into the choice.
             var cutoff = (now ?? DateTimeOffset.UtcNow).AddHours(-4);
-            var upcoming = sameDayCandidates
+            var upcoming = datedMatches
                 .Where(candidate => candidate.StartTime >= cutoff)
                 .ToList();
-            var pool = upcoming.Count > 0 ? upcoming : sameDayCandidates;
+            var pool = upcoming.Count > 0 ? upcoming : datedMatches;
             var nearestDate = pool
                 .Select(candidate => candidate.StartTime!.Value.ToOffset(VietnamOffset).Date)
                 .OrderBy(date => Math.Abs((date - localNow.Date).TotalDays))
@@ -250,6 +268,12 @@ public static class ZaloConversationCore
             name,
             @"^(?:t[2-7]|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu\s+nhat)$",
             RegexOptions.CultureInvariant);
+
+    private static bool GenericWeekdayNameMatches(string? name, DayOfWeek targetDay)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(name ?? string.Empty);
+        return IsGenericWeekdayName(normalized) && ParseWeekday(normalized) == targetDay;
+    }
 
     private static DayOfWeek ParseWeekday(string value)
     {
