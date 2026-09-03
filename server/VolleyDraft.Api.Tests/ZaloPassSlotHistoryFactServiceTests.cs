@@ -102,12 +102,41 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
         Assert.DoesNotContain("22/8", reply.Text, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Cn_nay_availability_only_returns_upcoming_sunday_and_open_offer()
+    {
+        var referenceNow = new DateTimeOffset(2026, 9, 2, 15, 0, 0, VietnamOffset);
+        await using var fixture = await Fixture.CreateIncidentAsync(referenceNow);
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+
+        await fixture.OpenAsync(store, "old-1", "Anh Kha", "sun-23", "CN 23/8", "old-23");
+        await fixture.OpenAsync(store, "old-2", "Ngọc Huyền", "sun-30", "CN 30/8", "old-30");
+        await fixture.OpenAsync(store, "live", "Pin", "sun-06", "CN 6/9", "live-06");
+
+        var reply = await new ZaloPassSlotHistoryFactService(fixture.Db).TryBuildAsync(
+            "conn",
+            "g1",
+            Message("q-cn", "client", "Vũ", "cn này bạn e mới vô gr nên ko kịp vote, có ai pass ko ạ"),
+            referenceNow);
+
+        Assert.NotNull(reply);
+        Assert.Contains("1 slot", reply!.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Pin", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("6/9", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Anh Kha", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Ngọc Huyền", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("23/8", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("30/8", reply.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("đã hết hạn", reply.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("hôm nay có bao nhiêu người pass slot?")]
     [InlineData("ai pass slot hnay vậy?")]
     [InlineData("danh sách người pass slot hôm nay")]
     [InlineData("còn slot nào đang mở chưa ai nhận?")]
     [InlineData("ai pass slot em lấy nha")]
+    [InlineData("cn này bạn e mới vô gr nên ko kịp vote, có ai pass ko ạ")]
     public void Natural_pass_slot_fact_questions_are_detected(string text)
     {
         Assert.True(ZaloPassSlotHistoryFactService.LooksLikeQuery(text));
@@ -154,6 +183,42 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
 
         public static async Task<Fixture> CreateAsync()
         {
+            var nowLocal = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
+            var referenceNow = new DateTimeOffset(
+                nowLocal.Year,
+                nowLocal.Month,
+                nowLocal.Day,
+                12,
+                0,
+                0,
+                VietnamOffset);
+            var todayStart = new DateTimeOffset(
+                nowLocal.Year,
+                nowLocal.Month,
+                nowLocal.Day,
+                20,
+                0,
+                0,
+                VietnamOffset);
+            return await CreateWithSessionsAsync(referenceNow,
+            [
+                ("today", "CN", todayStart),
+                ("tomorrow", "T2", todayStart.AddDays(1))
+            ]);
+        }
+
+        public static Task<Fixture> CreateIncidentAsync(DateTimeOffset referenceNow) =>
+            CreateWithSessionsAsync(referenceNow,
+            [
+                ("sun-23", "CN 23/8", new DateTimeOffset(2026, 8, 23, 17, 30, 0, VietnamOffset)),
+                ("sun-30", "CN 30/8", new DateTimeOffset(2026, 8, 30, 17, 30, 0, VietnamOffset)),
+                ("sun-06", "CN 6/9", new DateTimeOffset(2026, 9, 6, 17, 30, 0, VietnamOffset))
+            ]);
+
+        private static async Task<Fixture> CreateWithSessionsAsync(
+            DateTimeOffset referenceNow,
+            IReadOnlyList<(string Id, string Name, DateTimeOffset Start)> sessions)
+        {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
             var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>()
@@ -178,57 +243,21 @@ public sealed class ZaloPassSlotHistoryFactServiceTests
                 EncryptedCredentials = "x"
             };
 
-            // Keep date-sensitive scenarios deterministic even when CI runs near midnight.
-            // The old fixture used now+2h after 20:00, which could silently turn the
-            // session named "today" into tomorrow and make SessionToday tests flaky.
-            var nowLocal = DateTimeOffset.UtcNow.ToOffset(VietnamOffset);
-            var referenceNow = new DateTimeOffset(
-                nowLocal.Year,
-                nowLocal.Month,
-                nowLocal.Day,
-                12,
-                0,
-                0,
-                VietnamOffset);
-            var todayStart = new DateTimeOffset(
-                nowLocal.Year,
-                nowLocal.Month,
-                nowLocal.Day,
-                20,
-                0,
-                0,
-                VietnamOffset);
-            var tomorrowStart = todayStart.AddDays(1);
-
             db.Users.Add(admin);
             db.ZaloConnections.Add(zalo);
-            db.MatchSessions.AddRange(
-                new MatchSession
-                {
-                    Id = "today",
-                    Name = "CN",
-                    AdminUserId = admin.Id,
-                    AdminUser = admin,
-                    ZaloConnectionId = zalo.Id,
-                    ZaloConnection = zalo,
-                    ZaloGroupId = "g1",
-                    BotEnabled = true,
-                    Status = SessionStatus.Setup,
-                    StartTime = todayStart
-                },
-                new MatchSession
-                {
-                    Id = "tomorrow",
-                    Name = "T2",
-                    AdminUserId = admin.Id,
-                    AdminUser = admin,
-                    ZaloConnectionId = zalo.Id,
-                    ZaloConnection = zalo,
-                    ZaloGroupId = "g1",
-                    BotEnabled = true,
-                    Status = SessionStatus.Setup,
-                    StartTime = tomorrowStart
-                });
+            db.MatchSessions.AddRange(sessions.Select(item => new MatchSession
+            {
+                Id = item.Id,
+                Name = item.Name,
+                AdminUserId = admin.Id,
+                AdminUser = admin,
+                ZaloConnectionId = zalo.Id,
+                ZaloConnection = zalo,
+                ZaloGroupId = "g1",
+                BotEnabled = true,
+                Status = SessionStatus.Setup,
+                StartTime = item.Start
+            }));
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
             return new Fixture(connection, db, referenceNow);
