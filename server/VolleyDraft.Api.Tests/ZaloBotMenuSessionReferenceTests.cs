@@ -6,6 +6,8 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloBotMenuSessionReferenceTests
 {
     [Theory]
+    [InlineData("8 T4", 8, "t4", ZaloBotIntent.SyncPoll)]
+    [InlineData("8 thứ 4", 8, "thu 4", ZaloBotIntent.SyncPoll)]
     [InlineData("9 T4", 9, "t4", ZaloBotIntent.AutoDraft)]
     [InlineData("10 T4", 10, "t4", ZaloBotIntent.TeamImage)]
     [InlineData("10 CN", 10, "cn", ZaloBotIntent.TeamImage)]
@@ -44,8 +46,7 @@ public sealed class ZaloBotMenuSessionReferenceTests
     [InlineData("10abc")]
     [InlineData("10 team 1")]
     [InlineData("10 abc")]
-    [InlineData("8 T4")]
-    public void Non_supported_numeric_suffixes_do_not_become_menu_commands(string input)
+    public void Non_session_numeric_suffixes_do_not_become_menu_commands(string input)
     {
         Assert.False(ZaloBotIntelligence.TryGetMenuCommand(input, out _, out _));
     }

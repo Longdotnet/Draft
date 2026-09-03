@@ -138,9 +138,6 @@ public sealed record ZaloSessionReference(string Id, string Name, DateTimeOffset
 public static class ZaloBotIntelligence
 {
     private static readonly Regex ExactCommandRegex = new("^(?:[1-9]|10|12)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static readonly Regex MenuCommandWithSessionReferenceRegex = new(
-        @"^(?:(?:@?[a-z0-9._-]*bot|npc|volley\s*bot)\s+)?(?<command>9|10)(?:\s+(?<reference>(?:t[2-7]|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu\s+nhat|hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)))?$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {
         "ai", "hoi", "hay", "la", "thi", "cho", "minh", "tui", "toi", "em", "anh", "chi",
@@ -163,46 +160,14 @@ public static class ZaloBotIntelligence
         ZaloBotIntent.WeeklySessionCount;
 
     /// <summary>
-    /// A weekday by itself (for example "CN") is an operational reference to an
-    /// upcoming session. Old sessions are only eligible when the user supplies an
-    /// exact/relative date or the complete non-generic session name.
+    /// All operational session filtering is delegated to the canonical conversation
+    /// core so every handler shares exact-date and nearest-weekday semantics.
     /// </summary>
     public static IReadOnlyList<string> SelectOperationalSessionCandidateIds(
         string value,
         IReadOnlyList<ZaloSessionReference> candidates,
-        DateTimeOffset? now = null)
-    {
-        var q = Normalize(value);
-        var hasCalendarDate = Regex.IsMatch(
-            q,
-            @"(?<!\d)\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?(?!\d)",
-            RegexOptions.CultureInvariant);
-        var hasRelativeDate = Regex.IsMatch(
-            q,
-            @"(?<![a-z0-9])(?:hom nay|bua nay|ngay mai|mai nay)(?![a-z0-9])",
-            RegexOptions.CultureInvariant);
-        var hasCompleteSessionName = candidates.Any(candidate =>
-        {
-            var normalizedName = Normalize(candidate.Name);
-            if (normalizedName.Length < 3 || !q.Contains(normalizedName, StringComparison.Ordinal)) return false;
-            return !Regex.IsMatch(
-                normalizedName,
-                @"^(?:t[2-7]|thu (?:[2-7]|hai|ba|tu|nam|sau|bay)|cn|chu nhat)$",
-                RegexOptions.CultureInvariant);
-        });
-
-        if (hasCalendarDate)
-            return ResolveSessionReference(q, candidates, now);
-
-        if (hasRelativeDate || hasCompleteSessionName)
-            return candidates.Select(candidate => candidate.Id).ToList();
-
-        var cutoff = (now ?? DateTimeOffset.UtcNow).AddHours(-4);
-        return candidates
-            .Where(candidate => candidate.StartTime is null || candidate.StartTime >= cutoff)
-            .Select(candidate => candidate.Id)
-            .ToList();
-    }
+        DateTimeOffset? now = null) =>
+        ZaloConversationCore.SelectOperationalSessionCandidateIds(value, candidates, now);
 
     public static bool IsShareSlotAnnouncement(string value)
     {
@@ -228,8 +193,6 @@ public static class ZaloBotIntelligence
                 "khong danh chung slot", "khong choi chung slot", "khong thay phien"))
             return true;
 
-        // Keep destructive verbs contextual. A participant named Huy followed by
-        // "share slot" must not be read as the unaccented verb "huy share".
         if (Regex.IsMatch(
                 value,
                 @"(?:hủy|huỷ|bỏ|tách)\s+(?:share|share\s+slot|slot)",
@@ -265,28 +228,11 @@ public static class ZaloBotIntelligence
     }
 
     /// <summary>
-    /// Parses deterministic numeric menu commands while allowing commands 9 and 10
-    /// to carry an explicit session reference such as "T4", "CN" or "2/9".
-    /// The optional bot prefix is accepted because inbound Zalo payloads can expose
-    /// either the mention-stripped question or the original visible content.
+    /// Numeric commands use one parser. Commands that include a suffix only match
+    /// when the suffix is a real deterministic session selector.
     /// </summary>
-    public static bool TryGetMenuCommand(string value, out int command, out string? sessionReference)
-    {
-        sessionReference = null;
-        var normalized = Normalize(value);
-        if (TryGetExactCommand(normalized, out command)) return true;
-
-        var match = MenuCommandWithSessionReferenceRegex.Match(normalized);
-        if (!match.Success || !int.TryParse(match.Groups["command"].Value, out command))
-        {
-            command = 0;
-            return false;
-        }
-
-        var reference = match.Groups["reference"].Value.Trim();
-        sessionReference = reference.Length == 0 ? null : reference;
-        return true;
-    }
+    public static bool TryGetMenuCommand(string value, out int command, out string? sessionReference) =>
+        ZaloConversationCore.TryGetMenuCommand(value, out command, out sessionReference);
 
     public static ZaloBotIntent IntentForCommand(int command) => command switch
     {
@@ -329,13 +275,7 @@ public static class ZaloBotIntelligence
                firstTeamOrdinal != secondTeamOrdinal;
     }
 
-    public static bool IsCancel(string value)
-    {
-        var normalized = Normalize(value);
-        return normalized is "huy" or "cancel" or "thoi" or "bo qua" or "khong can nua" ||
-               normalized.StartsWith("huy ", StringComparison.Ordinal) ||
-               normalized.StartsWith("cancel ", StringComparison.Ordinal);
-    }
+    public static bool IsCancel(string value) => ZaloConversationCore.IsNaturalCancel(value);
 
     public static bool IsConfirmation(string value)
     {
@@ -673,35 +613,8 @@ public static class ZaloBotIntelligence
     public static IReadOnlyList<string> ResolveSessionReference(
         string value,
         IReadOnlyList<ZaloSessionReference> candidates,
-        DateTimeOffset? now = null)
-    {
-        var q = Normalize(value);
-        var localNow = (now ?? DateTimeOffset.UtcNow).ToOffset(TimeSpan.FromHours(7));
-        return candidates.Where(candidate =>
-        {
-            if (q.Contains(Normalize(candidate.Name), StringComparison.Ordinal)) return true;
-            if (candidate.StartTime is null) return false;
-            var local = candidate.StartTime.Value.ToOffset(TimeSpan.FromHours(7));
-            if ((q.Contains("hom nay", StringComparison.Ordinal) || q.Contains("bua nay", StringComparison.Ordinal)) && local.Date == localNow.Date) return true;
-            if ((q.Contains("ngay mai", StringComparison.Ordinal) || q == "mai") && local.Date == localNow.Date.AddDays(1)) return true;
-            foreach (Match match in Regex.Matches(q, @"(?<!\d)(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?(?!\d)"))
-            {
-                if (int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) == local.Day &&
-                    int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) == local.Month) return true;
-            }
-            var aliases = local.DayOfWeek switch
-            {
-                DayOfWeek.Monday => new[] { "t2", "thu 2", "thu hai" },
-                DayOfWeek.Tuesday => new[] { "t3", "thu 3", "thu ba" },
-                DayOfWeek.Wednesday => new[] { "t4", "thu 4", "thu tu" },
-                DayOfWeek.Thursday => new[] { "t5", "thu 5", "thu nam" },
-                DayOfWeek.Friday => new[] { "t6", "thu 6", "thu sau" },
-                DayOfWeek.Saturday => new[] { "t7", "thu 7", "thu bay" },
-                _ => new[] { "cn", "chu nhat" }
-            };
-            return aliases.Any(alias => Regex.IsMatch(q, $@"(?<![a-z0-9]){Regex.Escape(alias)}(?![a-z0-9])"));
-        }).Select(candidate => candidate.Id).ToList();
-    }
+        DateTimeOffset? now = null) =>
+        ZaloConversationCore.ResolveSessionReference(value, candidates, now);
 
     private static HashSet<string> Tokens(string value)
     {

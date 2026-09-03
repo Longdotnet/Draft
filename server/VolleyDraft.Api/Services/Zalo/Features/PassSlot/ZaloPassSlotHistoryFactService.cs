@@ -1,20 +1,13 @@
 using System.Data.Common;
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Services.Zalo.Conversation;
+using VolleyDraft.Api.Services.Zalo.Features.PassSlot;
 
 namespace VolleyDraft.Api.Services;
-
-internal enum ZaloPassSlotHistoryScope
-{
-    EventToday,
-    SessionToday,
-    CurrentOpen,
-    SpecificSession
-}
 
 internal sealed record ZaloPassSlotHistoryRow(
     string OfferId,
@@ -29,40 +22,16 @@ internal sealed record ZaloPassSlotHistoryRow(
     DateTimeOffset UpdatedAt);
 
 /// <summary>
-/// Read-only pass-slot facts backed by ZaloOpenSlotOffers. Chat/AI may decide that a
-/// user is asking about pass-slot history, but counts, names and statuses always come
-/// from durable coordination state rather than re-reading chat text.
+/// Read-only PassSlot feature service backed by ZaloOpenSlotOffers.
+/// Natural-language scope belongs to PassSlotQueryPolicy; this class owns fact loading,
+/// deterministic filtering and response rendering only.
 /// </summary>
 internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
 
-    private static readonly Regex SummaryQuestionPattern = new(
-        @"(?:bao\s+nhieu|may\s+nguoi|co\s+may|co\s+bao\s+nhieu|danh\s+sach|list).{0,45}(?:pass|nhuong)|(?:pass|nhuong).{0,45}(?:bao\s+nhieu|may\s+nguoi|co\s+may|danh\s+sach|list)|(?<![a-z0-9])ai\s+(?:dang\s+)?(?:pass|nhuong)(?![a-z0-9])|(?:pass|nhuong)\s+(?:(?:slot|suat|keo)\s+)?(?:la\s+)?ai(?![a-z0-9])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex CurrentOpenPattern = new(
-        @"(?:slot|suat|keo).{0,35}(?:dang\s+mo|con\s+mo|chua\s+ai\s+nhan|chua\s+co\s+nguoi\s+nhan|can\s+nguoi|ai\s+hot)|(?:con|dang).{0,25}(?:slot|suat).{0,25}(?:pass|mo)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex SessionTodayPattern = new(
-        @"(?:keo|tran|buoi|session|san)\s+(?:hom\s+nay|hnay)|(?:hom\s+nay|hnay)\s+(?:co\s+)?(?:keo|tran|buoi|session|san)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex TodayPattern = new(
-        @"(?<![a-z0-9])(?:hom\s+nay|hnay|today)(?![a-z0-9])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    private static readonly Regex SessionReferencePattern = new(
-        @"(?<![a-z0-9])(?:t[2-7]|cn|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chu\s+nhat)(?![a-z0-9])",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    internal static bool LooksLikeQuery(string? content)
-    {
-        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
-        if (normalized.Length == 0) return false;
-        return SummaryQuestionPattern.IsMatch(normalized) || CurrentOpenPattern.IsMatch(normalized);
-    }
+    internal static bool LooksLikeQuery(string? content) =>
+        ZaloPassSlotQueryPolicy.LooksLikeQuery(content);
 
     public async Task<ZaloMemberAssistReply?> TryBuildAsync(
         string connectionId,
@@ -77,8 +46,8 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         groupId = Clean(groupId);
         if (connectionId.Length == 0 || groupId.Length == 0) return null;
 
-        var normalized = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
-        var scope = ResolveScope(normalized);
+        var normalized = ZaloTextNormalizer.Normalize(incoming.Content);
+        var scope = ZaloPassSlotQueryPolicy.ResolveScope(normalized);
         var referenceNow = (now ?? DateTimeOffset.UtcNow).ToOffset(VietnamOffset);
 
         var rows = await LoadRowsAsync(connectionId, groupId, cancellationToken);
@@ -91,13 +60,38 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
             rows.Select(row => row.SessionId).Distinct(StringComparer.Ordinal).ToArray(),
             cancellationToken);
 
+        var sessionReferences = rows
+            .GroupBy(row => row.SessionId, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var representative = group.OrderByDescending(row => row.UpdatedAt).First();
+                return new ZaloSessionReference(
+                    representative.SessionId,
+                    representative.SessionName,
+                    sessionStarts.GetValueOrDefault(representative.SessionId));
+            })
+            .ToList();
+
+        var hasSessionSelector = ZaloSessionResolver.LooksLikeSelector(normalized) ||
+                                 sessionReferences.Any(reference =>
+                                 {
+                                     var name = ZaloTextNormalizer.Normalize(reference.Name);
+                                     return name.Length >= 3 && normalized.Contains(name, StringComparison.Ordinal);
+                                 });
+
+        var resolvedSessionIds = hasSessionSelector
+            ? ZaloSessionResolver.Resolve(normalized, sessionReferences, referenceNow)
+                .CandidateIds
+                .ToHashSet(StringComparer.Ordinal)
+            : [];
+
         IEnumerable<ZaloPassSlotHistoryRow> filtered = rows;
         filtered = scope switch
         {
-            // "Current" is a business-state gate, not merely Status == Open. A stale
-            // record can remain Open in durable history after its TTL/session time has
-            // passed; never advertise that old slot as claimable to the group.
             ZaloPassSlotHistoryScope.CurrentOpen => filtered.Where(row =>
+                IsCurrentlyOpen(row, sessionStarts.GetValueOrDefault(row.SessionId), referenceNow)),
+            ZaloPassSlotHistoryScope.SessionCurrentOpen => filtered.Where(row =>
+                resolvedSessionIds.Contains(row.SessionId) &&
                 IsCurrentlyOpen(row, sessionStarts.GetValueOrDefault(row.SessionId), referenceNow)),
             ZaloPassSlotHistoryScope.SessionToday => filtered.Where(row =>
                 sessionStarts.TryGetValue(row.SessionId, out var start) &&
@@ -105,11 +99,10 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
                 start.Value.ToOffset(VietnamOffset).Date == referenceNow.Date),
             ZaloPassSlotHistoryScope.EventToday => filtered.Where(row =>
                 row.CreatedAt.ToOffset(VietnamOffset).Date == referenceNow.Date),
+            ZaloPassSlotHistoryScope.SpecificSession => filtered.Where(row =>
+                resolvedSessionIds.Contains(row.SessionId)),
             _ => filtered
         };
-
-        if (SessionReferencePattern.IsMatch(normalized))
-            filtered = filtered.Where(row => MatchesSessionReference(normalized, row.SessionName, sessionStarts.GetValueOrDefault(row.SessionId)));
 
         var selected = filtered
             .OrderByDescending(row => row.UpdatedAt)
@@ -134,6 +127,7 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         builder.Append(scope switch
         {
             ZaloPassSlotHistoryScope.CurrentOpen => $"Hiện còn {offerCount} slot đang mở từ {peopleCount} người pass nha:",
+            ZaloPassSlotHistoryScope.SessionCurrentOpen => $"Kèo này hiện còn {offerCount} slot pass đang mở từ {peopleCount} người:",
             ZaloPassSlotHistoryScope.SessionToday => $"Kèo hôm nay có {peopleCount} người từng báo pass, tổng {offerCount} slot:",
             ZaloPassSlotHistoryScope.SpecificSession => $"Kèo này có {peopleCount} người từng báo pass, tổng {offerCount} slot:",
             _ => $"Hôm nay có {peopleCount} người báo pass, tổng {offerCount} slot:"
@@ -146,14 +140,14 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
                 .Append(" — ")
                 .Append(row.SessionName)
                 .Append(" (")
-                .Append(StatusLabel(row));
-            builder.Append(')');
+                .Append(StatusLabel(row))
+                .Append(')');
         }
 
         if (selected.Count > 8)
             builder.Append($"\n… còn {selected.Count - 8} slot nữa.");
 
-        if (scope != ZaloPassSlotHistoryScope.CurrentOpen && selected.Count > 1)
+        if (scope is not (ZaloPassSlotHistoryScope.CurrentOpen or ZaloPassSlotHistoryScope.SessionCurrentOpen) && selected.Count > 1)
         {
             builder.Append($"\nTóm lại: {openCount} đang mở, {claimCount} đang có người giữ/chốt, {completedCount} đã hoàn tất.");
         }
@@ -166,8 +160,6 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         string groupId,
         CancellationToken cancellationToken)
     {
-        // ListClaimableAsync guarantees the raw coordination table exists on both
-        // SQLite tests and PostgreSQL production before the history SELECT below.
         _ = await new ZaloOpenSlotOfferStore(db)
             .ListClaimableAsync(connectionId, groupId, "__readonly_history__", cancellationToken);
 
@@ -202,6 +194,7 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
                 ReadDateTimeOffset(reader, 8),
                 ReadDateTimeOffset(reader, 9)));
         }
+
         return rows;
     }
 
@@ -212,6 +205,7 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         CancellationToken cancellationToken)
     {
         if (sessionIds.Count == 0) return new(StringComparer.Ordinal);
+
         return await db.MatchSessions
             .AsNoTracking()
             .Where(session => session.ZaloConnectionId == connectionId &&
@@ -231,37 +225,10 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
         return sessionStart is null || sessionStart.Value > referenceNow;
     }
 
-    private static ZaloPassSlotHistoryScope ResolveScope(string normalized)
-    {
-        if (CurrentOpenPattern.IsMatch(normalized)) return ZaloPassSlotHistoryScope.CurrentOpen;
-        if (SessionTodayPattern.IsMatch(normalized)) return ZaloPassSlotHistoryScope.SessionToday;
-        if (TodayPattern.IsMatch(normalized)) return ZaloPassSlotHistoryScope.EventToday;
-        if (SessionReferencePattern.IsMatch(normalized)) return ZaloPassSlotHistoryScope.SpecificSession;
-        return ZaloPassSlotHistoryScope.CurrentOpen;
-    }
-
-    private static bool MatchesSessionReference(string normalized, string sessionName, DateTimeOffset? start)
-    {
-        var normalizedName = ZaloBotIntelligence.Normalize(sessionName);
-        if (normalizedName.Length > 0 && ContainsPhrase(normalized, normalizedName)) return true;
-        if (start is null) return false;
-        var local = start.Value.ToOffset(VietnamOffset);
-        var tokens = local.DayOfWeek switch
-        {
-            DayOfWeek.Monday => new[] { "t2", "thu 2", "thu hai" },
-            DayOfWeek.Tuesday => new[] { "t3", "thu 3", "thu ba" },
-            DayOfWeek.Wednesday => new[] { "t4", "thu 4", "thu tu" },
-            DayOfWeek.Thursday => new[] { "t5", "thu 5", "thu nam" },
-            DayOfWeek.Friday => new[] { "t6", "thu 6", "thu sau" },
-            DayOfWeek.Saturday => new[] { "t7", "thu 7", "thu bay" },
-            _ => new[] { "cn", "chu nhat" }
-        };
-        return tokens.Any(token => ContainsPhrase(normalized, token));
-    }
-
     private static string EmptyText(ZaloPassSlotHistoryScope scope) => scope switch
     {
         ZaloPassSlotHistoryScope.CurrentOpen => "Hiện không còn slot pass nào đang mở nha 👌",
+        ZaloPassSlotHistoryScope.SessionCurrentOpen => "Kèo đó hiện không còn slot pass nào đang mở nha 👌",
         ZaloPassSlotHistoryScope.SessionToday => "Tui chưa thấy ai báo pass ở các kèo diễn ra hôm nay nha.",
         ZaloPassSlotHistoryScope.SpecificSession => "Tui chưa thấy ai báo pass ở kèo đó nha.",
         _ => "Hôm nay tui chưa ghi nhận ai báo pass slot nha."
@@ -294,10 +261,14 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
     }
 
     private static string ReadString(DbDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal) ? string.Empty : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture) ?? string.Empty;
+        reader.IsDBNull(ordinal)
+            ? string.Empty
+            : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture) ?? string.Empty;
 
     private static string? ReadNullableString(DbDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal) ? null : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+        reader.IsDBNull(ordinal)
+            ? null
+            : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
 
     private static DateTimeOffset ReadDateTimeOffset(DbDataReader reader, int ordinal)
     {
@@ -311,9 +282,6 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
             : DateTimeOffset.MinValue;
     }
 
-    private static bool ContainsPhrase(string value, string phrase) =>
-        Regex.IsMatch(value, $@"(?<![a-z0-9]){Regex.Escape(phrase)}(?![a-z0-9])", RegexOptions.CultureInvariant);
-
     private static string DisplayName(string? value, string fallback = "bạn")
     {
         var clean = (value ?? string.Empty).Trim();
@@ -321,7 +289,7 @@ internal sealed class ZaloPassSlotHistoryFactService(VolleyDraftDbContext db)
     }
 
     private static string NormalizeName(string? value) =>
-        Regex.Replace(ZaloBotIntelligence.Normalize(value ?? string.Empty), @"\s+", " ").Trim();
+        ZaloTextNormalizer.Normalize(value);
 
     private static string Clean(string? value) => (value ?? string.Empty).Trim();
 }

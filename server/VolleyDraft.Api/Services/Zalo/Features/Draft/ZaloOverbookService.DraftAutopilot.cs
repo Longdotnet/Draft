@@ -110,8 +110,6 @@ public sealed partial class ZaloOverbookService
             }
         }
 
-        // Never let a strong confirmation quoted from another approver's prompt cross
-        // sender boundaries. Quote correlation is stronger than the short time window.
         if (ZaloDraftConversationPolicy.IsStrongDraftConfirmation(incoming.Content))
         {
             var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
@@ -164,6 +162,35 @@ public sealed partial class ZaloOverbookService
         var selectionState = await selectionStore.LoadActiveAsync(groupId, senderId, cancellationToken);
         var continuingSelection = selectionState is not null &&
                                   string.Equals(selectionState.Intent, DraftSessionChoiceIntent, StringComparison.Ordinal);
+
+        if (continuingSelection)
+        {
+            var fresh = ZaloBotIntelligence.ClassifyDeterministically(incoming.Content);
+            var disposition = ZaloConversationCore.ClassifyPendingSessionTurn(
+                DraftSessionChoiceIntent,
+                incoming.Content,
+                incoming.MentionedBot,
+                fresh.Intent == ZaloBotIntent.Unknown ? null : fresh.Intent.ToString(),
+                fresh.Confidence);
+            switch (disposition)
+            {
+                case ZaloPendingTurnDisposition.CancelPending:
+                    await selectionStore.CancelAsync(groupId, senderId, cancellationToken);
+                    await SendDraftReplyAsync(
+                        connectionId, accountId, botName, groupId, incoming,
+                        "Ok, tui bỏ câu hỏi chọn trận này nha. Khi nào cần cứ hỏi lại đội hình.",
+                        [], "draft_session_choice_cancelled", cancellationToken);
+                    return true;
+                case ZaloPendingTurnDisposition.SwitchToNewIntent:
+                    await selectionStore.CompleteAsync(groupId, senderId, cancellationToken);
+                    return false;
+                case ZaloPendingTurnDisposition.IgnoreCurrentTurn:
+                    return false;
+                case ZaloPendingTurnDisposition.ContinuePending:
+                    break;
+            }
+        }
+
         if (!continuingSelection && !ZaloDraftConversationPolicy.IsReadinessQuestion(incoming.Content))
             return false;
 
@@ -292,9 +319,6 @@ public sealed partial class ZaloOverbookService
 
         var roleResolution = await ResolveDraftApproversAsync(selected, settings, cancellationToken);
         var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
-
-        // Live group role is the authorization source of truth. Message activity is
-        // only used below to rank whom the bot should proactively tag.
         var senderAuthorization = await integration.GetGroupRoleAuthorizationAsync(
             selected.AdminUserId, selected.Id, senderId);
         var senderIsLeader = senderAuthorization.IsSuccess &&
@@ -614,9 +638,6 @@ public sealed partial class ZaloOverbookService
 
         try
         {
-            // Reuse the existing confirmation router so authorization history,
-            // SessionDraftService.AutoRunDraftAsync and its atomic session lease stay
-            // the single mutation path.
             await botService.HandleIncomingAsync(
                 PromoteToBot(incoming, "xác nhận draft"), cancellationToken);
         }
@@ -643,8 +664,6 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        // Failed/blocked router attempts remain retryable, but still bound to the
-        // exact same session and approver. Team rows alone never count as success.
         await escalationStore.SetStateAsync(request.Id, ZaloDraftEscalationState.ApproverTagged, cancellationToken);
         await SeedDraftConfirmationAsync(
             connectionId, groupId, senderId, session.Id,
@@ -902,8 +921,6 @@ public sealed partial class ZaloOverbookService
             .Select(member => ZaloOverbookLogic.NormalizeId(member.ZaloUserId))
             .ToHashSet(StringComparer.Ordinal);
 
-        // The live role API is authoritative for the creator. Deputies need current
-        // membership evidence to avoid tagging stale admin IDs from an old directory.
         var eligibleIds = roleIds
             .Where(id => id == creatorId || currentIds.Contains(id))
             .ToList();
@@ -948,7 +965,6 @@ public sealed partial class ZaloOverbookService
                     id == creatorId,
                     latest?.SentAt);
             })
-            // Activity influences selection order only; it never grants/revokes role.
             .OrderBy(candidate => candidate.LastMessageAt >= recentCutoff ? 0 :
                                   candidate.LastMessageAt >= fallbackCutoff ? 1 :
                                   candidate.IsCreator ? 2 : 3)
@@ -1093,7 +1109,7 @@ public sealed partial class ZaloOverbookService
         CancellationToken cancellationToken,
         bool refuseToOverwriteDifferentPending = false)
     {
-        _ = refuseToOverwriteDifferentPending; // kept for call-site readability/backward compatibility.
+        _ = refuseToOverwriteDifferentPending;
         approverId = ZaloOverbookLogic.NormalizeId(approverId);
         var now = DateTimeOffset.UtcNow;
         var payload = JsonSerializer.Serialize(new[] { sessionId });
@@ -1103,9 +1119,6 @@ public sealed partial class ZaloOverbookService
             item.SenderZaloUserId == approverId,
             cancellationToken);
 
-        // For draft autopilot the safe behavior is stricter than legacy callers: any
-        // live pending action may only be reused when it is AutoDraftConfirm for this
-        // exact session. Never overwrite T4 with T6, or an unrelated confirmation.
         if (!ZaloDraftApprovalSafety.CanReservePending(state, sessionId, now))
             return false;
 
@@ -1131,17 +1144,11 @@ public sealed partial class ZaloOverbookService
             }
             catch (DbUpdateException)
             {
-                // The composite unique key means another webhook/process reserved this
-                // approver first. Do not retry as an overwrite; let the caller choose
-                // another approver or wait for the existing pending action to finish.
                 db.Entry(created).State = EntityState.Detached;
                 return false;
             }
         }
 
-        // Existing rows use an optimistic compare-and-swap on the exact version we
-        // inspected. This closes the cross-session race even across API instances: if
-        // another process renews/replaces the pending row first, this update affects 0.
         var previousIntent = state.PendingIntent;
         var previousPayload = state.PendingPayloadJson;
         var previousUpdatedAt = state.UpdatedAt;
