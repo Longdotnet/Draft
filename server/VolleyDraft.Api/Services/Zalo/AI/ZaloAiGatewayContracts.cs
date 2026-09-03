@@ -42,7 +42,8 @@ public sealed record ZaloAiCompletionResult(
     int Attempts,
     int? StatusCode,
     TimeSpan Duration,
-    bool UsedFallback)
+    bool UsedFallback,
+    string? FinishReason = null)
 {
     public static ZaloAiCompletionResult NotConfigured(ZaloAiWorkload workload) =>
         new(false, null, ZaloAiFailureKind.NotConfigured, "none", workload.ToString(), 0, null, TimeSpan.Zero, false);
