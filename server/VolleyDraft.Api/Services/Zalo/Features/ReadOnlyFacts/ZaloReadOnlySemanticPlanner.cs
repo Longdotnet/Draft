@@ -1,9 +1,8 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -151,18 +150,16 @@ internal sealed class ZaloReadOnlySemanticPlanner
 {
     private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
 
-    private readonly IConfiguration configuration;
     private readonly ILogger logger;
-    private readonly HttpClient httpClient;
+    private readonly IZaloAiGateway aiGateway;
 
     public ZaloReadOnlySemanticPlanner(
         IConfiguration configuration,
         ILogger logger,
         HttpClient? httpClient = null)
     {
-        this.configuration = configuration;
         this.logger = logger;
-        this.httpClient = httpClient ?? SharedHttpClient;
+        aiGateway = ZaloAiGatewayFactory.Create(httpClient ?? SharedHttpClient, configuration, logger);
     }
 
     public async Task<ZaloReadOnlySemanticPlan> PlanAsync(
@@ -175,7 +172,7 @@ internal sealed class ZaloReadOnlySemanticPlanner
         CancellationToken cancellationToken = default)
     {
         if (!settings.Enabled) return ZaloReadOnlySemanticPlan.None("semantic_disabled");
-        if (!IsConfigured()) return ZaloReadOnlySemanticPlan.None("semantic_ai_not_configured");
+        if (!aiGateway.IsConfigured) return ZaloReadOnlySemanticPlan.None("semantic_ai_not_configured");
 
         var senderId = Clean(incoming.SenderId, 100);
         if (!ZaloAiBudgetLimiter.TryAcquire(
@@ -187,7 +184,7 @@ internal sealed class ZaloReadOnlySemanticPlanner
             return ZaloReadOnlySemanticPlan.None("semantic_budget_exhausted");
 
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
-        var prompt = """
+        const string prompt = """
             Bạn là semantic question planner cho bot quản lý nhóm bóng chuyền.
             Nhiệm vụ duy nhất: hiểu speech act + ngữ cảnh và trả về structured plan.
             KHÔNG trả lời câu hỏi, KHÔNG suy đoán database fact, KHÔNG thực thi mutation.
@@ -238,75 +235,58 @@ internal sealed class ZaloReadOnlySemanticPlanner
             Confidence >= 0.85 chỉ khi route + factKind + references đủ rõ.
             """;
 
-        var payload = new
+        var userPayload = JsonSerializer.Serialize(new
         {
-            model = configuration["Ai:Model"],
-            temperature = 0,
-            max_tokens = 320,
-            messages = new object[]
+            CurrentMessage = new
             {
-                new { role = "system", content = prompt },
-                new
+                SenderId = senderId,
+                SenderName = Clean(incoming.SenderName, 80),
+                Content = Clean(incoming.Content, 800)
+            },
+            Quote = quote.HasQuote
+                ? new
                 {
-                    role = "user",
-                    content = JsonSerializer.Serialize(new
-                    {
-                        CurrentMessage = new
-                        {
-                            SenderId = senderId,
-                            SenderName = Clean(incoming.SenderName, 80),
-                            Content = Clean(incoming.Content, 800)
-                        },
-                        Quote = quote.HasQuote
-                            ? new
-                            {
-                                quote.MessageId,
-                                quote.SenderId,
-                                quote.SenderName,
-                                Content = Clean(quote.Content, 600),
-                                quote.RepliesToBot
-                            }
-                            : null,
-                        ConversationContext = context.Messages.Select(message => new
-                        {
-                            message.Role,
-                            message.SenderId,
-                            message.SenderName,
-                            Content = Clean(message.Content, 600),
-                            message.SentAt
-                        }),
-                        GroundingSnapshot = snapshot
-                    })
+                    quote.MessageId,
+                    quote.SenderId,
+                    quote.SenderName,
+                    Content = Clean(quote.Content, 600),
+                    quote.RepliesToBot
                 }
-            }
-        };
-
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, configuration["Ai:Endpoint"])
+                : null,
+            ConversationContext = context.Messages.Select(message => new
             {
-                Content = JsonContent.Create(payload)
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration["Ai:ApiKey"]);
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.LogWarning(
-                    "Read-only semantic planner AI returned {StatusCode}; failing closed.",
-                    (int)response.StatusCode);
-                return ZaloReadOnlySemanticPlan.None("semantic_ai_error");
-            }
+                message.Role,
+                message.SenderId,
+                message.SenderName,
+                Content = Clean(message.Content, 600),
+                message.SentAt
+            }),
+            GroundingSnapshot = snapshot
+        });
 
-            using var responseDocument = JsonDocument.Parse(body);
-            var content = ReadModelContent(responseDocument.RootElement);
-            return ParsePlan(content);
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+        var result = await aiGateway.CompleteAsync(
+            new ZaloAiCompletionRequest(
+                ZaloAiWorkload.StructuredExtraction,
+                [
+                    new ZaloAiChatMessage("system", prompt),
+                    new ZaloAiChatMessage("user", userPayload)
+                ],
+                Temperature: 0,
+                MaxTokens: 320,
+                CorrelationId: incoming.MessageId),
+            cancellationToken);
+
+        if (!result.Success)
         {
-            logger.LogWarning(exception, "Read-only semantic planner failed; failing closed.");
+            logger.LogWarning(
+                "Read-only semantic planner AI failed Kind={FailureKind} Provider={Provider} Model={Model}; failing closed.",
+                result.FailureKind,
+                result.Provider,
+                result.Model);
             return ZaloReadOnlySemanticPlan.None("semantic_ai_error");
         }
+
+        return ParsePlan(result.Content);
     }
 
     internal static ZaloReadOnlySemanticPlan ParsePlan(string? content)
@@ -351,29 +331,6 @@ internal sealed class ZaloReadOnlySemanticPlanner
         {
             return ZaloReadOnlySemanticPlan.None("semantic_malformed_json");
         }
-    }
-
-    private bool IsConfigured() =>
-        !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
-
-    private static string? ReadModelContent(JsonElement root)
-    {
-        if (root.TryGetProperty("choices", out var choices) &&
-            choices.ValueKind == JsonValueKind.Array &&
-            choices.GetArrayLength() > 0)
-        {
-            var first = choices[0];
-            if (first.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var content) &&
-                content.ValueKind == JsonValueKind.String)
-                return content.GetString();
-        }
-
-        return root.TryGetProperty("output_text", out var outputText) && outputText.ValueKind == JsonValueKind.String
-            ? outputText.GetString()
-            : null;
     }
 
     private static string ReadString(JsonElement root, string propertyName) =>
