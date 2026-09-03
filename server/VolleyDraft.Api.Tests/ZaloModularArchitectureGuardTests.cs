@@ -95,6 +95,27 @@ public sealed class ZaloModularArchitectureGuardTests
     }
 
     [Fact]
+    public void Production_Zalo_webhook_must_dispatch_only_through_inbound_coordinator()
+    {
+        var root = FindRepoRoot();
+        var programPath = Path.Combine(root, "server", "VolleyDraft.Api", "Program.cs");
+        var program = File.ReadAllText(programPath);
+        const string startMarker = "app.MapPost(\"/api/internal/zalo/events\"";
+        const string endMarker = "app.MapPost(\"/api/internal/zalo/poll-events\"";
+        var start = program.IndexOf(startMarker, StringComparison.Ordinal);
+        var end = program.IndexOf(endMarker, start >= 0 ? start : 0, StringComparison.Ordinal);
+
+        Assert.True(start >= 0 && end > start, "Could not locate the production Zalo webhook block in Program.cs.");
+        var webhookBlock = program[start..end];
+        Assert.Contains("ZaloInboundCoordinator coordinator", webhookBlock, StringComparison.Ordinal);
+        Assert.Contains("coordinator.HandleAsync(incoming, cancellationToken)", webhookBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("ZaloOverbookService", webhookBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("ZaloBotService", webhookBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryHandleZaloConfirmationAsync", webhookBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("HandleIncomingAsync", webhookBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Legacy_orchestrators_may_not_keep_growing()
     {
         var root = FindRepoRoot();
