@@ -31,6 +31,34 @@ public sealed class ZaloConversationCoreRegressionTests
     }
 
     [Fact]
+    public void Explicit_date_and_time_disambiguates_sessions_on_the_same_day()
+    {
+        IReadOnlyList<ZaloSessionReference> sessions =
+        [
+            new("early", "T4 02/09 17:30", new DateTimeOffset(2026, 9, 2, 10, 30, 0, TimeSpan.Zero)),
+            new("late", "T4 02/09 19:00", new DateTimeOffset(2026, 9, 2, 12, 0, 0, TimeSpan.Zero))
+        ];
+
+        var result = ZaloConversationCore.ResolveSessionReference("T4 02/09 19:00", sessions, Now);
+
+        Assert.Equal(["late"], result);
+    }
+
+    [Fact]
+    public void Exact_legacy_session_name_can_resolve_without_start_time()
+    {
+        IReadOnlyList<ZaloSessionReference> sessions =
+        [
+            new("legacy", "T4 02/09 17:30 - kèo legacy", null),
+            new("dated", "T4 02/09 19:00", new DateTimeOffset(2026, 9, 2, 12, 0, 0, TimeSpan.Zero))
+        ];
+
+        var result = ZaloConversationCore.ResolveSessionReference("T4 02/09 17:30 - kèo legacy", sessions, Now);
+
+        Assert.Equal(["legacy"], result);
+    }
+
+    [Fact]
     public void Calendar_date_without_year_chooses_nearest_annual_occurrence()
     {
         var referenceNow = new DateTimeOffset(2027, 1, 1, 8, 0, 0, TimeSpan.Zero); // 15:00 VN
