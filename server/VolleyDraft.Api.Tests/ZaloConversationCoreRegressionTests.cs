@@ -31,6 +31,37 @@ public sealed class ZaloConversationCoreRegressionTests
     }
 
     [Fact]
+    public void Calendar_date_without_year_chooses_nearest_annual_occurrence()
+    {
+        var referenceNow = new DateTimeOffset(2027, 1, 1, 8, 0, 0, TimeSpan.Zero); // 15:00 VN
+        IReadOnlyList<ZaloSessionReference> sessions =
+        [
+            new("jan-2026", "2/1/2026", new DateTimeOffset(2026, 1, 2, 10, 30, 0, TimeSpan.Zero)),
+            new("jan-2027", "2/1/2027", new DateTimeOffset(2027, 1, 2, 10, 30, 0, TimeSpan.Zero)),
+            new("jan-2028", "2/1/2028", new DateTimeOffset(2028, 1, 2, 10, 30, 0, TimeSpan.Zero))
+        ];
+
+        var result = ZaloConversationCore.ResolveSessionReference("xem kèo 2/1", sessions, referenceNow);
+
+        Assert.Equal(["jan-2027"], result);
+    }
+
+    [Fact]
+    public void Calendar_date_with_year_can_explicitly_select_history()
+    {
+        var referenceNow = new DateTimeOffset(2027, 1, 1, 8, 0, 0, TimeSpan.Zero);
+        IReadOnlyList<ZaloSessionReference> sessions =
+        [
+            new("jan-2026", "2/1/2026", new DateTimeOffset(2026, 1, 2, 10, 30, 0, TimeSpan.Zero)),
+            new("jan-2027", "2/1/2027", new DateTimeOffset(2027, 1, 2, 10, 30, 0, TimeSpan.Zero))
+        ];
+
+        var result = ZaloConversationCore.ResolveSessionReference("xem kèo 2/1/2026", sessions, referenceNow);
+
+        Assert.Equal(["jan-2026"], result);
+    }
+
+    [Fact]
     public void Bare_weekday_resolves_nearest_still_relevant_occurrence()
     {
         var result = ZaloConversationCore.ResolveSessionReference("Thứ 4", Sessions, Now);
@@ -44,6 +75,29 @@ public sealed class ZaloConversationCoreRegressionTests
         var result = ZaloConversationCore.ResolveSessionReference("cn này", Sessions, Now);
 
         Assert.Equal(["sun-06"], result);
+    }
+
+    [Theory]
+    [InlineData("T4 tuần trước", "wed-prev")]
+    [InlineData("T4 tuần này", "wed-current")]
+    [InlineData("T4 tuần sau", "wed-next")]
+    [InlineData("T4 tuần tới", "wed-next")]
+    [InlineData("CN tuần sau", "sun-next")]
+    public void Explicit_week_modifier_selects_that_calendar_week_across_year_boundary(string text, string expectedId)
+    {
+        var referenceNow = new DateTimeOffset(2026, 12, 30, 8, 0, 0, TimeSpan.Zero); // Wednesday 15:00 VN
+        IReadOnlyList<ZaloSessionReference> sessions =
+        [
+            new("wed-prev", "T4 23/12", new DateTimeOffset(2026, 12, 23, 10, 30, 0, TimeSpan.Zero)),
+            new("wed-current", "T4 30/12", new DateTimeOffset(2026, 12, 30, 10, 30, 0, TimeSpan.Zero)),
+            new("sun-current", "CN 03/01", new DateTimeOffset(2027, 1, 3, 10, 30, 0, TimeSpan.Zero)),
+            new("wed-next", "T4 06/01", new DateTimeOffset(2027, 1, 6, 10, 30, 0, TimeSpan.Zero)),
+            new("sun-next", "CN 10/01", new DateTimeOffset(2027, 1, 10, 10, 30, 0, TimeSpan.Zero))
+        ];
+
+        var result = ZaloConversationCore.ResolveSessionReference(text, sessions, referenceNow);
+
+        Assert.Equal([expectedId], result);
     }
 
     [Fact]
