@@ -446,7 +446,7 @@ public sealed class ZaloBotIntelligenceTests
             ["aug-9"],
             ZaloBotIntelligence.SelectOperationalSessionCandidateIds("cho tui vào danh sách chờ CN", sessions, now));
         Assert.Equal(
-            ["jul-26", "aug-2", "aug-9"],
+            ["aug-2"],
             ZaloBotIntelligence.SelectOperationalSessionCandidateIds("xem CN 2/8", sessions, now));
     }
 
