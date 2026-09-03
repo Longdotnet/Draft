@@ -4,8 +4,8 @@ namespace VolleyDraft.Api.Tests;
 
 /// <summary>
 /// Prevents future work (including coding agents) from silently rebuilding the Zalo god-class layout.
-/// The limits are intentionally generous enough for temporary delegation code but new feature logic
-/// must live under Services/Zalo/Features.
+/// Legacy facades may exist during the strangler migration, but feature logic and infrastructure must
+/// stay inside their explicit ownership boundaries under Services/Zalo.
 /// </summary>
 public sealed class ZaloModularArchitectureGuardTests
 {
@@ -22,7 +22,30 @@ public sealed class ZaloModularArchitectureGuardTests
             "Zalo*PassSlot*.cs",
             "Zalo*Guest*.cs",
             "Zalo*RecruitmentGuest*.cs",
-            "Zalo*TeamPreference*.cs"
+            "Zalo*TeamPreference*.cs",
+            "Zalo*ShareSlot*.cs",
+            "ZaloAutoSession*.cs",
+            "ZaloAmbient*.cs",
+            "Zalo*Social*.cs",
+            "Zalo*Profile*.cs",
+            "Zalo*Identity*.cs",
+            "ZaloPoll*.cs",
+            "Zalo*Proactive*.cs",
+            "Zalo*Roster*.cs",
+            "Zalo*DomainEvent*.cs",
+            "Zalo*OperatorPermission*.cs",
+            "Zalo*ConversationState*.cs",
+            "Zalo*MessageGraph*.cs",
+            "Zalo*Retention*.cs",
+            "Zalo*Trace*.cs",
+            "ZaloBridge*.cs",
+            "ZaloCredential*.cs",
+            "ZaloListener*.cs",
+            "ZaloIntegration*.cs",
+            "ZaloQr*.cs",
+            "ZaloOutboundReceipt*.cs",
+            "ZaloLegacyOutbound*.cs",
+            "ZaloUpcomingMatch*.cs"
         ];
 
         var violations = forbiddenRootPatterns
@@ -34,7 +57,7 @@ public sealed class ZaloModularArchitectureGuardTests
 
         Assert.True(
             violations.Length == 0,
-            "Feature-owned Zalo files were added back to Services root: " + string.Join(", ", violations));
+            "Feature/infrastructure-owned Zalo files were added back to Services root: " + string.Join(", ", violations));
     }
 
     [Fact]
@@ -47,7 +70,9 @@ public sealed class ZaloModularArchitectureGuardTests
         {
             ["ZaloBotService.cs"] = 300_000,
             ["ZaloOverbookReminder.cs"] = 27_000,
-            ["ZaloBotIntelligence.cs"] = 36_000
+            ["ZaloBotIntelligence.cs"] = 36_000,
+            ["ZaloOverbookService.cs"] = 20_000,
+            ["AiAssistantService.cs"] = 56_000
         };
 
         foreach (var (fileName, maxBytes) in limits)
@@ -57,21 +82,46 @@ public sealed class ZaloModularArchitectureGuardTests
             var length = new FileInfo(path).Length;
             Assert.True(
                 length <= maxBytes,
-                $"{fileName} grew to {length:N0} bytes (limit {maxBytes:N0}). Move feature logic to Services/Zalo/Features instead.");
+                $"{fileName} grew to {length:N0} bytes (limit {maxBytes:N0}). Move feature logic to Services/Zalo/Features or a shared Zalo core boundary instead.");
         }
     }
 
     [Theory]
+    [InlineData("AutoSession")]
     [InlineData("Draft")]
     [InlineData("PassSlot")]
     [InlineData("TeamPreference")]
     [InlineData("ShareSlot")]
     [InlineData("Guest")]
+    [InlineData("Social")]
+    [InlineData("ReadOnlyFacts")]
+    [InlineData("Reminder")]
+    [InlineData("Profile")]
+    [InlineData("Identity")]
+    [InlineData("Poll")]
+    [InlineData("Proactive")]
+    [InlineData("Roster")]
+    [InlineData("DomainEvents")]
+    [InlineData("Permissions")]
+    [InlineData("Overbook")]
     public void Migrated_features_have_explicit_ownership_folder(string feature)
     {
         var root = FindRepoRoot();
         var path = Path.Combine(root, "server", "VolleyDraft.Api", "Services", "Zalo", "Features", feature);
         Assert.True(Directory.Exists(path), $"Missing feature ownership folder: {feature}");
+        Assert.NotEmpty(Directory.GetFiles(path, "*.cs", SearchOption.AllDirectories));
+    }
+
+    [Theory]
+    [InlineData("Conversation")]
+    [InlineData("Routing")]
+    [InlineData("AI")]
+    [InlineData("Infrastructure")]
+    public void Cross_cutting_Zalo_capabilities_have_explicit_core_boundary(string boundary)
+    {
+        var root = FindRepoRoot();
+        var path = Path.Combine(root, "server", "VolleyDraft.Api", "Services", "Zalo", boundary);
+        Assert.True(Directory.Exists(path), $"Missing Zalo core boundary: {boundary}");
         Assert.NotEmpty(Directory.GetFiles(path, "*.cs", SearchOption.AllDirectories));
     }
 
