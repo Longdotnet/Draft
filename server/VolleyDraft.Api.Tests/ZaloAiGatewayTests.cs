@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Services.Zalo.AI;
+using Xunit;
 
 namespace VolleyDraft.Api.Tests;
 
@@ -102,7 +103,7 @@ public sealed class ZaloAiGatewayTests
         Assert.True(result.UsedFallback);
         Assert.Equal("backup-provider", result.Provider);
         Assert.Equal("backup-model", result.Model);
-        Assert.Equal(["primary.test", "fallback.test"], calls);
+        Assert.Equal(new[] { "primary.test", "fallback.test" }, calls);
     }
 
     private static OpenAiCompatibleZaloAiGateway CreateGateway(
