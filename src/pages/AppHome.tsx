@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Volleyball } from "lucide-react";
-import { AdminExceptionFocus, type ExceptionFocus } from "../components/AdminExceptionFocus";
+import { AdminExceptionFocus } from "../components/AdminExceptionFocus";
 import { DbDraftFlow } from "../components/DbDraftFlow";
 import { MatchAutopilotCenter } from "../components/MatchAutopilotCenter";
 import { MobilePublicDraftFlow } from "../components/MobilePublicDraftFlow";
@@ -10,6 +10,8 @@ import { ZaloAutoSessionOperationsPanel } from "../components/ZaloAutoSessionOpe
 import { ZaloCommunityTipSettingsPanel } from "../components/ZaloCommunityTipSettingsPanel";
 import { ZaloGreetingTestPanel } from "../components/ZaloGreetingTestPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
+
+type ExceptionFocus = "bot-overbook-control" | "auto-session-control" | "draft-workspace";
 
 const exceptionFocusValues = new Set<ExceptionFocus>([
   "bot-overbook-control",
