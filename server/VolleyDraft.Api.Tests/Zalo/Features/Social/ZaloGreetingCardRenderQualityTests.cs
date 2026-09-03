@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using SkiaSharp;
 using VolleyDraft.Api.Services;
 using Xunit;
@@ -68,6 +69,48 @@ public sealed class ZaloGreetingCardRenderQualityTests
         Assert.NotNull(decoded);
         Assert.Equal(1600, decoded.Width);
         Assert.Equal(800, decoded.Height);
+    }
+
+    [Fact]
+    public void Uploaded_image_optimizer_rejects_extreme_declared_dimensions_before_full_decode()
+    {
+        using var sourceBitmap = new SKBitmap(1, 1, SKColorType.Rgba8888, SKAlphaType.Premul);
+        sourceBitmap.Erase(SKColors.CornflowerBlue);
+        using var sourceImage = SKImage.FromBitmap(sourceBitmap);
+        using var sourceData = sourceImage.Encode(SKEncodedImageFormat.Png, 100);
+        var oversizedHeader = RewritePngDimensions(sourceData.ToArray(), width: 40_000, height: 40_000);
+
+        var bounds = SKBitmap.DecodeBounds(oversizedHeader);
+        Assert.Equal(40_000, bounds.Width);
+        Assert.Equal(40_000, bounds.Height);
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => ZaloBotImageService.OptimizeForDelivery(oversizedHeader));
+        Assert.Contains("safe decode budget", error.Message);
+    }
+
+    private static byte[] RewritePngDimensions(byte[] png, int width, int height)
+    {
+        var copy = png.ToArray();
+        Assert.True(copy.Length >= 33);
+        Assert.Equal("IHDR", System.Text.Encoding.ASCII.GetString(copy, 12, 4));
+
+        BinaryPrimitives.WriteInt32BigEndian(copy.AsSpan(16, 4), width);
+        BinaryPrimitives.WriteInt32BigEndian(copy.AsSpan(20, 4), height);
+        BinaryPrimitives.WriteUInt32BigEndian(copy.AsSpan(29, 4), Crc32(copy.AsSpan(12, 17)));
+        return copy;
+    }
+
+    private static uint Crc32(ReadOnlySpan<byte> bytes)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var value in bytes)
+        {
+            crc ^= value;
+            for (var bit = 0; bit < 8; bit++)
+                crc = (crc >> 1) ^ (0xEDB88320u & (uint)-(int)(crc & 1));
+        }
+        return ~crc;
     }
 
     private static bool IsJpeg(byte[] bytes) =>
