@@ -24,13 +24,10 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
     [InlineData("T6 chia đội ra sao rồi?", ZaloBotIntent.TeamLineup)]
     [InlineData("T6 còn ai chờ?", ZaloBotIntent.WaitlistStatus)]
     [InlineData("lịch nhắc T6 sao rồi?", ZaloBotIntent.ReminderStatus)]
-    public void Natural_status_phrases_are_resolved_as_read_only_intents(
-        string content,
-        ZaloBotIntent expected)
+    public void Natural_status_phrases_are_resolved_as_read_only_intents(string content, ZaloBotIntent expected)
     {
         Assert.True(ZaloAmbientReadOnlyNaturalIntentResolver.TryResolve(content, out var intent));
         Assert.Equal(expected, intent);
-
         var decision = Decide(Incoming(content), lastBotMessageAt: null);
         Assert.True(decision.WouldReply);
         Assert.Equal(ZaloAmbientParticipationKind.Fact, decision.Kind);
@@ -53,13 +50,7 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
     public void Natural_status_still_obeys_bot_cooldown_without_a_lease()
     {
         var now = DateTimeOffset.UtcNow;
-        var decision = ZaloAmbientParticipationEngine.Evaluate(
-            Incoming("team T6 hiện sao?"),
-            Situation(now.AddMilliseconds(-500)),
-            Settings,
-            now,
-            hasActiveLease: false);
-
+        var decision = ZaloAmbientParticipationEngine.Evaluate(Incoming("team T6 hiện sao?"), Situation(now.AddMilliseconds(-500)), Settings, now, hasActiveLease: false);
         Assert.Equal(ZaloAmbientParticipationKind.Fact, decision.Kind);
         Assert.False(decision.WouldReply);
         Assert.Contains("bot_cooldown", decision.Signals);
@@ -69,13 +60,7 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
     public void Active_lease_allows_same_sender_natural_status_followup_through_cooldown()
     {
         var now = DateTimeOffset.UtcNow;
-        var decision = ZaloAmbientParticipationEngine.Evaluate(
-            Incoming("team T6 hiện sao?"),
-            Situation(now.AddMilliseconds(-500)),
-            Settings,
-            now,
-            hasActiveLease: true);
-
+        var decision = ZaloAmbientParticipationEngine.Evaluate(Incoming("team T6 hiện sao?"), Situation(now.AddMilliseconds(-500)), Settings, now, hasActiveLease: true);
         Assert.True(decision.WouldReply);
         Assert.Equal(ZaloAmbientParticipationKind.Fact, decision.Kind);
         Assert.Equal(ZaloBotIntent.TeamLineup.ToString(), decision.Intent);
@@ -87,28 +72,12 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
-        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
-            .UseSqlite(connection)
-            .Options;
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
         await using var db = new VolleyDraftDbContext(options);
         await db.Database.EnsureCreatedAsync();
 
-        var admin = new User
-        {
-            Id = "admin-1",
-            DisplayName = "Admin",
-            Email = $"natural-readonly-{Guid.NewGuid():n}@example.test",
-            PasswordHash = "test"
-        };
-        var zalo = new ZaloConnection
-        {
-            Id = "conn-1",
-            AdminUserId = admin.Id,
-            AdminUser = admin,
-            AccountZaloId = "bot-account",
-            DisplayName = "Npc",
-            EncryptedCredentials = "test"
-        };
+        var admin = new User { Id = "admin-1", DisplayName = "Admin", Email = $"natural-readonly-{Guid.NewGuid():n}@example.test", PasswordHash = "test" };
+        var zalo = new ZaloConnection { Id = "conn-1", AdminUserId = admin.Id, AdminUser = admin, AccountZaloId = "bot-account", DisplayName = "Npc", EncryptedCredentials = "test" };
         var session = new MatchSession
         {
             Id = "session-t6",
@@ -119,7 +88,7 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
             Name = "T6",
             Status = SessionStatus.Setup,
             BotEnabled = true,
-            StartTime = DateTimeOffset.UtcNow.AddDays(1),
+            StartTime = ZaloTestDates.Next(DayOfWeek.Friday),
             TeamCount = 3,
             TeamSize = 6
         };
@@ -133,9 +102,7 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
         var decision = Decide(incoming, lastBotMessageAt: null);
         var teamsBefore = await db.Teams.AsNoTracking().CountAsync();
         var slotsBefore = await db.DraftSlots.AsNoTracking().CountAsync();
-
-        var reply = await new ZaloAmbientFactResponder(db).TryBuildAsync(
-            "bot-account", "g1", incoming, decision, 60);
+        var reply = await new ZaloAmbientFactResponder(db).TryBuildAsync("bot-account", "g1", incoming, decision, 60);
 
         Assert.NotNull(reply);
         Assert.Equal(ZaloBotIntent.TeamLineup, reply!.Intent);
@@ -144,32 +111,12 @@ public sealed class ZaloAmbientNaturalReadOnlyPhraseTests
         Assert.Equal(slotsBefore, await db.DraftSlots.AsNoTracking().CountAsync());
     }
 
-    private static ZaloAmbientParticipationDecision Decide(
-        ZaloIncomingMessageEvent incoming,
-        DateTimeOffset? lastBotMessageAt) =>
-        ZaloAmbientParticipationEngine.Evaluate(
-            incoming,
-            Situation(lastBotMessageAt),
-            Settings,
-            DateTimeOffset.UtcNow);
+    private static ZaloAmbientParticipationDecision Decide(ZaloIncomingMessageEvent incoming, DateTimeOffset? lastBotMessageAt) =>
+        ZaloAmbientParticipationEngine.Evaluate(incoming, Situation(lastBotMessageAt), Settings, DateTimeOffset.UtcNow);
 
-    private static ZaloAmbientGroupSituation Situation(DateTimeOffset? lastBotMessageAt) => new(
-        RecentMessageCount: 1,
-        RecentTwoMinuteMessageCount: 1,
-        DistinctParticipantCount: 1,
-        RecentBotMessageCount: lastBotMessageAt is null ? 0 : 1,
-        LastBotMessageAt: lastBotMessageAt,
-        RecentMessageIds: ["context-1"]);
+    private static ZaloAmbientGroupSituation Situation(DateTimeOffset? lastBotMessageAt) => new(1, 1, 1, lastBotMessageAt is null ? 0 : 1, lastBotMessageAt, ["context-1"]);
 
     private static ZaloIncomingMessageEvent Incoming(string content) => new(
-        accountId: "bot-account",
-        botId: "bot-account",
-        groupId: "g1",
-        messageId: $"m-{Guid.NewGuid():n}",
-        senderId: "user-long",
-        senderName: "Long",
-        content: content,
-        mentions: [],
-        mentionedBot: false,
-        sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        accountId: "bot-account", botId: "bot-account", groupId: "g1", messageId: $"m-{Guid.NewGuid():n}", senderId: "user-long", senderName: "Long",
+        content: content, mentions: [], mentionedBot: false, sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 }
