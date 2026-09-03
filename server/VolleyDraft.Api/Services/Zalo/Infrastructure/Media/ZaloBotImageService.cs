@@ -113,13 +113,16 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
             throw new InvalidOperationException("Image dimensions exceed the safe decode budget.");
         }
 
-        // SKBitmap.Decode exposes the encoded pixel matrix and can discard EXIF orientation when the
-        // optimized image is re-encoded. SKImage.FromEncodedData preserves the display orientation,
-        // which keeps portrait phone photos upright while still bounding the encoded source first.
-        using var sourceImage = SKImage.FromEncodedData(sourceBytes)
+        // Decode the encoded pixel matrix through SKCodec so EXIF orientation remains explicit.
+        // SKImage.FromEncodedData does not guarantee that raster pixels are physically re-oriented
+        // before a later bitmap conversion/re-encode on every SkiaSharp path, so normalize all eight
+        // encoded origins ourselves before resizing and stripping metadata.
+        using var codecData = SKData.CreateCopy(sourceBytes);
+        using var codec = SKCodec.Create(codecData)
             ?? throw new InvalidOperationException("Image could not be decoded.");
-        using var source = SKBitmap.FromImage(sourceImage)
+        using var decoded = SKBitmap.Decode(codec)
             ?? throw new InvalidOperationException("Image could not be decoded.");
+        using var source = NormalizeEncodedOrigin(decoded, codec.EncodedOrigin);
 
         var scale = Math.Min(1d, (double)MaxStoredDimension / Math.Max(source.Width, source.Height));
         var targetWidth = Math.Max(1, (int)Math.Round(source.Width * scale));
@@ -142,6 +145,40 @@ public sealed class ZaloBotImageService(VolleyDraftDbContext db)
             ?? throw new InvalidOperationException("Image could not be encoded.");
         return encoded.ToArray();
     }
+
+    private static SKBitmap NormalizeEncodedOrigin(SKBitmap source, SKEncodedOrigin origin)
+    {
+        if (origin is SKEncodedOrigin.Default or SKEncodedOrigin.TopLeft)
+            return source.Copy();
+
+        var swapsAxes = origin is SKEncodedOrigin.LeftTop or
+            SKEncodedOrigin.RightTop or
+            SKEncodedOrigin.RightBottom or
+            SKEncodedOrigin.LeftBottom;
+        var targetWidth = swapsAxes ? source.Height : source.Width;
+        var targetHeight = swapsAxes ? source.Width : source.Height;
+        var target = new SKBitmap(targetWidth, targetHeight, source.ColorType, source.AlphaType);
+
+        using var canvas = new SKCanvas(target);
+        canvas.Clear(SKColors.Transparent);
+        canvas.SetMatrix(CreateEncodedOriginMatrix(origin, source.Width, source.Height));
+        canvas.DrawBitmap(source, 0, 0);
+        canvas.Flush();
+        return target;
+    }
+
+    private static SKMatrix CreateEncodedOriginMatrix(SKEncodedOrigin origin, int width, int height) => origin switch
+    {
+        SKEncodedOrigin.TopLeft or SKEncodedOrigin.Default => SKMatrix.Identity,
+        SKEncodedOrigin.TopRight => new SKMatrix(-1, 0, width, 0, 1, 0, 0, 0, 1),
+        SKEncodedOrigin.BottomRight => new SKMatrix(-1, 0, width, 0, -1, height, 0, 0, 1),
+        SKEncodedOrigin.BottomLeft => new SKMatrix(1, 0, 0, 0, -1, height, 0, 0, 1),
+        SKEncodedOrigin.LeftTop => new SKMatrix(0, 1, 0, 1, 0, 0, 0, 0, 1),
+        SKEncodedOrigin.RightTop => new SKMatrix(0, -1, height, 1, 0, 0, 0, 0, 1),
+        SKEncodedOrigin.RightBottom => new SKMatrix(0, -1, height, -1, 0, width, 0, 0, 1),
+        SKEncodedOrigin.LeftBottom => new SKMatrix(0, 1, 0, -1, 0, width, 0, 0, 1),
+        _ => throw new InvalidOperationException($"Unsupported encoded image origin: {origin}.")
+    };
 
     private static ZaloBotImageAssetResponse ToResponse(ZaloBotImageAsset asset, string publicOrigin) => new(
         asset.Id,
