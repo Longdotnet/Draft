@@ -60,7 +60,7 @@ public sealed class ZaloDirectSocialResilienceTests
     }
 
     [Fact]
-    public async Task Direct_social_provider_failure_returns_visible_fallback()
+    public async Task Direct_social_provider_failure_retries_transport_but_returns_one_visible_fallback()
     {
         await using var fixture = await Fixture.CreateAsync();
         var handler = new StaticAiHandler(HttpStatusCode.ServiceUnavailable, null);
@@ -83,7 +83,7 @@ public sealed class ZaloDirectSocialResilienceTests
         Assert.True(result.AiCalled);
         Assert.Equal("ai_generation_failed", result.GenerationFallbackReason);
         Assert.False(string.IsNullOrWhiteSpace(result.Text));
-        Assert.Equal(1, handler.CallCount);
+        Assert.Equal(2, handler.CallCount);
     }
 
     [Fact]
@@ -141,7 +141,8 @@ public sealed class ZaloDirectSocialResilienceTests
             {
                 ["Ai:Endpoint"] = "https://ai.test/v1/chat/completions",
                 ["Ai:ApiKey"] = "test-key",
-                ["Ai:Model"] = "test-model"
+                ["Ai:Model"] = "test-model",
+                ["Ai:RetryCount"] = "1"
             })
             .Build();
 

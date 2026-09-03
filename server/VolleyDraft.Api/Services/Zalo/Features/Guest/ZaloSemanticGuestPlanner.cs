@@ -1,6 +1,5 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -14,7 +13,7 @@ internal sealed class ZaloSemanticGuestPlanner
     private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
     private readonly IConfiguration configuration;
     private readonly ILogger logger;
-    private readonly HttpClient httpClient;
+    private readonly IZaloAiGateway aiGateway;
 
     public ZaloSemanticGuestPlanner(
         IConfiguration configuration,
@@ -23,7 +22,7 @@ internal sealed class ZaloSemanticGuestPlanner
     {
         this.configuration = configuration;
         this.logger = logger;
-        this.httpClient = httpClient ?? SharedHttpClient;
+        aiGateway = ZaloAiGatewayFactory.Create(httpClient ?? SharedHttpClient, configuration, logger);
     }
 
     public async Task<ZaloSemanticGuestPlan> PlanAsync(
@@ -37,7 +36,7 @@ internal sealed class ZaloSemanticGuestPlanner
     {
         if (!configuration.GetValue("ZaloBot:DraftAutopilot:GuestSemanticAiEnabled", true) || !settings.Enabled)
             return ZaloSemanticGuestPlan.None("semantic_guest_disabled");
-        if (!IsConfigured())
+        if (!aiGateway.IsConfigured)
             return ZaloSemanticGuestPlan.None("semantic_guest_ai_not_configured");
         if (!ZaloAiBudgetLimiter.TryAcquire(
                 connectionId,
@@ -47,7 +46,7 @@ internal sealed class ZaloSemanticGuestPlanner
                 settings.MaxGroupCallsPerMinute))
             return ZaloSemanticGuestPlan.None("semantic_guest_budget_exhausted");
 
-        var prompt = """
+        const string prompt = """
             Bạn là SEMANTIC GUEST DOMAIN PLANNER cho bot nhóm bóng chuyền.
             Chỉ hiểu ý nghĩa hội thoại và trả JSON. KHÔNG trả lời người dùng, KHÔNG gọi tool, KHÔNG sửa database.
 
@@ -137,57 +136,43 @@ internal sealed class ZaloSemanticGuestPlanner
             }
             """;
 
-        var payload = new
+        var userPayload = JsonSerializer.Serialize(new
         {
-            model = configuration["Ai:Model"],
-            temperature = 0,
-            max_tokens = 900,
-            messages = new object[]
+            CurrentMessage = Clean(message, 900),
+            ConversationContext = context.Messages.Select(item => new
             {
-                new { role = "system", content = prompt },
-                new
-                {
-                    role = "user",
-                    content = JsonSerializer.Serialize(new
-                    {
-                        CurrentMessage = Clean(message, 900),
-                        ConversationContext = context.Messages.Select(item => new
-                        {
-                            item.Role,
-                            item.SenderId,
-                            item.SenderName,
-                            Content = Clean(item.Content, 600),
-                            item.SentAt
-                        }),
-                        GroundingSnapshot = snapshot
-                    })
-                }
-            }
-        };
+                item.Role,
+                item.SenderId,
+                item.SenderName,
+                Content = Clean(item.Content, 600),
+                item.SentAt
+            }),
+            GroundingSnapshot = snapshot
+        });
 
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, configuration["Ai:Endpoint"])
-            {
-                Content = JsonContent.Create(payload)
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration["Ai:ApiKey"]);
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.LogWarning("Semantic guest planner AI returned {StatusCode}; failing closed.", (int)response.StatusCode);
-                return ZaloSemanticGuestPlan.None("semantic_guest_ai_error");
-            }
+        var result = await aiGateway.CompleteAsync(
+            new ZaloAiCompletionRequest(
+                ZaloAiWorkload.StructuredExtraction,
+                [
+                    new ZaloAiChatMessage("system", prompt),
+                    new ZaloAiChatMessage("user", userPayload)
+                ],
+                Temperature: 0,
+                MaxTokens: 900,
+                CorrelationId: $"guest:{groupId}:{snapshot.SponsorZaloUserId}"),
+            cancellationToken);
 
-            using var document = JsonDocument.Parse(body);
-            return ParsePlan(ReadModelContent(document.RootElement));
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+        if (!result.Success)
         {
-            logger.LogWarning(exception, "Semantic guest planner failed; failing closed.");
+            logger.LogWarning(
+                "Semantic guest planner failed Kind={FailureKind} Provider={Provider} Model={Model}; failing closed.",
+                result.FailureKind,
+                result.Provider,
+                result.Model);
             return ZaloSemanticGuestPlan.None("semantic_guest_ai_error");
         }
+
+        return ParsePlan(result.Content);
     }
 
     internal static ZaloSemanticGuestPlan ParsePlan(string? content)
@@ -244,26 +229,6 @@ internal sealed class ZaloSemanticGuestPlanner
         {
             return ZaloSemanticGuestPlan.None("semantic_guest_malformed_json");
         }
-    }
-
-    private bool IsConfigured() =>
-        !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
-
-    private static string? ReadModelContent(JsonElement root)
-    {
-        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
-        {
-            var first = choices[0];
-            if (first.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var content) &&
-                content.ValueKind == JsonValueKind.String)
-                return content.GetString();
-        }
-        return root.TryGetProperty("output_text", out var output) && output.ValueKind == JsonValueKind.String
-            ? output.GetString()
-            : null;
     }
 
     private static T? ReadEnum<T>(JsonElement node, string name) where T : struct, Enum

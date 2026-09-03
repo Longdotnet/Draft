@@ -1,9 +1,8 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -49,7 +48,7 @@ internal sealed class ZaloProfileSemanticInterpreter
     private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
     private readonly IConfiguration configuration;
     private readonly ILogger logger;
-    private readonly HttpClient httpClient;
+    private readonly IZaloAiGateway aiGateway;
 
     internal ZaloProfileSemanticInterpreter(
         IConfiguration configuration,
@@ -58,7 +57,7 @@ internal sealed class ZaloProfileSemanticInterpreter
     {
         this.configuration = configuration;
         this.logger = logger;
-        this.httpClient = httpClient ?? SharedHttpClient;
+        aiGateway = ZaloAiGatewayFactory.Create(httpClient ?? SharedHttpClient, configuration, logger);
     }
 
     internal async Task<ZaloProfileSemanticInterpretation?> InterpretAsync(
@@ -71,7 +70,7 @@ internal sealed class ZaloProfileSemanticInterpreter
     {
         if (!configuration.GetValue("ZaloBot:Semantic:MissingProfile:Enabled", true) ||
             prompts.Count == 0 ||
-            !IsConfigured())
+            !aiGateway.IsConfigured)
             return null;
 
         var senderId = Clean(incoming.SenderId, 100);
@@ -126,62 +125,48 @@ internal sealed class ZaloProfileSemanticInterpreter
             }
             """;
 
-        var payload = new
+        var userPayload = JsonSerializer.Serialize(new
         {
-            model = configuration["Ai:Model"],
-            temperature = 0,
-            max_tokens = 260,
-            messages = new object[]
+            CurrentMessage = new
             {
-                new { role = "system", content = prompt },
-                new
-                {
-                    role = "user",
-                    content = JsonSerializer.Serialize(new
-                    {
-                        CurrentMessage = new
-                        {
-                            SenderId = senderId,
-                            SenderName = Clean(incoming.SenderName, 80),
-                            Content = Clean(incoming.Content, 900)
-                        },
-                        ConversationContext = context.Messages.Select(item => new
-                        {
-                            item.Role,
-                            item.SenderId,
-                            item.SenderName,
-                            item.Content,
-                            item.SentAt
-                        }),
-                        PromptSnapshot = prompts
-                    })
-                }
-            }
-        };
+                SenderId = senderId,
+                SenderName = Clean(incoming.SenderName, 80),
+                Content = Clean(incoming.Content, 900)
+            },
+            ConversationContext = context.Messages.Select(item => new
+            {
+                item.Role,
+                item.SenderId,
+                item.SenderName,
+                item.Content,
+                item.SentAt
+            }),
+            PromptSnapshot = prompts
+        });
 
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, configuration["Ai:Endpoint"])
-            {
-                Content = JsonContent.Create(payload)
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", configuration["Ai:ApiKey"]);
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                logger.LogDebug("Profile semantic interpreter returned {StatusCode}; using deterministic fallback.", (int)response.StatusCode);
-                return null;
-            }
+        var result = await aiGateway.CompleteAsync(
+            new ZaloAiCompletionRequest(
+                ZaloAiWorkload.StructuredExtraction,
+                [
+                    new ZaloAiChatMessage("system", prompt),
+                    new ZaloAiChatMessage("user", userPayload)
+                ],
+                Temperature: 0,
+                MaxTokens: 260,
+                CorrelationId: incoming.MessageId),
+            cancellationToken);
 
-            using var envelope = JsonDocument.Parse(body);
-            return ParseInterpretation(ReadModelContent(envelope.RootElement), prompts);
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+        if (!result.Success)
         {
-            logger.LogDebug(exception, "Profile semantic interpreter failed; deterministic fallback remains available.");
+            logger.LogDebug(
+                "Profile semantic interpreter failed Kind={FailureKind} Provider={Provider} Model={Model}; deterministic fallback remains available.",
+                result.FailureKind,
+                result.Provider,
+                result.Model);
             return null;
         }
+
+        return ParseInterpretation(result.Content, prompts);
     }
 
     internal static ZaloProfileSemanticInterpretation ParseInterpretation(
@@ -232,29 +217,8 @@ internal sealed class ZaloProfileSemanticInterpreter
         }
     }
 
-    private bool IsConfigured() =>
-        !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
-
     private static TEnum? ParseEnum<TEnum>(string value) where TEnum : struct, Enum =>
         Enum.TryParse<TEnum>(value, true, out var parsed) ? parsed : null;
-
-    private static string? ReadModelContent(JsonElement root)
-    {
-        if (root.TryGetProperty("choices", out var choices) &&
-            choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
-        {
-            var first = choices[0];
-            if (first.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var content) &&
-                content.ValueKind == JsonValueKind.String)
-                return content.GetString();
-        }
-        return root.TryGetProperty("output_text", out var outputText) && outputText.ValueKind == JsonValueKind.String
-            ? outputText.GetString()
-            : null;
-    }
 
     private static string StripCodeFence(string value)
     {

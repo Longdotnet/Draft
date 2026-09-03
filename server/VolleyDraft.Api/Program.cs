@@ -68,6 +68,7 @@ builder.Services.AddScoped<Npc11CardService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
 builder.Services.AddScoped<ZaloOverbookService>();
+builder.Services.AddScoped<ZaloInboundCoordinator>();
 builder.Services.AddScoped<SessionWaitlistService>();
 builder.Services.AddScoped<ZaloBotActionHistoryService>();
 builder.Services.AddScoped<ZaloActivityBackfillCoordinator>();
@@ -183,8 +184,7 @@ auth.MapGet("/me", async (HttpContext httpContext, AuthService service) =>
 app.MapPost("/api/internal/zalo/events", async (
     HttpContext httpContext,
     ZaloIncomingMessageEvent incoming,
-    ZaloBotService service,
-    ZaloOverbookService overbookService,
+    ZaloInboundCoordinator coordinator,
     IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
@@ -195,10 +195,9 @@ app.MapPost("/api/internal/zalo/events", async (
     {
         return Results.Unauthorized();
     }
-    if (await overbookService.TryHandleZaloConfirmationAsync(incoming, cancellationToken))
-        return Results.Ok(new { accepted = true, handledBy = "overbook-confirmation" });
-    await service.HandleIncomingAsync(incoming, cancellationToken);
-    return Results.Ok(new { accepted = true });
+
+    var handling = await coordinator.HandleAsync(incoming, cancellationToken);
+    return Results.Ok(new { accepted = handling.Accepted, handledBy = handling.HandledBy });
 });
 
 app.MapPost("/api/internal/zalo/poll-events", (
