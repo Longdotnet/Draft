@@ -206,12 +206,14 @@ public sealed class ZaloReminderService(
 
             try
             {
-                await bridge.SendGroupMessageAsync(
+                var send = await bridge.SendGroupMessageAsync(
                     target.ZaloConnection!.AccountZaloId,
                     target.ZaloGroupId!,
                     message,
                     [new BridgeOutgoingMention("-1", 0, mentionLabel.Length)],
                     idempotencyKey: idempotencyKey);
+                if (!send.Sent)
+                    throw new InvalidOperationException("Zalo bridge did not confirm legacy reminder send.");
 
                 var intervalMinutes = EffectiveIntervalMinutes(target);
                 await db.MatchSessions
@@ -227,15 +229,17 @@ public sealed class ZaloReminderService(
                         .SetProperty(session => session.ReminderFailureCount, 0)
                         .SetProperty(session => session.LastReminderError, (string?)null), cancellationToken);
 
-                if (!await db.ZaloGroupMessages.AsNoTracking()
+                var providerMessageId = NormalizeProviderMessageId(send.MessageId);
+                if (providerMessageId is not null &&
+                    !await db.ZaloGroupMessages.AsNoTracking()
                         .AnyAsync(item => item.ZaloConnectionId == target.ZaloConnectionId &&
-                                          item.MessageId == idempotencyKey, cancellationToken))
+                                          item.MessageId == providerMessageId, cancellationToken))
                 {
                     db.ZaloGroupMessages.Add(new ZaloGroupMessage
                     {
                         ZaloConnectionId = target.ZaloConnectionId!,
                         GroupId = target.ZaloGroupId!,
-                        MessageId = idempotencyKey,
+                        MessageId = providerMessageId,
                         SenderId = target.ZaloConnection.AccountZaloId,
                         SenderName = target.ZaloConnection.DisplayName,
                         Content = message,
@@ -400,23 +404,28 @@ public sealed class ZaloReminderService(
             var idempotencyKey = $"natural-reminder:{schedule.Id}:{dueAt.ToUnixTimeSeconds()}";
             try
             {
-                await bridge.SendGroupMessageAsync(
+                var send = await bridge.SendGroupMessageAsync(
                     session.ZaloConnection!.AccountZaloId,
                     session.ZaloGroupId!,
                     audience.Message,
                     audience.Mentions,
                     imageUrl: schedule.IncludePaymentQr ? session.PaymentQrImageUrl : null,
                     idempotencyKey: idempotencyKey);
+                if (!send.Sent)
+                    throw new InvalidOperationException("Zalo bridge did not confirm natural reminder send.");
+
                 await CompleteNaturalScheduleAsync(schedule, leaseToken, now, sentSuccessfully: true, cancellationToken);
-                if (!await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
-                        item.ZaloConnectionId == session.ZaloConnectionId && item.MessageId == idempotencyKey,
+                var providerMessageId = NormalizeProviderMessageId(send.MessageId);
+                if (providerMessageId is not null &&
+                    !await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
+                        item.ZaloConnectionId == session.ZaloConnectionId && item.MessageId == providerMessageId,
                         cancellationToken))
                 {
                     db.ZaloGroupMessages.Add(new ZaloGroupMessage
                     {
                         ZaloConnectionId = session.ZaloConnectionId!,
                         GroupId = session.ZaloGroupId!,
-                        MessageId = idempotencyKey,
+                        MessageId = providerMessageId,
                         SenderId = session.ZaloConnection.AccountZaloId,
                         SenderName = session.ZaloConnection.DisplayName,
                         Content = audience.Message,
@@ -697,6 +706,14 @@ public sealed class ZaloReminderService(
 
     private static string Truncate(string value, int maxLength) =>
         value.Length <= maxLength ? value : value[..maxLength];
+
+    private static string? NormalizeProviderMessageId(string? value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        if (text.EndsWith("_0", StringComparison.Ordinal))
+            text = text[..^2];
+        return text.Length == 0 ? null : text;
+    }
 
     private static string FormatVietnamTime(DateTimeOffset time)
     {
