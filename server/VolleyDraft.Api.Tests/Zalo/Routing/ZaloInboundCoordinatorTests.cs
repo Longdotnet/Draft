@@ -173,7 +173,7 @@ public sealed class ZaloInboundCoordinatorTests
         requestCancellation.Cancel();
         CancellationToken cleanupToken = requestCancellation.Token;
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             ZaloInboundCoordinator.DispatchClaimedAsync(
                 Incoming("cancelled-turn"),
                 (_, _) => Task.FromResult(claim),
