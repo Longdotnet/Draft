@@ -1,0 +1,71 @@
+name: One-time share UID authority self-review
+
+on:
+  push:
+    branches:
+      - fix/zalo-share-uid-authority-domain
+
+permissions:
+  contents: write
+
+jobs:
+  harden-format-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/zalo-share-uid-authority-domain
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Harden unique-UID behavior
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
+          text = path.read_text()
+          method = text.index('    public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync(')
+          name_start = text.index('        var namePlayers = sessionPlayers.Where(player =>', method)
+          branch_start = text.index('        if (uidPlayer is not null)', name_start)
+          replacement = '''        SessionPlayer? namePlayer = null;
+                  if (uidPlayer is null)
+                  {
+                      var namePlayers = sessionPlayers.Where(player =>
+                              NormalizePlayerLookup(player.DisplayName) == NormalizePlayerLookup(input.DisplayName))
+                          .ToList();
+                      if (namePlayers.Count > 1)
+                          return Conflict<PreDraftSharedSlotResult>($"Tên '{input.DisplayName}' đang trùng nhiều player; đã chặn ghi share slot.");
+                      namePlayer = namePlayers.SingleOrDefault();
+                  }
+
+          '''
+          text = text[:name_start] + replacement + text[branch_start:]
+          path.write_text(text)
+          PY
+      - name: Format touched C# files
+        shell: bash
+        run: |
+          dotnet format server/VolleyDraft.Api/VolleyDraft.Api.csproj whitespace \
+            --include server/VolleyDraft.Api/Services/SessionDraftService.cs \
+                      server/VolleyDraft.Api/Services/ZaloBotService.cs
+          dotnet format server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj whitespace \
+            --include server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareSlotIdentityBindingTests.cs \
+                      server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareExplicitMentionAuthorityTests.cs
+      - name: Run targeted regression tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release --filter "FullyQualifiedName~ZaloShareSlotIdentityBindingTests|FullyQualifiedName~ZaloShareExplicitMentionAuthorityTests"
+      - name: Commit hardening and remove one-time workflow
+        shell: bash
+        run: |
+          rm .github/workflows/hotfix-share-uid-authority-review.yml
+          git config user.name "Draft Autonomous Maintainer"
+          git config user.email "actions@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs \
+                  server/VolleyDraft.Api/Services/ZaloBotService.cs \
+                  server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareSlotIdentityBindingTests.cs \
+                  server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareExplicitMentionAuthorityTests.cs \
+                  .github/workflows/hotfix-share-uid-authority-review.yml
+          git commit -m "test: harden canonical share identity resolution"
+          git push origin HEAD:fix/zalo-share-uid-authority-domain
