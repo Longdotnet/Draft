@@ -379,6 +379,13 @@ public static class ZaloNaturalCommandParser
             var partnerIndex = basis.Partners
                 .Select((name, index) => new { Name = name, Index = index })
                 .FirstOrDefault(item => SamePersonReference(item.Name, mentionName))?.Index;
+            // A real structured @mention is stronger evidence than a stale/fuzzy
+            // single-partner label produced by an earlier parse/AI turn. If there is
+            // exactly one partner slot and the mention is not the anchor, bind that
+            // slot to the mention's display name + UID instead of carrying a stale
+            // name with the fresh UID (the production "Thanh Tuyền"/"Anh Tú" bug).
+            if (partnerIndex is null && basis.RequestedPartnerCount == 1 && basis.Partners.Count == 1)
+                partnerIndex = 0;
             if (partnerIndex is null) return currentCommand;
 
             var boundPartners = basis.Partners.ToList();
