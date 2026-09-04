@@ -142,16 +142,48 @@ internal sealed class ZaloMissingProfilePromptStore(VolleyDraftDbContext db)
     {
         await EnsureAsync(cancellationToken);
         limit = Math.Clamp(limit, 1, 500);
-        await using var command = await CreateCommandAsync(
-            "SELECT * FROM \"ZaloMissingProfilePrompts\" WHERE \"CompletedAt\" IS NULL LIMIT @Limit;",
-            cancellationToken);
-        Add(command, "@Limit", limit);
-        var rows = new List<ZaloMissingProfilePromptContext>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken)) rows.Add(Read(reader));
+
+        // Never LIMIT the raw incomplete rows before expiry filtering. Expired rows are
+        // intentionally kept for audit/history, so doing that can permanently hide a
+        // newer live prompt from every consumer once enough stale rows accumulate.
+        var rows = await LoadIncompleteAsync(cancellationToken);
         return rows
             .Where(item => item.ExpiresAt > now)
             .OrderBy(item => item.UpdatedAt)
+            .ThenBy(item => item.Id)
+            .Take(limit)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Resolve conversational state at the same identity boundary used by Zalo routing.
+    /// A synchronous sender reply must never depend on whether unrelated active prompts
+    /// happen to fit inside a global worker batch limit.
+    /// </summary>
+    public async Task<IReadOnlyList<ZaloMissingProfilePromptContext>> GetActiveForSenderAsync(
+        DateTimeOffset now,
+        string zaloConnectionId,
+        string groupId,
+        string zaloUserId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            SELECT * FROM "ZaloMissingProfilePrompts"
+            WHERE "CompletedAt" IS NULL
+              AND "ZaloConnectionId" = @ZaloConnectionId
+              AND "GroupId" = @GroupId
+              AND "ZaloUserId" = @ZaloUserId;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@ZaloConnectionId", Clean(zaloConnectionId, 100));
+        Add(command, "@GroupId", Clean(groupId, 100));
+        Add(command, "@ZaloUserId", Clean(zaloUserId, 100));
+        var rows = await ReadAllAsync(command, cancellationToken);
+        return rows
+            .Where(item => item.ExpiresAt > now)
+            .OrderBy(item => item.PromptedAt)
+            .ThenBy(item => item.Id)
             .ToList();
     }
 
@@ -192,6 +224,15 @@ internal sealed class ZaloMissingProfilePromptStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default) =>
         await UpdateProgressAsync(id, false, false, false, lastProcessedAt, true, cancellationToken);
 
+    private async Task<IReadOnlyList<ZaloMissingProfilePromptContext>> LoadIncompleteAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var command = await CreateCommandAsync(
+            "SELECT * FROM \"ZaloMissingProfilePrompts\" WHERE \"CompletedAt\" IS NULL;",
+            cancellationToken);
+        return await ReadAllAsync(command, cancellationToken);
+    }
+
     private async Task<ZaloMissingProfilePromptContext?> LoadExactAsync(
         string zaloConnectionId,
         string groupId,
@@ -227,6 +268,16 @@ internal sealed class ZaloMissingProfilePromptStore(VolleyDraftDbContext db)
         if (db.Database.CurrentTransaction is { } transaction)
             command.Transaction = transaction.GetDbTransaction();
         return command;
+    }
+
+    private static async Task<IReadOnlyList<ZaloMissingProfilePromptContext>> ReadAllAsync(
+        DbCommand command,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<ZaloMissingProfilePromptContext>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) rows.Add(Read(reader));
+        return rows;
     }
 
     private static ZaloMissingProfilePromptContext Read(DbDataReader reader) => new(
