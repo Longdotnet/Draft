@@ -82,7 +82,9 @@ public sealed class ZaloInboundCoordinator(
         }
         catch
         {
-            await release(claim, cancellationToken);
+            // Cleanup must not inherit an already-cancelled request token; otherwise a
+            // client disconnect can leave the ingress lease stuck until stale recovery.
+            await release(claim, CancellationToken.None);
             throw;
         }
     }
