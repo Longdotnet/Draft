@@ -66,33 +66,33 @@ public sealed class ZaloShareSlotIdentityBindingTests
         Assert.Empty(await db.DraftSlots.AsNoTracking().ToListAsync());
 
         // Dù label upstream bị stale thành Thanh Tuyền, UID structured mention vẫn
-    // chọn đúng Anh Tú. Preview/write canonicalize chứ không rename identity.
-    var thanhTuyenPreview = await service.PreviewShareSlotAsync(
-        admin.Id,
-        session.Id,
-        "Long",
-        [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
-    Assert.True(thanhTuyenPreview.IsSuccess, thanhTuyenPreview.Error);
-    Assert.NotNull(thanhTuyenPreview.Value);
-    Assert.Equal(["Anh Tú"], thanhTuyenPreview.Value!.PartnerPlayerNames);
+        // chọn đúng Anh Tú. Preview/write canonicalize chứ không rename identity.
+        var thanhTuyenPreview = await service.PreviewShareSlotAsync(
+            admin.Id,
+            session.Id,
+            "Long",
+            [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
+        Assert.True(thanhTuyenPreview.IsSuccess, thanhTuyenPreview.Error);
+        Assert.NotNull(thanhTuyenPreview.Value);
+        Assert.Equal(["Anh Tú"], thanhTuyenPreview.Value!.PartnerPlayerNames);
 
-    var write = await service.SharePreDraftSlotAsync(
-        admin.Id,
-        session.Id,
-        "Long",
-        [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
-    Assert.True(write.IsSuccess, write.Error);
+        var write = await service.SharePreDraftSlotAsync(
+            admin.Id,
+            session.Id,
+            "Long",
+            [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
+        Assert.True(write.IsSuccess, write.Error);
 
-    db.ChangeTracker.Clear();
-    var anhTu = await db.SessionPlayers.AsNoTracking()
-        .Include(player => player.PlayerProfile)
-        .SingleAsync(player => player.Id == "player-anh-tu");
-    Assert.Equal("Anh Tú", anhTu.DisplayName);
-    Assert.Equal("Anh Tú", anhTu.PlayerProfile!.DisplayName);
-    Assert.True(anhTu.IsInsideSharedSlot);
-    Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().ToListAsync(),
-        player => player.DisplayName == "Thanh Tuyền");
-    Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());
+        db.ChangeTracker.Clear();
+        var anhTu = await db.SessionPlayers.AsNoTracking()
+            .Include(player => player.PlayerProfile)
+            .SingleAsync(player => player.Id == "player-anh-tu");
+        Assert.Equal("Anh Tú", anhTu.DisplayName);
+        Assert.Equal("Anh Tú", anhTu.PlayerProfile!.DisplayName);
+        Assert.True(anhTu.IsInsideSharedSlot);
+        Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().ToListAsync(),
+            player => player.DisplayName == "Thanh Tuyền");
+        Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());
     }
 
     [Fact]
@@ -139,16 +139,16 @@ public sealed class ZaloShareSlotIdentityBindingTests
             [new ShareSlotParticipantInput("Thanh Tuyền", "uid-stale")]);
 
         Assert.True(result.IsSuccess, result.Error);
-    db.ChangeTracker.Clear();
-    var storedProfile = await db.PlayerProfiles.AsNoTracking().SingleAsync(profile => profile.Id == "profile-stale");
-    Assert.Equal("Anh Tú", storedProfile.DisplayName);
-    var created = await db.SessionPlayers.AsNoTracking()
-        .SingleAsync(player => player.SessionId == session.Id && player.PlayerProfileId == storedProfile.Id);
-    Assert.Equal("Anh Tú", created.DisplayName);
-    Assert.True(created.IsInsideSharedSlot);
-    Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().Where(player => player.SessionId == session.Id).ToListAsync(),
-        player => player.DisplayName == "Thanh Tuyền");
-    Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());
+        db.ChangeTracker.Clear();
+        var storedProfile = await db.PlayerProfiles.AsNoTracking().SingleAsync(profile => profile.Id == "profile-stale");
+        Assert.Equal("Anh Tú", storedProfile.DisplayName);
+        var created = await db.SessionPlayers.AsNoTracking()
+            .SingleAsync(player => player.SessionId == session.Id && player.PlayerProfileId == storedProfile.Id);
+        Assert.Equal("Anh Tú", created.DisplayName);
+        Assert.True(created.IsInsideSharedSlot);
+        Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().Where(player => player.SessionId == session.Id).ToListAsync(),
+            player => player.DisplayName == "Thanh Tuyền");
+        Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());
     }
 
     [Fact]
