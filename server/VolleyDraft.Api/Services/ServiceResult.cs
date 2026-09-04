@@ -17,8 +17,9 @@ public sealed record ServiceResult<T>(bool IsSuccess, T? Value, int StatusCode, 
         }
 
         return error +
-               " Cách xử lý: hãy @mention lại đúng người. Nếu @mention đúng tài khoản nhưng hồ sơ đang mang tên cũ, " +
-               "nhờ admin xác minh/sửa identity theo UID rồi gửi lại yêu cầu share slot.";
+               " Cách xử lý ngay trên Zalo: nếu @mention nhầm tài khoản thì mention lại đúng người. " +
+               "Nếu UID đúng nhưng tên hồ sơ đang cũ, trưởng/phó nhóm hoặc operator/admin gửi `@Npc sửa identity @TênĐúng`; " +
+               "bot sẽ cho chọn 1 giữ identity cũ, 2 đổi sang tên vừa mention, hoặc 3 huỷ. Bot không tự đổi UID hay tự merge hai hồ sơ.";
     }
 }
 
