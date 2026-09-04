@@ -79,11 +79,12 @@ public sealed partial class ZaloOverbookService
         if (string.IsNullOrWhiteSpace(connectionId)) return false;
 
         var promptStore = new ZaloMissingProfilePromptStore(db);
-        var senderPrompts = (await promptStore.GetActiveAsync(now, 100, cancellationToken))
-            .Where(prompt =>
-                string.Equals(prompt.ZaloConnectionId, connectionId, StringComparison.Ordinal) &&
-                string.Equals(prompt.GroupId, groupId, StringComparison.Ordinal) &&
-                string.Equals(prompt.ZaloUserId, senderId, StringComparison.Ordinal))
+        var senderPrompts = (await promptStore.GetActiveForSenderAsync(
+                now,
+                connectionId,
+                groupId,
+                senderId,
+                cancellationToken))
             .OrderBy(prompt => prompt.PromptedAt)
             .ThenBy(prompt => prompt.Id)
             .ToList();
