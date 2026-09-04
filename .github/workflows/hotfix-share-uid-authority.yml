@@ -1,0 +1,347 @@
+name: One-time share UID authority hotfix
+
+on:
+  push:
+    branches:
+      - fix/zalo-share-uid-authority-domain
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/zalo-share-uid-authority-domain
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Patch UID-authoritative share-slot flow
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          service_path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
+          service = service_path.read_text()
+
+          old_preview = '''        foreach (var input in inputs)
+          {
+              if (input.ZaloUserId is not null)
+              {
+                  var storedProfile = await db.PlayerProfiles.AsNoTracking()
+                      .SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId, cancellationToken);
+                  if (storedProfile is not null &&
+                      NormalizePlayerLookup(storedProfile.DisplayName) != NormalizePlayerLookup(input.DisplayName))
+                  {
+                      return Conflict<ShareSlotPreview>(
+                          $"Xung đột định danh: @mention '{input.DisplayName}' mang UID đang thuộc hồ sơ '{storedProfile.DisplayName}'. Bot không tự ghép hoặc đổi hồ sơ.");
+                  }
+              }
+
+              var normalizedInputName = ZaloBotIntelligence.Normalize(input.DisplayName);'''
+          new_preview = '''        foreach (var suppliedInput in inputs)
+          {
+              var input = suppliedInput;
+              if (input.ZaloUserId is not null)
+              {
+                  var storedProfile = await db.PlayerProfiles.AsNoTracking()
+                      .SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId, cancellationToken);
+                  // A structured Zalo UID is the identity authority. The visible label can
+                  // be stale/fuzzy, so canonicalize it to the UID-bound profile without
+                  // renaming or merging any identity.
+                  if (storedProfile is not null)
+                      input = input with { DisplayName = storedProfile.DisplayName };
+              }
+
+              var normalizedInputName = ZaloBotIntelligence.Normalize(input.DisplayName);'''
+          if old_preview not in service:
+              raise SystemExit('preview identity block not found')
+          service = service.replace(old_preview, new_preview, 1)
+
+          old_resolve = '''            if (byZaloId.Count == 1)
+              {
+                  var matched = byZaloId[0];
+                  var requestedName = NormalizePlayerLookup(playerReference);
+                  var playerName = NormalizePlayerLookup(matched.DisplayName);
+                  var profileName = NormalizePlayerLookup(matched.PlayerProfile?.DisplayName);
+                  if (requestedName.Length == 0 ||
+                      requestedName != playerName ||
+                      profileName.Length > 0 && requestedName != profileName)
+                  {
+                      return new(
+                          null,
+                          $"Xung đột định danh: @mention '{playerReference}' mang UID đang gắn với '{matched.DisplayName}'. Bot không tự ghép hoặc ghi dữ liệu.",
+                          false);
+                  }
+                  return new(matched, null, false);
+              }'''
+          new_resolve = '''            if (byZaloId.Count == 1)
+              {
+                  // UID match is stronger than any display label. Returning the existing
+                  // player keeps the canonical stored identity and never renames it from
+                  // potentially stale mention text.
+                  return new(byZaloId[0], null, false);
+              }'''
+          if old_resolve not in service:
+              raise SystemExit('ResolveProfilePlayer UID block not found')
+          service = service.replace(old_resolve, new_resolve, 1)
+
+          method_marker = '    public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync('
+          start = service.index(method_marker)
+          prefix, method_and_after = service[:start], service[start:]
+          write_pattern = re.compile(r'''        foreach \(var input in inputs\)\n        \{\n            if \(input\.ZaloUserId is not null\)\n            \{.*?\n            \}\n\n            SessionPlayer\? partner = null;''', re.S)
+          new_write = '''        foreach (var suppliedInput in inputs)
+          {
+              var input = suppliedInput;
+              if (input.ZaloUserId is not null)
+              {
+                  var uidPlayers = sessionPlayers.Where(player =>
+                          NormalizeZaloId(player.PlayerProfile?.ZaloUserId) == input.ZaloUserId)
+                      .ToList();
+                  if (uidPlayers.Count > 1)
+                      return Conflict<PreDraftSharedSlotResult>("UID Zalo này đang gắn với nhiều người trong cùng trận; đã chặn ghi share slot.");
+
+                  var uidPlayer = uidPlayers.SingleOrDefault();
+                  var profileByUid = await db.PlayerProfiles.SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId);
+
+                  // The stable UID selects the identity. A stale mention label must not
+                  // block the operation and must never rename/merge the selected profile.
+                  var canonicalName = uidPlayer?.DisplayName ?? profileByUid?.DisplayName;
+                  if (!string.IsNullOrWhiteSpace(canonicalName))
+                      input = input with { DisplayName = canonicalName };
+
+                  var namePlayers = sessionPlayers.Where(player =>
+                          NormalizePlayerLookup(player.DisplayName) == NormalizePlayerLookup(input.DisplayName))
+                      .ToList();
+                  if (namePlayers.Count > 1)
+                      return Conflict<PreDraftSharedSlotResult>($"Tên '{input.DisplayName}' đang trùng nhiều player; đã chặn ghi share slot.");
+                  var namePlayer = namePlayers.SingleOrDefault();
+
+                  if (uidPlayer is not null)
+                  {
+                      // Defense in depth: the same UID must still resolve to the same
+                      // profile object. Display-name differences are intentionally ignored.
+                      if (profileByUid is not null && uidPlayer.PlayerProfileId != profileByUid.Id)
+                      {
+                          return Conflict<PreDraftSharedSlotResult>(
+                              $"Xung đột định danh: UID của '{uidPlayer.DisplayName}' đang trỏ tới profile không nhất quán. Đã chặn ghi share slot.");
+                      }
+                  }
+                  else if (namePlayer is not null)
+                  {
+                      var namePlayerUid = NormalizeZaloId(namePlayer.PlayerProfile?.ZaloUserId);
+                      if (namePlayerUid.Length == 0)
+                      {
+                          return Conflict<PreDraftSharedSlotResult>(
+                              $"'{input.DisplayName}' đã tồn tại theo tên nhưng chưa có UID đã xác minh. Bot không tự gắn UID/profile chỉ vì trùng tên.");
+                      }
+                      if (namePlayerUid != input.ZaloUserId)
+                      {
+                          return Conflict<PreDraftSharedSlotResult>(
+                              $"Xung đột định danh: '{input.DisplayName}' đang gắn với UID khác. Đã chặn ghi share slot.");
+                      }
+                      if (profileByUid is not null && namePlayer.PlayerProfileId != profileByUid.Id)
+                      {
+                          return Conflict<PreDraftSharedSlotResult>(
+                              $"Xung đột định danh: label/UID/profile của '{input.DisplayName}' không cùng một identity. Đã chặn ghi share slot.");
+                      }
+                  }
+              }
+
+              SessionPlayer? partner = null;'''
+          method_and_after, count = write_pattern.subn(new_write, method_and_after, count=1)
+          if count != 1:
+              raise SystemExit(f'write identity block replacements={count}')
+          service = prefix + method_and_after
+          service_path.write_text(service)
+
+          bot_path = Path('server/VolleyDraft.Api/Services/ZaloBotService.cs')
+          bot = bot_path.read_text()
+          old_bot = '''            var identityLabel = !string.IsNullOrWhiteSpace(mention?.DisplayName)
+                  ? mention!.DisplayName
+                  : partnerName;
+              var existingByUid = normalizedMentionId.Length > 0 &&
+                                  session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
+                  ? mentionedPartnerName
+                  : null;
+              if (existingByUid is not null && NormalizeText(identityLabel) != NormalizeText(existingByUid))
+              {
+                  return new BotAnswer(
+                      $"Mình không ghép vì @mention '{identityLabel}' đang mang UID đã gắn với '{existingByUid}' trong {session.Name}. Dữ liệu chưa thay đổi; hãy mention lại đúng người hoặc nhờ admin sửa identity trước.",
+                      null,
+                      decision.Intent,
+                      aiCalled,
+                      ProtectedTerms: [identityLabel, existingByUid, session.Name]);
+              }
+
+              var existing = existingByUid ?? ResolvePlayerReference(partnerName, session.PlayerNames);
+              mentionedMembers.TryGetValue(normalizedMentionId, out var member);
+              var displayName = existing ?? (NormalizeText(partnerName) == "ban"
+                  ? NextExternalShareName(anchor, session.PlayerNames)
+                  : partnerName);'''
+          new_bot = '''            var suppliedDisplayName = !string.IsNullOrWhiteSpace(mention?.DisplayName)
+                  ? mention!.DisplayName
+                  : partnerName;
+              var existingByUid = normalizedMentionId.Length > 0 &&
+                                  session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
+                  ? mentionedPartnerName
+                  : null;
+
+              // Structured mention UID is authoritative. Prefer the canonical session
+              // identity when known; otherwise keep the visible mention label. A stale
+              // parsed label must never overrule the UID or force an identity rename.
+              var existing = existingByUid ?? ResolvePlayerReference(suppliedDisplayName, session.PlayerNames);
+              mentionedMembers.TryGetValue(normalizedMentionId, out var member);
+              var displayName = existing ?? (NormalizeText(suppliedDisplayName) == "ban"
+                  ? NextExternalShareName(anchor, session.PlayerNames)
+                  : suppliedDisplayName);'''
+          if old_bot not in bot:
+              raise SystemExit('bot participant identity block not found')
+          bot = bot.replace(old_bot, new_bot, 1)
+          bot_path.write_text(bot)
+
+          test_path = Path('server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareSlotIdentityBindingTests.cs')
+          tests = test_path.read_text()
+          tests = tests.replace(
+              'public async Task AnhTu_preview_cancel_then_ThanhTuyen_with_AnhTu_uid_does_not_reuse_AnhTu()',
+              'public async Task Stale_label_with_AnhTu_uid_resolves_to_AnhTu_without_renaming_identity()',
+              1)
+          old_first_asserts = '''        // Lượt sau label là Thanh Tuyền nhưng bridge/pending payload mang nhầm UID Anh Tú.
+              var thanhTuyenPreview = await service.PreviewShareSlotAsync(
+                  admin.Id,
+                  session.Id,
+                  "Long",
+                  [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
+              Assert.False(thanhTuyenPreview.IsSuccess);
+              Assert.Contains("Xung đột định danh", thanhTuyenPreview.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+              // Defense in depth: kể cả caller bỏ qua preview thì write path vẫn phải chặn.
+              var write = await service.SharePreDraftSlotAsync(
+                  admin.Id,
+                  session.Id,
+                  "Long",
+                  [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
+              Assert.False(write.IsSuccess);
+              Assert.Contains("Xung đột định danh", write.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+              db.ChangeTracker.Clear();
+              var anhTu = await db.SessionPlayers.AsNoTracking()
+                  .Include(player => player.PlayerProfile)
+                  .SingleAsync(player => player.Id == "player-anh-tu");
+              Assert.Equal("Anh Tú", anhTu.DisplayName);
+              Assert.Equal("Anh Tú", anhTu.PlayerProfile!.DisplayName);
+              Assert.False(anhTu.IsInsideSharedSlot);
+              Assert.Empty(await db.DraftSlots.AsNoTracking().ToListAsync());'''
+          new_first_asserts = '''        // Dù label upstream bị stale thành Thanh Tuyền, UID structured mention vẫn
+              // chọn đúng Anh Tú. Preview/write phải canonicalize chứ không rename identity.
+              var thanhTuyenPreview = await service.PreviewShareSlotAsync(
+                  admin.Id,
+                  session.Id,
+                  "Long",
+                  [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
+              Assert.True(thanhTuyenPreview.IsSuccess, thanhTuyenPreview.Error);
+              Assert.NotNull(thanhTuyenPreview.Value);
+              Assert.Equal(["Anh Tú"], thanhTuyenPreview.Value!.PartnerPlayerNames);
+
+              var write = await service.SharePreDraftSlotAsync(
+                  admin.Id,
+                  session.Id,
+                  "Long",
+                  [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
+              Assert.True(write.IsSuccess, write.Error);
+
+              db.ChangeTracker.Clear();
+              var anhTu = await db.SessionPlayers.AsNoTracking()
+                  .Include(player => player.PlayerProfile)
+                  .SingleAsync(player => player.Id == "player-anh-tu");
+              Assert.Equal("Anh Tú", anhTu.DisplayName);
+              Assert.Equal("Anh Tú", anhTu.PlayerProfile!.DisplayName);
+              Assert.True(anhTu.IsInsideSharedSlot);
+              Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().ToListAsync(),
+                  player => player.DisplayName == "Thanh Tuyền");
+              Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());'''
+          if old_first_asserts not in tests:
+              raise SystemExit('first identity regression assertions not found')
+          tests = tests.replace(old_first_asserts, new_first_asserts, 1)
+
+          tests = tests.replace(
+              'public async Task Existing_uid_profile_with_different_label_is_not_reused_or_renamed()',
+              'public async Task Existing_uid_profile_with_stale_label_creates_session_player_from_canonical_identity()',
+              1)
+          old_second_asserts = '''        Assert.False(result.IsSuccess);
+              Assert.Contains("Xung đột định danh", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+              db.ChangeTracker.Clear();
+              var storedProfile = await db.PlayerProfiles.AsNoTracking().SingleAsync(profile => profile.Id == "profile-stale");
+              Assert.Equal("Anh Tú", storedProfile.DisplayName);
+              Assert.Single(await db.SessionPlayers.AsNoTracking().Where(player => player.SessionId == session.Id).ToListAsync());
+              Assert.Empty(await db.DraftSlots.AsNoTracking().ToListAsync());'''
+          new_second_asserts = '''        Assert.True(result.IsSuccess, result.Error);
+              db.ChangeTracker.Clear();
+              var storedProfile = await db.PlayerProfiles.AsNoTracking().SingleAsync(profile => profile.Id == "profile-stale");
+              Assert.Equal("Anh Tú", storedProfile.DisplayName);
+              var created = await db.SessionPlayers.AsNoTracking()
+                  .SingleAsync(player => player.SessionId == session.Id && player.PlayerProfileId == storedProfile.Id);
+              Assert.Equal("Anh Tú", created.DisplayName);
+              Assert.True(created.IsInsideSharedSlot);
+              Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().Where(player => player.SessionId == session.Id).ToListAsync(),
+                  player => player.DisplayName == "Thanh Tuyền");
+              Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());'''
+          if old_second_asserts not in tests:
+              raise SystemExit('second identity regression assertions not found')
+          tests = tests.replace(old_second_asserts, new_second_asserts, 1)
+          test_path.write_text(tests)
+
+          parser_test_path = Path('server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareExplicitMentionAuthorityTests.cs')
+          parser_tests = parser_test_path.read_text()
+          insertion = '''
+              [Fact]
+              public void Two_real_mentions_make_Hiep_anchor_and_AnhTu_partner_even_when_parser_label_is_stale()
+              {
+                  var stale = new ZaloShareSlotCommand(
+                      "Hiệp Hoàng Phạm",
+                      ["Thanh Tuyền"],
+                      1,
+                      "T6");
+
+                  var result = ZaloNaturalCommandParser.BindExplicitShareMentions(
+                      [
+                          new ZaloMentionedUser("uid-hiep", "Hiệp Hoàng Phạm"),
+                          new ZaloMentionedUser("uid-anh-tu", "Anh Tú")
+                      ],
+                      stale,
+                      stale);
+
+                  Assert.NotNull(result);
+                  Assert.Equal("Hiệp Hoàng Phạm", result!.Anchor);
+                  Assert.Equal("uid-hiep", result.AnchorZaloUserId);
+                  Assert.Equal(["Anh Tú"], result.Partners);
+                  Assert.Equal(["uid-anh-tu"], result.PartnerZaloUserIds);
+              }
+          '''
+          if 'Two_real_mentions_make_Hiep_anchor_and_AnhTu_partner' not in parser_tests:
+              pos = parser_tests.rfind('\n}')
+              if pos < 0:
+                  raise SystemExit('parser test class close not found')
+              parser_tests = parser_tests[:pos] + insertion + parser_tests[pos:]
+              parser_test_path.write_text(parser_tests)
+          PY
+      - name: Run targeted regression tests
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release --filter "FullyQualifiedName~ZaloShareSlotIdentityBindingTests|FullyQualifiedName~ZaloShareExplicitMentionAuthorityTests"
+      - name: Commit hotfix and remove one-time workflow
+        shell: bash
+        run: |
+          rm .github/workflows/hotfix-share-uid-authority.yml
+          git config user.name "Draft Autonomous Maintainer"
+          git config user.email "actions@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs \
+                  server/VolleyDraft.Api/Services/ZaloBotService.cs \
+                  server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareSlotIdentityBindingTests.cs \
+                  server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareExplicitMentionAuthorityTests.cs \
+                  .github/workflows/hotfix-share-uid-authority.yml
+          git commit -m "fix: make Zalo share UID authoritative end to end"
+          git push origin HEAD:fix/zalo-share-uid-authority-domain
