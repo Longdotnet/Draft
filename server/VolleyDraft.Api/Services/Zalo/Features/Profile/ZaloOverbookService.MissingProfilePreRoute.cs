@@ -14,7 +14,14 @@ internal static class ZaloFlexibleProfileReplySemantics
 {
     internal static bool AcceptsAnyPosition(string? content)
     {
-        var text = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        var chars = normalized.Select(character =>
+                char.IsLetterOrDigit(character) || char.IsWhiteSpace(character)
+                    ? character
+                    : ' ')
+            .ToArray();
+        var text = string.Join(' ',
+            new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
         if (!ContainsPhrase(text, "vi tri")) return false;
 
         var asksAny = ContainsToken(text, "nao") || ContainsToken(text, "gi");
@@ -47,9 +54,9 @@ public sealed partial class ZaloOverbookService
         return await TryHandleZaloConfirmationAsync(incoming, cancellationToken);
     }
 
-    private async Task<bool> TryHandleTargetedMissingProfileReplyAsync(
+    internal async Task<bool> TryHandleTargetedMissingProfileReplyAsync(
         ZaloIncomingMessageEvent incoming,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
         var accountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
         var groupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
@@ -221,15 +228,12 @@ public sealed partial class ZaloOverbookService
             db,
             NullLogger<ZaloBotActionHistoryService>.Instance);
         var before = await history.CaptureAsync(session.Id, cancellationToken);
-        var updated = await new SessionDraftService(db).UpdatePlayerProfileFromBotAsync(
-            session.AdminUserId,
-            session.Id,
-            freshPlayer!.DisplayName,
-            parsed.Gender,
-            parsed.Role,
-            parsed.Level,
-            prompt.ZaloUserId,
-            prompt.SessionPlayerId);
+        var updated = await UpdatePromptProfileFieldsAsync(
+            session,
+            freshPlayer!,
+            prompt,
+            parsed,
+            cancellationToken);
         if (!updated.IsSuccess || updated.Value is null)
         {
             await SendProfileConversationReplyAsync(
@@ -288,7 +292,7 @@ public sealed partial class ZaloOverbookService
         return true;
     }
 
-    private static ZaloNaturalProfileValues ParseTargetedProfileReply(
+    internal static ZaloNaturalProfileValues ParseTargetedProfileReply(
         string? content,
         (bool Gender, bool Role, bool Level) missing)
     {
@@ -313,6 +317,52 @@ public sealed partial class ZaloOverbookService
         }
 
         return parsed;
+    }
+
+    /// <summary>
+    /// SessionDraftService intentionally updates only supplied session fields, but its
+    /// legacy gender path also seeds null profile role/level from current session values.
+    /// A conversational prompt is a strict field allow-list: answering only "nam" must
+    /// not silently claim that an old/default session role or level was user-confirmed.
+    /// Keep those null profile facts null unless this turn explicitly supplied them.
+    /// </summary>
+    private async Task<ServiceResult<SessionPlayerResponse>> UpdatePromptProfileFieldsAsync(
+        MatchSession session,
+        SessionPlayer player,
+        ZaloMissingProfilePromptContext prompt,
+        ZaloNaturalProfileValues parsed,
+        CancellationToken cancellationToken)
+    {
+        var preserveMissingRole = parsed.Role is null && player.PlayerProfile?.DefaultRole is null;
+        var preserveMissingLevel = parsed.Level is null && player.PlayerProfile?.DefaultLevel is null;
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var updated = await new SessionDraftService(db).UpdatePlayerProfileFromBotAsync(
+            session.AdminUserId,
+            session.Id,
+            player.DisplayName,
+            parsed.Gender,
+            parsed.Role,
+            parsed.Level,
+            prompt.ZaloUserId,
+            prompt.SessionPlayerId);
+        if (!updated.IsSuccess || updated.Value is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return updated;
+        }
+
+        if ((preserveMissingRole || preserveMissingLevel) && player.PlayerProfileId is not null)
+        {
+            var profile = await db.PlayerProfiles
+                .SingleAsync(item => item.Id == player.PlayerProfileId, cancellationToken);
+            if (preserveMissingRole) profile.DefaultRole = null;
+            if (preserveMissingLevel) profile.DefaultLevel = null;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return updated;
     }
 
     private static IReadOnlyList<string> DescribeAcceptedProfileValues(ZaloNaturalProfileValues parsed)
