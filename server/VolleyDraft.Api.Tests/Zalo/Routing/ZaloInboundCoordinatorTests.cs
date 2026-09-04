@@ -165,6 +165,31 @@ public sealed class ZaloInboundCoordinatorTests
         Assert.Equal(["pre-route", "release", "bot"], sequence);
     }
 
+    [Fact]
+    public async Task Failed_or_cancelled_turn_releases_claim_with_non_cancelled_cleanup_token()
+    {
+        var claim = new ZaloInboundClaim(true, false, "row-3", "token-3");
+        using var requestCancellation = new CancellationTokenSource();
+        requestCancellation.Cancel();
+        CancellationToken cleanupToken = requestCancellation.Token;
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            ZaloInboundCoordinator.DispatchClaimedAsync(
+                Incoming("cancelled-turn"),
+                (_, _) => Task.FromResult(claim),
+                (_, token) => Task.FromCanceled<bool>(token),
+                (_, _) => Task.CompletedTask,
+                (_, _) => Task.CompletedTask,
+                (_, token) =>
+                {
+                    cleanupToken = token;
+                    return Task.CompletedTask;
+                },
+                requestCancellation.Token));
+
+        Assert.False(cleanupToken.CanBeCanceled);
+    }
+
     private static ZaloIncomingMessageEvent Incoming(string messageId) => new(
         accountId: "bot-account",
         botId: "bot-account",
