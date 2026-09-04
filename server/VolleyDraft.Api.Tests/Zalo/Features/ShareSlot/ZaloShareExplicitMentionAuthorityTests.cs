@@ -5,11 +5,14 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloShareExplicitMentionAuthorityTests
 {
-    [Fact]
-    public void Single_structured_partner_mention_overrides_stale_parsed_partner_label()
+    [Theory]
+    [InlineData("tui")]
+    [InlineData("mình")]
+    [InlineData("tôi")]
+    public void Single_structured_partner_mention_overrides_stale_parsed_partner_label_for_self_service_anchor(string anchor)
     {
         var stale = new ZaloShareSlotCommand(
-            "tui",
+            anchor,
             ["Thanh Tuyền"],
             1,
             "T6");
@@ -20,7 +23,7 @@ public sealed class ZaloShareExplicitMentionAuthorityTests
             stale);
 
         Assert.NotNull(result);
-        Assert.Equal("tui", result.Anchor);
+        Assert.Equal(anchor, result.Anchor);
         Assert.Equal(["Anh Tú"], result.Partners);
         Assert.Equal(["uid-anh-tu"], result.PartnerZaloUserIds);
         Assert.Equal("T6", result.SessionReference);
@@ -60,6 +63,25 @@ public sealed class ZaloShareExplicitMentionAuthorityTests
 
         Assert.NotNull(result);
         Assert.Equal(["An", "Bình"], result.Partners);
+        Assert.Null(result.PartnerZaloUserIds);
+    }
+
+    [Fact]
+    public void One_unmatched_mention_does_not_guess_partner_for_named_anchor()
+    {
+        var command = new ZaloShareSlotCommand(
+            "Hiệp Hoàng Phạm",
+            ["Thanh Tuyền"],
+            1,
+            "T6");
+
+        var result = ZaloNaturalCommandParser.BindExplicitShareMentions(
+            [new ZaloMentionedUser("uid-anh-tu", "Anh Tú")],
+            command,
+            command);
+
+        Assert.Same(command, result);
+        Assert.Equal(["Thanh Tuyền"], result!.Partners);
         Assert.Null(result.PartnerZaloUserIds);
     }
 }
