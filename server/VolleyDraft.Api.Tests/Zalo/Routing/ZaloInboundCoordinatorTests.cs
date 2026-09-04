@@ -125,7 +125,8 @@ public sealed class ZaloInboundCoordinatorTests
             });
 
         Assert.Equal("overbook-confirmation", result.HandledBy);
-        Assert.Single(completed, claim);
+        Assert.Single(completed);
+        Assert.Equal(claim, completed[0]);
         Assert.Empty(released);
         Assert.Equal(0, botCalls);
     }
