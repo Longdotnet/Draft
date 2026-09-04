@@ -23,15 +23,16 @@ public sealed partial class ZaloOverbookService
         var remappedMentions = incoming.Mentions
             .Select(mention =>
             {
-                if (string.Equals(mention.Uid?.Trim(), incoming.BotId?.Trim(), StringComparison.Ordinal))
-                    return new ZaloBridgeMention(mention.Uid, -1, 0);
+                var mentionUid = NormalizeProfileConversationId(mention.Uid);
+                if (string.Equals(mentionUid, NormalizeProfileConversationId(incoming.BotId), StringComparison.Ordinal))
+                    return new ZaloBridgeMention(mentionUid, -1, 0);
                 if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos + mention.Len > incoming.Content.Length)
-                    return new ZaloBridgeMention(mention.Uid, -1, 0);
+                    return new ZaloBridgeMention(mentionUid, -1, 0);
 
                 var label = incoming.Content.Substring(mention.Pos, mention.Len);
                 var newPos = question.IndexOf(label, StringComparison.Ordinal);
                 return new ZaloBridgeMention(
-                    mention.Uid,
+                    mentionUid,
                     newPos,
                     newPos >= 0 ? label.Length : 0);
             })
