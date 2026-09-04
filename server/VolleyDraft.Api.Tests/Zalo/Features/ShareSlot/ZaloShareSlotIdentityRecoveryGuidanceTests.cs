@@ -10,7 +10,7 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloShareSlotIdentityRecoveryGuidanceTests
 {
     [Fact]
-    public async Task Preview_identity_conflict_tells_user_how_to_recover_without_rebinding()
+    public async Task Preview_identity_conflict_points_to_in_chat_recovery_without_rebinding()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -72,9 +72,11 @@ public sealed class ZaloShareSlotIdentityRecoveryGuidanceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(StatusCodes.Status409Conflict, result.StatusCode);
         Assert.Contains("Xung đột định danh", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Cách xử lý", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("mention lại đúng người", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("identity theo UID", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Cách xử lý ngay trên Zalo", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc sửa identity @TênĐúng", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("1 giữ identity cũ", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("2 đổi", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("3 huỷ", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
         var stored = await db.PlayerProfiles.AsNoTracking()
             .SingleAsync(profile => profile.Id == conflictingProfile.Id);
