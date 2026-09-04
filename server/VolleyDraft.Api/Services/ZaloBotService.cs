@@ -2926,28 +2926,22 @@ public sealed partial class ZaloBotService(
             var mention = FindMentionedUser(partnerName, mentionedUsers);
             var mentionId = commandPartnerId ?? mention?.ZaloUserId;
             var normalizedMentionId = NormalizeId(mentionId ?? string.Empty);
-            var identityLabel = !string.IsNullOrWhiteSpace(mention?.DisplayName)
-                ? mention!.DisplayName
-                : partnerName;
-            var existingByUid = normalizedMentionId.Length > 0 &&
-                                session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
-                ? mentionedPartnerName
-                : null;
-            if (existingByUid is not null && NormalizeText(identityLabel) != NormalizeText(existingByUid))
-            {
-                return new BotAnswer(
-                    $"Mình không ghép vì @mention '{identityLabel}' đang mang UID đã gắn với '{existingByUid}' trong {session.Name}. Dữ liệu chưa thay đổi; hãy mention lại đúng người hoặc nhờ admin sửa identity trước.",
-                    null,
-                    decision.Intent,
-                    aiCalled,
-                    ProtectedTerms: [identityLabel, existingByUid, session.Name]);
-            }
+            var suppliedDisplayName = !string.IsNullOrWhiteSpace(mention?.DisplayName)
+        ? mention!.DisplayName
+        : partnerName;
+    var existingByUid = normalizedMentionId.Length > 0 &&
+                        session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
+        ? mentionedPartnerName
+        : null;
 
-            var existing = existingByUid ?? ResolvePlayerReference(partnerName, session.PlayerNames);
-            mentionedMembers.TryGetValue(normalizedMentionId, out var member);
-            var displayName = existing ?? (NormalizeText(partnerName) == "ban"
-                ? NextExternalShareName(anchor, session.PlayerNames)
-                : partnerName);
+    // Structured mention UID wins over parsed/fuzzy display text. Prefer the
+    // canonical session identity when it exists; otherwise preserve the real
+    // visible mention label and let the domain canonicalize a global UID profile.
+    var existing = existingByUid ?? ResolvePlayerReference(suppliedDisplayName, session.PlayerNames);
+    mentionedMembers.TryGetValue(normalizedMentionId, out var member);
+    var displayName = existing ?? (NormalizeText(suppliedDisplayName) == "ban"
+        ? NextExternalShareName(anchor, session.PlayerNames)
+        : suppliedDisplayName);
             participantInputs.Add(new ShareSlotParticipantInput(displayName, mentionId, member?.AvatarUrl));
         }
         var preview = await draftService.PreviewShareSlotAsync(
