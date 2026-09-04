@@ -379,6 +379,17 @@ public static class ZaloNaturalCommandParser
             var partnerIndex = basis.Partners
                 .Select((name, index) => new { Name = name, Index = index })
                 .FirstOrDefault(item => SamePersonReference(item.Name, mentionName))?.Index;
+            // A real structured @mention can replace a stale/fuzzy single-partner
+            // label only when the parsed anchor is unambiguously the sender. For a
+            // named anchor, an unmatched sole mention is role-ambiguous; fail closed
+            // instead of silently moving that UID into the partner slot.
+            if (partnerIndex is null &&
+                basis.RequestedPartnerCount == 1 &&
+                basis.Partners.Count == 1 &&
+                IsSelfServiceShareAnchor(basis.Anchor))
+            {
+                partnerIndex = 0;
+            }
             if (partnerIndex is null) return currentCommand;
 
             var boundPartners = basis.Partners.ToList();
@@ -420,6 +431,9 @@ public static class ZaloNaturalCommandParser
         command.Anchor.Trim().Length > 0 &&
         command.RequestedPartnerCount is >= 1 and <= 2 &&
         command.Partners.Count == command.RequestedPartnerCount;
+
+    private static bool IsSelfServiceShareAnchor(string anchor) =>
+        ZaloBotIntelligence.Normalize(anchor.Trim().TrimStart('@')) is "tui" or "minh" or "toi";
 
     private static bool SamePersonReference(string first, string second) =>
         string.Equals(
