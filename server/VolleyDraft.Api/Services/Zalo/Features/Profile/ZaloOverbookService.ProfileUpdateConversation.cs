@@ -79,6 +79,9 @@ public sealed partial class ZaloOverbookService
         var freshDecision = ZaloBotIntelligence.ClassifyDeterministically(incoming.Content);
         if (state?.PendingIntent == ZaloBotIntent.UpdatePlayerProfile.ToString())
         {
+            // A complete new profile command supersedes the old clarification just like
+            // every other explicit new intent. Otherwise let the pending state interpret
+            // only a genuine selector/cancel turn and never swallow unrelated chat.
             if (freshDecision.Intent == ZaloBotIntent.UpdatePlayerProfile && freshDecision.Confidence >= .85)
             {
                 db.ZaloBotConversationStates.Remove(state);
@@ -99,9 +102,11 @@ public sealed partial class ZaloOverbookService
                         db.ZaloBotConversationStates.Remove(state);
                         await db.SaveChangesAsync(cancellationToken);
                         await SendProfileUpdateReplyAsync(
-                            sessions[0], incoming,
+                            sessions[0],
+                            incoming,
                             "Ok, tui huỷ yêu cầu cập nhật hồ sơ đang chờ. Chưa có dữ liệu nào bị đổi.",
-                            "cancelled", cancellationToken);
+                            "cancelled",
+                            cancellationToken);
                         return true;
                     case ZaloPendingTurnDisposition.SwitchToNewIntent:
                         db.ZaloBotConversationStates.Remove(state);
@@ -110,13 +115,20 @@ public sealed partial class ZaloOverbookService
                     case ZaloPendingTurnDisposition.IgnoreCurrentTurn:
                         return false;
                     case ZaloPendingTurnDisposition.ContinuePending:
-                        return await ContinueProfileUpdateConversationAsync(state, sessions, incoming, cancellationToken);
+                        return await ContinueProfileUpdateConversationAsync(
+                            state,
+                            sessions,
+                            incoming,
+                            cancellationToken);
                 }
             }
         }
 
-        if (freshDecision.Intent != ZaloBotIntent.UpdatePlayerProfile) return false;
+        if (freshDecision.Intent != ZaloBotIntent.UpdatePlayerProfile)
+            return false;
 
+        // An explicit profile mutation is a topic switch. Do not leave an unrelated
+        // legacy pending state around to consume the next short answer after this turn.
         if (state is not null)
         {
             db.ZaloBotConversationStates.Remove(state);
@@ -128,13 +140,20 @@ public sealed partial class ZaloOverbookService
             .GroupBy(mention => NormalizeProfileConversationId(mention.Uid), StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
-        if (personMentions.Count == 0) return false;
+        if (personMentions.Count == 0)
+        {
+            // Preserve name-only legacy behavior. This pre-route owns only stable
+            // structured UID identity; generic routing may still resolve typed names.
+            return false;
+        }
         if (personMentions.Count != 1)
         {
             await SendProfileUpdateReplyAsync(
-                sessions[0], incoming,
+                sessions[0],
+                incoming,
                 "Mỗi lần chỉ cập nhật một người. Hãy @mention đúng một thành viên rồi gửi lại.",
-                "multiple_targets", cancellationToken);
+                "multiple_targets",
+                cancellationToken);
             return true;
         }
 
@@ -147,17 +166,21 @@ public sealed partial class ZaloOverbookService
         if (parsed.HasConflict)
         {
             await SendProfileUpdateReplyAsync(
-                sessions[0], incoming,
+                sessions[0],
+                incoming,
                 "Tui thấy có hơn một giá trị cùng loại trong lệnh cập nhật nên chưa dám ghi. Mỗi lần chọn một giới tính, một vị trí và một trình độ nha.",
-                "profile_conflict", cancellationToken);
+                "profile_conflict",
+                cancellationToken);
             return true;
         }
         if (parsed.Gender is null && parsed.Role is null && parsed.Level is null)
         {
             await SendProfileUpdateReplyAsync(
-                sessions[0], incoming,
+                sessions[0],
+                incoming,
                 "Tui chưa nhận ra thông tin hồ sơ. Dùng nam/nữ; công/thủ/chuyền 2/toàn diện; trình độ mới/trung bình/tốt.",
-                "profile_values_missing", cancellationToken);
+                "profile_values_missing",
+                cancellationToken);
             return true;
         }
 
@@ -165,9 +188,11 @@ public sealed partial class ZaloOverbookService
         if (targetRows.Count == 0)
         {
             await SendProfileUpdateReplyAsync(
-                sessions[0], incoming,
+                sessions[0],
+                incoming,
                 $"Tui nhận đúng UID của {targetDisplay} nhưng người này không nằm trong roster các trận đang bật bot, nên chưa cập nhật gì.",
-                "target_not_in_roster", cancellationToken);
+                "target_not_in_roster",
+                cancellationToken);
             return true;
         }
         var duplicateSession = targetRows
@@ -177,9 +202,11 @@ public sealed partial class ZaloOverbookService
         {
             var conflictedSession = sessions.First(item => item.Id == duplicateSession.Key);
             await SendProfileUpdateReplyAsync(
-                conflictedSession, incoming,
+                conflictedSession,
+                incoming,
                 $"UID của {targetDisplay} đang trỏ tới nhiều player trong {conflictedSession.Name}. Tui chặn cập nhật để tránh ghi nhầm người.",
-                "identity_conflict", cancellationToken);
+                "identity_conflict",
+                cancellationToken);
             return true;
         }
 
@@ -188,14 +215,17 @@ public sealed partial class ZaloOverbookService
         var authorizedSessions = new List<MatchSession>();
         foreach (var session in targetSessions)
         {
-            if (await CanOperateProfileUpdateAsync(session, senderId)) authorizedSessions.Add(session);
+            if (await CanOperateProfileUpdateAsync(session, senderId))
+                authorizedSessions.Add(session);
         }
         if (authorizedSessions.Count == 0)
         {
             await SendProfileUpdateReplyAsync(
-                targetSessions[0], incoming,
+                targetSessions[0],
+                incoming,
                 "Lệnh này sửa hồ sơ của người khác nên chỉ admin/trưởng nhóm/phó nhóm hoặc UID được cấp quyền bot mới thực hiện được.",
-                "unauthorized", cancellationToken);
+                "unauthorized",
+                cancellationToken);
             return true;
         }
 
@@ -210,18 +240,36 @@ public sealed partial class ZaloOverbookService
             selectedSessions = [authorizedSessions[0]];
 
         var payload = new ZaloProfileUpdateConversationPayload(
-            authorizedSessions.Select(session => session.Id).ToList(), targetUid, targetDisplay,
-            parsed.Gender, parsed.Role, parsed.Level, incoming.MessageId);
+            authorizedSessions.Select(session => session.Id).ToList(),
+            targetUid,
+            targetDisplay,
+            parsed.Gender,
+            parsed.Role,
+            parsed.Level,
+            incoming.MessageId);
 
         if (selectedSessions.Count == 1)
-            return await ApplyProfileUpdateConversationAsync(selectedSessions[0], payload, incoming, cancellationToken);
+        {
+            return await ApplyProfileUpdateConversationAsync(
+                selectedSessions[0],
+                payload,
+                incoming,
+                cancellationToken);
+        }
 
-        await SaveProfileUpdateConversationAsync(connectionId, groupId, senderId, payload, cancellationToken);
+        await SaveProfileUpdateConversationAsync(
+            connectionId,
+            groupId,
+            senderId,
+            payload,
+            cancellationToken);
         var choices = string.Join(", ", authorizedSessions.Take(4).Select(FormatProfileSessionChoice));
         await SendProfileUpdateReplyAsync(
-            authorizedSessions[0], incoming,
+            authorizedSessions[0],
+            incoming,
             $"Tui nhớ lệnh cập nhật {targetDisplay} rồi. Ông muốn áp dụng cho trận nào: {choices}? Chỉ cần trả lời T6/T7/CN, thứ, ngày hoặc tên trận; không cần gõ lại lệnh.",
-            "session_clarification", cancellationToken);
+            "session_clarification",
+            cancellationToken);
         return true;
     }
 
@@ -232,8 +280,14 @@ public sealed partial class ZaloOverbookService
         CancellationToken cancellationToken)
     {
         ZaloProfileUpdateConversationPayload? payload;
-        try { payload = JsonSerializer.Deserialize<ZaloProfileUpdateConversationPayload>(state.PendingPayloadJson); }
-        catch (JsonException) { payload = null; }
+        try
+        {
+            payload = JsonSerializer.Deserialize<ZaloProfileUpdateConversationPayload>(state.PendingPayloadJson);
+        }
+        catch (JsonException)
+        {
+            payload = null;
+        }
         if (payload is null || payload.SessionIds.Count == 0)
         {
             db.ZaloBotConversationStates.Remove(state);
@@ -241,7 +295,9 @@ public sealed partial class ZaloOverbookService
             return false;
         }
 
-        var candidates = sessions.Where(session => payload.SessionIds.Contains(session.Id, StringComparer.Ordinal)).ToList();
+        var candidates = sessions
+            .Where(session => payload.SessionIds.Contains(session.Id, StringComparer.Ordinal))
+            .ToList();
         if (candidates.Count == 0)
         {
             db.ZaloBotConversationStates.Remove(state);
@@ -258,21 +314,27 @@ public sealed partial class ZaloOverbookService
         {
             var choices = string.Join(", ", candidates.Take(4).Select(FormatProfileSessionChoice));
             await SendProfileUpdateReplyAsync(
-                candidates[0], incoming,
+                candidates[0],
+                incoming,
                 $"Tui vẫn nhớ đang cập nhật {payload.TargetDisplayName}, nhưng chưa xác định đúng một trận. Trả lời bằng T6/T7/CN, thứ, ngày hoặc tên trận: {choices}; hoặc gõ huỷ.",
-                "session_still_ambiguous", cancellationToken);
+                "session_still_ambiguous",
+                cancellationToken);
             return true;
         }
 
+        // Re-check authority and identity at execution time. Pending state carries
+        // intent arguments, never permission or a stale player object.
         var selected = matches[0];
         if (!await CanOperateProfileUpdateAsync(selected, incoming.SenderId))
         {
             db.ZaloBotConversationStates.Remove(state);
             await db.SaveChangesAsync(cancellationToken);
             await SendProfileUpdateReplyAsync(
-                selected, incoming,
+                selected,
+                incoming,
                 "Quyền thao tác của ông không còn hợp lệ cho trận này nên tui dừng cập nhật. Dữ liệu chưa bị đổi.",
-                "authorization_changed", cancellationToken);
+                "authorization_changed",
+                cancellationToken);
             return true;
         }
 
@@ -291,11 +353,13 @@ public sealed partial class ZaloOverbookService
         if (currentRows.Count != 1)
         {
             await SendProfileUpdateReplyAsync(
-                session, incoming,
+                session,
+                incoming,
                 currentRows.Count == 0
                     ? $"{payload.TargetDisplayName} không còn nằm trong roster {session.Name}, nên tui không cập nhật dữ liệu cũ."
                     : $"UID của {payload.TargetDisplayName} đang trỏ tới nhiều player trong {session.Name}; tui chặn cập nhật để tránh ghi nhầm.",
-                "target_changed", cancellationToken);
+                "target_changed",
+                cancellationToken);
             return true;
         }
 
@@ -303,32 +367,44 @@ public sealed partial class ZaloOverbookService
         var history = new ZaloBotActionHistoryService(db, NullLogger<ZaloBotActionHistoryService>.Instance);
         var before = await history.CaptureAsync(session.Id, cancellationToken);
         var updated = await new SessionDraftService(db).UpdatePlayerProfileFromBotAsync(
-            session.AdminUserId, session.Id, target.DisplayName,
-            payload.Gender, payload.Role, payload.Level,
-            payload.TargetZaloUserId, target.SessionPlayerId);
+            session.AdminUserId,
+            session.Id,
+            target.DisplayName,
+            payload.Gender,
+            payload.Role,
+            payload.Level,
+            payload.TargetZaloUserId,
+            target.SessionPlayerId);
         if (!updated.IsSuccess || updated.Value is null)
         {
             await SendProfileUpdateReplyAsync(
-                session, incoming,
+                session,
+                incoming,
                 updated.Error ?? "Backend vừa chặn cập nhật hồ sơ để giữ an toàn dữ liệu. Tui chưa thay đổi gì.",
-                "backend_rejected", cancellationToken);
+                "backend_rejected",
+                cancellationToken);
             return true;
         }
 
         var player = updated.Value;
         await history.RecordAsync(
-            session.Id, incoming.SenderId, incoming.SenderName,
+            session.Id,
+            incoming.SenderId,
+            incoming.SenderName,
             "UpdatePlayerProfile",
             $"Cập nhật hồ sơ {player.DisplayName} trong {session.Name} qua hội thoại Zalo",
-            before, cancellationToken);
+            before,
+            cancellationToken);
         var remaining = await new SessionDraftService(db).GetIncompletePlayerProfilesAsync(session.AdminUserId, session.Id);
         var remainingText = remaining.IsSuccess && remaining.Value is { Count: > 0 }
             ? $" Còn hồ sơ thiếu: {string.Join(", ", remaining.Value.Take(10).Select(item => item.DisplayName))}."
             : " Hồ sơ trận này đã đủ điều kiện để draft.";
         await SendProfileUpdateReplyAsync(
-            session, incoming,
+            session,
+            incoming,
             $"Đã cập nhật {player.DisplayName} cho {session.Name}: {FormatProfileGender(player.Gender)}, {FormatProfileRole(player.Role)}, {FormatProfileLevel(player.Level)}.{remainingText}",
-            "updated", cancellationToken);
+            "updated",
+            cancellationToken);
         return true;
     }
 
@@ -342,10 +418,15 @@ public sealed partial class ZaloOverbookService
             .AsNoTracking()
             .Where(player => sessionIds.Contains(player.SessionId) && player.IsPresent && player.PlayerProfile != null)
             .Select(player => new ProfileUpdateTargetRow(
-                player.SessionId, player.Id, player.DisplayName, player.PlayerProfile!.ZaloUserId))
+                player.SessionId,
+                player.Id,
+                player.DisplayName,
+                player.PlayerProfile!.ZaloUserId))
             .ToListAsync(cancellationToken);
         var normalizedTarget = NormalizeProfileConversationId(targetZaloUserId);
-        return rows.Where(row => NormalizeProfileConversationId(row.ZaloUserId) == normalizedTarget).ToList();
+        return rows
+            .Where(row => NormalizeProfileConversationId(row.ZaloUserId) == normalizedTarget)
+            .ToList();
     }
 
     private async Task<bool> CanOperateProfileUpdateAsync(MatchSession session, string senderId)
@@ -356,7 +437,10 @@ public sealed partial class ZaloOverbookService
             .Contains(normalizedSender, StringComparer.Ordinal))
             return true;
 
-        var role = await integration.GetGroupRoleAuthorizationAsync(session.AdminUserId, session.Id, normalizedSender);
+        var role = await integration.GetGroupRoleAuthorizationAsync(
+            session.AdminUserId,
+            session.Id,
+            normalizedSender);
         return role.IsSuccess && role.Value?.CanOperateBot == true;
     }
 
@@ -368,7 +452,9 @@ public sealed partial class ZaloOverbookService
         CancellationToken cancellationToken)
     {
         var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
-            item.ZaloConnectionId == connectionId && item.GroupId == groupId && item.SenderZaloUserId == senderId,
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == senderId,
             cancellationToken);
         if (state is null)
         {
@@ -385,7 +471,9 @@ public sealed partial class ZaloOverbookService
         state.PendingPayloadJson = JsonSerializer.Serialize(payload);
         state.PreviousCommand = ZaloBotIntent.UpdatePlayerProfile.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(
-            configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15), 1, 120));
+            configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15),
+            1,
+            120));
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
     }
@@ -408,9 +496,8 @@ public sealed partial class ZaloOverbookService
         if (!send.Sent)
             throw new InvalidOperationException("Zalo bridge did not confirm profile-update conversation send.");
 
-        // Idempotency keys identify our retry operation; they are not Zalo message IDs.
-        // Only provider-issued IDs may enter message history, otherwise a later quote can
-        // falsely appear to target a bot message that never existed on the channel.
+        // The idempotency key identifies our retry operation, not a real Zalo message.
+        // Only provider-issued IDs may become quote/reply targets in message history.
         var providerMessageId = NormalizeProviderMessageId(send.MessageId);
         if (providerMessageId is not null)
             await SaveBotMessageAsync(session, providerMessageId, text, DateTimeOffset.UtcNow, cancellationToken);
