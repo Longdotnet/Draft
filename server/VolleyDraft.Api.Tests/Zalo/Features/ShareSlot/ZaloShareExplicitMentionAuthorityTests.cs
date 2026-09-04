@@ -84,4 +84,28 @@ public sealed class ZaloShareExplicitMentionAuthorityTests
         Assert.Equal(["Thanh Tuyền"], result!.Partners);
         Assert.Null(result.PartnerZaloUserIds);
     }
+    [Fact]
+    public void Two_real_mentions_make_Hiep_anchor_and_AnhTu_partner_even_when_parser_label_is_stale()
+    {
+        var stale = new ZaloShareSlotCommand(
+            "Hiệp Hoàng Phạm",
+            ["Thanh Tuyền"],
+            1,
+            "T6");
+
+        var result = ZaloNaturalCommandParser.BindExplicitShareMentions(
+            [
+                new ZaloMentionedUser("uid-hiep", "Hiệp Hoàng Phạm"),
+                new ZaloMentionedUser("uid-anh-tu", "Anh Tú")
+            ],
+            stale,
+            stale);
+
+        Assert.NotNull(result);
+        Assert.Equal("Hiệp Hoàng Phạm", result!.Anchor);
+        Assert.Equal("uid-hiep", result.AnchorZaloUserId);
+        Assert.Equal(["Anh Tú"], result.Partners);
+        Assert.Equal(["uid-anh-tu"], result.PartnerZaloUserIds);
+    }
+
 }
