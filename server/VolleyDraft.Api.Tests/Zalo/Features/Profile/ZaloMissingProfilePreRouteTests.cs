@@ -17,11 +17,12 @@ public sealed class ZaloMissingProfilePreRouteTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Exact_prompt_reply_updates_profile_before_generic_bot_even_without_fresh_mention(bool mentionedBot)
+    public async Task Exact_prompt_reply_updates_quoted_match_before_generic_bot_even_with_multiple_active_prompts(bool mentionedBot)
     {
-        await using var fixture = await Fixture.CreateAsync();
+        await using var fixture = await Fixture.CreateAsync(includeSecondPlayerContext: true);
         var promptedAt = DateTimeOffset.UtcNow.AddMinutes(-2);
         await fixture.CreatePromptAsync("session-t6", "player-hiep-t6", "profile-prompt-t6", promptedAt);
+        await fixture.CreatePromptAsync("session-t7", "player-hiep-t7", "profile-prompt-t7", promptedAt.AddSeconds(1));
         var incoming = fixture.Incoming(
             "reply-profile-1",
             "@Npc nam, vị trí nào cũng đc, trình độ trung bình",
@@ -43,16 +44,21 @@ public sealed class ZaloMissingProfilePreRouteTests
 
         fixture.Db.ChangeTracker.Clear();
         var profile = await fixture.Db.PlayerProfiles.AsNoTracking().SingleAsync(item => item.Id == "profile-hiep");
-        var player = await fixture.Db.SessionPlayers.AsNoTracking().SingleAsync(item => item.Id == "player-hiep-t6");
+        var t6Player = await fixture.Db.SessionPlayers.AsNoTracking().SingleAsync(item => item.Id == "player-hiep-t6");
+        var t7Player = await fixture.Db.SessionPlayers.AsNoTracking().SingleAsync(item => item.Id == "player-hiep-t7");
         Assert.Equal(PlayerGender.Male, profile.Gender);
         Assert.Equal(PlayerRole.FullStack, profile.DefaultRole);
         Assert.Equal(PlayerLevel.Average, profile.DefaultLevel);
-        Assert.Equal(PlayerGender.Male, player.Gender);
-        Assert.Equal(PlayerRole.FullStack, player.Role);
-        Assert.Equal(PlayerLevel.Average, player.Level);
+        Assert.Equal(PlayerGender.Male, t6Player.Gender);
+        Assert.Equal(PlayerRole.FullStack, t6Player.Role);
+        Assert.Equal(PlayerLevel.Average, t6Player.Level);
+        Assert.Equal(PlayerGender.Unknown, t7Player.Gender);
+        Assert.Equal(PlayerRole.Attack, t7Player.Role);
+        Assert.Equal(PlayerLevel.New, t7Player.Level);
 
         var active = await new ZaloMissingProfilePromptStore(fixture.Db).GetActiveAsync(DateTimeOffset.UtcNow);
-        Assert.Empty(active);
+        var remaining = Assert.Single(active);
+        Assert.Equal("session-t7", remaining.SessionId);
     }
 
     [Fact]
@@ -78,6 +84,39 @@ public sealed class ZaloMissingProfilePreRouteTests
     }
 
     [Fact]
+    public async Task Partial_gender_reply_does_not_silently_confirm_existing_session_role_or_level()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var promptedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.CreatePromptAsync("session-t6", "player-hiep-t6", "profile-prompt-t6", promptedAt);
+        var incoming = fixture.Incoming(
+            "reply-gender-only",
+            "nam",
+            mentionedBot: false,
+            quote: null);
+
+        var handled = await fixture.Service.TryHandleZaloPreRouteAsync(incoming);
+
+        Assert.True(handled);
+        Assert.Equal(1, fixture.Bridge.SendCount);
+        fixture.Db.ChangeTracker.Clear();
+        var profile = await fixture.Db.PlayerProfiles.AsNoTracking().SingleAsync(item => item.Id == "profile-hiep");
+        var player = await fixture.Db.SessionPlayers.AsNoTracking().SingleAsync(item => item.Id == "player-hiep-t6");
+        Assert.Equal(PlayerGender.Male, profile.Gender);
+        Assert.Null(profile.DefaultRole);
+        Assert.Null(profile.DefaultLevel);
+        Assert.Equal(PlayerGender.Male, player.Gender);
+        Assert.Equal(PlayerRole.Attack, player.Role);
+        Assert.Equal(PlayerLevel.New, player.Level);
+
+        var active = await new ZaloMissingProfilePromptStore(fixture.Db).GetActiveAsync(DateTimeOffset.UtcNow);
+        var remaining = Assert.Single(active);
+        Assert.False(remaining.MissingGender);
+        Assert.True(remaining.MissingRole);
+        Assert.True(remaining.MissingLevel);
+    }
+
+    [Fact]
     public async Task Unrelated_command_is_not_stolen_while_profile_prompt_is_active()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -89,7 +128,7 @@ public sealed class ZaloMissingProfilePreRouteTests
             mentionedBot: true,
             quote: null);
 
-        var handled = await fixture.Service.TryHandleZaloPreRouteAsync(incoming);
+        var handled = await fixture.Service.TryHandleTargetedMissingProfileReplyAsync(incoming);
 
         Assert.False(handled);
         Assert.Equal(0, fixture.Bridge.SendCount);
@@ -113,7 +152,7 @@ public sealed class ZaloMissingProfilePreRouteTests
             mentionedBot: false,
             quote: null);
 
-        var handled = await fixture.Service.TryHandleZaloPreRouteAsync(incoming);
+        var handled = await fixture.Service.TryHandleTargetedMissingProfileReplyAsync(incoming);
 
         Assert.False(handled);
         Assert.Equal(0, fixture.Bridge.SendCount);
@@ -124,8 +163,23 @@ public sealed class ZaloMissingProfilePreRouteTests
         Assert.Null(profile.DefaultLevel);
     }
 
+    [Fact]
+    public void Screenshot_phrase_parses_all_three_profile_fields_despite_punctuation()
+    {
+        var parsed = ZaloOverbookService.ParseTargetedProfileReply(
+            "@Npc nam, vị trí nào cũng đc, trình độ trung bình",
+            (Gender: true, Role: true, Level: true));
+
+        Assert.False(parsed.HasConflict);
+        Assert.True(parsed.LooksLikeProfileAnswer);
+        Assert.Equal(PlayerGender.Male, parsed.Gender);
+        Assert.Equal(PlayerRole.FullStack, parsed.Role);
+        Assert.Equal(PlayerLevel.Average, parsed.Level);
+    }
+
     [Theory]
     [InlineData("vị trí nào cũng đc", true)]
+    [InlineData("vị trí nào cũng đc, trình độ trung bình", true)]
     [InlineData("vị trí gì cũng được", true)]
     [InlineData("vị trí nào cũng ok", true)]
     [InlineData("cái nào cũng được", false)]
