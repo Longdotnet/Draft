@@ -283,7 +283,7 @@ public sealed class ZaloAmbientSemanticMemberAssistTests
                 ZaloGroupId = "g1",
                 BotEnabled = true,
                 Status = SessionStatus.Setup,
-                StartTime = DateTimeOffset.UtcNow.AddDays(1),
+                StartTime = ZaloTestDates.Next(DayOfWeek.Friday),
                 TeamCount = 3,
                 TeamSize = 6
             };
