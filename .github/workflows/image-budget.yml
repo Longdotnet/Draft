@@ -1,0 +1,50 @@
+name: Image bandwidth budget
+
+on:
+  pull_request:
+    paths:
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.webp'
+      - '.github/workflows/image-budget.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  image-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject newly changed oversized images
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MAX_IMAGE_BYTES: '1572864'
+        run: |
+          set -euo pipefail
+          git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD \
+            | grep -Ei '\.(png|jpe?g|webp)$' > /tmp/changed-images.txt || true
+
+          if [[ ! -s /tmp/changed-images.txt ]]; then
+            echo 'No changed image assets.'
+            exit 0
+          fi
+
+          failed=0
+          while IFS= read -r file; do
+            [[ -f "$file" ]] || continue
+            size=$(stat -c%s "$file")
+            echo "$file: $size bytes"
+            if (( size > MAX_IMAGE_BYTES )); then
+              echo "::error file=$file::Image is larger than the 1.5 MB bandwidth budget. Compress it or move delivery to CDN/object storage."
+              failed=1
+            fi
+          done < /tmp/changed-images.txt
+
+          exit "$failed"

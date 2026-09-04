@@ -27,7 +27,7 @@ public sealed class ZaloMemberAssistNoMutationTests
         {
             Id = "s", Name = "T6", AdminUserId = admin.Id, AdminUser = admin,
             ZaloConnectionId = zalo.Id, ZaloConnection = zalo, ZaloGroupId = "g",
-            BotEnabled = true, StartTime = DateTimeOffset.UtcNow.AddDays(1)
+            BotEnabled = true, StartTime = ZaloTestDates.Next(DayOfWeek.Friday)
         };
         session.Players.Add(new SessionPlayer
         {

@@ -217,10 +217,10 @@ public sealed class ZaloNaturalConfirmationAndAiGuardTests
                 ZaloConnectionId = zalo.Id,
                 ZaloConnection = zalo,
                 ZaloGroupId = "g1",
-                Name = "CN 16/8",
+                Name = "CN",
                 Status = SessionStatus.Setup,
                 BotEnabled = true,
-                StartTime = DateTimeOffset.UtcNow.AddDays(1),
+                StartTime = ZaloTestDates.Next(DayOfWeek.Sunday),
                 TeamCount = 3,
                 TeamSize = 6
             };
@@ -290,7 +290,7 @@ public sealed class ZaloNaturalConfirmationAndAiGuardTests
                 partnerZaloUserId = "user-toan",
                 partnerDisplayName = "To An",
                 sessionId = "session-t6",
-                sessionName = "CN 16/8"
+                sessionName = "CN"
             });
             await new ZaloConversationStateV2Store(Db).SaveActiveAsync(
                 "g1",

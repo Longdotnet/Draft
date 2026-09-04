@@ -127,7 +127,7 @@ public sealed class ZaloAmbientTeamLineupTests
                 Name = "T6",
                 Status = SessionStatus.Setup,
                 BotEnabled = true,
-                StartTime = DateTimeOffset.UtcNow.AddDays(1),
+                StartTime = ZaloTestDates.Next(DayOfWeek.Friday),
                 TeamCount = 3,
                 TeamSize = 6
             };

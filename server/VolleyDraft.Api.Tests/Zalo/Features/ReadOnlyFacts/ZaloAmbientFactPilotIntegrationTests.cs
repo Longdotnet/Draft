@@ -18,23 +18,18 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
     [InlineData(true, true, 0)]
     [InlineData(false, false, 0)]
     [InlineData(false, true, 1)]
-    public async Task Ambient_fact_send_requires_both_rollout_gates(
-        bool shadowMode,
-        bool pilotEnabled,
-        int expectedSends)
+    public async Task Ambient_fact_send_requires_both_rollout_gates(bool shadowMode, bool pilotEnabled, int expectedSends)
     {
         await using var fixture = await Fixture.CreateAsync(shadowMode, pilotEnabled);
         var incoming = fixture.Incoming("gate-message");
 
         var handled = await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
 
-        Assert.False(handled); // Ambient participation never claims legacy confirmation routing.
-        var stored = await fixture.Db.ZaloGroupMessages
-            .AsNoTracking()
+        Assert.False(handled);
+        var stored = await fixture.Db.ZaloGroupMessages.AsNoTracking()
             .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == incoming.MessageId);
         var diagnostics = await fixture.DescribeAsync(incoming.MessageId, stored);
-        Assert.True(
-            fixture.Bridge.SendCount == expectedSends,
+        Assert.True(fixture.Bridge.SendCount == expectedSends,
             $"Expected {expectedSends} ambient bridge send(s), got {fixture.Bridge.SendCount}. {diagnostics}");
         if (expectedSends == 0)
         {
@@ -59,22 +54,18 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
         await fixture.Service.TryHandleZaloConfirmationAsync(incoming);
 
-        var inbound = await fixture.Db.ZaloGroupMessages
-            .AsNoTracking()
+        var inbound = await fixture.Db.ZaloGroupMessages.AsNoTracking()
             .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == "duplicate-message");
         var diagnostics = await fixture.DescribeAsync(incoming.MessageId, inbound);
-        Assert.True(
-            fixture.Bridge.SendCount == 1,
+        Assert.True(fixture.Bridge.SendCount == 1,
             $"Expected one ambient bridge send across duplicate webhook delivery, got {fixture.Bridge.SendCount}. {diagnostics}");
         Assert.Single(fixture.Bridge.RequestBodies);
         Assert.Contains("ambient-fact:bot-account:duplicate-message", fixture.Bridge.RequestBodies[0]);
-
         Assert.NotNull(inbound.BotReplySentAt);
         Assert.Equal("ambient_sent", inbound.ReplyOutcome);
         Assert.Equal(1, inbound.ReplyAttemptCount);
 
-        var outbound = await fixture.Db.ZaloGroupMessages
-            .AsNoTracking()
+        var outbound = await fixture.Db.ZaloGroupMessages.AsNoTracking()
             .SingleAsync(item => item.ZaloConnectionId == "conn-1" && item.MessageId == "provider-ambient-1");
         Assert.True(outbound.IsFromBot);
         Assert.Equal("sent", outbound.ReplyOutcome);
@@ -93,12 +84,8 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private Fixture(
-            SqliteConnection connection,
-            VolleyDraftDbContext db,
-            RecordingBridgeHandler bridge,
-            RecordingLogger<ZaloOverbookService> logger,
-            ZaloOverbookService service)
+        private Fixture(SqliteConnection connection, VolleyDraftDbContext db, RecordingBridgeHandler bridge,
+            RecordingLogger<ZaloOverbookService> logger, ZaloOverbookService service)
         {
             Connection = connection;
             Db = db;
@@ -117,99 +104,51 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
-            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
-                .UseSqlite(connection)
-                .Options;
-            var db = new VolleyDraftDbContext(options);
+            var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options);
             await db.Database.EnsureCreatedAsync();
 
             db.Users.Add(new User
             {
-                Id = "admin-1",
-                DisplayName = "Admin",
-                Email = $"ambient-pilot-{Guid.NewGuid():n}@example.test",
-                PasswordHash = "test"
+                Id = "admin-1", DisplayName = "Admin",
+                Email = $"ambient-pilot-{Guid.NewGuid():n}@example.test", PasswordHash = "test"
             });
             var zaloConnection = new ZaloConnection
             {
-                Id = "conn-1",
-                AdminUserId = "admin-1",
-                AccountZaloId = "bot-account",
-                DisplayName = "Volley Bot",
-                EncryptedCredentials = "test"
+                Id = "conn-1", AdminUserId = "admin-1", AccountZaloId = "bot-account",
+                DisplayName = "Volley Bot", EncryptedCredentials = "test"
             };
             var session = new MatchSession
             {
-                Id = "session-t6",
-                AdminUserId = "admin-1",
-                ZaloConnectionId = zaloConnection.Id,
-                ZaloConnection = zaloConnection,
-                ZaloGroupId = "g1",
-                Name = "T6",
-                Status = SessionStatus.Setup,
-                BotEnabled = true,
-                StartTime = DateTimeOffset.UtcNow.AddDays(1),
-                TeamCount = 1,
-                TeamSize = 6
+                Id = "session-t6", AdminUserId = "admin-1", ZaloConnectionId = zaloConnection.Id,
+                ZaloConnection = zaloConnection, ZaloGroupId = "g1", Name = "T6", Status = SessionStatus.Setup,
+                BotEnabled = true, StartTime = ZaloTestDates.Next(DayOfWeek.Friday), TeamCount = 1, TeamSize = 6
             };
-            session.Players.Add(new SessionPlayer
-            {
-                Id = "player-1",
-                SessionId = session.Id,
-                DisplayName = "Long",
-                IsPresent = true
-            });
-            session.Players.Add(new SessionPlayer
-            {
-                Id = "player-2",
-                SessionId = session.Id,
-                DisplayName = "Nam",
-                IsPresent = true
-            });
+            session.Players.Add(new SessionPlayer { Id = "player-1", SessionId = session.Id, DisplayName = "Long", IsPresent = true });
+            session.Players.Add(new SessionPlayer { Id = "player-2", SessionId = session.Id, DisplayName = "Nam", IsPresent = true });
             db.MatchSessions.Add(session);
             await db.SaveChangesAsync();
 
-            var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Zalo:CredentialEncryptionKey"] = "ambient-fact-pilot-test-key",
-                    ["ZaloBot:Ambient:Enabled"] = "true",
-                    ["ZaloBot:Ambient:ShadowMode"] = shadowMode.ToString(),
-                    ["ZaloBot:Ambient:WouldReplyThreshold"] = "60",
-                    ["ZaloBot:Ambient:BotCooldownSeconds"] = "20",
-                    ["ZaloBot:Ambient:FactPilot:Enabled"] = pilotEnabled.ToString(),
-                    ["ZaloBot:Ambient:FactPilot:MinimumScore"] = "60"
-                })
-                .Build();
-            var bridgeHandler = new RecordingBridgeHandler();
-            var httpClient = new HttpClient(bridgeHandler)
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
-                BaseAddress = new Uri("https://bridge.test/")
-            };
-            var bridge = new ZaloBridgeClient(httpClient);
+                ["Zalo:CredentialEncryptionKey"] = "ambient-fact-pilot-test-key",
+                ["ZaloBot:Ambient:Enabled"] = "true",
+                ["ZaloBot:Ambient:ShadowMode"] = shadowMode.ToString(),
+                ["ZaloBot:Ambient:WouldReplyThreshold"] = "60",
+                ["ZaloBot:Ambient:BotCooldownSeconds"] = "20",
+                ["ZaloBot:Ambient:FactPilot:Enabled"] = pilotEnabled.ToString(),
+                ["ZaloBot:Ambient:FactPilot:MinimumScore"] = "60"
+            }).Build();
+            var bridgeHandler = new RecordingBridgeHandler();
+            var bridge = new ZaloBridgeClient(new HttpClient(bridgeHandler) { BaseAddress = new Uri("https://bridge.test/") });
             var logger = new RecordingLogger<ZaloOverbookService>();
-            var service = new ZaloOverbookService(
-                db,
-                bridge,
-                new ZaloCredentialProtector(configuration),
-                null!,
-                null!,
-                configuration,
-                logger);
+            var service = new ZaloOverbookService(db, bridge, new ZaloCredentialProtector(configuration), null!, null!, configuration, logger);
             return new Fixture(connection, db, bridgeHandler, logger, service);
         }
 
         public ZaloIncomingMessageEvent Incoming(string messageId) => new(
-            accountId: "bot-account",
-            botId: "bot-account",
-            groupId: "g1",
-            messageId: messageId,
-            senderId: "user-1",
-            senderName: "Long",
-            content: "T6 còn bao nhiêu slot?",
-            mentions: [],
-            mentionedBot: false,
-            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            accountId: "bot-account", botId: "bot-account", groupId: "g1", messageId: messageId,
+            senderId: "user-1", senderName: "Long", content: "T6 còn bao nhiêu slot?",
+            mentions: [], mentionedBot: false, sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         public async Task<string> DescribeAsync(string messageId, ZaloGroupMessage stored)
         {
@@ -226,10 +165,7 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
             {
                 await using var reader = await command.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
-                {
-                    traces.Add(
-                        $"source={Nullable(reader, 0)},address={Nullable(reader, 1)},intent={Nullable(reader, 2)},confidence={Nullable(reader, 3)},meta={Nullable(reader, 4)}");
-                }
+                    traces.Add($"source={Nullable(reader, 0)},address={Nullable(reader, 1)},intent={Nullable(reader, 2)},confidence={Nullable(reader, 3)},meta={Nullable(reader, 4)}");
             }
             catch (SqliteException exception)
             {
@@ -255,9 +191,7 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
         public int SendCount { get; private set; }
         public List<string> RequestBodies { get; } = [];
 
-        protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (request.Method == HttpMethod.Post && request.RequestUri?.AbsolutePath.EndsWith("/v1/group-messages", StringComparison.Ordinal) == true)
             {
@@ -277,22 +211,12 @@ public sealed class ZaloAmbientFactPilotIntegrationTests
     private sealed class RecordingLogger<T> : ILogger<T>
     {
         public List<string> Entries { get; } = [];
-
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
         public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter)
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             var message = formatter(state, exception);
-            Entries.Add(exception is null
-                ? $"{logLevel}:{message}"
-                : $"{logLevel}:{message} :: {exception.GetType().Name}: {exception.Message}");
+            Entries.Add(exception is null ? $"{logLevel}:{message}" : $"{logLevel}:{message} :: {exception.GetType().Name}: {exception.Message}");
         }
     }
 }
