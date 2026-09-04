@@ -11,6 +11,36 @@ public sealed partial class ZaloOverbookService
     /// </summary>
     public Task<bool> TryHandleZaloProfileUpdatePreRouteAsync(
         ZaloIncomingMessageEvent incoming,
-        CancellationToken cancellationToken = default) =>
-        TryHandleProfileUpdateConversationAsync(incoming, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        // Deterministic classification should see the user's sentence, not the leading
+        // structured @Npc token. Preserve person UIDs and remap their visible offsets so
+        // commands such as "@Npc cập nhật @Hiệp ..." work even without the word "hồ sơ".
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        if (string.Equals(question, incoming.Content, StringComparison.Ordinal))
+            return TryHandleProfileUpdateConversationAsync(incoming, cancellationToken);
+
+        var remappedMentions = incoming.Mentions
+            .Select(mention =>
+            {
+                if (string.Equals(mention.Uid?.Trim(), incoming.BotId?.Trim(), StringComparison.Ordinal))
+                    return new ZaloBridgeMention(mention.Uid, -1, 0);
+                if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos + mention.Len > incoming.Content.Length)
+                    return new ZaloBridgeMention(mention.Uid, -1, 0);
+
+                var label = incoming.Content.Substring(mention.Pos, mention.Len);
+                var newPos = question.IndexOf(label, StringComparison.Ordinal);
+                return new ZaloBridgeMention(
+                    mention.Uid,
+                    newPos,
+                    newPos >= 0 ? label.Length : 0);
+            })
+            .ToList();
+        var normalized = incoming with
+        {
+            Content = question,
+            Mentions = remappedMentions
+        };
+        return TryHandleProfileUpdateConversationAsync(normalized, cancellationToken);
+    }
 }
