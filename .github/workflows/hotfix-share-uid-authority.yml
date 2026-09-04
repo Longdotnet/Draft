@@ -24,78 +24,51 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import re
+
+          def splice(text, start_marker, end_marker, replacement, *, start_at=0, label='block'):
+              start = text.index(start_marker, start_at)
+              end = text.index(end_marker, start)
+              return text[:start] + replacement + text[end:]
 
           service_path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
           service = service_path.read_text()
 
-          old_preview = '''        foreach (var input in inputs)
-          {
-              if (input.ZaloUserId is not null)
-              {
-                  var storedProfile = await db.PlayerProfiles.AsNoTracking()
-                      .SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId, cancellationToken);
-                  if (storedProfile is not null &&
-                      NormalizePlayerLookup(storedProfile.DisplayName) != NormalizePlayerLookup(input.DisplayName))
-                  {
-                      return Conflict<ShareSlotPreview>(
-                          $"Xung đột định danh: @mention '{input.DisplayName}' mang UID đang thuộc hồ sơ '{storedProfile.DisplayName}'. Bot không tự ghép hoặc đổi hồ sơ.");
-                  }
-              }
-
-              var normalizedInputName = ZaloBotIntelligence.Normalize(input.DisplayName);'''
-          new_preview = '''        foreach (var suppliedInput in inputs)
+          preview_method = service.index('    public async Task<ServiceResult<ShareSlotPreview>> PreviewShareSlotAsync(')
+          preview_loop = service.index('        foreach (var input in inputs)', preview_method)
+          preview_after_identity = service.index('            var normalizedInputName = ZaloBotIntelligence.Normalize(input.DisplayName);', preview_loop)
+          preview_replacement = '''        foreach (var suppliedInput in inputs)
           {
               var input = suppliedInput;
               if (input.ZaloUserId is not null)
               {
                   var storedProfile = await db.PlayerProfiles.AsNoTracking()
                       .SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId, cancellationToken);
-                  // A structured Zalo UID is the identity authority. The visible label can
-                  // be stale/fuzzy, so canonicalize it to the UID-bound profile without
+                  // Structured Zalo UID is the identity authority. A visible label may
+                  // be stale/fuzzy, so use the UID-bound canonical profile name without
                   // renaming or merging any identity.
                   if (storedProfile is not null)
                       input = input with { DisplayName = storedProfile.DisplayName };
               }
 
-              var normalizedInputName = ZaloBotIntelligence.Normalize(input.DisplayName);'''
-          if old_preview not in service:
-              raise SystemExit('preview identity block not found')
-          service = service.replace(old_preview, new_preview, 1)
+          '''
+          service = service[:preview_loop] + preview_replacement + service[preview_after_identity:]
 
-          old_resolve = '''            if (byZaloId.Count == 1)
+          resolve_method = service.index('    private static SessionPlayerResolution ResolveProfilePlayer(')
+          resolve_one = service.index('            if (byZaloId.Count == 1)', resolve_method)
+          resolve_many = service.index('            if (byZaloId.Count > 1)', resolve_one)
+          resolve_replacement = '''            if (byZaloId.Count == 1)
               {
-                  var matched = byZaloId[0];
-                  var requestedName = NormalizePlayerLookup(playerReference);
-                  var playerName = NormalizePlayerLookup(matched.DisplayName);
-                  var profileName = NormalizePlayerLookup(matched.PlayerProfile?.DisplayName);
-                  if (requestedName.Length == 0 ||
-                      requestedName != playerName ||
-                      profileName.Length > 0 && requestedName != profileName)
-                  {
-                      return new(
-                          null,
-                          $"Xung đột định danh: @mention '{playerReference}' mang UID đang gắn với '{matched.DisplayName}'. Bot không tự ghép hoặc ghi dữ liệu.",
-                          false);
-                  }
-                  return new(matched, null, false);
-              }'''
-          new_resolve = '''            if (byZaloId.Count == 1)
-              {
-                  // UID match is stronger than any display label. Returning the existing
-                  // player keeps the canonical stored identity and never renames it from
-                  // potentially stale mention text.
+                  // UID is stronger than display text. Return the existing player and
+                  // keep its stored identity; stale mention text must not block or rename it.
                   return new(byZaloId[0], null, false);
-              }'''
-          if old_resolve not in service:
-              raise SystemExit('ResolveProfilePlayer UID block not found')
-          service = service.replace(old_resolve, new_resolve, 1)
+              }
+          '''
+          service = service[:resolve_one] + resolve_replacement + service[resolve_many:]
 
-          method_marker = '    public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync('
-          start = service.index(method_marker)
-          prefix, method_and_after = service[:start], service[start:]
-          write_pattern = re.compile(r'''        foreach \(var input in inputs\)\n        \{\n            if \(input\.ZaloUserId is not null\)\n            \{.*?\n            \}\n\n            SessionPlayer\? partner = null;''', re.S)
-          new_write = '''        foreach (var suppliedInput in inputs)
+          write_method = service.index('    public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync(')
+          write_loop = service.index('        foreach (var input in inputs)', write_method)
+          write_partner = service.index('            SessionPlayer? partner = null;', write_loop)
+          write_replacement = '''        foreach (var suppliedInput in inputs)
           {
               var input = suppliedInput;
               if (input.ZaloUserId is not null)
@@ -109,8 +82,8 @@ jobs:
                   var uidPlayer = uidPlayers.SingleOrDefault();
                   var profileByUid = await db.PlayerProfiles.SingleOrDefaultAsync(profile => profile.ZaloUserId == input.ZaloUserId);
 
-                  // The stable UID selects the identity. A stale mention label must not
-                  // block the operation and must never rename/merge the selected profile.
+                  // The stable UID selects the identity. Canonicalize display text to
+                  // existing data, but never rename/merge identities from an incoming label.
                   var canonicalName = uidPlayer?.DisplayName ?? profileByUid?.DisplayName;
                   if (!string.IsNullOrWhiteSpace(canonicalName))
                       input = input with { DisplayName = canonicalName };
@@ -124,8 +97,6 @@ jobs:
 
                   if (uidPlayer is not null)
                   {
-                      // Defense in depth: the same UID must still resolve to the same
-                      // profile object. Display-name differences are intentionally ignored.
                       if (profileByUid is not null && uidPlayer.PlayerProfileId != profileByUid.Id)
                       {
                           return Conflict<PreDraftSharedSlotResult>(
@@ -134,6 +105,8 @@ jobs:
                   }
                   else if (namePlayer is not null)
                   {
+                      // Preserve the existing safety rule: a name-only row must not be
+                      // linked to a UID just because its label happens to match.
                       var namePlayerUid = NormalizeZaloId(namePlayer.PlayerProfile?.ZaloUserId);
                       if (namePlayerUid.Length == 0)
                       {
@@ -153,38 +126,16 @@ jobs:
                   }
               }
 
-              SessionPlayer? partner = null;'''
-          method_and_after, count = write_pattern.subn(new_write, method_and_after, count=1)
-          if count != 1:
-              raise SystemExit(f'write identity block replacements={count}')
-          service = prefix + method_and_after
+          '''
+          service = service[:write_loop] + write_replacement + service[write_partner:]
           service_path.write_text(service)
 
           bot_path = Path('server/VolleyDraft.Api/Services/ZaloBotService.cs')
           bot = bot_path.read_text()
-          old_bot = '''            var identityLabel = !string.IsNullOrWhiteSpace(mention?.DisplayName)
-                  ? mention!.DisplayName
-                  : partnerName;
-              var existingByUid = normalizedMentionId.Length > 0 &&
-                                  session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
-                  ? mentionedPartnerName
-                  : null;
-              if (existingByUid is not null && NormalizeText(identityLabel) != NormalizeText(existingByUid))
-              {
-                  return new BotAnswer(
-                      $"Mình không ghép vì @mention '{identityLabel}' đang mang UID đã gắn với '{existingByUid}' trong {session.Name}. Dữ liệu chưa thay đổi; hãy mention lại đúng người hoặc nhờ admin sửa identity trước.",
-                      null,
-                      decision.Intent,
-                      aiCalled,
-                      ProtectedTerms: [identityLabel, existingByUid, session.Name]);
-              }
-
-              var existing = existingByUid ?? ResolvePlayerReference(partnerName, session.PlayerNames);
-              mentionedMembers.TryGetValue(normalizedMentionId, out var member);
-              var displayName = existing ?? (NormalizeText(partnerName) == "ban"
-                  ? NextExternalShareName(anchor, session.PlayerNames)
-                  : partnerName);'''
-          new_bot = '''            var suppliedDisplayName = !string.IsNullOrWhiteSpace(mention?.DisplayName)
+          participant_area = bot.index('        var participantInputs = new List<ShareSlotParticipantInput>();')
+          identity_start = bot.index('            var identityLabel = !string.IsNullOrWhiteSpace(mention?.DisplayName)', participant_area)
+          add_call = bot.index('            participantInputs.Add(new ShareSlotParticipantInput(displayName, mentionId, member?.AvatarUrl));', identity_start)
+          bot_replacement = '''            var suppliedDisplayName = !string.IsNullOrWhiteSpace(mention?.DisplayName)
                   ? mention!.DisplayName
                   : partnerName;
               var existingByUid = normalizedMentionId.Length > 0 &&
@@ -192,53 +143,28 @@ jobs:
                   ? mentionedPartnerName
                   : null;
 
-              // Structured mention UID is authoritative. Prefer the canonical session
-              // identity when known; otherwise keep the visible mention label. A stale
-              // parsed label must never overrule the UID or force an identity rename.
+              // Structured mention UID wins over parsed/fuzzy display text. Prefer the
+              // canonical session identity when it exists; otherwise preserve the real
+              // visible mention label and let the domain canonicalize a global UID profile.
               var existing = existingByUid ?? ResolvePlayerReference(suppliedDisplayName, session.PlayerNames);
               mentionedMembers.TryGetValue(normalizedMentionId, out var member);
               var displayName = existing ?? (NormalizeText(suppliedDisplayName) == "ban"
                   ? NextExternalShareName(anchor, session.PlayerNames)
-                  : suppliedDisplayName);'''
-          if old_bot not in bot:
-              raise SystemExit('bot participant identity block not found')
-          bot = bot.replace(old_bot, new_bot, 1)
+                  : suppliedDisplayName);
+          '''
+          bot = bot[:identity_start] + bot_replacement + bot[add_call:]
           bot_path.write_text(bot)
 
           test_path = Path('server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareSlotIdentityBindingTests.cs')
           tests = test_path.read_text()
           tests = tests.replace(
               'public async Task AnhTu_preview_cancel_then_ThanhTuyen_with_AnhTu_uid_does_not_reuse_AnhTu()',
-              'public async Task Stale_label_with_AnhTu_uid_resolves_to_AnhTu_without_renaming_identity()',
-              1)
-          old_first_asserts = '''        // Lượt sau label là Thanh Tuyền nhưng bridge/pending payload mang nhầm UID Anh Tú.
-              var thanhTuyenPreview = await service.PreviewShareSlotAsync(
-                  admin.Id,
-                  session.Id,
-                  "Long",
-                  [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
-              Assert.False(thanhTuyenPreview.IsSuccess);
-              Assert.Contains("Xung đột định danh", thanhTuyenPreview.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-
-              // Defense in depth: kể cả caller bỏ qua preview thì write path vẫn phải chặn.
-              var write = await service.SharePreDraftSlotAsync(
-                  admin.Id,
-                  session.Id,
-                  "Long",
-                  [new ShareSlotParticipantInput("Thanh Tuyền", "uid-anh-tu")]);
-              Assert.False(write.IsSuccess);
-              Assert.Contains("Xung đột định danh", write.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-
-              db.ChangeTracker.Clear();
-              var anhTu = await db.SessionPlayers.AsNoTracking()
-                  .Include(player => player.PlayerProfile)
-                  .SingleAsync(player => player.Id == "player-anh-tu");
-              Assert.Equal("Anh Tú", anhTu.DisplayName);
-              Assert.Equal("Anh Tú", anhTu.PlayerProfile!.DisplayName);
-              Assert.False(anhTu.IsInsideSharedSlot);
-              Assert.Empty(await db.DraftSlots.AsNoTracking().ToListAsync());'''
-          new_first_asserts = '''        // Dù label upstream bị stale thành Thanh Tuyền, UID structured mention vẫn
-              // chọn đúng Anh Tú. Preview/write phải canonicalize chứ không rename identity.
+              'public async Task Stale_label_with_AnhTu_uid_resolves_to_AnhTu_without_renaming_identity()', 1)
+          first_sig = tests.index('public async Task Stale_label_with_AnhTu_uid_resolves_to_AnhTu_without_renaming_identity()')
+          first_tail = tests.index('        // Lượt sau label là Thanh Tuyền', first_sig)
+          next_fact = tests.index('    [Fact]', first_tail)
+          first_replacement = '''        // Dù label upstream bị stale thành Thanh Tuyền, UID structured mention vẫn
+              // chọn đúng Anh Tú. Preview/write canonicalize chứ không rename identity.
               var thanhTuyenPreview = await service.PreviewShareSlotAsync(
                   admin.Id,
                   session.Id,
@@ -264,23 +190,19 @@ jobs:
               Assert.True(anhTu.IsInsideSharedSlot);
               Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().ToListAsync(),
                   player => player.DisplayName == "Thanh Tuyền");
-              Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());'''
-          if old_first_asserts not in tests:
-              raise SystemExit('first identity regression assertions not found')
-          tests = tests.replace(old_first_asserts, new_first_asserts, 1)
+              Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());
+              }
+
+          '''
+          tests = tests[:first_tail] + first_replacement + tests[next_fact:]
 
           tests = tests.replace(
               'public async Task Existing_uid_profile_with_different_label_is_not_reused_or_renamed()',
-              'public async Task Existing_uid_profile_with_stale_label_creates_session_player_from_canonical_identity()',
-              1)
-          old_second_asserts = '''        Assert.False(result.IsSuccess);
-              Assert.Contains("Xung đột định danh", result.Error ?? string.Empty, StringComparison.OrdinalIgnoreCase);
-              db.ChangeTracker.Clear();
-              var storedProfile = await db.PlayerProfiles.AsNoTracking().SingleAsync(profile => profile.Id == "profile-stale");
-              Assert.Equal("Anh Tú", storedProfile.DisplayName);
-              Assert.Single(await db.SessionPlayers.AsNoTracking().Where(player => player.SessionId == session.Id).ToListAsync());
-              Assert.Empty(await db.DraftSlots.AsNoTracking().ToListAsync());'''
-          new_second_asserts = '''        Assert.True(result.IsSuccess, result.Error);
+              'public async Task Existing_uid_profile_with_stale_label_creates_session_player_from_canonical_identity()', 1)
+          second_sig = tests.index('public async Task Existing_uid_profile_with_stale_label_creates_session_player_from_canonical_identity()')
+          second_assert = tests.index('        Assert.False(result.IsSuccess);', second_sig)
+          next_fact = tests.index('    [Fact]', second_assert)
+          second_replacement = '''        Assert.True(result.IsSuccess, result.Error);
               db.ChangeTracker.Clear();
               var storedProfile = await db.PlayerProfiles.AsNoTracking().SingleAsync(profile => profile.Id == "profile-stale");
               Assert.Equal("Anh Tú", storedProfile.DisplayName);
@@ -290,15 +212,17 @@ jobs:
               Assert.True(created.IsInsideSharedSlot);
               Assert.DoesNotContain(await db.SessionPlayers.AsNoTracking().Where(player => player.SessionId == session.Id).ToListAsync(),
                   player => player.DisplayName == "Thanh Tuyền");
-              Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());'''
-          if old_second_asserts not in tests:
-              raise SystemExit('second identity regression assertions not found')
-          tests = tests.replace(old_second_asserts, new_second_asserts, 1)
+              Assert.Single(await db.DraftSlots.AsNoTracking().ToListAsync());
+              }
+
+          '''
+          tests = tests[:second_assert] + second_replacement + tests[next_fact:]
           test_path.write_text(tests)
 
-          parser_test_path = Path('server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareExplicitMentionAuthorityTests.cs')
-          parser_tests = parser_test_path.read_text()
-          insertion = '''
+          parser_path = Path('server/VolleyDraft.Api.Tests/Zalo/Features/ShareSlot/ZaloShareExplicitMentionAuthorityTests.cs')
+          parser_tests = parser_path.read_text()
+          if 'Two_real_mentions_make_Hiep_anchor_and_AnhTu_partner' not in parser_tests:
+              insertion = '''
               [Fact]
               public void Two_real_mentions_make_Hiep_anchor_and_AnhTu_partner_even_when_parser_label_is_stale()
               {
@@ -323,12 +247,9 @@ jobs:
                   Assert.Equal(["uid-anh-tu"], result.PartnerZaloUserIds);
               }
           '''
-          if 'Two_real_mentions_make_Hiep_anchor_and_AnhTu_partner' not in parser_tests:
-              pos = parser_tests.rfind('\n}')
-              if pos < 0:
-                  raise SystemExit('parser test class close not found')
-              parser_tests = parser_tests[:pos] + insertion + parser_tests[pos:]
-              parser_test_path.write_text(parser_tests)
+              close = parser_tests.rfind('\n}')
+              parser_tests = parser_tests[:close] + insertion + parser_tests[close:]
+              parser_path.write_text(parser_tests)
           PY
       - name: Run targeted regression tests
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release --filter "FullyQualifiedName~ZaloShareSlotIdentityBindingTests|FullyQualifiedName~ZaloShareExplicitMentionAuthorityTests"
