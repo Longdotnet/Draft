@@ -121,12 +121,14 @@ public sealed partial class ZaloOverbookService
             var body = await BuildReminderBodyAsync(owned, state, observation, reminderNumber, cancellationToken);
             var outgoing = BuildMentionMessage(normalized, observation.DisplayNames, body);
             var idempotencyKey = $"overbook:{sessionId}:{state.IncidentKey}:{reminderNumber}";
-            await bridge.SendGroupMessageAsync(
+            var send = await bridge.SendGroupMessageAsync(
                 owned.ZaloConnection!.AccountZaloId,
                 owned.ZaloGroupId!,
                 outgoing.Message,
                 outgoing.Mentions,
                 idempotencyKey: idempotencyKey);
+            if (!send.Sent)
+                throw new InvalidOperationException("Zalo bridge did not confirm manual overbook reminder send.");
 
             state.ReminderCount = reminderNumber;
             state.LastReminderAt = now;
@@ -135,7 +137,10 @@ public sealed partial class ZaloOverbookService
                 : now.AddMinutes(state.ReminderIntervalMinutes);
             state.LastError = null;
             await store.SaveAsync(state, cancellationToken);
-            await SaveBotMessageAsync(owned, idempotencyKey, outgoing.Message, now, cancellationToken);
+
+            var providerMessageId = NormalizeProviderMessageId(send.MessageId);
+            if (providerMessageId is not null)
+                await SaveBotMessageAsync(owned, providerMessageId, outgoing.Message, now, cancellationToken);
             return ServiceResult<ZaloOverbookStatusResponse>.Success(
                 await BuildStatusAsync(observation, state, cancellationToken));
         }
