@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -25,8 +26,9 @@ public sealed class ZaloProfileUpdateConversationPreRouteTests
 
         Assert.True(handled);
         Assert.Equal(1, fixture.Bridge.SendCount);
-        Assert.Contains("Đã cập nhật", fixture.Bridge.LastBody, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("Bot tiếp tục xử lý theo trạng thái hiện tại", fixture.Bridge.LastBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Đã cập nhật", fixture.Bridge.LastMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Bot tiếp tục xử lý theo trạng thái hiện tại", fixture.Bridge.LastMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("profile-update-conversation:update-t6:updated", fixture.Bridge.LastIdempotencyKey);
 
         fixture.Db.ChangeTracker.Clear();
         var t6 = await fixture.Db.SessionPlayers.AsNoTracking().SingleAsync(item => item.Id == "player-t6-hiep");
@@ -54,7 +56,8 @@ public sealed class ZaloProfileUpdateConversationPreRouteTests
         var pending = await fixture.Db.ZaloBotConversationStates.AsNoTracking().SingleAsync();
         Assert.Equal(ZaloBotIntent.UpdatePlayerProfile.ToString(), pending.PendingIntent);
         Assert.Contains("uid-hiep", pending.PendingPayloadJson, StringComparison.Ordinal);
-        Assert.Contains("không cần gõ lại lệnh", fixture.Bridge.LastBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần gõ lại lệnh", fixture.Bridge.LastMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("profile-update-conversation:update-ambiguous:session_clarification", fixture.Bridge.LastIdempotencyKey);
         await fixture.AssertAllSessionFieldsStillInitialAsync();
 
         var followUpHandled = await fixture.Service.TryHandleZaloProfileUpdatePreRouteAsync(
@@ -68,6 +71,7 @@ public sealed class ZaloProfileUpdateConversationPreRouteTests
         Assert.Equal(PlayerLevel.Average, t6.Level);
         Assert.Empty(await fixture.Db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
         Assert.Equal(2, fixture.Bridge.SendCount);
+        Assert.Equal("profile-update-conversation:update-follow-up:updated", fixture.Bridge.LastIdempotencyKey);
     }
 
     [Fact]
@@ -116,7 +120,8 @@ public sealed class ZaloProfileUpdateConversationPreRouteTests
             fixture.Command("unauthorized-update", command, "other-zalo"));
 
         Assert.True(handled);
-        Assert.Contains("chỉ admin", fixture.Bridge.LastBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chỉ admin", fixture.Bridge.LastMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("profile-update-conversation:unauthorized-update:unauthorized", fixture.Bridge.LastIdempotencyKey);
         fixture.Db.ChangeTracker.Clear();
         await fixture.AssertAllSessionFieldsStillInitialAsync();
     }
@@ -328,7 +333,8 @@ public sealed class ZaloProfileUpdateConversationPreRouteTests
     private sealed class RecordingBridgeHandler : HttpMessageHandler
     {
         public int SendCount { get; private set; }
-        public string LastBody { get; private set; } = string.Empty;
+        public string LastMessage { get; private set; } = string.Empty;
+        public string LastIdempotencyKey { get; private set; } = string.Empty;
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -338,7 +344,10 @@ public sealed class ZaloProfileUpdateConversationPreRouteTests
                 request.RequestUri?.AbsolutePath.EndsWith("/v1/group-messages", StringComparison.Ordinal) == true)
             {
                 SendCount += 1;
-                LastBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+                var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var document = JsonDocument.Parse(body);
+                LastMessage = document.RootElement.GetProperty("message").GetString() ?? string.Empty;
+                LastIdempotencyKey = document.RootElement.GetProperty("idempotencyKey").GetString() ?? string.Empty;
                 return Json(HttpStatusCode.OK,
                     $"{{\"sent\":true,\"mock\":false,\"messageId\":\"provider-profile-update-{SendCount}\"}}");
             }
