@@ -14,6 +14,16 @@ internal sealed record ZaloAutoSessionCandidate(
     DateTimeOffset StartTime,
     int VoteCount);
 
+internal sealed record ZaloPollScheduleIssue(
+    string OptionId,
+    string OptionContent,
+    string Code,
+    string Message);
+
+internal sealed record ZaloPollScheduleExtraction(
+    IReadOnlyList<ZaloAutoSessionCandidate> Candidates,
+    IReadOnlyList<ZaloPollScheduleIssue> Issues);
+
 internal sealed record ZaloPollClassification(
     bool IsVolleyballSignupPoll,
     double Confidence,
@@ -34,21 +44,33 @@ internal static class ZaloPollScheduleParser
     private static readonly Regex ApprovalDayTimeRegex = new(
         @"(?<day>t\s*[2-7]|cn)[^0-9]{0,24}(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex NextWeekRegex = new(
+        @"(?<![a-z0-9])tuan\s+(?:sau|toi|ke)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static IReadOnlyList<ZaloAutoSessionCandidate> ExtractCandidates(
+        BridgePoll poll,
+        ZaloTrackedGroupData trackedGroup,
+        DateTimeOffset? currentTime = null) =>
+        ExtractSchedule(poll, trackedGroup, currentTime).Candidates;
+
+    public static ZaloPollScheduleExtraction ExtractSchedule(
         BridgePoll poll,
         ZaloTrackedGroupData trackedGroup,
         DateTimeOffset? currentTime = null)
     {
         var result = new List<ZaloAutoSessionCandidate>();
+        var issues = new List<ZaloPollScheduleIssue>();
         var vietnamOffset = TimeSpan.FromHours(7);
         var pollLocal = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, poll.CreatedAtUnixMs))
             .ToOffset(vietnamOffset);
         var nowLocal = (currentTime ?? DateTimeOffset.UtcNow).ToOffset(vietnamOffset);
         var staleBefore = nowLocal.AddHours(-6);
+        var normalizedQuestion = NormalizeText(poll.Question);
+        var nextWeekScope = NextWeekRegex.IsMatch(normalizedQuestion);
         var pollDefaultMinutes = trackedGroup.DefaultStartMinutes;
         if (TryReadTimeMinutes(
-                NormalizeText(poll.Question),
+                normalizedQuestion,
                 trackedGroup.AssumePmForHourUnder12,
                 out var questionMinutes))
             pollDefaultMinutes = questionMinutes;
@@ -57,9 +79,31 @@ internal static class ZaloPollScheduleParser
         {
             var normalized = NormalizeText(option.Content);
             var hasDay = TryReadDay(normalized, out var dayKey, out var dayOfWeek);
-            DateTime explicitDate = default;
-            var hasDate = !hasDay && TryReadDate(normalized, pollLocal, out explicitDate);
+            var hasExplicitDateToken = ExplicitDateRegex.IsMatch(normalized);
+            var hasDate = TryReadDate(normalized, pollLocal, out var explicitDate);
+            if (hasExplicitDateToken && !hasDate)
+            {
+                issues.Add(new ZaloPollScheduleIssue(
+                    option.Id,
+                    option.Content.Trim(),
+                    "invalid_explicit_date",
+                    $"Option “{option.Content.Trim()}” có ngày lịch không hợp lệ. Hãy sửa ngày trong poll trước khi tạo website."));
+                continue;
+            }
             if (!hasDay && !hasDate) continue;
+
+            if (hasDay && hasDate && dayOfWeek != explicitDate.DayOfWeek)
+            {
+                var actualDayKey = DayKey(explicitDate.DayOfWeek);
+                var declaredDayDate = FindNextDateForDay(explicitDate.Date, dayOfWeek);
+                issues.Add(new ZaloPollScheduleIssue(
+                    option.Id,
+                    option.Content.Trim(),
+                    "weekday_date_conflict",
+                    $"Option “{option.Content.Trim()}” ghi {dayKey} nhưng {explicitDate:dd/MM} là {actualDayKey}. " +
+                    $"Bạn muốn {actualDayKey} {explicitDate:dd/MM} hay {dayKey} {declaredDayDate:dd/MM}? Hãy sửa option trong poll cho rõ trước khi tạo website."));
+                continue;
+            }
 
             var minutes = pollDefaultMinutes;
             if (TryReadTimeMinutes(normalized, trackedGroup.AssumePmForHourUnder12, out var optionMinutes))
@@ -68,12 +112,14 @@ internal static class ZaloPollScheduleParser
             DateTimeOffset start;
             if (hasDate)
             {
+                // Explicit calendar dates are authoritative. A weekday token, when present,
+                // was validated above and can never override the calendar date.
                 dayKey = DayKey(explicitDate.DayOfWeek);
                 start = new DateTimeOffset(explicitDate.Date.AddMinutes(minutes), vietnamOffset);
             }
             else
             {
-                start = ResolveUpcoming(pollLocal, dayOfWeek, minutes);
+                start = ResolveUpcoming(pollLocal, dayOfWeek, minutes, nextWeekScope);
             }
 
             if (start < staleBefore) continue;
@@ -85,11 +131,67 @@ internal static class ZaloPollScheduleParser
                 option.VoteCount));
         }
 
-        return result
+        var candidates = result
             .GroupBy(item => item.OptionId, StringComparer.Ordinal)
             .Select(group => group.First())
             .OrderBy(item => item.StartTime)
             .ToList();
+        return new ZaloPollScheduleExtraction(candidates, issues);
+    }
+
+    public static bool ValidateCandidateConsistency(
+        BridgePoll poll,
+        ZaloAutoSessionCandidate candidate,
+        out string? reason)
+    {
+        var sourceOption = poll.Options.FirstOrDefault(option =>
+            string.Equals(option.Id, candidate.OptionId, StringComparison.Ordinal));
+        if (sourceOption is null)
+        {
+            reason = "source_option_missing";
+            return false;
+        }
+
+        if (!string.Equals(
+                NormalizeText(sourceOption.Content),
+                NormalizeText(candidate.OptionContent),
+                StringComparison.Ordinal))
+        {
+            reason = "option_content_mismatch";
+            return false;
+        }
+
+        var normalized = NormalizeText(sourceOption.Content);
+        var hasExplicitDateToken = ExplicitDateRegex.IsMatch(normalized);
+        var pollLocal = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, poll.CreatedAtUnixMs))
+            .ToOffset(TimeSpan.FromHours(7));
+        if (!TryReadDate(normalized, pollLocal, out var explicitDate))
+        {
+            reason = hasExplicitDateToken ? "invalid_explicit_date" : null;
+            return !hasExplicitDateToken;
+        }
+
+        if (TryReadDay(normalized, out _, out var declaredDay) && declaredDay != explicitDate.DayOfWeek)
+        {
+            reason = "weekday_date_conflict";
+            return false;
+        }
+
+        var localStart = candidate.StartTime.ToOffset(TimeSpan.FromHours(7));
+        if (localStart.Date != explicitDate.Date)
+        {
+            reason = "explicit_date_mismatch";
+            return false;
+        }
+
+        if (!string.Equals(candidate.DayKey, DayKey(explicitDate.DayOfWeek), StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "day_key_mismatch";
+            return false;
+        }
+
+        reason = null;
+        return true;
     }
 
     public static IReadOnlyList<ZaloAutoSessionCandidate> SelectFromApproval(
@@ -293,9 +395,33 @@ internal static class ZaloPollScheduleParser
         _ => "CN"
     };
 
-    private static DateTimeOffset ResolveUpcoming(DateTimeOffset pollLocal, DayOfWeek targetDay, int minutes)
+    private static DateTime FindNextDateForDay(DateTime date, DayOfWeek targetDay)
+    {
+        var delta = ((int)targetDay - (int)date.DayOfWeek + 7) % 7;
+        if (delta == 0) delta = 7;
+        return date.AddDays(delta);
+    }
+
+    private static DateTimeOffset ResolveUpcoming(
+        DateTimeOffset pollLocal,
+        DayOfWeek targetDay,
+        int minutes,
+        bool nextWeekScope)
     {
         minutes = Math.Clamp(minutes, 0, 23 * 60 + 59);
+        if (nextWeekScope)
+        {
+            var daysSinceMonday = pollLocal.DayOfWeek == DayOfWeek.Sunday
+                ? 6
+                : (int)pollLocal.DayOfWeek - (int)DayOfWeek.Monday;
+            var targetOffsetFromMonday = targetDay == DayOfWeek.Sunday
+                ? 6
+                : (int)targetDay - (int)DayOfWeek.Monday;
+            var nextMonday = pollLocal.Date.AddDays(7 - daysSinceMonday);
+            var scopedDate = nextMonday.AddDays(targetOffsetFromMonday).AddMinutes(minutes);
+            return new DateTimeOffset(scopedDate, TimeSpan.FromHours(7));
+        }
+
         var delta = ((int)targetDay - (int)pollLocal.DayOfWeek + 7) % 7;
         var candidateDate = pollLocal.Date.AddDays(delta).AddMinutes(minutes);
         var candidate = new DateTimeOffset(candidateDate, TimeSpan.FromHours(7));
