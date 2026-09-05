@@ -38,6 +38,36 @@ public sealed class ZaloPollDateOptionTests
     }
 
     [Fact]
+    public void Yearless_date_option_after_new_year_rolls_forward_instead_of_becoming_stale()
+    {
+        var created = new DateTimeOffset(2026, 12, 31, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", "2/1", 8, []));
+
+        var candidates = ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 12, 31, 21, 0, 0, TimeSpan.FromHours(7)));
+
+        var candidate = Assert.Single(candidates);
+        Assert.Equal(new DateTimeOffset(2027, 1, 2, 18, 0, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+    }
+
+    [Fact]
+    public void Yearless_leap_day_option_resolves_to_the_next_valid_occurrence()
+    {
+        var created = new DateTimeOffset(2027, 3, 1, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", "29/2", 8, []));
+
+        var candidates = ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2027, 3, 1, 21, 0, 0, TimeSpan.FromHours(7)));
+
+        var candidate = Assert.Single(candidates);
+        Assert.Equal(new DateTimeOffset(2028, 2, 29, 18, 0, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+    }
+
+    [Fact]
     public async Task Date_only_multi_choice_vote_san_poll_passes_deterministic_classifier()
     {
         var created = new DateTimeOffset(2026, 8, 23, 20, 0, 0, TimeSpan.FromHours(7));
