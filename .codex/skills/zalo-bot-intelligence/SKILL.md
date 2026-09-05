@@ -39,6 +39,7 @@ Use this order:
 - Do not send duplicate replies for one Zalo message ID.
 - Do not discard quote/reply metadata at the Zalo transport boundary.
 - Do not require a fresh textual `@bot` mention when the user directly replies to a bot message; a verified quote owned by the bot is an explicit address.
+- Do not let pending state consume a fresh deterministic intent merely because generic cancel/confirm words overlap. Pending handlers must use domain-scoped continuation grammar and yield to a clearly different current intent.
 - Do not advance application scheduling/reminder state unless the Zalo bridge positively confirms delivery.
 - Do not persist an idempotency key as though it were a provider-issued Zalo message ID; retry identity and channel message identity are separate contracts.
 
@@ -82,6 +83,8 @@ Examples:
 - `15/7`
 
 Clear state after success, cancellation or expiry.
+
+Pending-state ownership must be narrower than global language helpers. A generic helper may treat `hủy ...` or `chốt ...` as cancel/confirm for conversation UX, but a domain pending handler must only consume forms that clearly continue that domain. For example, a live slot reservation may own bare `hủy` or `chốt`, while `hủy reminder`, `hủy share slot`, or `chốt slot` must remain available to their fresh deterministic owners when those phrases map to another capability.
 
 A future ConversationState v2 should distinguish a short follow-up from a high-confidence new topic so a stale confirmation does not trap the user.
 
@@ -181,6 +184,7 @@ Always test:
 - two users in one group;
 - the same user in two groups;
 - expired context;
+- pending state followed by a different fresh deterministic intent;
 - superseding conflicting user concepts;
 - duplicate message delivery;
 - AI unavailable;

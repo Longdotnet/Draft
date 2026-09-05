@@ -33,8 +33,12 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         @"^(?:(?:tui|toi|minh|em|anh|chi)\s+)?(?:huy|bo|thoi)\s+(?:pass|nhuong)(?:\s+(?:slot|suat|keo))?|^(?:khong|ko)\s+(?:pass|nhuong)\s+nua$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private static readonly Regex PreDraftDonePattern = new(
-        @"^(?:xong|done|roi|ok\s+xong|vote\s+xong)[!?.]*$",
+    private static readonly Regex PendingClaimCancelPattern = new(
+        @"^(?:huy|cancel|thoi|bo\s+qua|khong\s+can\s+nua|thoi\s+khoi(?:\s+di)?|hoi\s+khoi\s+di|khoi(?:\s+di)?|bo\s+di|khong\s+lam\s+nua|(?:huy|bo)\s+(?:nhan|claim)(?:\s+(?:slot|suat|keo))?|khong\s+nhan\s+nua)[!?.]*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex PendingClaimConfirmationPattern = new(
+        @"^(?:xac\s+nhan(?:\s+draft)?|dong\s+y|ok\s+chay|chay\s+di|thuc\s+hien\s+di|duoc|ok|chot|lam\s+di|tao\s+di|trien\s+khai|xong|done|roi|ok\s+xong|vote\s+xong)[!?.]*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly ZaloOpenSlotOfferStore store = new(db);
@@ -45,6 +49,29 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
         return normalized.Length > 0 &&
                (BareClaimPattern.IsMatch(normalized) || QualifiedClaimPattern.IsMatch(normalized));
+    }
+
+    /// <summary>
+    /// Pending OpenSlotOffer state may consume only cancellation language that clearly
+    /// refers to the pending reservation itself. Broad conversation-level cancellation
+    /// (for example "hủy reminder" or "hủy share slot") belongs to the fresh intent
+    /// router and must not be stolen merely because a reservation is still active.
+    /// </summary>
+    internal static bool IsPendingClaimCancellation(string? content)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty).Trim();
+        return normalized.Length > 0 && PendingClaimCancelPattern.IsMatch(normalized);
+    }
+
+    /// <summary>
+    /// Confirmation ownership is deliberately exact for the same reason as cancel:
+    /// "chốt" continues a reservation, while domain-qualified phrases such as
+    /// "chốt slot" may belong to another deterministic capability such as waitlist.
+    /// </summary>
+    internal static bool IsPendingClaimConfirmation(string? content)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty).Trim();
+        return normalized.Length > 0 && PendingClaimConfirmationPattern.IsMatch(normalized);
     }
 
     public async Task<ZaloOpenSlotOfferHandleResult> TryHandleAsync(
@@ -70,7 +97,7 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
 
         if (pending is not null)
         {
-            if (ZaloBotIntelligence.IsCancel(incoming.Content ?? string.Empty))
+            if (IsPendingClaimCancellation(incoming.Content))
             {
                 if (pending.Status == ZaloOpenSlotOfferStatus.Applying)
                 {
@@ -86,8 +113,7 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
                     : new(true, $"Slot {pending.SessionName} vừa đổi trạng thái ở lượt khác nên tui không báo huỷ bừa nha. Tui giữ theo trạng thái mới nhất.");
             }
 
-            var normalized = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
-            if (ZaloBotIntelligence.IsConfirmation(normalized) || PreDraftDonePattern.IsMatch(normalized))
+            if (IsPendingClaimConfirmation(incoming.Content))
                 return await ConfirmClaimAsync(connectionId, groupId, incoming, pending, cancellationToken);
 
             if (IsClaimPhrase(incoming.Content))
