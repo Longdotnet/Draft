@@ -56,6 +56,30 @@ public sealed partial class ZaloOverbookService
         var question = ZaloBotService.ExtractQuestion(incoming);
         var promoted = incoming with { Content = question };
 
+        // Addressed OpenSlot routing is additive, not a replacement for existing V1
+        // deterministic commands. A live marketplace conversation may keep ownership
+        // of its own confirmation/cancel continuation, but a fresh deterministic V1
+        // intent (for example WaitlistAccept) wins even if some OpenSlotOffer happens
+        // to exist in the same session.
+        var existingDeterministic = ZaloBotIntelligence.ClassifyDeterministically(question);
+        var hasExistingDeterministicOwner =
+            existingDeterministic.Intent != ZaloBotIntent.Unknown &&
+            existingDeterministic.Intent != ZaloBotIntent.GeneralChat;
+        if (hasExistingDeterministicOwner)
+        {
+            var pending = await new ZaloOpenSlotOfferStore(db).LoadPendingClaimAsync(
+                connection.Id,
+                groupId,
+                senderId,
+                cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+            var hasLivePendingConversation = pending is not null &&
+                (pending.Status == ZaloOpenSlotOfferStatus.Applying ||
+                 pending.Status == ZaloOpenSlotOfferStatus.ClaimPending &&
+                 (pending.ClaimExpiresAt is null || pending.ClaimExpiresAt > now));
+            if (!hasLivePendingConversation) return false;
+        }
+
         var result = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
             connection.Id,
             groupId,
@@ -75,20 +99,15 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
+        // If an existing deterministic owner did not become an OpenSlot pending-state
+        // continuation, return it to V1 rather than inventing marketplace semantics.
+        if (hasExistingDeterministicOwner) return false;
+
         // If this is a canonical OpenSlotOffer claim that names an actual session,
         // keep the degraded path deterministic even when no claimable offer remains.
         // This turns a stale rescue/late claim into a grounded clarification instead
         // of falling through to GeneralChat and exposing an AI-provider outage.
         if (!ZaloOpenSlotOfferService.IsClaimPhrase(question)) return false;
-
-        // OpenSlotOffer state wins when it actually handled the turn above. Without
-        // matching offer state, however, preserve any pre-existing deterministic V1
-        // command owner (for example waitlist acceptance) instead of reinterpreting
-        // the same wording as a stale marketplace claim.
-        var existingDeterministic = ZaloBotIntelligence.ClassifyDeterministically(question);
-        if (existingDeterministic.Intent != ZaloBotIntent.Unknown &&
-            existingDeterministic.Intent != ZaloBotIntent.GeneralChat)
-            return false;
 
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
