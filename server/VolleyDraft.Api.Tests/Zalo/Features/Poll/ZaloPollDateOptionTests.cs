@@ -62,6 +62,17 @@ public sealed class ZaloPollDateOptionTests
             candidate => AssertCandidate(candidate, "T4", 2026, 9, 9, 17, 45),
             candidate => AssertCandidate(candidate, "T6", 2026, 9, 11, 17, 45),
             candidate => AssertCandidate(candidate, "CN", 2026, 9, 13, 17, 45));
+
+        var preview = ZaloAutoSessionV2Service.BuildOrganizerPreview(
+            poll,
+            candidates,
+            3,
+            6,
+            4,
+            "UTE",
+            ZaloAutoSessionRolloutMode.Live);
+        Assert.Contains("CN 13/09 17:45", preview, StringComparison.Ordinal);
+        Assert.DoesNotContain("CN 06/09", preview, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -92,19 +103,43 @@ public sealed class ZaloPollDateOptionTests
             created,
             "Vote sân UTE tuần sau. 17:45-22:00",
             new BridgePollOption("o1", "Chủ nhật 12/9", 2, []));
+        var now = new DateTimeOffset(2026, 9, 5, 21, 0, 0, VietnamOffset);
 
         var extraction = ZaloPollScheduleParser.ExtractSchedule(
             poll,
             new ZaloTrackedGroupData(),
-            new DateTimeOffset(2026, 9, 5, 21, 0, 0, VietnamOffset));
+            now);
 
         Assert.Empty(extraction.Candidates);
+        Assert.Empty(ZaloPollScheduleParser.ExtractCandidates(poll, new ZaloTrackedGroupData(), now));
         var issue = Assert.Single(extraction.Issues);
         Assert.Equal("weekday_date_conflict", issue.Code);
         Assert.Equal("o1", issue.OptionId);
         Assert.Contains("12/09", issue.Message, StringComparison.Ordinal);
         Assert.Contains("T7", issue.Message, StringComparison.Ordinal);
         Assert.Contains("CN 13/09", issue.Message, StringComparison.Ordinal);
+
+        var prompt = ZaloAutoSessionV2Service.BuildScheduleConflictPrompt(poll, extraction.Issues);
+        Assert.Contains("Website CHƯA được tạo", prompt, StringComparison.Ordinal);
+        Assert.Contains("T7 12/09", prompt, StringComparison.Ordinal);
+        Assert.Contains("CN 13/09", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Invalid_explicit_date_fails_closed_instead_of_falling_back_to_weekday()
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, VietnamOffset);
+        var poll = BuildPoll(
+            created,
+            "Vote sân UTE tuần sau. 17:45-22:00",
+            new BridgePollOption("o1", "Chủ nhật 31/2", 2, []));
+        var now = new DateTimeOffset(2026, 9, 5, 21, 0, 0, VietnamOffset);
+
+        var extraction = ZaloPollScheduleParser.ExtractSchedule(poll, new ZaloTrackedGroupData(), now);
+
+        Assert.Empty(extraction.Candidates);
+        Assert.Empty(ZaloPollScheduleParser.ExtractCandidates(poll, new ZaloTrackedGroupData(), now));
+        Assert.Equal("invalid_explicit_date", Assert.Single(extraction.Issues).Code);
     }
 
     [Fact]
@@ -141,6 +176,9 @@ public sealed class ZaloPollDateOptionTests
 
         Assert.False(ZaloPollScheduleParser.ValidateCandidateConsistency(poll, staleCandidate, out var reason));
         Assert.Equal("explicit_date_mismatch", reason);
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            ZaloAutoSessionActionExecutor.EnsureCandidatesMatchPollSource(poll, [staleCandidate]));
+        Assert.Contains("auto_session_candidate_source_mismatch:o1:explicit_date_mismatch", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -158,6 +196,7 @@ public sealed class ZaloPollDateOptionTests
 
         Assert.True(ZaloPollScheduleParser.ValidateCandidateConsistency(poll, candidate, out var reason));
         Assert.Null(reason);
+        ZaloAutoSessionActionExecutor.EnsureCandidatesMatchPollSource(poll, [candidate]);
     }
 
     [Fact]
