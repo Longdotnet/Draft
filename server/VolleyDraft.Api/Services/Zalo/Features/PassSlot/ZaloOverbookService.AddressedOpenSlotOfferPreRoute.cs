@@ -49,10 +49,16 @@ public sealed partial class ZaloOverbookService
             .FirstOrDefault();
         if (connection is null) return false;
 
+        // Reuse the canonical explicit-address extraction so the feature parser sees
+        // the same question whether a member writes "tui nhận CN" or
+        // "@Npc tui nhận CN". Human mention metadata stays intact for owner scoping.
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        var promoted = incoming with { Content = question };
+
         var result = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
             connection.Id,
             groupId,
-            incoming,
+            promoted,
             cancellationToken);
         if (result.Handled && !string.IsNullOrWhiteSpace(result.Response))
         {
@@ -72,7 +78,7 @@ public sealed partial class ZaloOverbookService
         // keep the degraded path deterministic even when no claimable offer remains.
         // This turns a stale rescue/late claim into a grounded clarification instead
         // of falling through to GeneralChat and exposing an AI-provider outage.
-        if (!ZaloOpenSlotOfferService.IsClaimPhrase(incoming.Content)) return false;
+        if (!ZaloOpenSlotOfferService.IsClaimPhrase(question)) return false;
 
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
@@ -94,7 +100,7 @@ public sealed partial class ZaloOverbookService
             .Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime))
             .ToList();
         var matchedIds = ZaloBotIntelligence.SelectOperationalSessionCandidateIds(
-            incoming.Content,
+            question,
             references);
         var matched = sessionRows
             .Where(session => matchedIds.Contains(session.Id, StringComparer.Ordinal))
