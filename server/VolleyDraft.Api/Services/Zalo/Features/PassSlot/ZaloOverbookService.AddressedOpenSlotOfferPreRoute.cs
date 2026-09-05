@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Models;
@@ -238,13 +239,10 @@ public sealed partial class ZaloOverbookService
     {
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty).Trim();
         if (normalized.Length is 0 or > 40) return false;
-        if (normalized is "cn" or "chu nhat") return true;
-        if (normalized.StartsWith("cn ", StringComparison.Ordinal) ||
-            normalized.StartsWith("chu nhat ", StringComparison.Ordinal) ||
-            normalized.StartsWith("thu ", StringComparison.Ordinal))
-            return true;
-        return normalized.Length >= 2 && normalized[0] == 't' && normalized[1] is >= '2' and <= '7' &&
-               (normalized.Length == 2 || char.IsWhiteSpace(normalized[2]));
+        return Regex.IsMatch(
+            normalized,
+            @"^(?:t[2-7]|cn|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chu\s+nhat)(?:\s+\d{1,2}(?:/\d{1,2}(?:/\d{2,4})?)?)?$",
+            RegexOptions.CultureInvariant);
     }
 
     private static bool ContainsToken(string value, string token) =>
