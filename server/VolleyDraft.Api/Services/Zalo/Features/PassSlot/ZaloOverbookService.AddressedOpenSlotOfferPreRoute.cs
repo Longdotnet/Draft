@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Models;
@@ -71,26 +72,41 @@ public sealed partial class ZaloOverbookService
              pending.Status == ZaloOpenSlotOfferStatus.ClaimPending &&
              (pending.ClaimExpiresAt is null || pending.ClaimExpiresAt > now));
 
+        string? quotedSelectionClaim = null;
+        if (!hasNaturalClaim && !hasNaturalPendingConfirmation &&
+            IsVerifiedReplyToBot(incoming) && IsShortOpenSlotSelector(extractedQuestion))
+        {
+            quotedSelectionClaim = await TryResolveQuotedOpenSlotSelectionAsync(
+                connection.Id,
+                groupId,
+                senderId,
+                extractedQuestion,
+                incoming.Quote?.Content,
+                store,
+                cancellationToken);
+        }
+
         // A phrase such as "lấy cái đó" is too ambiguous to wake NPC by itself. It is
         // promoted to confirmation only while this sender has a live, group-scoped
-        // OpenSlotOffer reservation. That state is durable, so restart/deploy does not
-        // change the meaning of the follow-up.
+        // OpenSlotOffer reservation. Short selectors such as "T6" are accepted only
+        // when they are a verified reply to NPC and the quoted text plus authoritative
+        // active offers resolve to exactly one slot.
         var question = hasNaturalPendingConfirmation && hasLivePendingConversation
             ? "chot"
             : hasNaturalClaim
                 ? naturalClaim
-                : extractedQuestion;
+                : quotedSelectionClaim ?? extractedQuestion;
         var promoted = incoming with { Content = question };
 
         // Existing deterministic commands still own fresh turns. The only exception is
-        // a live marketplace continuation already owned by this sender. This preserves
-        // WaitlistAccept and other legacy/product semantics while making wording more
-        // natural inside the OpenSlotOffer lifecycle.
+        // a live marketplace continuation or a grounded reply selection already owned
+        // by the OpenSlotOffer conversation. This preserves WaitlistAccept and other
+        // legacy/product semantics while making wording more natural.
         var existingDeterministic = ZaloBotIntelligence.ClassifyDeterministically(extractedQuestion);
         var hasExistingDeterministicOwner =
             existingDeterministic.Intent != ZaloBotIntent.Unknown &&
             existingDeterministic.Intent != ZaloBotIntent.GeneralChat;
-        if (hasExistingDeterministicOwner && !hasLivePendingConversation)
+        if (hasExistingDeterministicOwner && !hasLivePendingConversation && quotedSelectionClaim is null)
             return false;
 
         // For an unmentioned natural claim, require actual authoritative marketplace
@@ -162,6 +178,76 @@ public sealed partial class ZaloOverbookService
             cancellationToken);
         return true;
     }
+
+    private async Task<string?> TryResolveQuotedOpenSlotSelectionAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string selector,
+        string? quotedContent,
+        ZaloOpenSlotOfferStore store,
+        CancellationToken cancellationToken)
+    {
+        var claimable = await store.ListClaimableAsync(connectionId, groupId, senderId, cancellationToken);
+        if (claimable.Count == 0) return null;
+
+        var offerIds = claimable.Select(item => item.SessionId).ToHashSet(StringComparer.Ordinal);
+        var sessions = await db.MatchSessions
+            .AsNoTracking()
+            .Where(session => offerIds.Contains(session.Id) &&
+                              session.ZaloConnectionId == connectionId &&
+                              session.ZaloGroupId == groupId &&
+                              session.BotEnabled &&
+                              session.Status != SessionStatus.Cancelled)
+            .Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime))
+            .ToListAsync(cancellationToken);
+        if (sessions.Count == 0) return null;
+
+        var matchedIds = ZaloBotIntelligence.SelectOperationalSessionCandidateIds(selector, sessions);
+        var matchedOffers = claimable
+            .Where(offer => matchedIds.Contains(offer.SessionId, StringComparer.Ordinal))
+            .Take(2)
+            .ToList();
+        if (matchedOffers.Count != 1) return null;
+
+        var matched = matchedOffers[0];
+        var normalizedQuote = ZaloBotIntelligence.Normalize(quotedContent ?? string.Empty);
+        if (!QuoteGroundsOpenSlotOffer(normalizedQuote, matched)) return null;
+        return $"tui nhan {matched.SessionName}";
+    }
+
+    private static bool QuoteGroundsOpenSlotOffer(string normalizedQuote, ZaloOpenSlotOfferSnapshot offer)
+    {
+        if (normalizedQuote.Length == 0 ||
+            !ContainsToken(normalizedQuote, "slot") && !ContainsToken(normalizedQuote, "pass"))
+            return false;
+
+        var sessionName = ZaloBotIntelligence.Normalize(offer.SessionName);
+        var ownerName = ZaloBotIntelligence.Normalize(offer.OwnerDisplayName);
+        return sessionName.Length >= 2 && normalizedQuote.Contains(sessionName, StringComparison.Ordinal) ||
+               ownerName.Length >= 2 && normalizedQuote.Contains(ownerName, StringComparison.Ordinal);
+    }
+
+    private static bool IsVerifiedReplyToBot(ZaloIncomingMessageEvent incoming)
+    {
+        var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
+        var quotedSenderId = ZaloOverbookLogic.NormalizeId(incoming.Quote?.SenderId);
+        return botId.Length > 0 && string.Equals(botId, quotedSenderId, StringComparison.Ordinal);
+    }
+
+    internal static bool IsShortOpenSlotSelector(string? content)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty).Trim();
+        if (normalized.Length is 0 or > 40) return false;
+        return Regex.IsMatch(
+            normalized,
+            @"^(?:t[2-7]|cn|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chu\s+nhat)(?:\s+\d{1,2}(?:/\d{1,2}(?:/\d{2,4})?)?)?$",
+            RegexOptions.CultureInvariant);
+    }
+
+    private static bool ContainsToken(string value, string token) =>
+        value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(item =>
+            string.Equals(item.Trim(' ', ',', '.', ':', ';', '!', '?', '|'), token, StringComparison.Ordinal));
 
     internal static bool TryPromoteNaturalOpenSlotClaim(string? content, out string canonicalClaim)
     {
