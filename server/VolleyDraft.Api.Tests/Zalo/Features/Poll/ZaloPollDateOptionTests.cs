@@ -8,6 +8,61 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloPollDateOptionTests
 {
     [Fact]
+    public void Explicit_date_is_authoritative_when_option_also_contains_weekday()
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(
+            created,
+            new BridgePollOption("sun", "Chủ nhật 13/9", 2, []),
+            new BridgePollOption("tue", "Thứ 3 8/9", 5, []),
+            new BridgePollOption("wed", "Thứ 4 9/9", 6, []),
+            new BridgePollOption("fri", "Thứ 6 11/9", 8, []));
+
+        var candidates = ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 9, 5, 21, 0, 0, TimeSpan.FromHours(7)));
+
+        Assert.Collection(
+            candidates,
+            candidate => Assert.Equal(new DateTimeOffset(2026, 9, 8, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime),
+            candidate => Assert.Equal(new DateTimeOffset(2026, 9, 9, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime),
+            candidate => Assert.Equal(new DateTimeOffset(2026, 9, 11, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime),
+            candidate => Assert.Equal(new DateTimeOffset(2026, 9, 13, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime));
+    }
+
+    [Theory]
+    [InlineData("CN 13/9")]
+    [InlineData("13/9 Chủ nhật")]
+    [InlineData("Chủ nhật 13/09")]
+    public void Explicit_date_precedence_handles_common_vietnamese_variants(string option)
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", option, 2, []));
+
+        var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 9, 5, 21, 0, 0, TimeSpan.FromHours(7))));
+
+        Assert.Equal(new DateTimeOffset(2026, 9, 13, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+    }
+
+    [Fact]
+    public void Weekday_only_option_uses_next_week_scope_from_poll_title()
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật", 2, []));
+
+        var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 9, 5, 21, 0, 0, TimeSpan.FromHours(7))));
+
+        Assert.Equal(new DateTimeOffset(2026, 9, 13, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+    }
+
+    [Fact]
     public void Date_only_options_inherit_start_time_from_poll_question()
     {
         var created = new DateTimeOffset(2026, 8, 23, 20, 0, 0, TimeSpan.FromHours(7));
@@ -93,7 +148,7 @@ public sealed class ZaloPollDateOptionTests
 
     private static BridgePoll BuildPoll(DateTimeOffset created, params BridgePollOption[] options) => new(
         "poll-ute-next-week",
-        "Vote sân ute tuần sau. 17h30-22h",
+        "Vote sân UTE tuần sau. Max 18 slots/sân. 28k/slot. 17:45-22:00",
         "leader-1",
         options,
         true,
