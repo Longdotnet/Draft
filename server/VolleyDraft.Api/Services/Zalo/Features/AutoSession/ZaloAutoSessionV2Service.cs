@@ -219,9 +219,8 @@ internal sealed class ZaloAutoSessionV2Service(
         }
 
         var learnedRules = await v2Store.GetApprovedDayTimeRulesAsync(tracked.Id, cancellationToken);
-        var parsed = ApplyLearnedDayDefaults(
-                ZaloPollScheduleParser.ExtractCandidates(poll, tracked),
-                learnedRules)
+        var extraction = ZaloPollScheduleParser.ExtractSchedule(poll, tracked);
+        var parsed = ApplyLearnedDayDefaults(extraction.Candidates, learnedRules)
             .Select(candidate => candidate with { StartTime = candidate.StartTime.ToUniversalTime() })
             .ToList();
         var proposal = existing ?? new ZaloPollSessionProposalData
@@ -240,16 +239,67 @@ internal sealed class ZaloAutoSessionV2Service(
         proposal.ApprovedAt = null;
         proposal.LastError = null;
 
-        if (poll.IsAnonymous || poll.IsClosed || parsed.Count == 0)
+        if (poll.IsAnonymous || poll.IsClosed)
         {
             proposal.CandidatesJson = JsonSerializer.Serialize(parsed, JsonOptions);
             proposal.Status = ZaloPollSessionProposalStatus.Ignored;
             proposal.ClassifierConfidence = 0;
-            proposal.ClassifierReason = poll.IsAnonymous
-                ? "anonymous_poll"
-                : poll.IsClosed
-                    ? "closed_poll"
-                    : "no_current_schedule_option";
+            proposal.ClassifierReason = poll.IsAnonymous ? "anonymous_poll" : "closed_poll";
+            await store.UpsertProposalAsync(proposal, cancellationToken);
+            return;
+        }
+
+        if (extraction.Issues.Count > 0)
+        {
+            proposal.CandidatesJson = JsonSerializer.Serialize(parsed, JsonOptions);
+            proposal.Status = ZaloPollSessionProposalStatus.Ignored;
+            proposal.ClassifierConfidence = 0;
+            proposal.ClassifierReason = "schedule_conflict";
+            proposal.LastError = Truncate(string.Join(" | ", extraction.Issues.Select(issue => issue.Message)), 1000);
+
+            var conflictRoles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
+            var conflictOrganizerIds = GetOrganizerIds(conflictRoles);
+            var conflictCreatorId = NormalizeId(poll.CreatorId);
+            if (!conflictOrganizerIds.Contains(conflictCreatorId, StringComparer.Ordinal))
+            {
+                proposal.ClassifierReason = "poll_creator_is_not_group_organizer";
+                await store.UpsertProposalAsync(proposal, cancellationToken);
+                return;
+            }
+
+            proposal = await store.UpsertProposalAsync(proposal, cancellationToken);
+            try
+            {
+                var targets = new[] { conflictCreatorId };
+                var names = await ResolveNamesAsync(credentials, targets);
+                var outgoing = BuildMentionMessage(targets, names, BuildScheduleConflictPrompt(poll, extraction.Issues));
+                var sent = await bridge.SendGroupMessageAsync(
+                    connection.AccountZaloId,
+                    tracked.GroupId,
+                    outgoing.Message,
+                    outgoing.Mentions,
+                    idempotencyKey: $"auto-session-v2-conflict:{tracked.Id}:{poll.Id}:{structureHash[..12]}");
+                if (!sent.Sent || string.IsNullOrWhiteSpace(sent.MessageId))
+                    throw new InvalidOperationException("Zalo bridge did not return schedule-conflict message id.");
+                proposal.ProposalMessageId = sent.MessageId.Trim();
+                await store.UpsertProposalAsync(proposal, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                proposal.Status = ZaloPollSessionProposalStatus.Failed;
+                proposal.LastError = Truncate(exception.Message, 1000);
+                await store.UpsertProposalAsync(proposal, cancellationToken);
+                throw;
+            }
+            return;
+        }
+
+        if (parsed.Count == 0)
+        {
+            proposal.CandidatesJson = JsonSerializer.Serialize(parsed, JsonOptions);
+            proposal.Status = ZaloPollSessionProposalStatus.Ignored;
+            proposal.ClassifierConfidence = 0;
+            proposal.ClassifierReason = "no_current_schedule_option";
             await store.UpsertProposalAsync(proposal, cancellationToken);
             return;
         }
@@ -307,7 +357,7 @@ internal sealed class ZaloAutoSessionV2Service(
         }
 
         var targetIds = new[] { pollCreatorId };
-        var names = await ResolveNamesAsync(credentials, targetIds);
+        var namesForPreview = await ResolveNamesAsync(credentials, targetIds);
         var body = BuildOrganizerPreview(
             poll,
             candidates,
@@ -316,7 +366,7 @@ internal sealed class ZaloAutoSessionV2Service(
             Math.Max(1, tracked.DefaultTotalSets),
             tracked.DefaultLocation,
             rollout);
-        var outgoing = BuildMentionMessage(targetIds, names, body);
+        var outgoingPreview = BuildMentionMessage(targetIds, namesForPreview, body);
 
         proposal.Status = rollout == ZaloAutoSessionRolloutMode.Live
             ? ZaloPollSessionProposalStatus.AwaitingApproval
@@ -330,8 +380,8 @@ internal sealed class ZaloAutoSessionV2Service(
             var sent = await bridge.SendGroupMessageAsync(
                 connection.AccountZaloId,
                 tracked.GroupId,
-                outgoing.Message,
-                outgoing.Mentions,
+                outgoingPreview.Message,
+                outgoingPreview.Mentions,
                 idempotencyKey: $"auto-session-v2:{rollout}:{tracked.Id}:{poll.Id}:{structureHash[..12]}");
             if (!sent.Sent || string.IsNullOrWhiteSpace(sent.MessageId))
                 throw new InvalidOperationException("Zalo bridge did not return organizer preview message id.");
@@ -379,7 +429,8 @@ internal sealed class ZaloAutoSessionV2Service(
                 "no_current_schedule_option" or
                 "poll_creator_is_not_group_organizer" or
                 "all_schedule_options_already_linked" or
-                "website_matches_already_exist")
+                "website_matches_already_exist" or
+                "schedule_conflict")
             return false;
 
         var age = now - existing.UpdatedAt;
@@ -545,6 +596,16 @@ internal sealed class ZaloAutoSessionV2Service(
                "• “T6 6h”, “sân A”, “21 người”\n" +
                "• “tạo đi” khi bản nháp đã đúng\n" +
                "• “bỏ qua” nếu không muốn tạo.";
+    }
+
+    internal static string BuildScheduleConflictPrompt(
+        BridgePoll poll,
+        IReadOnlyList<ZaloPollScheduleIssue> issues)
+    {
+        var lines = issues.Select(issue => $"• {issue.Message}");
+        return $"Tui chưa thể preview/tạo website từ poll “{Truncate(poll.Question, 180)}” vì ngày trong option đang mâu thuẫn hoặc không hợp lệ.\n\n" +
+               $"{string.Join("\n", lines)}\n\n" +
+               "Website CHƯA được tạo. Sau khi bạn sửa option/poll cho rõ, bot sẽ đọc lại từ đầu; tui không tự đoán ngày.";
     }
 
     private async Task<ZaloConnection?> GetConnectionAsync(string connectionId, CancellationToken cancellationToken) =>

@@ -394,6 +394,8 @@ internal sealed class ZaloAutoSessionService(
         IReadOnlyList<string> organizerIds,
         CancellationToken cancellationToken)
     {
+        ZaloAutoSessionActionExecutor.EnsureCandidatesMatchPollSource(poll, selected);
+
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         try
