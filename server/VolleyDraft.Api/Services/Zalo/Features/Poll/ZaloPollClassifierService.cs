@@ -218,17 +218,41 @@ internal static class ZaloPollScheduleParser
             return false;
         }
 
-        var year = pollLocal.Year;
         var hasExplicitYear = match.Groups["year"].Success;
-        if (hasExplicitYear &&
-            int.TryParse(match.Groups["year"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedYear))
-            year = parsedYear < 100 ? 2000 + parsedYear : parsedYear;
+        if (hasExplicitYear)
+        {
+            if (!int.TryParse(match.Groups["year"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedYear))
+            {
+                date = default;
+                return false;
+            }
 
+            var year = parsedYear < 100 ? 2000 + parsedYear : parsedYear;
+            return TryCreateDate(year, month, day, out date);
+        }
+
+        var oldestAllowed = pollLocal.Date.AddDays(-14);
+        // Preserve the existing short historical grace for poll options, while allowing
+        // yearless dates to cross New Year and leap-year boundaries deterministically.
+        for (var year = pollLocal.Year; year <= pollLocal.Year + 8; year += 1)
+        {
+            if (!TryCreateDate(year, month, day, out var candidate)) continue;
+            if (candidate >= oldestAllowed)
+            {
+                date = candidate;
+                return true;
+            }
+        }
+
+        date = default;
+        return false;
+    }
+
+    private static bool TryCreateDate(int year, int month, int day, out DateTime date)
+    {
         try
         {
             date = new DateTime(year, month, day);
-            if (!hasExplicitYear && date < pollLocal.Date.AddDays(-14))
-                date = date.AddYears(1);
             return true;
         }
         catch (ArgumentOutOfRangeException)
