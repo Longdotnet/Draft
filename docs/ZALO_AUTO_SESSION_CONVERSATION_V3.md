@@ -28,6 +28,19 @@ Bạn cứ nói tự nhiên. Muốn tạo ở bước cuối, bấm Trả lời 
 
 `DefaultTotalSets=4` can remain an internal website default; it is not a decision the organizer needs to see in the Zalo conversation.
 
+## Date resolution safety
+
+Poll schedule resolution is deterministic and treats calendar text as source data, not an AI guess.
+
+- An explicit calendar date (`dd/MM/yyyy`, `dd/MM`, and supported separator variants) is authoritative.
+- If an option contains both a weekday and an explicit date, the weekday only validates the date. It never overrides the date.
+- If the weekday and date conflict, Auto Session fails closed, sends no website preview/conversation for that draft, and asks the poll creator to clarify the conflicting alternatives. For example, `Chủ nhật 12/9` in 2026 is reported as `T7 12/09` versus `CN 13/09`; the bot does not choose one silently.
+- Weekday inference is used only when the option has no explicit calendar date.
+- Poll-title scope such as `tuần sau` constrains weekday-only options to the next Monday-through-Sunday week. For a poll created on Saturday 05/09/2026, weekday-only `Chủ nhật` therefore means 13/09/2026, not 06/09/2026.
+- Yearless explicit dates retain the forward-resolution rules for New Year and leap-day boundaries.
+
+The candidates shown in the preview are persisted into `InitialDraftJson` / `DraftJson`; final confirmation executes that persisted structured draft rather than parsing the poll date a second time. Before execution, the current poll structure hash must still match the previewed poll. Immediately before any proposal/link/session mutation, the selected candidate is also checked against its current source option: option identity/text, explicit calendar date, and weekday/date consistency must still agree. A persisted candidate such as source `Chủ nhật 13/9` with resolved start `06/09` is rejected before a `MatchSession` can be written.
+
 ## Conversation state
 
 ```text
@@ -123,6 +136,7 @@ Safe write rules:
 - tracked group must still be enabled
 - sender must still be current group creator/admin
 - poll must still match the preview structure
+- the persisted selected candidates must still be consistent with their raw poll options, including explicit calendar dates
 - at least one schedule option must remain selected
 - conversation state must be `ReadyToConfirm`
 - final confirmation must explicitly address the bot
@@ -187,7 +201,7 @@ With `AutoSession:ConversationV3Enabled=true` (default), V2 continues to own pol
 
 V3 uses a dedicated typed `ZaloAutoSessionActionExecutor`. It preserves the same idempotent session/link/roster/overbook creation sequence while keeping interpretation and authorization separate from writes.
 
-Set `AutoSession:ConversationV3Enabled=false` to fall back to the old exact-preview reply confirmation path.
+Set `AutoSession:ConversationV3Enabled=false` to fall back to the old exact-preview reply confirmation path. Schedule extraction itself still fails closed on conflicting/invalid explicit dates, so the legacy path cannot create a new proposal from an ambiguous schedule.
 
 The global Auto Session kill switch also stops Conversation V3 reconciliation/follow-ups; it does not keep reminding organizers while the feature is globally disabled.
 
