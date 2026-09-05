@@ -81,6 +81,15 @@ public sealed partial class ZaloOverbookService
         // of falling through to GeneralChat and exposing an AI-provider outage.
         if (!ZaloOpenSlotOfferService.IsClaimPhrase(question)) return false;
 
+        // OpenSlotOffer state wins when it actually handled the turn above. Without
+        // matching offer state, however, preserve any pre-existing deterministic V1
+        // command owner (for example waitlist acceptance) instead of reinterpreting
+        // the same wording as a stale marketplace claim.
+        var existingDeterministic = ZaloBotIntelligence.ClassifyDeterministically(question);
+        if (existingDeterministic.Intent != ZaloBotIntent.Unknown &&
+            existingDeterministic.Intent != ZaloBotIntent.GeneralChat)
+            return false;
+
         var sessionRows = await db.MatchSessions
             .AsNoTracking()
             .Where(session =>
