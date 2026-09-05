@@ -68,6 +68,23 @@ public sealed class ZaloAddressedOpenSlotOfferPreRouteTests
     }
 
     [Fact]
+    public async Task Existing_deterministic_command_keeps_ownership_when_no_open_offer_matches()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var incoming = fixture.Explicit(
+            "legacy-waitlist-1",
+            $"@Npc tui nhận slot {fixture.SessionName}");
+        var extracted = ZaloBotService.ExtractQuestion(incoming);
+
+        Assert.Equal(ZaloBotIntent.WaitlistAccept, ZaloBotIntelligence.ClassifyDeterministically(extracted).Intent);
+
+        var handled = await fixture.Service.TryHandleAddressedOpenSlotOfferPreRouteAsync(incoming);
+
+        Assert.False(handled);
+        Assert.Equal(0, fixture.Bridge.SendCount);
+    }
+
+    [Fact]
     public async Task Unmentioned_or_unrelated_turn_is_not_stolen_from_existing_routing()
     {
         await using var fixture = await Fixture.CreateAsync();
