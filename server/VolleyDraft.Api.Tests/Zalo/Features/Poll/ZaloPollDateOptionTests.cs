@@ -7,12 +7,15 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloPollDateOptionTests
 {
+    private const string ProductionQuestion = "Vote sân UTE tuần sau. Max 18 slots/sân. 28k/slot. 17:45-22:00";
+
     [Fact]
     public void Explicit_date_is_authoritative_when_option_also_contains_weekday()
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
         var poll = BuildPoll(
             created,
+            ProductionQuestion,
             new BridgePollOption("sun", "Chủ nhật 13/9", 2, []),
             new BridgePollOption("tue", "Thứ 3 8/9", 5, []),
             new BridgePollOption("wed", "Thứ 4 9/9", 6, []),
@@ -35,10 +38,11 @@ public sealed class ZaloPollDateOptionTests
     [InlineData("CN 13/9")]
     [InlineData("13/9 Chủ nhật")]
     [InlineData("Chủ nhật 13/09")]
+    [InlineData("CN 13-9")]
     public void Explicit_date_precedence_handles_common_vietnamese_variants(string option)
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
-        var poll = BuildPoll(created, new BridgePollOption("o1", option, 2, []));
+        var poll = BuildPoll(created, ProductionQuestion, new BridgePollOption("o1", option, 2, []));
 
         var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
             poll,
@@ -52,7 +56,7 @@ public sealed class ZaloPollDateOptionTests
     public void Conflicting_weekday_does_not_override_explicit_date_and_mutation_fails_closed()
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
-        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật 12/9", 2, []));
+        var poll = BuildPoll(created, ProductionQuestion, new BridgePollOption("o1", "Chủ nhật 12/9", 2, []));
 
         var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
             poll,
@@ -72,7 +76,7 @@ public sealed class ZaloPollDateOptionTests
     public void Mutation_guard_rejects_stale_bad_preview_when_raw_option_has_explicit_date()
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
-        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật 13/9", 2, []));
+        var poll = BuildPoll(created, ProductionQuestion, new BridgePollOption("o1", "Chủ nhật 13/9", 2, []));
         var staleBadCandidate = new ZaloAutoSessionCandidate(
             "o1",
             "Chủ nhật 13/9",
@@ -89,7 +93,7 @@ public sealed class ZaloPollDateOptionTests
     public void Mutation_guard_accepts_resolved_candidate_that_matches_explicit_source_date()
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
-        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật 13/9", 2, []));
+        var poll = BuildPoll(created, ProductionQuestion, new BridgePollOption("o1", "Chủ nhật 13/9", 2, []));
         var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
             poll,
             new ZaloTrackedGroupData(),
@@ -103,7 +107,7 @@ public sealed class ZaloPollDateOptionTests
     public void Weekday_only_option_uses_next_week_scope_from_poll_title()
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
-        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật", 2, []));
+        var poll = BuildPoll(created, ProductionQuestion, new BridgePollOption("o1", "Chủ nhật", 2, []));
 
         var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
             poll,
@@ -197,9 +201,12 @@ public sealed class ZaloPollDateOptionTests
         Assert.Contains("date_pattern", result.Reason, StringComparison.Ordinal);
     }
 
-    private static BridgePoll BuildPoll(DateTimeOffset created, params BridgePollOption[] options) => new(
+    private static BridgePoll BuildPoll(DateTimeOffset created, params BridgePollOption[] options) =>
+        BuildPoll(created, "Vote sân 17h30", options);
+
+    private static BridgePoll BuildPoll(DateTimeOffset created, string question, params BridgePollOption[] options) => new(
         "poll-ute-next-week",
-        "Vote sân UTE tuần sau. Max 18 slots/sân. 28k/slot. 17:45-22:00",
+        question,
         "leader-1",
         options,
         true,
