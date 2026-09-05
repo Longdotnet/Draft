@@ -39,6 +39,22 @@ internal sealed class ZaloAutoSessionActionExecutor(
         int? teamSizeOverride,
         CancellationToken cancellationToken = default)
     {
+        foreach (var candidate in selected
+                     .GroupBy(item => item.OptionId, StringComparer.Ordinal)
+                     .Select(group => group.First()))
+        {
+            if (ZaloPollScheduleParser.TryValidateCandidateForMutation(poll, candidate, out var consistencyError))
+                continue;
+
+            await bridge.SendGroupMessageAsync(
+                connection.AccountZaloId,
+                tracked.GroupId,
+                consistencyError,
+                [],
+                idempotencyKey: $"auto-session-v3-date-guard:{proposal.Id}:{candidate.OptionId}");
+            throw new InvalidOperationException($"schedule_consistency_guard: {consistencyError}");
+        }
+
         var effectiveTeamSize = Math.Clamp(teamSizeOverride ?? tracked.DefaultTeamSize, 2, 30);
         var effectiveLocation = locationOverride ?? tracked.DefaultLocation;
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
