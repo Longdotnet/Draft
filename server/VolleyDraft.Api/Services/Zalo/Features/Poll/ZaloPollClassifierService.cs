@@ -51,8 +51,11 @@ internal static class ZaloPollScheduleParser
     public static IReadOnlyList<ZaloAutoSessionCandidate> ExtractCandidates(
         BridgePoll poll,
         ZaloTrackedGroupData trackedGroup,
-        DateTimeOffset? currentTime = null) =>
-        ExtractSchedule(poll, trackedGroup, currentTime).Candidates;
+        DateTimeOffset? currentTime = null)
+    {
+        var extraction = ExtractSchedule(poll, trackedGroup, currentTime);
+        return extraction.Issues.Count == 0 ? extraction.Candidates : [];
+    }
 
     public static ZaloPollScheduleExtraction ExtractSchedule(
         BridgePoll poll,
