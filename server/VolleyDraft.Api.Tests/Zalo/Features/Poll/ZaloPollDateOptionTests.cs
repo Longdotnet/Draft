@@ -49,7 +49,7 @@ public sealed class ZaloPollDateOptionTests
             new DateTimeOffset(2026, 12, 31, 21, 0, 0, TimeSpan.FromHours(7)));
 
         var candidate = Assert.Single(candidates);
-        Assert.Equal(new DateTimeOffset(2027, 1, 2, 18, 0, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+        Assert.Equal(new DateTimeOffset(2027, 1, 2, 17, 30, 0, TimeSpan.FromHours(7)), candidate.StartTime);
     }
 
     [Fact]
@@ -64,7 +64,7 @@ public sealed class ZaloPollDateOptionTests
             new DateTimeOffset(2027, 3, 1, 21, 0, 0, TimeSpan.FromHours(7)));
 
         var candidate = Assert.Single(candidates);
-        Assert.Equal(new DateTimeOffset(2028, 2, 29, 18, 0, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+        Assert.Equal(new DateTimeOffset(2028, 2, 29, 17, 30, 0, TimeSpan.FromHours(7)), candidate.StartTime);
     }
 
     [Fact]
