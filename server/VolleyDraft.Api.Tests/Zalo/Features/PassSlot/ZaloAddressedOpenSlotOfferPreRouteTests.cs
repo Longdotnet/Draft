@@ -69,9 +69,10 @@ public sealed class ZaloAddressedOpenSlotOfferPreRouteTests
     }
 
     [Fact]
-    public async Task Existing_deterministic_command_keeps_ownership_when_no_open_offer_matches()
+    public async Task Existing_deterministic_command_keeps_ownership_even_when_open_offer_exists()
     {
         await using var fixture = await Fixture.CreateAsync();
+        await fixture.OpenOfferAsync();
         var incoming = fixture.Explicit(
             "legacy-waitlist-1",
             $"@Npc tui nhận slot {fixture.SessionName}");
