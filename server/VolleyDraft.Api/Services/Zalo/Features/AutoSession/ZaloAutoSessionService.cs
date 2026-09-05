@@ -394,6 +394,25 @@ internal sealed class ZaloAutoSessionService(
         IReadOnlyList<string> organizerIds,
         CancellationToken cancellationToken)
     {
+        foreach (var candidate in selected
+                     .GroupBy(item => item.OptionId, StringComparer.Ordinal)
+                     .Select(group => group.First()))
+        {
+            if (ZaloPollScheduleParser.TryValidateCandidateForMutation(poll, candidate, out var consistencyError))
+                continue;
+
+            proposal.Status = ZaloPollSessionProposalStatus.Superseded;
+            proposal.LastError = "schedule_consistency_guard";
+            await store.UpsertProposalAsync(proposal, cancellationToken);
+            await bridge.SendGroupMessageAsync(
+                connection.AccountZaloId,
+                tracked.GroupId,
+                consistencyError,
+                [],
+                idempotencyKey: $"auto-session-date-guard:{proposal.Id}:{candidate.OptionId}");
+            return;
+        }
+
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         try
