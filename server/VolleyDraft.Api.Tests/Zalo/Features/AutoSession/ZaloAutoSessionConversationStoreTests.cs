@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Services;
 using Xunit;
@@ -8,6 +10,54 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloAutoSessionConversationStoreTests
 {
+    [Fact]
+    public async Task CreateFromPreview_PersistsResolvedPlanWithoutReparsingOptionText()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloAutoSessionConversationStore(db);
+        var start = new DateTimeOffset(2026, 9, 13, 17, 45, 0, TimeSpan.FromHours(7));
+        var proposal = new ZaloPollSessionProposalData
+        {
+            Id = "proposal-explicit-date",
+            TrackedGroupId = "tracked-1",
+            PollId = "poll-1",
+            PollCreatorId = "captain",
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var tracked = new ZaloTrackedGroupData
+        {
+            Id = "tracked-1",
+            GroupId = "group-1",
+            DefaultTeamSize = 6
+        };
+        var candidate = new ZaloAutoSessionCandidate(
+            "o1",
+            "Chủ nhật 13/9",
+            "CN",
+            start,
+            2);
+
+        var conversation = await store.CreateFromPreviewAsync(
+            proposal,
+            tracked,
+            [candidate],
+            "preview-1",
+            new ConfigurationBuilder().Build());
+
+        var draft = JsonSerializer.Deserialize<ZaloAutoSessionConversationDraft>(
+            conversation.DraftJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var persisted = Assert.Single(Assert.IsType<ZaloAutoSessionConversationDraft>(draft).Items);
+        Assert.Equal("Chủ nhật 13/9", persisted.OptionContent);
+        Assert.Equal("CN", persisted.DayKey);
+        Assert.Equal(start, persisted.StartTime);
+    }
+
     [Fact]
     public async Task Create_TurnLookup_AndExecutionClaim_AreIdempotent()
     {
