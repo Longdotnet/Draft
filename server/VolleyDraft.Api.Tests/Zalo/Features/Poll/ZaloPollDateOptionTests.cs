@@ -49,6 +49,57 @@ public sealed class ZaloPollDateOptionTests
     }
 
     [Fact]
+    public void Conflicting_weekday_does_not_override_explicit_date_and_mutation_fails_closed()
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật 12/9", 2, []));
+
+        var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 9, 5, 21, 0, 0, TimeSpan.FromHours(7))));
+
+        Assert.Equal("T7", candidate.DayKey);
+        Assert.Equal(new DateTimeOffset(2026, 9, 12, 17, 45, 0, TimeSpan.FromHours(7)), candidate.StartTime);
+        Assert.False(ZaloPollScheduleParser.TryValidateCandidateForMutation(poll, candidate, out var error));
+        Assert.Contains("T7", error, StringComparison.Ordinal);
+        Assert.Contains("12/09", error, StringComparison.Ordinal);
+        Assert.Contains("CN", error, StringComparison.Ordinal);
+        Assert.Contains("13/09", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mutation_guard_rejects_stale_bad_preview_when_raw_option_has_explicit_date()
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật 13/9", 2, []));
+        var staleBadCandidate = new ZaloAutoSessionCandidate(
+            "o1",
+            "Chủ nhật 13/9",
+            "CN",
+            new DateTimeOffset(2026, 9, 6, 17, 45, 0, TimeSpan.FromHours(7)),
+            2);
+
+        Assert.False(ZaloPollScheduleParser.TryValidateCandidateForMutation(poll, staleBadCandidate, out var error));
+        Assert.Contains("13/09/2026", error, StringComparison.Ordinal);
+        Assert.Contains("06/09/2026", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mutation_guard_accepts_resolved_candidate_that_matches_explicit_source_date()
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
+        var poll = BuildPoll(created, new BridgePollOption("o1", "Chủ nhật 13/9", 2, []));
+        var candidate = Assert.Single(ZaloPollScheduleParser.ExtractCandidates(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 9, 5, 21, 0, 0, TimeSpan.FromHours(7))));
+
+        Assert.True(ZaloPollScheduleParser.TryValidateCandidateForMutation(poll, candidate, out var error));
+        Assert.Equal(string.Empty, error);
+    }
+
+    [Fact]
     public void Weekday_only_option_uses_next_week_scope_from_poll_title()
     {
         var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, TimeSpan.FromHours(7));
