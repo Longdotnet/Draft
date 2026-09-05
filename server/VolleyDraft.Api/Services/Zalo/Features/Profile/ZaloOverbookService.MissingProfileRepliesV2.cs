@@ -819,10 +819,9 @@ public sealed partial class ZaloOverbookService
             idempotencyKey: idempotencyKey);
         if (!send.Sent)
             throw new InvalidOperationException("Zalo bridge did not confirm missing-profile conversation send.");
-        var persistedId = string.IsNullOrWhiteSpace(send.MessageId)
-            ? idempotencyKey
-            : send.MessageId!;
-        await SaveBotMessageAsync(session, persistedId, text, DateTimeOffset.UtcNow, cancellationToken);
+        var providerMessageId = NormalizeProviderMessageId(send.MessageId);
+        if (providerMessageId is not null)
+            await SaveBotMessageAsync(session, providerMessageId, text, DateTimeOffset.UtcNow, cancellationToken);
     }
 
     private async Task MarkProfileInputHandledAsync(

@@ -39,6 +39,8 @@ Use this order:
 - Do not send duplicate replies for one Zalo message ID.
 - Do not discard quote/reply metadata at the Zalo transport boundary.
 - Do not require a fresh textual `@bot` mention when the user directly replies to a bot message; a verified quote owned by the bot is an explicit address.
+- Do not advance application scheduling/reminder state unless the Zalo bridge positively confirms delivery.
+- Do not persist an idempotency key as though it were a provider-issued Zalo message ID; retry identity and channel message identity are separate contracts.
 
 ## Message and reply context
 

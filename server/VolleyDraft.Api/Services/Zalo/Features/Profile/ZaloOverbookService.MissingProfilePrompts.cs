@@ -196,12 +196,13 @@ public sealed partial class ZaloOverbookService
                     throw new InvalidOperationException("Zalo bridge did not confirm missing-profile prompt send.");
 
                 var providerMessageId = NormalizeProviderMessageId(send.MessageId);
-                await SaveBotMessageAsync(
-                    session,
-                    providerMessageId ?? idempotencyKey,
-                    outgoing.Message,
-                    now,
-                    cancellationToken);
+                if (providerMessageId is not null)
+                    await SaveBotMessageAsync(
+                        session,
+                        providerMessageId,
+                        outgoing.Message,
+                        now,
+                        cancellationToken);
 
                 var ttlMinutes = Math.Clamp(
                     configuration.GetValue("ZaloBot:ProfilePromptTtlMinutes", 60),
