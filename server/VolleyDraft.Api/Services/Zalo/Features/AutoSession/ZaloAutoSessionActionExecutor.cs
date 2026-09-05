@@ -39,6 +39,12 @@ internal sealed class ZaloAutoSessionActionExecutor(
         int? teamSizeOverride,
         CancellationToken cancellationToken = default)
     {
+        // The persisted conversation draft is the plan that was previewed. Before any
+        // proposal status mutation, link claim, or MatchSession write, prove that each
+        // selected item still agrees with the authoritative source option. This catches
+        // stale/bad persisted plans even if an upstream parser regresses in the future.
+        EnsureCandidatesMatchPollSource(poll, selected);
+
         var effectiveTeamSize = Math.Clamp(teamSizeOverride ?? tracked.DefaultTeamSize, 2, 30);
         var effectiveLocation = locationOverride ?? tracked.DefaultLocation;
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
@@ -166,6 +172,22 @@ internal sealed class ZaloAutoSessionActionExecutor(
             message,
             [],
             idempotencyKey: $"auto-session-v3-created:{proposal.Id}");
+    }
+
+    internal static void EnsureCandidatesMatchPollSource(
+        BridgePoll poll,
+        IReadOnlyList<ZaloAutoSessionCandidate> selected)
+    {
+        foreach (var candidate in selected
+                     .GroupBy(item => item.OptionId, StringComparer.Ordinal)
+                     .Select(group => group.First()))
+        {
+            if (ZaloPollScheduleParser.ValidateCandidateConsistency(poll, candidate, out var reason))
+                continue;
+
+            throw new InvalidOperationException(
+                $"auto_session_candidate_source_mismatch:{candidate.OptionId}:{reason ?? "unknown"}");
+        }
     }
 
     private static string BuildSessionName(ZaloAutoSessionCandidate candidate)
