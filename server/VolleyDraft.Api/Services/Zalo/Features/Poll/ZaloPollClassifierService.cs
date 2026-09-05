@@ -62,7 +62,7 @@ internal static class ZaloPollScheduleParser
         {
             var normalized = NormalizeText(option.Content);
             var hasDay = TryReadDay(normalized, out var dayKey, out var dayOfWeek);
-            var hasDate = TryReadDate(normalized, pollLocal, out var explicitDate);
+            var hasDate = TryReadExplicitDate(normalized, pollLocal, out var explicitDate);
             if (!hasDay && !hasDate) continue;
 
             var minutes = pollDefaultMinutes;
@@ -112,7 +112,7 @@ internal static class ZaloPollScheduleParser
         var pollLocal = DateTimeOffset.FromUnixTimeMilliseconds(Math.Max(0, poll.CreatedAtUnixMs))
             .ToOffset(VietnamOffset);
         var normalized = NormalizeText(source.Content);
-        if (!TryReadDate(normalized, pollLocal, out var explicitDate))
+        if (!TryReadExplicitDate(normalized, pollLocal, out var explicitDate))
         {
             error = string.Empty;
             return true;
@@ -255,6 +255,18 @@ internal static class ZaloPollScheduleParser
         dayKey = "CN";
         dayOfWeek = DayOfWeek.Sunday;
         return true;
+    }
+
+    private static bool TryReadExplicitDate(
+        string normalized,
+        DateTimeOffset pollLocal,
+        out DateTime date)
+    {
+        // Weekday tokens can themselves contain digits (for example "T4 - 5h30").
+        // Remove the recognized weekday token before calendar-date extraction so the
+        // weekday/time syntax cannot be reinterpreted as a numeric date.
+        var dateSource = DayRegex.Replace(normalized, " ", 1);
+        return TryReadDate(dateSource, pollLocal, out date);
     }
 
     private static bool TryReadDate(
