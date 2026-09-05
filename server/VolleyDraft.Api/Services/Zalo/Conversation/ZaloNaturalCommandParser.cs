@@ -379,10 +379,6 @@ public static class ZaloNaturalCommandParser
             var partnerIndex = basis.Partners
                 .Select((name, index) => new { Name = name, Index = index })
                 .FirstOrDefault(item => SamePersonReference(item.Name, mentionName))?.Index;
-            // A real structured @mention can replace a stale/fuzzy single-partner
-            // label only when the parsed anchor is unambiguously the sender. For a
-            // named anchor, an unmatched sole mention is role-ambiguous; fail closed
-            // instead of silently moving that UID into the partner slot.
             if (partnerIndex is null &&
                 basis.RequestedPartnerCount == 1 &&
                 basis.Partners.Count == 1 &&
@@ -586,20 +582,44 @@ public static class ZaloNaturalCommandParser
         if (Regex.IsMatch(normalized, @"(?<![a-z])ngay\s+mai(?![a-z])|(?<![a-z])mai(?![a-z])"))
             return DateOnly.FromDateTime(now.Date.AddDays(1));
         if (Regex.IsMatch(normalized, @"hom\s+nay")) return DateOnly.FromDateTime(now.Date);
+
         var match = Regex.Match(normalized, @"(?<!\d)(?<day>[0-3]?\d)[/-](?<month>[01]?\d)(?:[/-](?<year>\d{4}))?(?!\d)");
         if (!match.Success) return null;
-        var year = match.Groups["year"].Success
-            ? int.Parse(match.Groups["year"].Value, CultureInfo.InvariantCulture)
-            : now.Year;
-        return DateOnly.TryParseExact(
-            $"{match.Groups["day"].Value}/{match.Groups["month"].Value}/{year}",
+
+        if (match.Groups["year"].Success)
+        {
+            return TryParseCalendarDate(
+                match.Groups["day"].Value,
+                match.Groups["month"].Value,
+                int.Parse(match.Groups["year"].Value, CultureInfo.InvariantCulture));
+        }
+
+        var today = DateOnly.FromDateTime(now.Date);
+        // A yearless reminder date is an upcoming calendar occurrence, not an instruction
+        // to silently schedule into the past. Search far enough to cross the longest
+        // Gregorian leap-day gap (for example 2096 -> 2104).
+        for (var year = now.Year; year <= now.Year + 8; year += 1)
+        {
+            var candidate = TryParseCalendarDate(
+                match.Groups["day"].Value,
+                match.Groups["month"].Value,
+                year);
+            if (candidate is not null && candidate.Value >= today)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static DateOnly? TryParseCalendarDate(string day, string month, int year) =>
+        DateOnly.TryParseExact(
+            $"{day}/{month}/{year}",
             "d/M/yyyy",
             CultureInfo.InvariantCulture,
             DateTimeStyles.None,
             out var parsed)
             ? parsed
             : null;
-    }
 
     private static string? ExtractReminderMessage(string question)
     {
