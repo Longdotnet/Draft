@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -329,7 +330,9 @@ public sealed class ZaloAddressedOpenSlotOfferPreRouteTests
                 request.RequestUri?.AbsolutePath.EndsWith("/v1/group-messages", StringComparison.Ordinal) == true)
             {
                 SendCount += 1;
-                LastBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+                var raw = await request.Content!.ReadAsStringAsync(cancellationToken);
+                using var payload = JsonDocument.Parse(raw);
+                LastBody = payload.RootElement.GetProperty("message").GetString() ?? string.Empty;
                 return Json(HttpStatusCode.OK,
                     $"{{\"sent\":true,\"mock\":false,\"messageId\":\"provider-addressed-slot-{SendCount}\"}}");
             }
