@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
@@ -86,7 +87,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnectionId == connection.Id &&
                 session.ZaloGroupId == groupId &&
                 session.BotEnabled &&
-                session.Status != Models.SessionStatus.Cancelled)
+                session.Status != SessionStatus.Cancelled)
             .Select(session => new
             {
                 session.Id,
