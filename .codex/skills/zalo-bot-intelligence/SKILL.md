@@ -85,6 +85,19 @@ Clear state after success, cancellation or expiry.
 
 A future ConversationState v2 should distinguish a short follow-up from a high-confidence new topic so a stale confirmation does not trap the user.
 
+## Auto-session temporal invariants
+
+Poll/session scheduling is authoritative application data and must stay deterministic end to end.
+
+- If a poll option contains an explicit calendar date (`dd/MM/yyyy` or `dd/MM`), that date is authoritative. A weekday token in the same option may validate the date but must never override it.
+- Infer from a weekday only when the option has no explicit calendar date.
+- Temporal scope from the poll question, such as `tuần sau`, applies to weekday-only options. It must not shift an explicit date.
+- If an explicit date and weekday conflict, fail closed before creating a website session and ask for clarification instead of choosing one interpretation silently.
+- Resolve yearless dates with the established rollover/leap-year rules; do not regress New Year or leap-day behavior while changing weekday logic.
+- The organizer preview and final create must share the same persisted structured draft. Do not reparse the source option into a different date during final confirmation.
+- Revalidate the live poll structure before final creation. If question/options changed after preview, supersede the old confirmation and require a fresh preview.
+- Immediately before any MatchSession/link mutation, verify that a source option containing an explicit date still agrees with the persisted resolved date. Abort the mutation on any mismatch.
+
 ## Sender-aware context assembly
 
 Do not treat the latest N group messages as equally relevant.
@@ -187,5 +200,7 @@ Always test:
 - legacy payload without quote metadata;
 - SQLite user-concept persistence;
 - PostgreSQL schema upgrade.
+
+For auto-session date changes, also test explicit-date precedence, conflicting weekday/date, weekday-only temporal scope, New Year/leap-day boundaries, poll fingerprint changes after preview, persisted preview-plan reuse at create, and the final pre-mutation consistency guard.
 
 CI must run the backend xUnit suite with `dotnet test`; compiling the test project alone is not sufficient.
