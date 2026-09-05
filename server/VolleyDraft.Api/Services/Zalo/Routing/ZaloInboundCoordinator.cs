@@ -33,6 +33,7 @@ public sealed class ZaloInboundCoordinator(
             TryClaimAsync,
             async (message, token) =>
                 await overbookService.TryHandleZaloProfileUpdatePreRouteAsync(message, token) ||
+                await overbookService.TryHandleAddressedOpenSlotOfferPreRouteAsync(message, token) ||
                 await overbookService.TryHandleZaloPreRouteAsync(message, token),
             async (message, token) => await botService.HandleIncomingAsync(message, token),
             CompletePreRouteAsync,
