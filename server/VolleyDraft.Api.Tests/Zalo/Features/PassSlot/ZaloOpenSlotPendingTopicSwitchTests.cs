@@ -17,12 +17,12 @@ public sealed class ZaloOpenSlotPendingTopicSwitchTests
 
         Assert.Equal(
             ZaloBotIntent.CancelReminder,
-            ZaloBotIntelligence.ClassifyDeterministically("hủy reminder").Intent);
+            ZaloBotIntelligence.ClassifyDeterministically("hủy lịch nhắc").Intent);
 
         var result = await fixture.Service.TryHandleAsync(
             "conn",
             "g1",
-            Message("m-reminder", "claimant", "Long", "hủy reminder"));
+            Message("m-reminder", "claimant", "Long", "hủy lịch nhắc"));
 
         Assert.False(result.Handled);
         var pending = await fixture.Store.LoadPendingClaimAsync("conn", "g1", "claimant");
@@ -97,6 +97,7 @@ public sealed class ZaloOpenSlotPendingTopicSwitchTests
 
     [Theory]
     [InlineData("hủy reminder")]
+    [InlineData("hủy lịch nhắc")]
     [InlineData("hủy share slot")]
     [InlineData("hủy chờ slot")]
     [InlineData("hủy pass")]
