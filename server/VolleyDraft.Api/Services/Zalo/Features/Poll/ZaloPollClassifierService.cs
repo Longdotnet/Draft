@@ -36,7 +36,7 @@ internal static class ZaloPollScheduleParser
         @"(?<![a-z0-9])(?:t|thu)\s*(?<weekday>[2-7])(?![0-9])|(?<![a-z0-9])cn(?![a-z0-9])|chu\s*nhat",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitDateRegex = new(
-        @"(?<!\d)(?<day>\d{1,2})\s*[/.-]\s*(?<month>\d{1,2})(?:\s*[/.-]\s*(?<year>\d{2,4}))?(?!\d)",
+        @"(?<!\d)(?<day>\d{1,2})\s*[/.-]\s*(?<month>\d{1,2})(?:\s*[/.-]\s*(?<year>\d{2,4}))?(?!\d|\s*(?:h|:)(?:\s*\d|$))",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitTimeRegex = new(
         @"(?<!\d)(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?(?!\d)",
