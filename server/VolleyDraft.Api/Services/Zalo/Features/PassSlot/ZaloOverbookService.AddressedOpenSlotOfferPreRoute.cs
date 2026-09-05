@@ -121,14 +121,7 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        // If an existing deterministic owner did not become an OpenSlot pending-state
-        // continuation, return it to V1 rather than inventing marketplace semantics.
         if (hasExistingDeterministicOwner) return false;
-
-        // If this is a canonical OpenSlotOffer claim that names an actual session,
-        // keep the degraded path deterministic even when no claimable offer remains.
-        // This turns a stale rescue/late claim into a grounded clarification instead
-        // of falling through to GeneralChat and exposing an AI-provider outage.
         if (!ZaloOpenSlotOfferService.IsClaimPhrase(question)) return false;
 
         var sessionRows = await db.MatchSessions
@@ -150,9 +143,7 @@ public sealed partial class ZaloOverbookService
         var references = sessionRows
             .Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime))
             .ToList();
-        var matchedIds = ZaloBotIntelligence.SelectOperationalSessionCandidateIds(
-            question,
-            references);
+        var matchedIds = ZaloBotIntelligence.SelectOperationalSessionCandidateIds(question, references);
         var matched = sessionRows
             .Where(session => matchedIds.Contains(session.Id, StringComparer.Ordinal))
             .Take(2)
@@ -184,17 +175,7 @@ public sealed partial class ZaloOverbookService
             foreach (var verb in new[] { "vo", "vao" })
             {
                 var prefix = $"{subject} {verb}";
-                if (string.Equals(normalized, prefix, StringComparison.Ordinal))
-                {
-                    canonicalClaim = "tui nhan";
-                    return true;
-                }
-
-                if (normalized.StartsWith(prefix + " ", StringComparison.Ordinal))
-                {
-                    canonicalClaim = "tui nhan " + normalized[(prefix.Length + 1)..];
-                    return true;
-                }
+                if (TryBuildNaturalClaim(normalized, prefix, out canonicalClaim)) return true;
             }
         }
 
@@ -203,21 +184,43 @@ public sealed partial class ZaloOverbookService
             foreach (var verb in new[] { "vo", "vao" })
             {
                 var prefix = $"{lead} {verb}";
-                if (string.Equals(normalized, prefix, StringComparison.Ordinal))
-                {
-                    canonicalClaim = "tui nhan";
-                    return true;
-                }
-
-                if (normalized.StartsWith(prefix + " ", StringComparison.Ordinal))
-                {
-                    canonicalClaim = "tui nhan " + normalized[(prefix.Length + 1)..];
-                    return true;
-                }
+                if (TryBuildNaturalClaim(normalized, prefix, out canonicalClaim)) return true;
             }
         }
 
         return false;
+    }
+
+    private static bool TryBuildNaturalClaim(string normalized, string prefix, out string canonicalClaim)
+    {
+        canonicalClaim = string.Empty;
+        if (string.Equals(normalized, prefix, StringComparison.Ordinal))
+        {
+            canonicalClaim = "tui nhan";
+            return true;
+        }
+
+        if (!normalized.StartsWith(prefix + " ", StringComparison.Ordinal)) return false;
+        var tail = normalized[(prefix.Length + 1)..].Trim();
+        if (!IsNaturalSessionReference(tail)) return false;
+        canonicalClaim = "tui nhan " + tail;
+        return true;
+    }
+
+    private static bool IsNaturalSessionReference(string tail)
+    {
+        if (tail.Length == 0) return false;
+        if (tail is "cn" or "chu nhat") return true;
+        if (tail.StartsWith("cn ", StringComparison.Ordinal) ||
+            tail.StartsWith("chu nhat ", StringComparison.Ordinal) ||
+            tail.StartsWith("thu ", StringComparison.Ordinal) ||
+            tail.StartsWith("slot ", StringComparison.Ordinal) ||
+            tail.StartsWith("suat ", StringComparison.Ordinal) ||
+            tail.StartsWith("keo ", StringComparison.Ordinal) ||
+            tail.StartsWith("cua ", StringComparison.Ordinal))
+            return true;
+        return tail.Length >= 2 && tail[0] == 't' && tail[1] is >= '2' and <= '7' &&
+               (tail.Length == 2 || char.IsWhiteSpace(tail[2]));
     }
 
     internal static bool IsNaturalPendingClaimConfirmation(string? content)
