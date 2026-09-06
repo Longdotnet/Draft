@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -89,11 +88,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             if (cancellationToken.IsCancellationRequested)
             {
                 return Failure(
-                    ZaloAiFailureKind.Cancelled,
+                    new AiProviderFailure(AiProviderFailureKind.Cancelled),
                     profile,
                     model,
                     attempt - 1,
-                    null,
                     usedFallback);
             }
 
@@ -123,25 +121,11 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var failureKind = MapStatus(response.StatusCode);
-                    lastFailure = Failure(
-                        failureKind,
-                        profile,
-                        model,
-                        attempt,
-                        (int)response.StatusCode,
-                        usedFallback);
+                    var providerFailure = AiProviderFailure.FromHttp(response.StatusCode, body);
+                    lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
+                    LogFailure(request.Workload, profile, model, attempt, providerFailure);
 
-                    _logger.LogWarning(
-                        "Zalo AI {Workload} provider {Provider} model {Model} returned {StatusCode} on attempt {Attempt}: {Body}",
-                        request.Workload,
-                        profile.Name,
-                        model,
-                        (int)response.StatusCode,
-                        attempt,
-                        Truncate(body, 500));
-
-                    if (attempt <= _retryCount && IsRetryable(failureKind))
+                    if (attempt <= _retryCount && providerFailure.Retryable)
                     {
                         await DelayBeforeRetryAsync(attempt, cancellationToken);
                         continue;
@@ -153,20 +137,11 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 var completion = ExtractCompletion(body);
                 if (string.IsNullOrWhiteSpace(completion.Content))
                 {
-                    lastFailure = Failure(
-                        ZaloAiFailureKind.InvalidResponse,
-                        profile,
-                        model,
-                        attempt,
-                        (int)response.StatusCode,
-                        usedFallback);
-
-                    _logger.LogWarning(
-                        "Zalo AI {Workload} provider {Provider} model {Model} returned an unsupported payload shape",
-                        request.Workload,
-                        profile.Name,
-                        model);
-
+                    var invalidResponse = new AiProviderFailure(
+                        AiProviderFailureKind.InvalidResponse,
+                        (int)response.StatusCode);
+                    lastFailure = Failure(invalidResponse, profile, model, attempt, usedFallback);
+                    LogFailure(request.Workload, profile, model, attempt, invalidResponse);
                     return lastFailure;
                 }
 
@@ -182,24 +157,16 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     usedFallback,
                     completion.FinishReason);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException exception)
             {
-                lastFailure = Failure(
-                    ZaloAiFailureKind.Timeout,
-                    profile,
-                    model,
-                    attempt,
-                    null,
-                    usedFallback);
+                var providerFailure = AiProviderFailure.FromException(exception, cancellationToken);
+                lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
+                LogFailure(request.Workload, profile, model, attempt, providerFailure, exception);
 
-                _logger.LogWarning(
-                    "Zalo AI {Workload} provider {Provider} model {Model} timed out on attempt {Attempt}",
-                    request.Workload,
-                    profile.Name,
-                    model,
-                    attempt);
+                if (providerFailure.Kind == AiProviderFailureKind.Cancelled)
+                    return lastFailure;
 
-                if (attempt <= _retryCount)
+                if (attempt <= _retryCount && providerFailure.Retryable)
                 {
                     await DelayBeforeRetryAsync(attempt, cancellationToken);
                     continue;
@@ -209,23 +176,11 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             }
             catch (HttpRequestException exception)
             {
-                lastFailure = Failure(
-                    ZaloAiFailureKind.TransientProvider,
-                    profile,
-                    model,
-                    attempt,
-                    null,
-                    usedFallback);
+                var providerFailure = AiProviderFailure.FromException(exception, cancellationToken);
+                lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
+                LogFailure(request.Workload, profile, model, attempt, providerFailure, exception);
 
-                _logger.LogWarning(
-                    exception,
-                    "Zalo AI {Workload} provider {Provider} model {Model} transport failure on attempt {Attempt}",
-                    request.Workload,
-                    profile.Name,
-                    model,
-                    attempt);
-
-                if (attempt <= _retryCount)
+                if (attempt <= _retryCount && providerFailure.Retryable)
                 {
                     await DelayBeforeRetryAsync(attempt, cancellationToken);
                     continue;
@@ -235,29 +190,17 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             }
             catch (JsonException exception)
             {
-                _logger.LogWarning(
-                    exception,
-                    "Zalo AI {Workload} provider {Provider} model {Model} returned invalid JSON",
-                    request.Workload,
-                    profile.Name,
-                    model);
-
-                return Failure(
-                    ZaloAiFailureKind.InvalidResponse,
-                    profile,
-                    model,
-                    attempt,
-                    null,
-                    usedFallback);
+                var providerFailure = AiProviderFailure.FromException(exception, cancellationToken);
+                LogFailure(request.Workload, profile, model, attempt, providerFailure, exception);
+                return Failure(providerFailure, profile, model, attempt, usedFallback);
             }
         }
 
         return lastFailure ?? Failure(
-            ZaloAiFailureKind.ProviderError,
+            new AiProviderFailure(AiProviderFailureKind.Unknown),
             profile,
             model,
             0,
-            null,
             usedFallback);
     }
 
@@ -313,32 +256,16 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             new Dictionary<ZaloAiWorkload, string>());
     }
 
-    private static ZaloAiFailureKind MapStatus(HttpStatusCode statusCode)
-    {
-        var code = (int)statusCode;
-        if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            return ZaloAiFailureKind.Unauthorized;
-        if (code == 408)
-            return ZaloAiFailureKind.Timeout;
-        if (code == 429)
-            return ZaloAiFailureKind.RateLimited;
-        if (code >= 500)
-            return ZaloAiFailureKind.TransientProvider;
-        return ZaloAiFailureKind.ProviderError;
-    }
-
-    private static bool IsRetryable(ZaloAiFailureKind kind) => kind is
-        ZaloAiFailureKind.Timeout or
-        ZaloAiFailureKind.RateLimited or
-        ZaloAiFailureKind.TransientProvider;
-
     private static bool ShouldFallback(ZaloAiFailureKind kind) => kind is
-        ZaloAiFailureKind.Unauthorized or
-        ZaloAiFailureKind.Timeout or
+        ZaloAiFailureKind.AuthenticationFailed or
+        ZaloAiFailureKind.QuotaExceeded or
         ZaloAiFailureKind.RateLimited or
-        ZaloAiFailureKind.TransientProvider or
-        ZaloAiFailureKind.ProviderError or
-        ZaloAiFailureKind.InvalidResponse;
+        ZaloAiFailureKind.Timeout or
+        ZaloAiFailureKind.ProviderUnavailable or
+        ZaloAiFailureKind.ModelOrEndpointUnavailable or
+        ZaloAiFailureKind.InvalidResponse or
+        ZaloAiFailureKind.NetworkFailure or
+        ZaloAiFailureKind.Unknown;
 
     private static async Task DelayBeforeRetryAsync(int attempt, CancellationToken cancellationToken)
     {
@@ -373,25 +300,58 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     }
 
     private static ZaloAiCompletionResult Failure(
-        ZaloAiFailureKind kind,
+        AiProviderFailure failure,
         ZaloAiProviderProfile profile,
         string model,
         int attempts,
-        int? statusCode,
         bool usedFallback) =>
         new(
             false,
             null,
-            kind,
+            MapFailureKind(failure.Kind),
             profile.Name,
             model,
             attempts,
-            statusCode,
+            failure.StatusCode,
             TimeSpan.Zero,
-            usedFallback);
+            usedFallback,
+            ProviderCode: failure.ProviderCode,
+            Retryable: failure.Retryable);
 
-    private static string? Truncate(string? value, int maxLength) =>
-        string.IsNullOrEmpty(value) || value.Length <= maxLength
-            ? value
-            : value[..maxLength];
+    private static ZaloAiFailureKind MapFailureKind(AiProviderFailureKind kind) => kind switch
+    {
+        AiProviderFailureKind.NotConfigured => ZaloAiFailureKind.NotConfigured,
+        AiProviderFailureKind.AuthenticationFailed => ZaloAiFailureKind.AuthenticationFailed,
+        AiProviderFailureKind.QuotaExceeded => ZaloAiFailureKind.QuotaExceeded,
+        AiProviderFailureKind.RateLimited => ZaloAiFailureKind.RateLimited,
+        AiProviderFailureKind.Timeout => ZaloAiFailureKind.Timeout,
+        AiProviderFailureKind.ProviderUnavailable => ZaloAiFailureKind.ProviderUnavailable,
+        AiProviderFailureKind.ModelOrEndpointUnavailable => ZaloAiFailureKind.ModelOrEndpointUnavailable,
+        AiProviderFailureKind.InvalidRequest => ZaloAiFailureKind.InvalidRequest,
+        AiProviderFailureKind.InvalidResponse => ZaloAiFailureKind.InvalidResponse,
+        AiProviderFailureKind.NetworkFailure => ZaloAiFailureKind.NetworkFailure,
+        AiProviderFailureKind.Cancelled => ZaloAiFailureKind.Cancelled,
+        _ => ZaloAiFailureKind.Unknown
+    };
+
+    private void LogFailure(
+        ZaloAiWorkload workload,
+        ZaloAiProviderProfile profile,
+        string model,
+        int attempt,
+        AiProviderFailure failure,
+        Exception? exception = null)
+    {
+        _logger.LogWarning(
+            "Zalo AI request failed. Workload={Workload} Provider={Provider} Model={Model} Attempt={Attempt} FailureKind={FailureKind} StatusCode={StatusCode} ProviderCode={ProviderCode} Retryable={Retryable} ExceptionType={ExceptionType}",
+            workload,
+            profile.Name,
+            model,
+            attempt,
+            failure.Kind,
+            failure.StatusCode,
+            failure.ProviderCode,
+            failure.Retryable,
+            exception?.GetType().Name);
+    }
 }
