@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BridgeHttpError, bridgeErrorLogFields, classifyBridgeError } from "../src/bridgeErrors.js";
+import { OutboundIdempotencyConflictError } from "../src/outboundIdempotency.js";
 
 test("preserves upstream 429 as an explicit rate-limit with safe provenance", () => {
   const error = {
@@ -51,6 +52,18 @@ test("preserves intentional bridge validation errors", () => {
     kind: "invalid_credentials",
     retryable: false,
     publicMessage: "Valid Zalo credentials are required.",
+  });
+});
+
+test("idempotency payload conflicts are explicit non-retryable client conflicts", () => {
+  const result = classifyBridgeError(new OutboundIdempotencyConflictError());
+
+  assert.deepEqual(result, {
+    status: 409,
+    source: "bridge-validation",
+    kind: "idempotency_conflict",
+    retryable: false,
+    publicMessage: "Outbound idempotency key conflicts with a previous request.",
   });
 });
 
