@@ -46,6 +46,9 @@ public sealed class ZaloConversationStateMigrationPolicyTests
     [InlineData("xác nhận")]
     [InlineData("xác nhận draft")]
     [InlineData("ok")]
+    [InlineData("@Npc xác nhận")]
+    [InlineData("@Npc xác nhận draft")]
+    [InlineData("@Npc ok")]
     public void Bare_confirmation_still_belongs_to_pending_preview(string text)
     {
         var result = ZaloConversationStateMigrationPolicy.Evaluate(
@@ -53,6 +56,32 @@ public sealed class ZaloConversationStateMigrationPolicyTests
             text);
 
         Assert.Equal(ZaloTopicSwitchDecision.ContinuePending, result.Decision);
+    }
+
+    [Theory]
+    [InlineData("cn 6/9")]
+    [InlineData("@Npc cn 6/9")]
+    [InlineData("@Npc T6")]
+    public void Addressed_session_selector_does_not_abandon_pending_auto_draft(string text)
+    {
+        var result = ZaloConversationStateMigrationPolicy.Evaluate(
+            "AutoDraft",
+            text);
+
+        Assert.Equal(ZaloTopicSwitchDecision.ContinuePending, result.Decision);
+        Assert.Null(result.FreshIntent);
+    }
+
+    [Fact]
+    public void Addressed_new_operational_intent_still_escapes_stale_pending()
+    {
+        var result = ZaloConversationStateMigrationPolicy.Evaluate(
+            "AutoDraftConfirm",
+            "@Npc T6 còn thiếu bao nhiêu slot?");
+
+        Assert.Equal(ZaloTopicSwitchDecision.SwitchToNewIntent, result.Decision);
+        Assert.Equal("MissingSlots", result.FreshIntent);
+        Assert.Equal("high_confidence_new_operational_intent", result.Reason);
     }
 
     [Fact]
