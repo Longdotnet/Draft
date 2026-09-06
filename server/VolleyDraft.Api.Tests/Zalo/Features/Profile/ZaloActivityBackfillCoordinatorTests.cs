@@ -46,6 +46,73 @@ public sealed class ZaloActivityBackfillCoordinatorTests
     }
 
     [Fact]
+    public async Task Missing_backfill_is_discovered_from_durable_tracked_group_without_active_session()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var settingsStore = new ZaloAutoSessionSettingsStore(fixture.Db);
+        await settingsStore.InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin",
+            ZaloConnectionId = "connection",
+            GroupId = "tracked-only",
+            GroupName = "Nhóm được theo dõi lâu dài",
+            AutoSessionEnabled = false
+        });
+
+        var queued = await fixture.Coordinator.QueueMissingLinkedGroupsAsync();
+
+        Assert.Equal(1, queued);
+        var job = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal("connection", job.ZaloConnectionId);
+        Assert.Equal("tracked-only", job.GroupId);
+        Assert.True(job.IsFullBackfill);
+        Assert.Equal(ZaloActivityBackfillStatus.Queued, job.Status);
+    }
+
+    [Fact]
+    public async Task Durable_and_legacy_discovery_of_same_group_queues_exactly_once()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var session = await fixture.Db.MatchSessions.SingleAsync();
+        session.BotEnabled = true;
+        await fixture.Db.SaveChangesAsync();
+        var settingsStore = new ZaloAutoSessionSettingsStore(fixture.Db);
+        await settingsStore.InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin",
+            ZaloConnectionId = "connection",
+            GroupId = "group",
+            GroupName = "CLB Bóng Chuyền Newbie"
+        });
+
+        var firstQueued = await fixture.Coordinator.QueueMissingLinkedGroupsAsync();
+        var secondQueued = await fixture.Coordinator.QueueMissingLinkedGroupsAsync();
+
+        Assert.Equal(1, firstQueued);
+        Assert.Equal(0, secondQueued);
+        Assert.Equal(1, await fixture.Db.ZaloActivityBackfillJobs.CountAsync());
+    }
+
+    [Fact]
+    public async Task Stale_tracked_group_whose_connection_no_longer_exists_is_not_queued()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var settingsStore = new ZaloAutoSessionSettingsStore(fixture.Db);
+        await settingsStore.InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin",
+            ZaloConnectionId = "deleted-connection",
+            GroupId = "orphan-group",
+            GroupName = "Nhóm cấu hình cũ"
+        });
+
+        var queued = await fixture.Coordinator.QueueMissingLinkedGroupsAsync();
+
+        Assert.Equal(0, queued);
+        Assert.Empty(await fixture.Db.ZaloActivityBackfillJobs.ToListAsync());
+    }
+
+    [Fact]
     public async Task Desktop_backup_import_is_group_scoped_and_idempotent()
     {
         await using var fixture = await BackfillFixture.CreateAsync();
