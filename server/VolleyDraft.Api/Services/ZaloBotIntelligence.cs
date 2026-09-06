@@ -368,6 +368,8 @@ public static class ZaloBotIntelligence
             return true;
         }
 
+        if (negatedDisable) return false;
+
         var duration = Regex.Match(
             q,
             @"(?<!\d)(?<amount>\d{1,3})\s*(?<unit>phut|p|gio|tieng|h)(?![a-z0-9])",
