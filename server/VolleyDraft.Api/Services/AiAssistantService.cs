@@ -820,26 +820,14 @@ public sealed class AiAssistantService(
 
     private void LogProviderFailure(string operation, AiProviderFailure failure, Exception? exception = null)
     {
-        if (exception is null)
-        {
-            logger.LogWarning(
-                "AI request failed. Operation={Operation} FailureKind={FailureKind} StatusCode={StatusCode} ProviderCode={ProviderCode} Retryable={Retryable}",
-                operation,
-                failure.Kind,
-                failure.StatusCode,
-                failure.ProviderCode,
-                failure.Retryable);
-            return;
-        }
-
         logger.LogWarning(
-            exception,
-            "AI request failed. Operation={Operation} FailureKind={FailureKind} StatusCode={StatusCode} ProviderCode={ProviderCode} Retryable={Retryable}",
+            "AI request failed. Operation={Operation} FailureKind={FailureKind} StatusCode={StatusCode} ProviderCode={ProviderCode} Retryable={Retryable} ExceptionType={ExceptionType}",
             operation,
             failure.Kind,
             failure.StatusCode,
             failure.ProviderCode,
-            failure.Retryable);
+            failure.Retryable,
+            exception?.GetType().Name);
     }
 
     private static string? Truncate(string? value, int length) =>
