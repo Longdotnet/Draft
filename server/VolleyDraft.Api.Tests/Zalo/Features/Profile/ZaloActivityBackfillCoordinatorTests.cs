@@ -46,6 +46,49 @@ public sealed class ZaloActivityBackfillCoordinatorTests
     }
 
     [Fact]
+    public async Task Requeue_does_not_steal_running_lease_from_concurrent_worker()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var job = await fixture.Coordinator.QueueGroupAsync("connection", "group", true);
+        var completedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        job.Status = ZaloActivityBackfillStatus.Completed;
+        job.Stage = ZaloActivityBackfillStage.Completed;
+        job.IsFullBackfill = false;
+        job.BackfillStartedAt = completedAt.AddMinutes(-5);
+        job.BackfillCompletedAt = completedAt;
+        job.LastIncrementalSyncAt = completedAt;
+        await fixture.Db.SaveChangesAsync();
+
+        fixture.Db.ChangeTracker.Clear();
+        var staleCompleted = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(ZaloActivityBackfillStatus.Completed, staleCompleted.Status);
+
+        await using var peer = fixture.CreatePeerDbContext();
+        var leaseUntil = DateTimeOffset.UtcNow.AddMinutes(5);
+        var claimed = await peer.ZaloActivityBackfillJobs
+            .Where(item => item.Id == job.Id)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, ZaloActivityBackfillStatus.Running)
+                .SetProperty(item => item.Stage, ZaloActivityBackfillStage.SyncingMembers)
+                .SetProperty(item => item.LeaseToken, "peer-lease")
+                .SetProperty(item => item.LeaseUntil, leaseUntil));
+        Assert.Equal(1, claimed);
+
+        var result = await fixture.Coordinator.QueueGroupAsync("connection", "group", true);
+
+        Assert.Equal(ZaloActivityBackfillStatus.Running, result.Status);
+        Assert.Equal("peer-lease", result.LeaseToken);
+        fixture.Db.ChangeTracker.Clear();
+        var persisted = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(ZaloActivityBackfillStatus.Running, persisted.Status);
+        Assert.Equal(ZaloActivityBackfillStage.SyncingMembers, persisted.Stage);
+        Assert.Equal("peer-lease", persisted.LeaseToken);
+        Assert.Equal(leaseUntil, persisted.LeaseUntil);
+        Assert.Equal(completedAt, persisted.BackfillCompletedAt);
+        Assert.False(persisted.IsFullBackfill);
+    }
+
+    [Fact]
     public async Task Missing_backfill_is_discovered_from_durable_tracked_group_without_active_session()
     {
         await using var fixture = await BackfillFixture.CreateAsync();
@@ -265,6 +308,14 @@ public sealed class ZaloActivityBackfillCoordinatorTests
                 configuration,
                 NullLogger<ZaloActivityBackfillCoordinator>.Instance);
             return new BackfillFixture(connection, httpClient, db, coordinator);
+        }
+
+        public VolleyDraftDbContext CreatePeerDbContext()
+        {
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connection)
+                .Options;
+            return new VolleyDraftDbContext(options);
         }
 
         public async ValueTask DisposeAsync()
