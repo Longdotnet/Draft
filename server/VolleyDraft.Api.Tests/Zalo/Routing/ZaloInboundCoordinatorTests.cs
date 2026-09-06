@@ -1,4 +1,9 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -190,10 +195,71 @@ public sealed class ZaloInboundCoordinatorTests
         Assert.False(cleanupToken.CanBeCanceled);
     }
 
-    private static ZaloIncomingMessageEvent Incoming(string messageId) => new(
-        accountId: "bot-account",
-        botId: "bot-account",
-        groupId: "g1",
+    [Fact]
+    public async Task Tracked_group_without_match_session_is_claimed_and_persisted_for_activity()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-configured");
+
+        var claim = await ZaloInboundCoordinator.TryClaimTrackedAsync(
+            fixture.Db,
+            NullLogger<ZaloInboundCoordinator>.Instance,
+            Incoming("tracked-no-session", "bot-account_0", "g-configured_0"));
+
+        Assert.True(claim.IsTracked);
+        Assert.False(claim.IsDuplicate);
+        Assert.Empty(await fixture.Db.MatchSessions.ToListAsync());
+        var stored = await fixture.Db.ZaloGroupMessages.SingleAsync();
+        Assert.Equal("conn-1", stored.ZaloConnectionId);
+        Assert.Equal("g-configured", stored.GroupId);
+        Assert.Equal("tracked-no-session", stored.MessageId);
+    }
+
+    [Fact]
+    public async Task Duplicate_delivery_remains_suppressed_for_tracked_group_without_session()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-configured");
+        var incoming = Incoming("tracked-duplicate", "bot-account", "g-configured");
+
+        var first = await ZaloInboundCoordinator.TryClaimTrackedAsync(
+            fixture.Db,
+            NullLogger<ZaloInboundCoordinator>.Instance,
+            incoming);
+        var second = await ZaloInboundCoordinator.TryClaimTrackedAsync(
+            fixture.Db,
+            NullLogger<ZaloInboundCoordinator>.Instance,
+            incoming);
+
+        Assert.True(first.IsTracked);
+        Assert.False(first.IsDuplicate);
+        Assert.True(second.IsDuplicate);
+        Assert.Single(await fixture.Db.ZaloGroupMessages.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Tracked_group_id_on_another_account_is_not_claimed_or_persisted()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-configured");
+
+        var claim = await ZaloInboundCoordinator.TryClaimTrackedAsync(
+            fixture.Db,
+            NullLogger<ZaloInboundCoordinator>.Instance,
+            Incoming("wrong-account", "different-account", "g-configured"));
+
+        Assert.False(claim.IsTracked);
+        Assert.False(claim.IsDuplicate);
+        Assert.Empty(await fixture.Db.ZaloGroupMessages.ToListAsync());
+    }
+
+    private static ZaloIncomingMessageEvent Incoming(
+        string messageId,
+        string accountId = "bot-account",
+        string groupId = "g1") => new(
+        accountId: accountId,
+        botId: accountId,
+        groupId: groupId,
         messageId: messageId,
         senderId: "user-1",
         senderName: "Long",
@@ -201,4 +267,72 @@ public sealed class ZaloInboundCoordinatorTests
         mentions: [],
         mentionedBot: true,
         sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+    private sealed class Fixture : IAsyncDisposable
+    {
+        private Fixture(SqliteConnection sqlite, VolleyDraftDbContext db, User admin, ZaloConnection connection)
+        {
+            Sqlite = sqlite;
+            Db = db;
+            Admin = admin;
+            Connection = connection;
+        }
+
+        public SqliteConnection Sqlite { get; }
+        public VolleyDraftDbContext Db { get; }
+        public User Admin { get; }
+        public ZaloConnection Connection { get; }
+
+        public static async Task<Fixture> CreateAsync()
+        {
+            var sqlite = new SqliteConnection("Data Source=:memory:");
+            await sqlite.OpenAsync();
+            var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(sqlite)
+                .Options);
+            await db.Database.EnsureCreatedAsync();
+
+            var admin = new User
+            {
+                Id = "admin-1",
+                DisplayName = "Admin",
+                Email = $"inbound-{Guid.NewGuid():n}@example.test",
+                PasswordHash = "test"
+            };
+            var connection = new ZaloConnection
+            {
+                Id = "conn-1",
+                AdminUserId = admin.Id,
+                AdminUser = admin,
+                AccountZaloId = "bot-account",
+                DisplayName = "Npc",
+                EncryptedCredentials = "test",
+                Status = ZaloConnectionStatus.Connected
+            };
+            db.Users.Add(admin);
+            db.ZaloConnections.Add(connection);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            return new Fixture(sqlite, db, admin, connection);
+        }
+
+        public async Task AddTrackedGroupAsync(string groupId)
+        {
+            await new ZaloAutoSessionStore(Db).EnsureAsync();
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            await Db.Database.ExecuteSqlInterpolatedAsync($$"""
+                INSERT INTO "ZaloTrackedGroups" (
+                    "Id", "AdminUserId", "ZaloConnectionId", "GroupId", "GroupName", "CreatedAt", "UpdatedAt")
+                VALUES (
+                    {{Guid.NewGuid().ToString("n")}}, {{Admin.Id}}, {{Connection.Id}}, {{groupId}}, {{groupId}}, {{now}}, {{now}});
+                """);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Db.DisposeAsync();
+            await Sqlite.DisposeAsync();
+        }
+    }
 }
