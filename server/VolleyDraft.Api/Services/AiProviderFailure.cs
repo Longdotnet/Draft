@@ -59,6 +59,8 @@ public sealed record AiProviderFailure(
         var code = ExtractProviderCode(responseBody);
         if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new(AiProviderFailureKind.AuthenticationFailed, numeric, code);
+        if (numeric == 402)
+            return new(AiProviderFailureKind.QuotaExceeded, numeric, code);
         if (statusCode == HttpStatusCode.TooManyRequests)
         {
             return LooksLikeQuotaFailure(responseBody)
