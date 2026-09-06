@@ -115,17 +115,27 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
-        var isExactNpcCommand = incoming.MentionedBot &&
-                                ZaloBotIntelligence.TryGetMenuCommand(incoming.Content, out _, out _);
+        var routeAccountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+        var routeGroupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
+        var routeSenderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        var hasActiveLegacyPending = incoming.MentionedBot &&
+                                     await HasActiveLegacyBotPendingAsync(
+                                         routeAccountId,
+                                         routeGroupId,
+                                         routeSenderId,
+                                         cancellationToken);
+        var bypassAutoSession = ZaloAutoSessionPreRouteOwnership.ShouldBypassAutoSession(
+            incoming,
+            hasActiveLegacyPending);
 
-        if (!isExactNpcCommand &&
+        if (!bypassAutoSession &&
             serviceProvider is not null &&
             await ZaloAutoSessionConversationService.Create(serviceProvider)
                 .TryHandleIncomingAsync(incoming, cancellationToken))
             return true;
 
-        var draftAccountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
-        var draftGroupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
+        var draftAccountId = routeAccountId;
+        var draftGroupId = routeGroupId;
         if (draftAccountId.Length > 0 && draftGroupId.Length > 0)
         {
             var draftConnectionRows = await db.ZaloConnections
@@ -261,6 +271,28 @@ public sealed partial class ZaloOverbookService
             [],
             idempotencyKey: $"overbook-confirm:{candidate.Session.Id}:{candidate.State.IncidentKey}");
         return true;
+    }
+
+    private async Task<bool> HasActiveLegacyBotPendingAsync(
+        string accountId,
+        string groupId,
+        string senderId,
+        CancellationToken cancellationToken)
+    {
+        if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0)
+            return false;
+
+        // Keep identity predicates in SQL but evaluate DateTimeOffset expiry in memory
+        // for the same SQLite/PostgreSQL behavior as the V2 migration adapter.
+        var expiries = await db.ZaloBotConversationStates
+            .AsNoTracking()
+            .Where(item => item.GroupId == groupId &&
+                           item.SenderZaloUserId == senderId &&
+                           item.ZaloConnection.AccountZaloId == accountId)
+            .Select(item => item.ExpiresAt)
+            .ToListAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        return expiries.Any(expiresAt => expiresAt > now);
     }
 
     private async Task<string> BuildReminderBodyAsync(
