@@ -197,7 +197,7 @@ public sealed class AiProviderFailureTests
         var result = await service.RewriteFactualAnswerAsync(new ZaloAiRewriteContext(
             "nhắc T6",
             "Long",
-            VolleyDraft.Api.Models.ZaloBotIntent.ScheduleReminder,
+            ZaloBotIntent.ScheduleReminder,
             "Đã lên lịch cho T6."));
 
         Assert.Null(result);
