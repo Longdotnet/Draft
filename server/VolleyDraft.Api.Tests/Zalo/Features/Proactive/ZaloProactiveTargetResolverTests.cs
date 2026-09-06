@@ -102,6 +102,45 @@ public sealed class ZaloProactiveTargetResolverTests
         Assert.Single(targets);
     }
 
+    [Fact]
+    public async Task Listener_keeps_durable_group_subscribed_when_auto_session_is_disabled()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-analytics", autoSessionEnabled: false);
+
+        var groupIds = await ZaloListenerCoordinator.ResolveListenerGroupIdsAsync(
+            fixture.Db,
+            [fixture.Connection.Id]);
+
+        Assert.Equal(["g-analytics"], groupIds);
+        Assert.Empty(await fixture.Db.MatchSessions.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Listener_preserves_legacy_bot_session_fallback_before_tracking_seed()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Db.MatchSessions.Add(new MatchSession
+        {
+            Id = "session-listener-legacy",
+            Name = "T4",
+            AdminUserId = fixture.Admin.Id,
+            ZaloConnectionId = fixture.Connection.Id,
+            ZaloGroupId = "g-listener-legacy",
+            BotEnabled = true,
+            Status = SessionStatus.Setup,
+            StartTime = DateTimeOffset.UtcNow.AddDays(1)
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var groupIds = await ZaloListenerCoordinator.ResolveListenerGroupIdsAsync(
+            fixture.Db,
+            [fixture.Connection.Id]);
+
+        Assert.Equal(["g-listener-legacy"], groupIds);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private Fixture(
@@ -155,15 +194,16 @@ public sealed class ZaloProactiveTargetResolverTests
             return new Fixture(sqlite, db, admin, connection);
         }
 
-        public async Task AddTrackedGroupAsync(string groupId)
+        public async Task AddTrackedGroupAsync(string groupId, bool autoSessionEnabled = true)
         {
             await new ZaloAutoSessionStore(Db).EnsureAsync();
             var now = DateTimeOffset.UtcNow.ToString("O");
+            var enabled = autoSessionEnabled ? 1 : 0;
             await Db.Database.ExecuteSqlInterpolatedAsync($$"""
                 INSERT INTO "ZaloTrackedGroups" (
-                    "Id", "AdminUserId", "ZaloConnectionId", "GroupId", "GroupName", "CreatedAt", "UpdatedAt")
+                    "Id", "AdminUserId", "ZaloConnectionId", "GroupId", "GroupName", "AutoSessionEnabled", "CreatedAt", "UpdatedAt")
                 VALUES (
-                    {{Guid.NewGuid().ToString("n")}}, {{Admin.Id}}, {{Connection.Id}}, {{groupId}}, {{groupId}}, {{now}}, {{now}});
+                    {{Guid.NewGuid().ToString("n")}}, {{Admin.Id}}, {{Connection.Id}}, {{groupId}}, {{groupId}}, {{enabled}}, {{now}}, {{now}});
                 """);
         }
 
