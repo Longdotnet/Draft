@@ -44,6 +44,7 @@ Use this order:
 - Do not treat a negated reminder cancellation such as `không hủy reminder` or `đừng tắt reminder` as either cancellation or a new schedule. Fail closed unless another explicit reminder action independently owns the turn.
 - Do not advance application scheduling/reminder state unless the Zalo bridge positively confirms delivery.
 - Do not persist an idempotency key as though it were a provider-issued Zalo message ID; retry identity and channel message identity are separate contracts.
+- Do not treat a caller idempotency key as globally unique. Outbound transport idempotency must be scoped by account and group, bind the key to the intended side-effect payload, coalesce equivalent concurrent retries, and fail closed when the same scoped key is reused for a different payload.
 - Do not collapse materially different AI failures into one generic "không kết nối được" message. Normalize provider/auth/quota/rate-limit/timeout/network/response failures into a safe failure taxonomy.
 - Do not expose provider response bodies, API keys, endpoints, stack traces or raw exception messages to group members. User-facing AI failure explanations state only the safe cause and what deterministic functionality still works.
 
@@ -200,6 +201,7 @@ Always test:
 - negated reminder mutations such as `không hủy reminder` fail closed instead of defaulting to another mutation;
 - superseding conflicting user concepts;
 - duplicate message delivery;
+- outbound idempotency isolation across accounts/groups, same-payload concurrent retry coalescing, conflicting payload reuse, failure release, and expiry;
 - AI unavailable;
 - AI auth/quota/rate-limit/timeout/network/provider/invalid-response failures produce safe distinct behavior without leaking provider details;
 - structured AI failure still yields to deterministic/backend fallback;
