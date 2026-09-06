@@ -299,57 +299,144 @@ public sealed class ZaloActivityBackfillCoordinator(
         CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow;
-        var job = await db.ZaloActivityBackfillJobs
-            .SingleOrDefaultAsync(
-                item => item.ZaloConnectionId == connectionId && item.GroupId == groupId,
+        var existing = await TryQueueExistingAsync(
+            connectionId,
+            groupId,
+            full,
+            now,
+            cancellationToken);
+        if (existing is not null)
+        {
+            LogQueueResult(existing, connectionId, groupId, full);
+            return existing;
+        }
+
+        var created = new ZaloActivityBackfillJob
+        {
+            ZaloConnectionId = connectionId,
+            GroupId = groupId,
+            IsFullBackfill = true,
+            Status = ZaloActivityBackfillStatus.Queued,
+            Stage = ZaloActivityBackfillStage.Queued,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        db.ZaloActivityBackfillJobs.Add(created);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+            LogQueueResult(created, connectionId, groupId, full);
+            return created;
+        }
+        catch (DbUpdateException)
+        {
+            // Two API instances may both observe the group before either one inserts
+            // its initial job. The unique (connection, group) index is the authority:
+            // detach our losing insert, then reuse the concurrently-created row. If no
+            // winner exists this was a different database failure and must remain loud.
+            db.Entry(created).State = EntityState.Detached;
+            var winner = await db.ZaloActivityBackfillJobs
+                .AsNoTracking()
+                .SingleOrDefaultAsync(
+                    job => job.ZaloConnectionId == connectionId && job.GroupId == groupId,
+                    cancellationToken);
+            if (winner is null)
+                throw;
+
+            var queuedWinner = await TryQueueExistingAsync(
+                connectionId,
+                groupId,
+                full,
+                now,
+                cancellationToken) ?? winner;
+            LogQueueResult(queuedWinner, connectionId, groupId, full);
+            return queuedWinner;
+        }
+    }
+
+    private async Task<ZaloActivityBackfillJob?> TryQueueExistingAsync(
+        string connectionId,
+        string groupId,
+        bool full,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        // Queue requests must never clear a lease that another worker acquired after
+        // our read. ExecuteUpdate makes the status check and mutation one database
+        // operation, so a Running job wins the race and keeps its lease/checkpoint.
+        var query = db.ZaloActivityBackfillJobs.Where(job =>
+            job.ZaloConnectionId == connectionId &&
+            job.GroupId == groupId &&
+            job.Status != ZaloActivityBackfillStatus.Running);
+        int updated;
+        if (full)
+        {
+            updated = await query.ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, ZaloActivityBackfillStatus.Queued)
+                .SetProperty(job => job.Stage, ZaloActivityBackfillStage.Queued)
+                .SetProperty(job => job.IsFullBackfill, true)
+                .SetProperty(job => job.NextAttemptAt, (DateTimeOffset?)null)
+                .SetProperty(job => job.LastErrorSummary, (string?)null)
+                .SetProperty(job => job.RetryCount, 0)
+                .SetProperty(job => job.LeaseToken, (string?)null)
+                .SetProperty(job => job.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(job => job.BoardPage, 1)
+                .SetProperty(job => job.BoardCursor, (string?)null)
+                .SetProperty(job => job.MessageCursor, (string?)null)
+                .SetProperty(job => job.LastBoardPageFingerprint, (string?)null)
+                .SetProperty(job => job.ProcessedCount, 0)
+                .SetProperty(job => job.DiscoveredTotal, (int?)null)
+                .SetProperty(job => job.TotalBoardItemsScanned, 0)
+                .SetProperty(job => job.BackfillStartedAt, (DateTimeOffset?)null)
+                .SetProperty(job => job.BackfillCompletedAt, (DateTimeOffset?)null)
+                .SetProperty(job => job.UpdatedAt, now),
                 cancellationToken);
-
-        if (job is null)
-        {
-            job = new ZaloActivityBackfillJob
-            {
-                ZaloConnectionId = connectionId,
-                GroupId = groupId,
-                IsFullBackfill = true,
-                Status = ZaloActivityBackfillStatus.Queued,
-                Stage = ZaloActivityBackfillStage.Queued,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-            db.ZaloActivityBackfillJobs.Add(job);
         }
-        else if (job.Status != ZaloActivityBackfillStatus.Running)
+        else
         {
-            job.Status = ZaloActivityBackfillStatus.Queued;
-            job.Stage = ZaloActivityBackfillStage.Queued;
-            job.IsFullBackfill = full || job.BackfillCompletedAt is null;
-            job.NextAttemptAt = null;
-            job.LastErrorSummary = null;
-            job.RetryCount = 0;
-            job.LeaseToken = null;
-            job.LeaseUntil = null;
-            job.UpdatedAt = now;
-            if (full)
-            {
-                ResetScanCheckpoint(job);
-                job.BackfillStartedAt = null;
-                job.BackfillCompletedAt = null;
-            }
-            else
-            {
-                job.BoardPage = 1;
-                job.LastBoardPageFingerprint = null;
-            }
+            updated = await query.ExecuteUpdateAsync(setters => setters
+                .SetProperty(job => job.Status, ZaloActivityBackfillStatus.Queued)
+                .SetProperty(job => job.Stage, ZaloActivityBackfillStage.Queued)
+                .SetProperty(job => job.IsFullBackfill, job => job.BackfillCompletedAt == null)
+                .SetProperty(job => job.NextAttemptAt, (DateTimeOffset?)null)
+                .SetProperty(job => job.LastErrorSummary, (string?)null)
+                .SetProperty(job => job.RetryCount, 0)
+                .SetProperty(job => job.LeaseToken, (string?)null)
+                .SetProperty(job => job.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(job => job.BoardPage, 1)
+                .SetProperty(job => job.LastBoardPageFingerprint, (string?)null)
+                .SetProperty(job => job.UpdatedAt, now),
+                cancellationToken);
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        var current = await db.ZaloActivityBackfillJobs
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                job => job.ZaloConnectionId == connectionId && job.GroupId == groupId,
+                cancellationToken);
+        if (current is null)
+            return null;
+
+        // updated == 0 with a current row means a worker owns it. Returning that row
+        // preserves the active lease instead of turning an in-flight sync back into
+        // Queued. A missing row means the caller may attempt the unique insert path.
+        return current;
+    }
+
+    private void LogQueueResult(
+        ZaloActivityBackfillJob job,
+        string connectionId,
+        string groupId,
+        bool requestedFull)
+    {
         logger.LogInformation(
-            "Queued Zalo activity sync JobId={JobId} ConnectionId={ConnectionId} GroupId={GroupId} Full={Full}",
+            "Requested Zalo activity sync JobId={JobId} ConnectionId={ConnectionId} GroupId={GroupId} RequestedFull={RequestedFull} Status={Status} EffectiveFull={EffectiveFull}",
             job.Id,
             connectionId,
             groupId,
+            requestedFull,
+            job.Status,
             job.IsFullBackfill);
-        return job;
     }
 
     public async Task<int> QueueMissingLinkedGroupsAsync(

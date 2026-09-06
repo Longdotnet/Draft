@@ -22,6 +22,7 @@ Enforce these rules:
 - Never invent messages, polls, voters, members, timestamps, coverage, or exact per-user vote times.
 - Automatically retrieve all historical Zalo data that the connected account can actually access.
 - Treat durable `ZaloTrackedGroups` configuration as the ownership boundary for background Member Intelligence discovery. A tracked group must remain eligible for initial/incremental activity synchronization even when it currently has no `MatchSession`, all sessions are finished/deleted, or session `BotEnabled` is temporarily false. Keep bot-enabled linked sessions only as a backwards-compatibility discovery fallback for installations that have not seeded tracked groups yet. Do not queue orphan tracked rows whose Zalo connection no longer exists.
+- Treat a running activity-backfill lease as authoritative across API instances. Queue/discovery requests may create or atomically requeue a non-running job, but must never clear or overwrite a lease/checkpoint that a worker acquired concurrently. Initial-job creation must tolerate the unique `(ZaloConnectionId, GroupId)` race by reusing the winning row rather than turning normal multi-instance contention into a worker/API failure.
 - Never assume activity coverage begins when the listener was first started.
 - Never require an administrator to manually import every poll for analytics.
 - Use `ZaloUserId` as member identity; never identify or mutate a member by display name alone.
