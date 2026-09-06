@@ -25,6 +25,60 @@ public sealed class ZaloProactiveTargetResolverTests
     }
 
     [Fact]
+    public async Task Inbound_account_group_resolves_from_durable_tracking_without_session()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-configured");
+
+        var target = await new ZaloProactiveTargetResolver(fixture.Db)
+            .ResolveTargetAsync("bot-account_0", "g-configured_0");
+
+        Assert.NotNull(target);
+        Assert.Equal("conn-1", target.ConnectionId);
+        Assert.Equal("g-configured", target.GroupId);
+        Assert.Equal("bot-account", target.AccountId);
+        Assert.Empty(await fixture.Db.MatchSessions.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Inbound_target_does_not_cross_account_boundary()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-configured");
+
+        var target = await new ZaloProactiveTargetResolver(fixture.Db)
+            .ResolveTargetAsync("different-account", "g-configured");
+
+        Assert.Null(target);
+    }
+
+    [Fact]
+    public async Task Legacy_session_remains_event_target_fallback_before_tracking_is_seeded()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        fixture.Db.MatchSessions.Add(new MatchSession
+        {
+            Id = "session-legacy",
+            Name = "T6",
+            AdminUserId = fixture.Admin.Id,
+            ZaloConnectionId = fixture.Connection.Id,
+            ZaloGroupId = "g-legacy",
+            BotEnabled = true,
+            Status = SessionStatus.Setup,
+            StartTime = DateTimeOffset.UtcNow.AddDays(1)
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var target = await new ZaloProactiveTargetResolver(fixture.Db)
+            .ResolveTargetAsync("bot-account", "g-legacy");
+
+        Assert.NotNull(target);
+        Assert.Equal("conn-1", target.ConnectionId);
+        Assert.Equal("g-legacy", target.GroupId);
+    }
+
+    [Fact]
     public async Task Configured_and_legacy_session_sources_are_deduplicated()
     {
         await using var fixture = await Fixture.CreateAsync();
