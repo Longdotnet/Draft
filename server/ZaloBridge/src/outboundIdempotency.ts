@@ -6,6 +6,13 @@ export type ScopedIdempotencyEntry<T> = {
   result: Promise<T>;
 };
 
+export class OutboundIdempotencyConflictError extends Error {
+  constructor() {
+    super("Idempotency key was reused with a different outbound payload");
+    this.name = "OutboundIdempotencyConflictError";
+  }
+}
+
 export class ScopedOutboundIdempotency<T> {
   private readonly entries = new Map<string, ScopedIdempotencyEntry<T>>();
 
@@ -26,7 +33,7 @@ export class ScopedOutboundIdempotency<T> {
     const existing = this.entries.get(scopedKey);
     if (existing && existing.expiresAt > now) {
       if (existing.payloadFingerprint !== payloadFingerprint) {
-        throw new Error("Idempotency key was reused with a different outbound payload");
+        throw new OutboundIdempotencyConflictError();
       }
       return existing.result;
     }
