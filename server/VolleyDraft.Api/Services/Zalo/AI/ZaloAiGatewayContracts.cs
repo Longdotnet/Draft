@@ -14,13 +14,17 @@ public enum ZaloAiFailureKind
 {
     None,
     NotConfigured,
-    Unauthorized,
+    AuthenticationFailed,
+    QuotaExceeded,
     RateLimited,
     Timeout,
-    TransientProvider,
-    ProviderError,
+    ProviderUnavailable,
+    ModelOrEndpointUnavailable,
+    InvalidRequest,
     InvalidResponse,
-    Cancelled
+    NetworkFailure,
+    Cancelled,
+    Unknown
 }
 
 public sealed record ZaloAiChatMessage(string Role, string Content);
@@ -43,7 +47,9 @@ public sealed record ZaloAiCompletionResult(
     int? StatusCode,
     TimeSpan Duration,
     bool UsedFallback,
-    string? FinishReason = null)
+    string? FinishReason = null,
+    string? ProviderCode = null,
+    bool Retryable = false)
 {
     public static ZaloAiCompletionResult NotConfigured(ZaloAiWorkload workload) =>
         new(false, null, ZaloAiFailureKind.NotConfigured, "none", workload.ToString(), 0, null, TimeSpan.Zero, false);
