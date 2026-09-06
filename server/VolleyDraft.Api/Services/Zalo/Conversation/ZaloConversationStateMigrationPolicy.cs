@@ -20,7 +20,12 @@ public static class ZaloConversationStateMigrationPolicy
 {
     public static ZaloPendingMigrationDecision Evaluate(string pendingIntent, string currentQuestion)
     {
-        var question = currentQuestion ?? string.Empty;
+        // This policy is called only after the webhook has established that the turn
+        // explicitly addresses the bot. Addressing is transport metadata, not intent
+        // text: keeping a visible leading @Npc token here makes otherwise canonical
+        // confirmations such as "@Npc xác nhận" fail IsConfirmation and causes the
+        // migration layer to delete the executable pending action before V1 can run it.
+        var question = RemoveLeadingAddress(currentQuestion ?? string.Empty);
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(question);
         var freshIntent = deterministic.Intent is ZaloBotIntent.Unknown or ZaloBotIntent.GeneralChat or ZaloBotIntent.Help
             ? null
@@ -77,6 +82,13 @@ public static class ZaloConversationStateMigrationPolicy
         var b = NormalizeFamily(right);
         return a.Length > 0 && a == b;
     }
+
+    private static string RemoveLeadingAddress(string value) =>
+        Regex.Replace(
+            value,
+            @"^\s*@\S+\s*",
+            string.Empty,
+            RegexOptions.CultureInvariant).Trim();
 
     private static bool IsConfirmationBoundary(string? intent)
     {
