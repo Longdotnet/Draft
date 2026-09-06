@@ -18,7 +18,8 @@ internal sealed record ZaloProactiveTarget(
 /// ZaloTrackedGroups is the durable configuration source used by the Zalo group
 /// settings UI. MatchSessions is kept only as a backwards-compatible fallback for
 /// installations that predate tracked-group seeding. A configured group therefore
-/// remains eligible for greetings/community hints even when it has no current match.
+/// remains eligible for greetings/community hints and activity synchronization even
+/// when it has no current match.
 /// </summary>
 internal sealed class ZaloProactiveTargetResolver(VolleyDraftDbContext db)
 {
@@ -71,6 +72,27 @@ internal sealed class ZaloProactiveTargetResolver(VolleyDraftDbContext db)
                 accounts[item.ConnectionId]))
             .Distinct()
             .ToList();
+    }
+
+    /// <summary>
+    /// Resolves one inbound provider account/group to the canonical durable target.
+    /// This keeps realtime event consumers from rediscovering ownership through the
+    /// current MatchSession lifecycle and therefore dropping configured groups that
+    /// temporarily have no bot-enabled session.
+    /// </summary>
+    public async Task<ZaloProactiveTarget?> ResolveTargetAsync(
+        string accountId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        accountId = CleanId(accountId);
+        groupId = CleanId(groupId);
+        if (accountId.Length == 0 || groupId.Length == 0) return null;
+
+        var targets = await GetTargetsAsync(cancellationToken);
+        return targets.FirstOrDefault(target =>
+            string.Equals(target.AccountId, accountId, StringComparison.Ordinal) &&
+            string.Equals(target.GroupId, groupId, StringComparison.Ordinal));
     }
 
     private async Task<IReadOnlyList<TargetKey>> ReadConfiguredKeysAsync(
