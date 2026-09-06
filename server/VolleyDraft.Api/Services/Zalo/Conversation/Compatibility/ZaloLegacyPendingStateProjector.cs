@@ -1,10 +1,15 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed record ZaloLegacyPendingProjectionResult(int Scanned, int Projected, int SkippedDifferentIntent);
+public sealed record ZaloLegacyPendingProjectionResult(
+    int Scanned,
+    int Projected,
+    int SkippedDifferentIntent,
+    int RemovedStale = 0);
 
 /// <summary>
 /// Reprojects active legacy pending workflows into typed ConversationState V2 data.
@@ -60,6 +65,7 @@ public sealed class ZaloLegacyPendingStateProjector(VolleyDraftDbContext db)
         var store = new ZaloConversationStateV2Store(db);
         var projected = 0;
         var skippedDifferentIntent = 0;
+        var removedStale = 0;
 
         foreach (var pending in active)
         {
@@ -71,6 +77,32 @@ public sealed class ZaloLegacyPendingStateProjector(VolleyDraftDbContext db)
 
             var typed = ZaloLegacyPendingPayloadAdapter.Adapt(intent, pending.PendingPayloadJson);
             var existing = await store.LoadActiveAsync(groupId, senderId, cancellationToken);
+
+            // Auto-draft/redraft confirmation payloads are executable references, not
+            // historical hints. If their target session disappeared, was moved away,
+            // disabled, cancelled, or crossed the draft lifecycle boundary, keeping the
+            // row alive makes every `xác nhận` fall back to the same waiting prompt.
+            // Remove only the exact legacy snapshot we inspected so a concurrent newer
+            // pending action cannot be deleted by this compatibility cleanup.
+            if (await IsStaleDraftConfirmationAsync(pending, intent, cancellationToken))
+            {
+                var deleted = await db.ZaloBotConversationStates
+                    .Where(item => item.Id == pending.Id &&
+                                   item.PendingIntent == pending.PendingIntent &&
+                                   item.PendingPayloadJson == pending.PendingPayloadJson)
+                    .ExecuteDeleteAsync(cancellationToken);
+                if (deleted > 0)
+                {
+                    removedStale += deleted;
+                    if (existing is not null &&
+                        string.Equals(existing.Intent, intent, StringComparison.OrdinalIgnoreCase))
+                    {
+                        await store.CancelAsync(groupId, senderId, cancellationToken);
+                    }
+                }
+                continue;
+            }
+
             if (existing is not null && !string.Equals(existing.Intent, intent, StringComparison.OrdinalIgnoreCase))
             {
                 skippedDifferentIntent += 1;
@@ -97,7 +129,45 @@ public sealed class ZaloLegacyPendingStateProjector(VolleyDraftDbContext db)
             projected += 1;
         }
 
-        return new ZaloLegacyPendingProjectionResult(active.Count, projected, skippedDifferentIntent);
+        return new ZaloLegacyPendingProjectionResult(active.Count, projected, skippedDifferentIntent, removedStale);
+    }
+
+    private async Task<bool> IsStaleDraftConfirmationAsync(
+        ZaloBotConversationState pending,
+        string intent,
+        CancellationToken cancellationToken)
+    {
+        var isAutoDraft = string.Equals(intent, ZaloBotIntent.AutoDraftConfirm.ToString(), StringComparison.Ordinal);
+        var isRedraft = string.Equals(intent, ZaloBotIntent.RedraftConfirm.ToString(), StringComparison.Ordinal);
+        if (!isAutoDraft && !isRedraft) return false;
+
+        List<string> sessionIds;
+        try
+        {
+            sessionIds = (JsonSerializer.Deserialize<List<string>>(pending.PendingPayloadJson ?? "[]") ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
+        if (sessionIds.Count == 0) return true;
+
+        var candidates = await db.MatchSessions.AsNoTracking()
+            .Where(session => sessionIds.Contains(session.Id) &&
+                              session.ZaloConnectionId == pending.ZaloConnectionId &&
+                              session.ZaloGroupId == pending.GroupId &&
+                              session.BotEnabled &&
+                              session.Status != SessionStatus.Cancelled)
+            .Select(session => new { session.Id, session.Status })
+            .ToListAsync(cancellationToken);
+
+        return isRedraft
+            ? candidates.All(session => session.Status != SessionStatus.Finished)
+            : candidates.All(session => session.Status == SessionStatus.Finished);
     }
 
     private static string Clean(string? value, int maxLength)

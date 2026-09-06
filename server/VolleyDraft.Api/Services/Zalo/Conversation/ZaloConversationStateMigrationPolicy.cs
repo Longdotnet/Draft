@@ -12,7 +12,9 @@ public sealed record ZaloPendingMigrationDecision(
 /// Transitional policy used while legacy pending workflows are migrated to the
 /// structured V2 state store. It only clears a legacy pending workflow for a
 /// high-confidence deterministic operational intent from a different intent family.
-/// Ambiguous/general chat remains on the existing pending path.
+/// Ambiguous/general chat remains on the existing pending path unless the pending
+/// workflow is already at a confirmation boundary, where only confirmation/cancel
+/// language (or an explicit same-family correction) still belongs to that workflow.
 /// </summary>
 public static class ZaloConversationStateMigrationPolicy
 {
@@ -24,19 +26,45 @@ public static class ZaloConversationStateMigrationPolicy
             ? null
             : deterministic.Intent.ToString();
 
-        if (freshIntent is not null && SameIntentFamily(pendingIntent, freshIntent))
+        var sameIntentFamily = freshIntent is not null && SameIntentFamily(pendingIntent, freshIntent);
+        if (sameIntentFamily)
             freshIntent = pendingIntent;
 
         var confidence = freshIntent is null ? 0 : deterministic.Confidence;
-        var decision = ZaloConversationStateV2Store.DecideTopicSwitch(
-            pendingIntent,
-            question,
-            freshIntent,
-            confidence);
+        ZaloTopicSwitchDecision decision;
+
+        // Domain-qualified fresh commands own the turn before broad conversation-level
+        // helpers such as IsCancel/IsConfirmation get a chance to consume it. This keeps
+        // `hủy reminder` and `chốt slot` available to their deterministic handlers even
+        // while an unrelated legacy confirmation is still pending.
+        if (!sameIntentFamily && freshIntent is not null && confidence >= .85)
+        {
+            decision = ZaloTopicSwitchDecision.SwitchToNewIntent;
+        }
+        // A confirmation state has already collected every mutation argument. It may own
+        // only an acknowledgement/cancel or a clearly same-family correction. Arbitrary
+        // new chat such as `test` or `100+200` must not be trapped behind a stale preview.
+        else if (IsConfirmationBoundary(pendingIntent) &&
+                 !ZaloBotIntelligence.IsConfirmation(question) &&
+                 !ZaloBotIntelligence.IsCancel(question) &&
+                 freshIntent is null)
+        {
+            decision = ZaloTopicSwitchDecision.SwitchToNewIntent;
+        }
+        else
+        {
+            decision = ZaloConversationStateV2Store.DecideTopicSwitch(
+                pendingIntent,
+                question,
+                freshIntent,
+                confidence);
+        }
+
         var reason = decision switch
         {
             ZaloTopicSwitchDecision.CancelPending => "explicit_cancel",
-            ZaloTopicSwitchDecision.SwitchToNewIntent => "high_confidence_new_operational_intent",
+            ZaloTopicSwitchDecision.SwitchToNewIntent when freshIntent is not null => "high_confidence_new_operational_intent",
+            ZaloTopicSwitchDecision.SwitchToNewIntent => "confirmation_pending_unrelated_turn",
             _ when freshIntent is null => "no_high_confidence_operational_intent",
             _ => "same_intent_family_or_confirmation"
         };
@@ -48,6 +76,17 @@ public static class ZaloConversationStateMigrationPolicy
         var a = NormalizeFamily(left);
         var b = NormalizeFamily(right);
         return a.Length > 0 && a == b;
+    }
+
+    private static bool IsConfirmationBoundary(string? intent)
+    {
+        var normalized = Regex.Replace(
+            ZaloBotIntelligence.Normalize(intent ?? string.Empty),
+            "[^a-z0-9]",
+            string.Empty,
+            RegexOptions.CultureInvariant);
+        return normalized.EndsWith("confirm", StringComparison.Ordinal) ||
+               normalized.EndsWith("confirmation", StringComparison.Ordinal);
     }
 
     private static string NormalizeFamily(string? value)

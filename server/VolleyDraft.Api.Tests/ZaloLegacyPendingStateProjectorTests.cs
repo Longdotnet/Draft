@@ -40,13 +40,14 @@ public sealed class ZaloLegacyPendingStateProjectorTests
     }
 
     [Fact]
-    public async Task Existing_different_v2_intent_is_not_overwritten_by_stale_legacy_pending()
+    public async Task Existing_different_v2_intent_is_not_overwritten_by_live_legacy_pending()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
         await using var db = new VolleyDraftDbContext(options);
         await SeedConnectionAsync(db);
+        await SeedSessionAsync(db, "s1", SessionStatus.Setup);
         var expires = DateTimeOffset.UtcNow.AddMinutes(5);
         db.ZaloBotConversationStates.Add(new ZaloBotConversationState
         {
@@ -65,8 +66,88 @@ public sealed class ZaloLegacyPendingStateProjectorTests
         var state = await new ZaloConversationStateV2Store(db).LoadActiveAsync("g1", "u1");
 
         Assert.Equal(1, result.SkippedDifferentIntent);
+        Assert.Equal(0, result.RemovedStale);
         Assert.Equal("SlotTransfer", state!.Intent);
         Assert.Equal("m-new", state.LastMessageId);
+    }
+
+    [Fact]
+    public async Task Missing_auto_draft_target_is_removed_instead_of_trapping_confirmation()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await SeedConnectionAsync(db);
+        db.ZaloBotConversationStates.Add(new ZaloBotConversationState
+        {
+            ZaloConnectionId = "conn-1",
+            GroupId = "g1",
+            SenderZaloUserId = "u1",
+            PendingIntent = "AutoDraftConfirm",
+            PendingPayloadJson = "[\"deleted-session\"]",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
+        });
+        await db.SaveChangesAsync();
+
+        var result = await new ZaloLegacyPendingStateProjector(db).ProjectScopeAsync("g1", "u1");
+
+        Assert.Equal(1, result.RemovedStale);
+        Assert.Empty(await db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
+        Assert.Null(await new ZaloConversationStateV2Store(db).LoadActiveAsync("g1", "u1"));
+    }
+
+    [Fact]
+    public async Task Auto_draft_confirmation_is_removed_after_session_is_already_finished()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await SeedConnectionAsync(db);
+        await SeedSessionAsync(db, "s1", SessionStatus.Finished);
+        db.ZaloBotConversationStates.Add(new ZaloBotConversationState
+        {
+            ZaloConnectionId = "conn-1",
+            GroupId = "g1",
+            SenderZaloUserId = "u1",
+            PendingIntent = "AutoDraftConfirm",
+            PendingPayloadJson = "[\"s1\"]",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
+        });
+        await db.SaveChangesAsync();
+
+        var result = await new ZaloLegacyPendingStateProjector(db).ProjectScopeAsync("g1", "u1");
+
+        Assert.Equal(1, result.RemovedStale);
+        Assert.Empty(await db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Finished_session_remains_a_valid_redraft_confirmation_target()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await SeedConnectionAsync(db);
+        await SeedSessionAsync(db, "s1", SessionStatus.Finished);
+        db.ZaloBotConversationStates.Add(new ZaloBotConversationState
+        {
+            ZaloConnectionId = "conn-1",
+            GroupId = "g1",
+            SenderZaloUserId = "u1",
+            PendingIntent = "RedraftConfirm",
+            PendingPayloadJson = "[\"s1\"]",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
+        });
+        await db.SaveChangesAsync();
+
+        var result = await new ZaloLegacyPendingStateProjector(db).ProjectScopeAsync("g1", "u1");
+
+        Assert.Equal(0, result.RemovedStale);
+        Assert.Equal(1, result.Projected);
+        Assert.Single(await db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
     }
 
     private static async Task SeedConnectionAsync(VolleyDraftDbContext db)
@@ -86,6 +167,25 @@ public sealed class ZaloLegacyPendingStateProjectorTests
             AccountZaloId = "bot-uid",
             DisplayName = "Bot",
             EncryptedCredentials = "test"
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task SeedSessionAsync(
+        VolleyDraftDbContext db,
+        string sessionId,
+        SessionStatus status)
+    {
+        db.MatchSessions.Add(new MatchSession
+        {
+            Id = sessionId,
+            Name = sessionId,
+            AdminUserId = "admin-1",
+            ZaloConnectionId = "conn-1",
+            ZaloGroupId = "g1",
+            BotEnabled = true,
+            Status = status,
+            StartTime = DateTimeOffset.UtcNow.AddDays(1)
         });
         await db.SaveChangesAsync();
     }
