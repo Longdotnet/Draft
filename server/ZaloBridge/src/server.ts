@@ -1,4 +1,10 @@
+import { randomUUID } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
+import {
+  BridgeHttpError,
+  bridgeErrorLogFields,
+  classifyBridgeError,
+} from "./bridgeErrors.js";
 import {
   getApiKeepAliveConfiguration,
   getApiKeepAliveRuntimeStatus,
@@ -55,6 +61,17 @@ app.get("/health", (_request, response) => {
   });
 });
 
+// Mark every response that actually entered the bridge process. If the API receives
+// a 429/5xx without this marker, the response came from a proxy/host/front door before
+// Express reached this middleware. Keep a request id so production screenshots can be
+// correlated with bridge logs without exposing credentials or provider response bodies.
+app.use("/v1", (request, response, next) => {
+  const requestId = request.header("x-request-id")?.trim() || randomUUID();
+  response.setHeader("x-volley-bridge-response", "1");
+  response.setHeader("x-volley-bridge-request-id", requestId);
+  next();
+});
+
 app.use("/v1", (request, response, next) => {
   if (request.header("x-internal-key") !== internalKey) {
     response.status(401).json({ error: "Unauthorized bridge request" });
@@ -80,7 +97,13 @@ app.get("/v1/qr-logins/:id", (request, response) => {
 function credentialsFrom(request: Request): ZaloCredentials {
   const credentials = request.body?.credentials as ZaloCredentials | undefined;
   if (!credentials?.imei || !credentials?.userAgent || !Array.isArray(credentials.cookie)) {
-    throw new Error("Valid Zalo credentials are required");
+    throw new BridgeHttpError(
+      400,
+      "bridge-validation",
+      "invalid_credentials",
+      false,
+      "Valid Zalo credentials are required.",
+    );
   }
   return credentials;
 }
@@ -180,13 +203,21 @@ app.post("/v1/group-stickers", async (request, response) => {
 });
 
 app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
-  const message = error instanceof Error ? error.message : "Unexpected bridge error";
+  const descriptor = classifyBridgeError(error);
+  response.setHeader("x-volley-bridge-error-source", descriptor.source);
+  response.setHeader("x-volley-bridge-error-kind", descriptor.kind);
+  response.setHeader("x-volley-bridge-retryable", String(descriptor.retryable));
   console.error("[Zalo bridge] request failed", {
     method: request.method,
     path: request.path,
-    error: message,
+    requestId: response.getHeader("x-volley-bridge-request-id") ?? null,
+    ...bridgeErrorLogFields(error, descriptor),
   });
-  response.status(502).json({ error: message });
+  response.status(descriptor.status).json({
+    error: descriptor.publicMessage,
+    kind: descriptor.kind,
+    retryable: descriptor.retryable,
+  });
 });
 
 const stopApiKeepAlive = startApiKeepAlive(getActiveListenerWebhookUrls, apiKeepAliveConfiguration);

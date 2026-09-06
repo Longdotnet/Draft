@@ -304,7 +304,7 @@ public sealed class ZaloBridgeClient
         return parent.Length == 0 ? null : parent.Length <= 160 ? parent : parent[..160];
     }
 
-    private static async Task<T> ReadAsync<T>(HttpResponseMessage response)
+    private async Task<T> ReadAsync<T>(HttpResponseMessage response)
     {
         var body = await response.Content.ReadAsStringAsync();
 
@@ -333,18 +333,74 @@ public sealed class ZaloBridgeClient
         }
         catch (JsonException)
         {
-            // Render's proxy can return an HTML error page during cold start.
-            // Preserve the HTTP status instead of masking it with a JSON error.
+            // A proxy/host can return plain text or HTML before the request enters
+            // the bridge process. Provenance is determined from the bridge marker,
+            // never from parsing or echoing that response body.
         }
 
-        var detail = string.IsNullOrWhiteSpace(body)
-            ? string.Empty
-            : $" Response: {body[..Math.Min(body.Length, 240)].Replace("\r", " ").Replace("\n", " ")}";
-        throw new HttpRequestException(
-            payload?.Error ?? $"Zalo bridge returned HTTP {(int)response.StatusCode}.{detail}",
-            null,
-            response.StatusCode);
+        var bridgeReached = response.Headers.TryGetValues("x-volley-bridge-response", out var markerValues) &&
+                            markerValues.Any(value => string.Equals(value, "1", StringComparison.Ordinal));
+        var requestId = response.Headers.TryGetValues("x-volley-bridge-request-id", out var requestIdValues)
+            ? requestIdValues.FirstOrDefault()?.Trim()
+            : null;
+        var retryAfter = response.Headers.TryGetValues("Retry-After", out var retryAfterValues)
+            ? retryAfterValues.FirstOrDefault()?.Trim()
+            : null;
+        var operation = response.RequestMessage?.RequestUri?.AbsolutePath ?? "unknown";
+
+        logger.LogWarning(
+            "Zalo bridge HTTP failure Status={StatusCode} BridgeReached={BridgeReached} Operation={Operation} RequestId={RequestId} RetryAfter={RetryAfter} ContentType={ContentType}",
+            (int)response.StatusCode,
+            bridgeReached,
+            operation,
+            requestId,
+            retryAfter,
+            response.Content.Headers.ContentType?.MediaType);
+
+        if ((int)response.StatusCode == StatusCodes.Status429TooManyRequests)
+        {
+            var sourceCode = bridgeReached ? "APP" : "EDGE";
+            var sourceText = bridgeReached
+                ? "Dịch vụ kết nối Zalo đang bị giới hạn truy cập tạm thời."
+                : "Kết nối tới dịch vụ Zalo đang bị giới hạn tạm thời trước khi request vào bridge.";
+            throw new ZaloBridgeRequestException(
+                $"{sourceText} Hãy chờ một chút rồi thử lại; không cần bấm liên tục. Mã lỗi: ZALO-BRIDGE-{sourceCode}-429.",
+                response.StatusCode,
+                bridgeReached,
+                requestId,
+                retryAfter,
+                operation);
+        }
+
+        // Preserve explicit bridge-owned application errors for compatibility, but never
+        // echo arbitrary proxy/host bodies to admins. Those bodies can contain HTML,
+        // infrastructure details or text that is unrelated to the VolleyDraft contract.
+        var message = bridgeReached && !string.IsNullOrWhiteSpace(payload?.Error)
+            ? payload.Error!
+            : $"Dịch vụ kết nối Zalo tạm thời không phản hồi đúng (HTTP {(int)response.StatusCode}). Mã lỗi: ZALO-BRIDGE-{(bridgeReached ? "APP" : "EDGE")}-{(int)response.StatusCode}.";
+        throw new ZaloBridgeRequestException(
+            message,
+            response.StatusCode,
+            bridgeReached,
+            requestId,
+            retryAfter,
+            operation);
     }
+}
+
+public sealed class ZaloBridgeRequestException(
+    string message,
+    System.Net.HttpStatusCode statusCode,
+    bool bridgeReached,
+    string? requestId,
+    string? retryAfter,
+    string operation)
+    : HttpRequestException(message, null, statusCode)
+{
+    public bool BridgeReached { get; } = bridgeReached;
+    public string? RequestId { get; } = requestId;
+    public string? RetryAfter { get; } = retryAfter;
+    public string Operation { get; } = operation;
 }
 
 public sealed record BridgeStartQrResponse(string Id, string Status, DateTimeOffset ExpiresAt);
