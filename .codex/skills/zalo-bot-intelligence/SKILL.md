@@ -40,6 +40,8 @@ Use this order:
 - Do not discard quote/reply metadata at the Zalo transport boundary.
 - Do not require a fresh textual `@bot` mention when the user directly replies to a bot message; a verified quote owned by the bot is an explicit address.
 - Do not let pending state consume a fresh deterministic intent merely because generic cancel/confirm words overlap. Pending handlers must use domain-scoped continuation grammar and yield to a clearly different current intent.
+- Do not let reminder vocabulary default a clear status/update/cancel request into `ScheduleReminder`; normalize common Vietnamese/English reminder wording before the generic schedule fallback.
+- Do not treat a negated reminder cancellation such as `không hủy reminder` or `đừng tắt reminder` as either cancellation or a new schedule. Fail closed unless another explicit reminder action independently owns the turn.
 - Do not advance application scheduling/reminder state unless the Zalo bridge positively confirms delivery.
 - Do not persist an idempotency key as though it were a provider-issued Zalo message ID; retry identity and channel message identity are separate contracts.
 
@@ -185,6 +187,8 @@ Always test:
 - the same user in two groups;
 - expired context;
 - pending state followed by a different fresh deterministic intent;
+- reminder status/update/cancel/schedule vocabulary including common `reminder` loanword forms;
+- negated reminder mutations such as `không hủy reminder` fail closed instead of defaulting to another mutation;
 - superseding conflicting user concepts;
 - duplicate message delivery;
 - AI unavailable;
