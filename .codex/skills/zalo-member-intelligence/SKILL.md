@@ -21,6 +21,7 @@ Enforce these rules:
 - Treat the AI model as neither a database nor an authority over stored facts.
 - Never invent messages, polls, voters, members, timestamps, coverage, or exact per-user vote times.
 - Automatically retrieve all historical Zalo data that the connected account can actually access.
+- Treat durable `ZaloTrackedGroups` configuration as the ownership boundary for background Member Intelligence discovery. A tracked group must remain eligible for initial/incremental activity synchronization even when it currently has no `MatchSession`, all sessions are finished/deleted, or session `BotEnabled` is temporarily false. Keep bot-enabled linked sessions only as a backwards-compatibility discovery fallback for installations that have not seeded tracked groups yet. Do not queue orphan tracked rows whose Zalo connection no longer exists.
 - Never assume activity coverage begins when the listener was first started.
 - Never require an administrator to manually import every poll for analytics.
 - Use `ZaloUserId` as member identity; never identify or mutate a member by display name alone.
