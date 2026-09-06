@@ -15,6 +15,11 @@ namespace VolleyDraft.Api.Services;
 /// so duplicate bridge deliveries remain suppressed across concurrent requests and
 /// process restarts. Once the Overbook/pre-routing lane handles a message, the generic
 /// Bot lane is never invoked.
+///
+/// Durable tracked-group ownership also applies to message capture. A configured group
+/// remains an ingress target even when it currently has no bot-enabled MatchSession, so
+/// Member Intelligence does not lose realtime message activity merely because the match
+/// lifecycle is temporarily empty. Bot/session feature lanes may still decline the turn.
 /// </summary>
 public sealed class ZaloInboundCoordinator(
     VolleyDraftDbContext db,
@@ -92,9 +97,16 @@ public sealed class ZaloInboundCoordinator(
         }
     }
 
-    private async Task<ZaloInboundClaim> TryClaimAsync(
+    private Task<ZaloInboundClaim> TryClaimAsync(
         ZaloIncomingMessageEvent incoming,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        TryClaimTrackedAsync(db, logger, incoming, cancellationToken);
+
+    internal static async Task<ZaloInboundClaim> TryClaimTrackedAsync(
+        VolleyDraftDbContext db,
+        ILogger<ZaloInboundCoordinator> logger,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken = default)
     {
         var accountId = NormalizeId(incoming.AccountId);
         var groupId = NormalizeId(incoming.GroupId);
@@ -102,25 +114,25 @@ public sealed class ZaloInboundCoordinator(
         if (accountId.Length == 0 || groupId.Length == 0 || messageId.Length == 0)
             return ZaloInboundClaim.Untracked;
 
-        var connection = await db.ZaloConnections
-            .AsNoTracking()
-            .Where(item => item.AccountZaloId == accountId &&
-                           item.MatchSessions.Any(session => session.ZaloGroupId == groupId && session.BotEnabled))
-            .OrderByDescending(item => item.UpdatedAt)
-            .Select(item => new { item.Id })
-            .FirstOrDefaultAsync(cancellationToken);
-        if (connection is null)
+        // Tracked groups are durable configuration and outlive MatchSession lifecycle.
+        // Resolve the inbound provider account/group through the same canonical target
+        // boundary used by proactive and realtime poll processing. MatchSessions remain
+        // only the resolver's compatibility fallback for installations not seeded yet.
+        var target = await new ZaloProactiveTargetResolver(db)
+            .ResolveTargetAsync(accountId, groupId, cancellationToken);
+        if (target is null)
             return ZaloInboundClaim.Untracked;
 
+        var canonicalGroupId = target.GroupId;
         var storedMessage = await db.ZaloGroupMessages.SingleOrDefaultAsync(message =>
-            message.ZaloConnectionId == connection.Id && message.MessageId == messageId, cancellationToken);
+            message.ZaloConnectionId == target.ConnectionId && message.MessageId == messageId, cancellationToken);
         if (storedMessage is null)
         {
             var now = DateTimeOffset.UtcNow;
             storedMessage = new ZaloGroupMessage
             {
-                ZaloConnectionId = connection.Id,
-                GroupId = groupId,
+                ZaloConnectionId = target.ConnectionId,
+                GroupId = canonicalGroupId,
                 MessageId = messageId,
                 SenderId = NormalizeId(incoming.SenderId),
                 SenderName = Clean(incoming.SenderName, 160, "Thành viên Zalo"),
@@ -140,7 +152,7 @@ public sealed class ZaloInboundCoordinator(
             {
                 db.ChangeTracker.Clear();
                 storedMessage = await db.ZaloGroupMessages.SingleAsync(message =>
-                    message.ZaloConnectionId == connection.Id && message.MessageId == messageId, cancellationToken);
+                    message.ZaloConnectionId == target.ConnectionId && message.MessageId == messageId, cancellationToken);
             }
         }
 
@@ -149,8 +161,8 @@ public sealed class ZaloInboundCoordinator(
         {
             logger.LogInformation(
                 "Zalo ingress duplicate skipped Account={AccountId} Group={GroupId} Message={MessageId} Outcome={Outcome}",
-                accountId,
-                groupId,
+                target.AccountId,
+                canonicalGroupId,
                 messageId,
                 storedMessage.ReplyOutcome);
             return ZaloInboundClaim.Duplicate;
@@ -175,8 +187,8 @@ public sealed class ZaloInboundCoordinator(
         {
             logger.LogInformation(
                 "Zalo ingress concurrent duplicate skipped Account={AccountId} Group={GroupId} Message={MessageId}",
-                accountId,
-                groupId,
+                target.AccountId,
+                canonicalGroupId,
                 messageId);
             return ZaloInboundClaim.Duplicate;
         }
