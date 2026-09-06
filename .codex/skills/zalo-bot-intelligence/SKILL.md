@@ -44,6 +44,8 @@ Use this order:
 - Do not treat a negated reminder cancellation such as `không hủy reminder` or `đừng tắt reminder` as either cancellation or a new schedule. Fail closed unless another explicit reminder action independently owns the turn.
 - Do not advance application scheduling/reminder state unless the Zalo bridge positively confirms delivery.
 - Do not persist an idempotency key as though it were a provider-issued Zalo message ID; retry identity and channel message identity are separate contracts.
+- Do not collapse materially different AI failures into one generic "không kết nối được" message. Normalize provider/auth/quota/rate-limit/timeout/network/response failures into a safe failure taxonomy.
+- Do not expose provider response bodies, API keys, endpoints, stack traces or raw exception messages to group members. User-facing AI failure explanations state only the safe cause and what deterministic functionality still works.
 
 ## Message and reply context
 
@@ -126,6 +128,13 @@ C# handlers are responsible for:
 - permissions;
 - writing data.
 
+AI failure handling follows capability ownership, not provider ownership:
+
+- deterministic/backend facts and canonical intents continue without AI whenever their handler can safely resolve the request;
+- structured AI helpers return no semantic result on provider failure so deterministic routing or grounded clarification can take over;
+- only a turn that genuinely requires free-form AI explanation should surface the normalized safe provider failure to the member;
+- logs may include failure kind, HTTP status, a sanitized provider error code and retryability, but never secrets or raw provider bodies.
+
 ## User concepts
 
 User concepts are distinct from approved group learned rules.
@@ -192,6 +201,8 @@ Always test:
 - superseding conflicting user concepts;
 - duplicate message delivery;
 - AI unavailable;
+- AI auth/quota/rate-limit/timeout/network/provider/invalid-response failures produce safe distinct behavior without leaking provider details;
+- structured AI failure still yields to deterministic/backend fallback;
 - legacy payload without quote metadata;
 - SQLite user-concept persistence;
 - PostgreSQL schema upgrade.
