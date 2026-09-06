@@ -371,7 +371,7 @@ public sealed class ZaloActivityBackfillCoordinator(
                 !string.IsNullOrWhiteSpace(group.ZaloConnectionId) &&
                 !string.IsNullOrWhiteSpace(group.GroupId) &&
                 existingConnectionIds.Contains(group.ZaloConnectionId))
-            .Select(group => (group.ZaloConnectionId, group.GroupId))
+            .Select(group => (ZaloConnectionId: group.ZaloConnectionId, GroupId: group.GroupId))
             .ToList();
 
         // Keep the pre-ZaloTrackedGroups discovery path as a compatibility fallback
@@ -391,7 +391,7 @@ public sealed class ZaloActivityBackfillCoordinator(
             .Distinct()
             .ToListAsync(cancellationToken);
         var linkedGroups = durableGroups
-            .Concat(legacyLinkedGroups.Select(group => (group.ConnectionId, group.GroupId)))
+            .Concat(legacyLinkedGroups.Select(group => (ZaloConnectionId: group.ConnectionId, GroupId: group.GroupId)))
             .Distinct()
             .ToList();
 
@@ -400,7 +400,7 @@ public sealed class ZaloActivityBackfillCoordinator(
             .Select(job => new { job.ZaloConnectionId, job.GroupId })
             .ToListAsync(cancellationToken);
         var existingKeys = existingJobs
-            .Select(item => (item.ZaloConnectionId, item.GroupId))
+            .Select(item => (ZaloConnectionId: item.ZaloConnectionId, GroupId: item.GroupId))
             .ToHashSet();
         var queued = 0;
         foreach (var linked in linkedGroups)
