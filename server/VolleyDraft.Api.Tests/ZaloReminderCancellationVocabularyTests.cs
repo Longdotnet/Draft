@@ -39,9 +39,11 @@ public sealed class ZaloReminderCancellationVocabularyTests
     [InlineData("không hủy reminder")]
     [InlineData("đừng tắt reminder")]
     [InlineData("không bỏ lịch nhắc")]
-    public void Negated_cancel_phrases_never_route_as_cancel(string input)
+    public void Negated_cancel_only_phrases_fail_closed_instead_of_mutating(string input)
     {
+        Assert.False(ZaloBotIntelligence.TryParseReminderCommand(input, out _));
         Assert.NotEqual(ZaloBotIntent.CancelReminder, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
+        Assert.NotEqual(ZaloBotIntent.ScheduleReminder, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
     }
 
     [Theory]
@@ -51,6 +53,7 @@ public sealed class ZaloReminderCancellationVocabularyTests
     [InlineData("đổi lịch nhắc T6", ZaloReminderCommandKind.Update)]
     [InlineData("đổi reminder T6", ZaloReminderCommandKind.Update)]
     [InlineData("sửa reminder CN", ZaloReminderCommandKind.Update)]
+    [InlineData("không hủy reminder, đổi reminder T6", ZaloReminderCommandKind.Update)]
     [InlineData("nhắc nhóm sau 6 tiếng", ZaloReminderCommandKind.Schedule)]
     [InlineData("nhắc T6 ngay", ZaloReminderCommandKind.TriggerNow)]
     public void Neighboring_reminder_intents_keep_their_expected_kind(string input, ZaloReminderCommandKind expected)
