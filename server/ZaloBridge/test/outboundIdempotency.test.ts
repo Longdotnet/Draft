@@ -66,7 +66,7 @@ test("reusing a scoped key for a different side effect fails closed", async () =
     { accountId: "account-1", groupId: "group-1", idempotencyKey: "reply:42" },
     { message: "first" }, send, 1_000), 1);
 
-  await assert.rejects(
+  assert.throws(
     () => guard.run(
       { accountId: "account-1", groupId: "group-1", idempotencyKey: "reply:42" },
       { message: "changed" }, send, 1_001),
