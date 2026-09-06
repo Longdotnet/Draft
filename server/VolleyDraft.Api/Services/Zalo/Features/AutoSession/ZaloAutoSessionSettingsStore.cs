@@ -14,6 +14,19 @@ internal sealed class ZaloAutoSessionSettingsStore(VolleyDraftDbContext db)
     public Task EnsureAsync(CancellationToken cancellationToken = default) =>
         baseStore.EnsureAsync(cancellationToken);
 
+    public async Task<IReadOnlyList<ZaloTrackedGroupData>> GetAllAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        await using var command = await CreateCommandAsync(
+            "SELECT * FROM \"ZaloTrackedGroups\" ORDER BY \"UpdatedAt\" DESC;",
+            cancellationToken);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<ZaloTrackedGroupData>();
+        while (await reader.ReadAsync(cancellationToken)) result.Add(ReadTrackedGroup(reader));
+        return result;
+    }
+
     public async Task<IReadOnlyList<ZaloTrackedGroupData>> GetForAdminAsync(
         string adminUserId,
         CancellationToken cancellationToken = default)

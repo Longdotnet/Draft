@@ -355,7 +355,29 @@ public sealed class ZaloActivityBackfillCoordinator(
     public async Task<int> QueueMissingLinkedGroupsAsync(
         CancellationToken cancellationToken = default)
     {
-        var linkedGroups = await db.MatchSessions
+        // ZaloTrackedGroups is the durable group configuration boundary. A group can
+        // remain intentionally tracked after all linked MatchSessions are finished,
+        // deleted, or temporarily have BotEnabled=false, so activity analytics must
+        // not rediscover groups exclusively from live session rows.
+        var trackedGroups = await new ZaloAutoSessionSettingsStore(db)
+            .GetAllAsync(cancellationToken);
+        var existingConnectionIds = (await db.ZaloConnections
+                .AsNoTracking()
+                .Select(connection => connection.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet(StringComparer.Ordinal);
+        var durableGroups = trackedGroups
+            .Where(group =>
+                !string.IsNullOrWhiteSpace(group.ZaloConnectionId) &&
+                !string.IsNullOrWhiteSpace(group.GroupId) &&
+                existingConnectionIds.Contains(group.ZaloConnectionId))
+            .Select(group => (ZaloConnectionId: group.ZaloConnectionId, GroupId: group.GroupId))
+            .ToList();
+
+        // Keep the pre-ZaloTrackedGroups discovery path as a compatibility fallback
+        // for installations that have linked sessions but have not seeded durable
+        // tracking yet. Once the tracked row exists, both sources collapse by tuple.
+        var legacyLinkedGroups = await db.MatchSessions
             .AsNoTracking()
             .Where(session =>
                 session.BotEnabled &&
@@ -368,28 +390,36 @@ public sealed class ZaloActivityBackfillCoordinator(
             })
             .Distinct()
             .ToListAsync(cancellationToken);
+        var linkedGroups = durableGroups
+            .Concat(legacyLinkedGroups.Select(group => (ZaloConnectionId: group.ConnectionId, GroupId: group.GroupId)))
+            .Distinct()
+            .ToList();
+
         var existingJobs = await db.ZaloActivityBackfillJobs
             .AsNoTracking()
             .Select(job => new { job.ZaloConnectionId, job.GroupId })
             .ToListAsync(cancellationToken);
         var existingKeys = existingJobs
-            .Select(item => $"{item.ZaloConnectionId}\u001f{item.GroupId}")
-            .ToHashSet(StringComparer.Ordinal);
+            .Select(item => (ZaloConnectionId: item.ZaloConnectionId, GroupId: item.GroupId))
+            .ToHashSet();
         var queued = 0;
         foreach (var linked in linkedGroups)
         {
-            if (existingKeys.Contains($"{linked.ConnectionId}\u001f{linked.GroupId}"))
+            if (existingKeys.Contains(linked))
                 continue;
             await QueueGroupAsync(
-                linked.ConnectionId,
+                linked.ZaloConnectionId,
                 linked.GroupId,
                 true,
                 cancellationToken);
+            existingKeys.Add(linked);
             queued++;
         }
 
         if (queued > 0)
-            logger.LogInformation("Queued initial Zalo activity backfill for {Count} existing linked groups.", queued);
+            logger.LogInformation(
+                "Queued initial Zalo activity backfill for {Count} tracked or legacy-linked groups.",
+                queued);
         return queued;
     }
 
