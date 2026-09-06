@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import express, { type NextFunction, type Request, type Response } from "express";
 import {
   getApiKeepAliveConfiguration,
@@ -53,6 +54,17 @@ app.get("/health", (_request, response) => {
     },
     revision: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null,
   });
+});
+
+// Mark every response that actually entered the bridge process. If the API receives
+// a 429/5xx without this marker, the response came from a proxy/host/front door before
+// Express reached this middleware. Keep a request id so production screenshots can be
+// correlated with bridge logs without exposing credentials or provider response bodies.
+app.use("/v1", (request, response, next) => {
+  const requestId = request.header("x-request-id")?.trim() || randomUUID();
+  response.setHeader("x-volley-bridge-response", "1");
+  response.setHeader("x-volley-bridge-request-id", requestId);
+  next();
 });
 
 app.use("/v1", (request, response, next) => {
@@ -184,6 +196,7 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   console.error("[Zalo bridge] request failed", {
     method: request.method,
     path: request.path,
+    requestId: response.getHeader("x-volley-bridge-request-id") ?? null,
     error: message,
   });
   response.status(502).json({ error: message });
