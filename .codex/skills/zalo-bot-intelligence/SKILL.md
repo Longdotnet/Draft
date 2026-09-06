@@ -50,6 +50,8 @@ Use this order:
 - Do not encode multi-field idempotency scope with an ambiguous delimiter-concatenated string. Preserve account, group, and caller key as separately framed identity fields so punctuation in one field cannot alias another scope.
 - Do not collapse materially different AI failures into one generic "không kết nối được" message. Normalize provider/auth/quota/rate-limit/timeout/network/response failures into a safe failure taxonomy.
 - Do not expose provider response bodies, API keys, endpoints, stack traces or raw exception messages to group members. User-facing AI failure explanations state only the safe cause and what deterministic functionality still works.
+- Do not turn every token `mai` into “tomorrow”. `Mai` is also a common Vietnamese member name. Only resolve it as a relative session date when the surrounding wording is unmistakably schedule-shaped, such as `trận mai`, `tối mai`, `mai 17 giờ 30`, or `mai đánh mấy giờ`; member-shaped questions such as `Mai chơi không?` must not be stolen by session routing.
+- Do not maintain separate clock grammars in different Zalo features. The canonical session resolver owns Vietnamese forms such as `17:30`, `17h30`, `17g30`, and `17 giờ 30`, including time filtering for exact dates and qualified relative dates.
 
 ## Message and reply context
 
@@ -201,6 +203,8 @@ Always test:
 - the same user in two groups;
 - expired context;
 - pending state followed by a different fresh deterministic intent;
+- session selectors at local day/year boundaries, including qualified `mai` language and multiple sessions on the same date;
+- Vietnamese clock forms (`17:30`, `17h30`, `17g30`, `17 giờ 30`) and the negative ambiguity case where `Mai` is a person's name;
 - reminder status/update/cancel/schedule vocabulary including common `reminder` loanword forms;
 - negated reminder mutations such as `không hủy reminder` fail closed instead of defaulting to another mutation;
 - superseding conflicting user concepts;

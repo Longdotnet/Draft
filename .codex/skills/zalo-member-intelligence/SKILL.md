@@ -24,6 +24,7 @@ Enforce these rules:
 - Never assume activity coverage begins when the listener was first started.
 - Never require an administrator to manually import every poll for analytics.
 - Use `ZaloUserId` as member identity; never identify or mutate a member by display name alone.
+- Do not let a relative-date shortcut silently reinterpret a plausible member name. In particular, Vietnamese `Mai` is both a common name and “tomorrow”; only treat `mai` as a session date when the surrounding language is unambiguously schedule-shaped (for example `trận mai`, `tối mai`, `mai 17 giờ 30`, or `mai đánh mấy giờ`). Questions such as `Mai chơi không?` must remain available to member/person resolution.
 - Treat learned application knowledge as approved application data, not model fine-tuning.
 - Give every routing or analytics defect a focused regression test.
 

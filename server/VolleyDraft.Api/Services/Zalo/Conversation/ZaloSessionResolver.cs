@@ -16,11 +16,20 @@ public static class ZaloSessionResolver
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex SessionTimeRegex = new(
-        @"(?<!\d)(?<hour>[01]?\d|2[0-3])(?::(?<minute>[0-5]\d)|h\s*(?<minuteH>[0-5]\d)?)(?!\d)",
+        @"(?<!\d)(?<hour>[01]?\d|2[0-3])(?::(?<minute>[0-5]\d)|\s*h\s*(?<minuteH>[0-5]\d)?|\s+gio\s*(?<minuteWord>[0-5]\d)?|\s*g\s*(?<minuteG>[0-5]\d)?)(?!\d)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex RelativeDateRegex = new(
         @"(?<![a-z0-9])(?:hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // Vietnamese users commonly shorten "ngày mai" to "mai", but "Mai" is also a
+    // common personal name. Treat it as a date only when the surrounding language is
+    // unmistakably schedule-shaped: a daypart/session noun, an adjacent clock time,
+    // or a play phrase that itself asks for timing/location. Bare "Mai" and personal
+    // questions such as "Mai chơi không?" therefore remain available to member logic.
+    private static readonly Regex QualifiedTomorrowRegex = new(
+        @"(?<![a-z0-9])(?:(?:sang|trua|chieu|toi|tran|keo|bua)\s+mai|mai\s+(?:may\s+gio|(?:[01]?\d|2[0-3])(?:\s*(?:h|gio|g)|:)|(?:danh|choi)\b.{0,24}\b(?:may\s+gio|luc|vao|khoang|tam|tran|keo|san)\b))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex BareTomorrowRegex = new(
@@ -140,19 +149,36 @@ public static class ZaloSessionResolver
         if (nameMatches.Count > 0)
             return new(nameMatches, "canonical_name", true, nameMatches.Count == 1);
 
-        var hasRelativeDate = RelativeDateRegex.IsMatch(normalized);
+        var hasRelativeDate = RelativeDateRegex.IsMatch(normalized) ||
+                              QualifiedTomorrowRegex.IsMatch(normalized);
         var isBareTomorrow = BareTomorrowRegex.IsMatch(normalized);
         if (hasRelativeDate || isBareTomorrow)
         {
             var targetDate = isBareTomorrow ||
+                             QualifiedTomorrowRegex.IsMatch(normalized) ||
                              normalized.Contains("ngay mai", StringComparison.Ordinal) ||
                              normalized.Contains("mai nay", StringComparison.Ordinal)
                 ? localNow.Date.AddDays(1)
                 : localNow.Date;
 
-            var ids = candidates
+            var matchingCandidates = candidates
                 .Where(candidate => candidate.StartTime is not null &&
                                     candidate.StartTime.Value.ToOffset(VietnamOffset).Date == targetDate)
+                .ToList();
+
+            var timeMatches = SessionTimeRegex.Matches(normalized);
+            if (timeMatches.Count == 1 && TryParseSessionTime(timeMatches[0], out var hour, out var minute))
+            {
+                matchingCandidates = matchingCandidates
+                    .Where(candidate =>
+                    {
+                        var local = candidate.StartTime!.Value.ToOffset(VietnamOffset);
+                        return local.Hour == hour && local.Minute == minute;
+                    })
+                    .ToList();
+            }
+
+            var ids = matchingCandidates
                 .Select(candidate => candidate.Id)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
@@ -235,6 +261,7 @@ public static class ZaloSessionResolver
         var normalized = ZaloTextNormalizer.Normalize(value);
         return CalendarDateRegex.IsMatch(normalized) ||
                RelativeDateRegex.IsMatch(normalized) ||
+               QualifiedTomorrowRegex.IsMatch(normalized) ||
                BareTomorrowRegex.IsMatch(normalized) ||
                WeekdayRegex.IsMatch(normalized);
     }
@@ -270,7 +297,11 @@ public static class ZaloSessionResolver
 
         var minuteText = match.Groups["minute"].Success
             ? match.Groups["minute"].Value
-            : match.Groups["minuteH"].Value;
+            : match.Groups["minuteH"].Success
+                ? match.Groups["minuteH"].Value
+                : match.Groups["minuteWord"].Success
+                    ? match.Groups["minuteWord"].Value
+                    : match.Groups["minuteG"].Value;
         return minuteText.Length == 0 ||
                int.TryParse(minuteText, NumberStyles.None, CultureInfo.InvariantCulture, out minute);
     }
