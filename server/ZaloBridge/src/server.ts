@@ -16,6 +16,7 @@ import type {
   StartListenerRequest,
   ZaloCredentials,
 } from "./contracts.js";
+import { ScopedOutboundIdempotency } from "./outboundIdempotency.js";
 import { isStickerReaction } from "./stickerLogic.js";
 import { sendGroupSticker } from "./stickerGateway.js";
 import {
@@ -44,6 +45,8 @@ if (!configuredInternalKey && process.env.NODE_ENV === "production") {
 }
 const internalKey = configuredInternalKey || "development-zalo-bridge-key";
 const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
+const outboundMessageIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupMessage>>>();
+const outboundStickerIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupSticker>>>();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
@@ -177,14 +180,22 @@ app.post("/v1/group-messages", async (request, response) => {
     response.status(400).json({ error: "accountId, groupId and message are required" });
     return;
   }
-  response.json(await sendGroupMessage({
-    accountId: String(body.accountId),
-    groupId: String(body.groupId),
+  const accountId = String(body.accountId);
+  const groupId = String(body.groupId);
+  const idempotencyKey = body.idempotencyKey ? String(body.idempotencyKey) : null;
+  const outbound = {
+    accountId,
+    groupId,
     message: String(body.message),
     mentions: Array.isArray(body.mentions) ? body.mentions : [],
     imageUrl: body.imageUrl ? String(body.imageUrl) : null,
-    idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
-  }));
+    idempotencyKey: null,
+  };
+  response.json(await outboundMessageIdempotency.run(
+    { accountId, groupId, idempotencyKey },
+    { message: outbound.message, mentions: outbound.mentions, imageUrl: outbound.imageUrl },
+    () => sendGroupMessage(outbound),
+  ));
 });
 
 app.post("/v1/group-stickers", async (request, response) => {
@@ -193,13 +204,21 @@ app.post("/v1/group-stickers", async (request, response) => {
     response.status(400).json({ error: "accountId, groupId and a supported reaction are required" });
     return;
   }
-  response.json(await sendGroupSticker({
-    accountId: String(body.accountId),
-    groupId: String(body.groupId),
+  const accountId = String(body.accountId);
+  const groupId = String(body.groupId);
+  const idempotencyKey = body.idempotencyKey ? String(body.idempotencyKey) : null;
+  const outbound = {
+    accountId,
+    groupId,
     credentials: credentialsFrom(request),
     reaction: body.reaction,
-    idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
-  }));
+    idempotencyKey: null,
+  };
+  response.json(await outboundStickerIdempotency.run(
+    { accountId, groupId, idempotencyKey },
+    { reaction: outbound.reaction },
+    () => sendGroupSticker(outbound),
+  ));
 });
 
 app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {

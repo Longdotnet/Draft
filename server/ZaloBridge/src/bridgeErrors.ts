@@ -1,3 +1,5 @@
+import { OutboundIdempotencyConflictError } from "./outboundIdempotency.js";
+
 export type BridgeErrorSource = "bridge-validation" | "upstream-zalo" | "bridge-internal";
 
 export type BridgeErrorDescriptor = {
@@ -56,6 +58,16 @@ export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
       kind: error.kind,
       retryable: error.retryable,
       publicMessage: error.publicMessage,
+    };
+  }
+
+  if (error instanceof OutboundIdempotencyConflictError) {
+    return {
+      status: 409,
+      source: "bridge-validation",
+      kind: "idempotency_conflict",
+      retryable: false,
+      publicMessage: "Outbound idempotency key conflicts with a previous request.",
     };
   }
 
