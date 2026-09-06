@@ -43,7 +43,7 @@ public sealed class ZaloSessionResolverNaturalVietnameseTests
 
         var result = ZaloSessionResolver.Resolve(text, sessions, NewYearsEve);
 
-        Assert.True(result.IsUnique);
+        Assert.True(result.IsExact);
         Assert.Equal(["early"], result.CandidateIds);
     }
 
@@ -58,7 +58,7 @@ public sealed class ZaloSessionResolverNaturalVietnameseTests
 
         var result = ZaloSessionResolver.Resolve("mai 17 giờ 30", sessions, NewYearsEve);
 
-        Assert.True(result.IsUnique);
+        Assert.True(result.IsExact);
         Assert.Equal(["early"], result.CandidateIds);
     }
 
