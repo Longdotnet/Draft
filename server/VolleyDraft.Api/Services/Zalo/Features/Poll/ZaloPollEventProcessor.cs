@@ -71,19 +71,12 @@ public sealed class ZaloPollEventWorker(
                 var domainEventShadow = new ZaloDomainEventShadowObserver(db);
                 var domainNarrator = new ZaloDomainEventNarrator(configuration, bridgeClient);
                 var domainNarrationTelemetry = new ZaloDomainEventNarrationTelemetry(db);
-                var linkedConnectionId = await db.MatchSessions
-                    .AsNoTracking()
-                    .Where(session =>
-                        session.BotEnabled &&
-                        session.ZaloGroupId == groupId &&
-                        session.ZaloConnection != null &&
-                        session.ZaloConnection.AccountZaloId == accountId)
-                    .Select(session => session.ZaloConnectionId)
-                    .FirstOrDefaultAsync(stoppingToken);
-                if (!string.IsNullOrWhiteSpace(linkedConnectionId))
+                var activityTarget = await new ZaloProactiveTargetResolver(db)
+                    .ResolveTargetAsync(accountId, groupId, stoppingToken);
+                if (activityTarget is not null)
                     await activityBackfill.QueueGroupAsync(
-                        linkedConnectionId,
-                        groupId,
+                        activityTarget.ConnectionId,
+                        activityTarget.GroupId,
                         false,
                         stoppingToken);
                 var sessions = await db.MatchSessions.AsNoTracking()
