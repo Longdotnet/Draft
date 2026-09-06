@@ -306,7 +306,6 @@ public static class ZaloBotIntelligence
                 "cac lich nhac",
                 "lich nhac hien tai",
                 "reminder hien tai",
-                "lich reminder",
                 "co lich nhac nao",
                 "co reminder nao",
                 "cho tui coi lich nhac",
