@@ -50,23 +50,7 @@ public sealed class ZaloListenerCoordinator(
             return false;
         }
         var connectionIds = connections.Select(item => item.Id).ToList();
-
-        var sessionGroupIds = await db.MatchSessions
-            .AsNoTracking()
-            .Where(session => session.ZaloConnectionId != null &&
-                              connectionIds.Contains(session.ZaloConnectionId) &&
-                              session.BotEnabled &&
-                              session.ZaloGroupId != null)
-            .Select(session => session.ZaloGroupId!)
-            .Distinct()
-            .ToListAsync(cancellationToken);
-        var trackedGroupIds = await new ZaloAutoSessionStore(db)
-            .GetActiveGroupIdsAsync(connectionIds, cancellationToken);
-        var groupIds = sessionGroupIds
-            .Concat(trackedGroupIds)
-            .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+        var groupIds = await ResolveListenerGroupIdsAsync(db, connectionIds, cancellationToken);
         try
         {
             if (groupIds.Count == 0)
@@ -96,6 +80,33 @@ public sealed class ZaloListenerCoordinator(
             logger.LogWarning(exception, "Could not reconcile Zalo listener for account {AccountId}", accountId);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Listener subscriptions follow durable tracked-group ownership, not the current
+    /// MatchSession or Auto Session enable flag. Feature-specific processors still
+    /// decide whether they act on an event; the listener's job is to preserve realtime
+    /// delivery for configured group analytics and conversations. The proactive target
+    /// resolver also supplies the legacy bot-enabled-session fallback for pre-seed data.
+    /// </summary>
+    internal static async Task<IReadOnlyList<string>> ResolveListenerGroupIdsAsync(
+        VolleyDraftDbContext db,
+        IReadOnlyList<string> connectionIds,
+        CancellationToken cancellationToken = default)
+    {
+        var allowedConnections = connectionIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .ToHashSet(StringComparer.Ordinal);
+        if (allowedConnections.Count == 0) return [];
+
+        var targets = await new ZaloProactiveTargetResolver(db).GetTargetsAsync(cancellationToken);
+        return targets
+            .Where(target => allowedConnections.Contains(target.ConnectionId))
+            .Select(target => target.GroupId)
+            .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
     }
 
     private async Task<BridgeListenerResponse> StartListenerWithRetryAsync(
