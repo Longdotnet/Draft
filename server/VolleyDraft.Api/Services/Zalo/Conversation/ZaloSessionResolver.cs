@@ -16,7 +16,7 @@ public static class ZaloSessionResolver
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex SessionTimeRegex = new(
-        @"(?<!\d)(?<hour>[01]?\d|2[0-3])(?::(?<minute>[0-5]\d)|h\s*(?<minuteH>[0-5]\d)?|g(?:io)?\s*(?<minuteWord>[0-5]\d)?)(?!\d)",
+        @"(?<!\d)(?<hour>[01]?\d|2[0-3])(?::(?<minute>[0-5]\d)|\s*h\s*(?<minuteH>[0-5]\d)?|\s+gio\s*(?<minuteWord>[0-5]\d)?|\s*g\s*(?<minuteG>[0-5]\d)?)(?!\d)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex RelativeDateRegex = new(
@@ -29,7 +29,7 @@ public static class ZaloSessionResolver
     // or a play phrase that itself asks for timing/location. Bare "Mai" and personal
     // questions such as "Mai chơi không?" therefore remain available to member logic.
     private static readonly Regex QualifiedTomorrowRegex = new(
-        @"(?<![a-z0-9])(?:(?:sang|trua|chieu|toi|tran|keo|bua)\s+mai|mai\s+(?:may\s+gio|(?:[01]?\d|2[0-3])(?:\s*(?:h|g|gio)|:)|(?:danh|choi)\b.{0,24}\b(?:may\s+gio|luc|vao|khoang|tam|tran|keo|san)\b))(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:(?:sang|trua|chieu|toi|tran|keo|bua)\s+mai|mai\s+(?:may\s+gio|(?:[01]?\d|2[0-3])(?:\s*(?:h|gio|g)|:)|(?:danh|choi)\b.{0,24}\b(?:may\s+gio|luc|vao|khoang|tam|tran|keo|san)\b))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex BareTomorrowRegex = new(
@@ -299,7 +299,9 @@ public static class ZaloSessionResolver
             ? match.Groups["minute"].Value
             : match.Groups["minuteH"].Success
                 ? match.Groups["minuteH"].Value
-                : match.Groups["minuteWord"].Value;
+                : match.Groups["minuteWord"].Success
+                    ? match.Groups["minuteWord"].Value
+                    : match.Groups["minuteG"].Value;
         return minuteText.Length == 0 ||
                int.TryParse(minuteText, NumberStyles.None, CultureInfo.InvariantCulture, out minute);
     }
