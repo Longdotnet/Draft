@@ -299,19 +299,24 @@ public static class ZaloBotIntelligence
 
         if (Has(q,
                 "xem lich nhac",
+                "xem reminder",
                 "danh sach lich nhac",
+                "danh sach reminder",
                 "liet ke lich nhac",
                 "cac lich nhac",
                 "lich nhac hien tai",
+                "reminder hien tai",
                 "lich reminder",
                 "co lich nhac nao",
+                "co reminder nao",
                 "cho tui coi lich nhac",
                 "cho toi coi lich nhac",
                 "dua lich nhac",
                 "khi nao nhac",
                 "bao gio nhac",
-                "con hen nhac") ||
-            (Has(q, "lich nhac") && Has(q,
+                "con hen nhac",
+                "con reminder") ||
+            (Has(q, "lich nhac", "reminder") && Has(q,
                 "hien tai dau",
                 "dau roi",
                 "o dau",
@@ -324,7 +329,17 @@ public static class ZaloBotIntelligence
             return true;
         }
 
-        if (Has(q, "tat nhac", "dung nhac", "huy lich nhac", "bo lich nhac", "khong nhac nua", "tat reminder"))
+        var negatedDisable = Regex.IsMatch(
+            q,
+            @"\b(?:khong|dung)\s+(?:can\s+)?(?:huy|tat|dung|bo)\s+(?:(?:toan\s+bo|het)\s+)?(?:lich\s+)?(?:nhac|reminder)\b",
+            RegexOptions.CultureInvariant);
+        var disableRequest = !negatedDisable &&
+            (Regex.IsMatch(
+                 q,
+                 @"(?:^|\s)(?:huy|tat|dung|bo)\s+(?:(?:toan\s+bo|het)\s+)?(?:lich\s+)?(?:nhac|reminder)\b",
+                 RegexOptions.CultureInvariant) ||
+             Has(q, "khong nhac nua", "khong can nhac nua"));
+        if (disableRequest)
         {
             command = new ZaloReminderCommand(ZaloReminderCommandKind.Disable, null, false);
             return true;
@@ -335,7 +350,12 @@ public static class ZaloBotIntelligence
                 "doi lich nhac",
                 "sua lich nhac",
                 "chinh lich nhac",
-                "cap nhat lich nhac"))
+                "cap nhat lich nhac",
+                "thay doi reminder",
+                "doi reminder",
+                "sua reminder",
+                "chinh reminder",
+                "cap nhat reminder"))
         {
             command = new ZaloReminderCommand(ZaloReminderCommandKind.Update, null, false);
             return true;
