@@ -99,7 +99,8 @@ public sealed class AiProviderFailureTests
         var answer = await service.AnswerAsync(CreateContext());
 
         Assert.Contains("hết hạn mức", answer, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("không cần AI", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("dữ liệu hệ thống", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vẫn dùng được", answer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("secret provider detail", answer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("không kết nối được dịch vụ AI", answer, StringComparison.OrdinalIgnoreCase);
     }
