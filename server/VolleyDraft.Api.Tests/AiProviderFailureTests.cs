@@ -31,6 +31,16 @@ public sealed class AiProviderFailureTests
     }
 
     [Fact]
+    public void Payment_required_is_treated_as_quota_exhaustion()
+    {
+        var result = AiProviderFailure.FromHttp((HttpStatusCode)402, "{\"error\":{\"message\":\"credits exhausted\"}}");
+
+        Assert.Equal(AiProviderFailureKind.QuotaExceeded, result.Kind);
+        Assert.False(result.Retryable);
+        Assert.Contains("hết hạn mức", result.ToUserMessage(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Provider_error_code_is_sanitized_before_logging()
     {
         var result = AiProviderFailure.FromHttp(
