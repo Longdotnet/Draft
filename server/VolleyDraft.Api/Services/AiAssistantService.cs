@@ -620,7 +620,7 @@ public sealed class AiAssistantService(
         var model = configuration["Ai:Model"];
         if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(model))
         {
-            return "Mình chưa đủ dữ kiện để trả lời chắc chắn. Bạn hãy nói rõ tên hoặc ngày của trận; gõ help để xem các câu hỏi có sẵn.";
+            return new AiProviderFailure(AiProviderFailureKind.NotConfigured).ToUserMessage();
         }
 
         var userConcepts = context.UserConcepts ?? [];
@@ -707,11 +707,9 @@ public sealed class AiAssistantService(
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                logger.LogWarning(
-                    "AI provider returned {StatusCode}: {ErrorBody}",
-                    (int)response.StatusCode,
-                    Truncate(body, 500));
-                return "Mình đang không kết nối được dịch vụ AI. Bạn thử gõ help hoặc hỏi lại sau nhé.";
+                var failure = AiProviderFailure.FromHttp(response.StatusCode, body);
+                LogProviderFailure("general_answer", failure);
+                return failure.ToUserMessage();
             }
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
@@ -726,17 +724,18 @@ public sealed class AiAssistantService(
                 return GetSafeGeneralAnswer(outputText.GetString());
             }
 
-            logger.LogWarning(
-                "AI provider returned HTTP {StatusCode} with unexpected payload shape: {ResponseBody}",
-                (int)response.StatusCode,
-                Truncate(body, 1500));
+            var invalidResponse = new AiProviderFailure(
+                AiProviderFailureKind.InvalidResponse,
+                (int)response.StatusCode);
+            LogProviderFailure("general_answer", invalidResponse);
+            return invalidResponse.ToUserMessage();
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
-            logger.LogWarning(exception, "AI provider request failed");
+            var failure = AiProviderFailure.FromException(exception, cancellationToken);
+            LogProviderFailure("general_answer", failure, exception);
+            return failure.ToUserMessage();
         }
-
-        return "Mình đang không kết nối được dịch vụ AI. Bạn thử gõ help hoặc hỏi lại sau nhé.";
     }
 
     private string GetSafeGeneralAnswer(string? answer)
@@ -797,7 +796,7 @@ public sealed class AiAssistantService(
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                logger.LogWarning("AI {Operation} returned {StatusCode}: {ErrorBody}", operation, (int)response.StatusCode, Truncate(body, 500));
+                LogProviderFailure(operation, AiProviderFailure.FromHttp(response.StatusCode, body));
                 return null;
             }
             using var document = JsonDocument.Parse(body);
@@ -807,18 +806,40 @@ public sealed class AiAssistantService(
                 message.TryGetProperty("content", out var content)) return content.GetString()?.Trim();
             if (root.TryGetProperty("output_text", out var outputText)) return outputText.GetString()?.Trim();
 
-            logger.LogWarning(
-                "AI {Operation} returned HTTP {StatusCode} with unexpected payload shape: {ResponseBody}",
+            LogProviderFailure(
                 operation,
-                (int)response.StatusCode,
-                Truncate(body, 1500));
+                new AiProviderFailure(AiProviderFailureKind.InvalidResponse, (int)response.StatusCode));
             return null;
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
-            logger.LogWarning(exception, "AI {Operation} request failed", operation);
+            LogProviderFailure(operation, AiProviderFailure.FromException(exception, cancellationToken), exception);
             return null;
         }
+    }
+
+    private void LogProviderFailure(string operation, AiProviderFailure failure, Exception? exception = null)
+    {
+        if (exception is null)
+        {
+            logger.LogWarning(
+                "AI request failed. Operation={Operation} FailureKind={FailureKind} StatusCode={StatusCode} ProviderCode={ProviderCode} Retryable={Retryable}",
+                operation,
+                failure.Kind,
+                failure.StatusCode,
+                failure.ProviderCode,
+                failure.Retryable);
+            return;
+        }
+
+        logger.LogWarning(
+            exception,
+            "AI request failed. Operation={Operation} FailureKind={FailureKind} StatusCode={StatusCode} ProviderCode={ProviderCode} Retryable={Retryable}",
+            operation,
+            failure.Kind,
+            failure.StatusCode,
+            failure.ProviderCode,
+            failure.Retryable);
     }
 
     private static string? Truncate(string? value, int length) =>
