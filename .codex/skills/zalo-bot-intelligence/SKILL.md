@@ -39,6 +39,7 @@ Use this order:
 - Do not send duplicate replies for one Zalo message ID.
 - Do not discard quote/reply metadata at the Zalo transport boundary.
 - Do not require a fresh textual `@bot` mention when the user directly replies to a bot message; a verified quote owned by the bot is an explicit address.
+- Do not let a visible bot-address token such as `@Npc` become part of pending-intent semantics after the transport has already established that the turn addresses the bot. Topic-switch, confirmation/cancel and short-selector logic must evaluate the user's question after addressing is removed, otherwise canonical turns such as `@Npc xác nhận` can be mistaken for unrelated chat and erase an executable pending action.
 - Do not let pending state consume a fresh deterministic intent merely because generic cancel/confirm words overlap. Pending handlers must use domain-scoped continuation grammar and yield to a clearly different current intent.
 - Do not let reminder vocabulary default a clear status/update/cancel request into `ScheduleReminder`; normalize common Vietnamese/English reminder wording before the generic schedule fallback.
 - Do not treat a negated reminder cancellation such as `không hủy reminder` or `đừng tắt reminder` as either cancellation or a new schedule. Fail closed unless another explicit reminder action independently owns the turn.
@@ -193,6 +194,7 @@ Every routing or context bug must produce a regression test.
 Always test:
 - natural sentences beginning with numbers;
 - short follow-up answers;
+- addressed pending confirmations/selectors both with and without a visible `@Npc` token;
 - direct reply to the bot without a fresh textual mention;
 - reply to another member does not wake the bot;
 - two users in one group;
