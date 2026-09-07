@@ -64,6 +64,76 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationGuard(VolleyDraftDbCont
     {
         if (disclosure is null) return null;
 
+        var pending = await FindPromotedPendingAsync(incoming, cancellationToken);
+        if (pending is null) return null;
+
+        TeamPreferencePendingPlan? plan = null;
+        try
+        {
+            using var document = JsonDocument.Parse(pending.PendingPayloadJson);
+            var root = document.RootElement;
+            if (root.TryGetProperty("SessionId", out var sessionNode) &&
+                root.TryGetProperty("Plan", out var planNode) &&
+                planNode.TryGetProperty("SessionPlayerIds", out var idsNode) &&
+                idsNode.ValueKind == JsonValueKind.Array &&
+                planNode.TryGetProperty("PlayerNames", out var namesNode) &&
+                namesNode.ValueKind == JsonValueKind.Array)
+            {
+                plan = new(
+                    Clean(sessionNode.GetString(), 100),
+                    idsNode.EnumerateArray()
+                        .Select(item => Clean(item.GetString(), 100))
+                        .Where(item => item.Length > 0)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray(),
+                    namesNode.EnumerateArray()
+                        .Select(item => Clean(item.GetString(), 160))
+                        .Where(item => item.Length > 0)
+                        .ToArray());
+            }
+        }
+        catch (JsonException)
+        {
+            // A promoted confirmation that cannot be proven equivalent to the
+            // disclosed pair is unsafe to pass through. Fall through to rejection.
+        }
+
+        if (plan is not null && string.Equals(plan.SessionId, disclosure.SessionId, StringComparison.Ordinal))
+        {
+            var disclosedUids = new[] { disclosure.RequesterZaloUserId, disclosure.PartnerZaloUserId }
+                .ToHashSet(StringComparer.Ordinal);
+            var disclosedPlayerIds = await db.SessionPlayers
+                .AsNoTracking()
+                .Where(player =>
+                    player.SessionId == disclosure.SessionId &&
+                    player.PlayerProfile != null &&
+                    player.PlayerProfile.ZaloUserId != null &&
+                    disclosedUids.Contains(player.PlayerProfile.ZaloUserId))
+                .Select(player => player.Id)
+                .ToListAsync(cancellationToken);
+
+            if (disclosedPlayerIds.Count == 2 &&
+                plan.SessionPlayerIds.ToHashSet(StringComparer.Ordinal).SetEquals(disclosedPlayerIds))
+                return null;
+        }
+
+        return await RejectAsync(pending, disclosure, plan, cancellationToken);
+    }
+
+    public async Task AbortPromotedConfirmationAsync(
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken = default)
+    {
+        var pending = await FindPromotedPendingAsync(incoming, cancellationToken);
+        if (pending is null) return;
+        db.ZaloBotConversationStates.Remove(pending);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task<ZaloBotConversationState?> FindPromotedPendingAsync(
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
         var groupId = Clean(incoming.GroupId, 100);
         var senderId = Clean(incoming.SenderId, 100);
         var messageId = Clean(incoming.MessageId, 160);
@@ -75,75 +145,32 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationGuard(VolleyDraftDbCont
                 state.SenderZaloUserId == senderId &&
                 state.PendingIntent == ZaloBotIntent.TeamPreferenceConfirm.ToString())
             .ToListAsync(cancellationToken);
-        var pending = pendingRows.SingleOrDefault(state =>
+        return pendingRows.SingleOrDefault(state =>
             (state.PreviousCommand ?? string.Empty).EndsWith($":{messageId}", StringComparison.Ordinal));
-        if (pending is null) return null;
+    }
 
-        TeamPreferencePendingPlan? plan;
-        try
-        {
-            using var document = JsonDocument.Parse(pending.PendingPayloadJson);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("SessionId", out var sessionNode) ||
-                !root.TryGetProperty("Plan", out var planNode) ||
-                !planNode.TryGetProperty("SessionPlayerIds", out var idsNode) ||
-                idsNode.ValueKind != JsonValueKind.Array ||
-                !planNode.TryGetProperty("PlayerNames", out var namesNode) ||
-                namesNode.ValueKind != JsonValueKind.Array)
-                return null;
-
-            plan = new(
-                Clean(sessionNode.GetString(), 100),
-                idsNode.EnumerateArray()
-                    .Select(item => Clean(item.GetString(), 100))
-                    .Where(item => item.Length > 0)
-                    .Distinct(StringComparer.Ordinal)
-                    .ToArray(),
-                namesNode.EnumerateArray()
-                    .Select(item => Clean(item.GetString(), 160))
-                    .Where(item => item.Length > 0)
-                    .ToArray());
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-
-        if (!string.Equals(plan.SessionId, disclosure.SessionId, StringComparison.Ordinal))
-            return null;
-
-        var disclosedUids = new[] { disclosure.RequesterZaloUserId, disclosure.PartnerZaloUserId }
-            .ToHashSet(StringComparer.Ordinal);
-        var disclosedPlayerIds = await db.SessionPlayers
-            .AsNoTracking()
-            .Where(player =>
-                player.SessionId == disclosure.SessionId &&
-                player.PlayerProfile != null &&
-                player.PlayerProfile.ZaloUserId != null &&
-                disclosedUids.Contains(player.PlayerProfile.ZaloUserId))
-            .Select(player => player.Id)
-            .ToListAsync(cancellationToken);
-
-        if (disclosedPlayerIds.Count == 2 &&
-            plan.SessionPlayerIds.ToHashSet(StringComparer.Ordinal).SetEquals(disclosedPlayerIds))
-            return null;
-
-        // The fresh plan is no longer the two-person proposal that the member saw.
-        // Remove the one-shot legacy envelope so the same webhook cannot fall through
-        // and mutate an undisclosed transitive group.
+    private async Task<string> RejectAsync(
+        ZaloBotConversationState pending,
+        ZaloAmbientTeamPreferenceDisclosure disclosure,
+        TeamPreferencePendingPlan? plan,
+        CancellationToken cancellationToken)
+    {
+        // The fresh plan is no longer provably identical to the two-person proposal
+        // that the member saw. Remove the one-shot legacy envelope so the same webhook
+        // cannot fall through and mutate an undisclosed transitive group.
         db.ZaloBotConversationStates.Remove(pending);
         await db.SaveChangesAsync(cancellationToken);
 
-        var expandedNames = plan.PlayerNames.Count == 0
-            ? $"{disclosure.RequesterDisplayName}, {disclosure.PartnerDisplayName}"
-            : string.Join(", ", plan.PlayerNames);
+        var currentNames = plan?.PlayerNames is { Count: > 0 }
+            ? string.Join(", ", plan.PlayerNames)
+            : "một nhóm khác với đề xuất ban đầu";
         var sessionLabel = disclosure.SessionName.Length == 0 ? "kèo này" : disclosure.SessionName;
         var retrySyntax = disclosure.SessionName.Length == 0
             ? $"@Npc xếp tui chung team với @{disclosure.PartnerDisplayName} đi"
             : $"@Npc xếp tui chung team với @{disclosure.PartnerDisplayName} ở {disclosure.SessionName} đi";
 
-        return $"Yêu cầu chung team đã đổi phạm vi: nếu xác nhận lúc này sẽ thành nhóm {expandedNames}, không còn chỉ {disclosure.RequesterDisplayName} + {disclosure.PartnerDisplayName} ở {sessionLabel}. " +
-               $"Mình chưa áp dụng để tránh gộp thêm người mà bạn chưa xem. Gửi lại: {retrySyntax} (chọn đúng @mention); mình sẽ hiện phương án mới đầy đủ rồi bạn xác nhận.";
+        return $"Yêu cầu chung team đã đổi phạm vi: nếu xác nhận lúc này sẽ thành {currentNames}, không còn đúng đề xuất {disclosure.RequesterDisplayName} + {disclosure.PartnerDisplayName} ở {sessionLabel}. " +
+               $"Mình chưa áp dụng để tránh đổi thêm người mà bạn chưa xem. Gửi lại: {retrySyntax} (chọn đúng @mention); mình sẽ hiện phương án mới đầy đủ rồi bạn xác nhận.";
     }
 
     private static string GetString(JsonElement root, string propertyName, int maxLength)
