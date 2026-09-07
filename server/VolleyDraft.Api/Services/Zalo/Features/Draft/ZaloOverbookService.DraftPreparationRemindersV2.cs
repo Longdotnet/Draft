@@ -257,14 +257,23 @@ public sealed partial class ZaloOverbookService
             {
                 decisionWasStale = true;
                 staleDecisionSlotCount = decision.EffectiveSlotCount;
-                await decisionStore.ClearAsync(session.Id, cancellationToken);
+                if (!await decisionStore.TryClearAsync(session.Id, decision, cancellationToken))
+                {
+                    // A leader/deputy replaced the decision after this reminder read it.
+                    // Preserve the newer user action and let the next cycle recompute from it.
+                    continue;
+                }
                 decision = null;
             }
             else if (decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting &&
                      readiness.EffectiveSlotCount >= readiness.Capacity &&
                      activeSlotRisks == 0)
             {
-                await decisionStore.ClearAsync(session.Id, cancellationToken);
+                if (!await decisionStore.TryClearAsync(session.Id, decision, cancellationToken))
+                {
+                    // Never let a stale scheduler observation delete a newer organizer choice.
+                    continue;
+                }
                 decision = null;
             }
 

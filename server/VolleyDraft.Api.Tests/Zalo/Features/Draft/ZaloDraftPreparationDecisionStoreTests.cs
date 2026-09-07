@@ -92,6 +92,60 @@ public sealed class ZaloDraftPreparationDecisionStoreTests
         Assert.Null(await store.GetAsync("session-1"));
     }
 
+    [Fact]
+    public async Task ConditionalClear_DeletesOnlyTheDecisionThatWasObserved()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var store = new ZaloDraftPreparationDecisionStore(fixture.Db);
+
+        var observed = await store.SetAsync(
+            "session-1",
+            ZaloDraftPreparationDecisionKind.KeepRecruiting,
+            null,
+            null,
+            "leader-1",
+            "Leader",
+            "m1");
+
+        var cleared = await store.TryClearAsync("session-1", observed);
+
+        Assert.True(cleared);
+        Assert.Null(await store.GetAsync("session-1"));
+    }
+
+    [Fact]
+    public async Task ConditionalClear_DoesNotDeleteANewerConcurrentDecision()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var store = new ZaloDraftPreparationDecisionStore(fixture.Db);
+
+        var staleObserved = await store.SetAsync(
+            "session-1",
+            ZaloDraftPreparationDecisionKind.KeepRecruiting,
+            null,
+            null,
+            "leader-1",
+            "Leader",
+            "m1");
+        await Task.Delay(2);
+        var newer = await store.SetAsync(
+            "session-1",
+            ZaloDraftPreparationDecisionKind.StopMatch,
+            null,
+            null,
+            "deputy-1",
+            "Deputy",
+            "m2");
+
+        var cleared = await store.TryClearAsync("session-1", staleObserved);
+        var current = await store.GetAsync("session-1");
+
+        Assert.False(cleared);
+        Assert.NotNull(current);
+        Assert.Equal(newer.SourceMessageId, current!.SourceMessageId);
+        Assert.Equal(ZaloDraftPreparationDecisionKind.StopMatch, current.Kind);
+    }
+
     private static ZaloDraftReadinessSnapshot Snapshot(string fingerprint, int slots) =>
         new(
             SessionId: "session-1",
