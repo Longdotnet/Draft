@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 
@@ -124,10 +125,15 @@ internal sealed class ZaloAutoSessionActionExecutor(
         }
         catch (Exception exception)
         {
-            await transaction.RollbackAsync(cancellationToken);
-            proposal.Status = ZaloPollSessionProposalStatus.Failed;
-            proposal.LastError = Truncate(exception.Message, 1000);
-            await store.UpsertProposalAsync(proposal, cancellationToken);
+            // Recovery must not inherit a request token that may already be cancelled; otherwise
+            // the rollback/failure marker itself can be cancelled and the durable proposal remains
+            // looking executable after a failed mutation attempt.
+            await PersistFailureAfterRollbackAsync(
+                transaction,
+                store,
+                proposal,
+                exception,
+                CancellationToken.None);
             throw;
         }
 
@@ -172,6 +178,26 @@ internal sealed class ZaloAutoSessionActionExecutor(
             message,
             [],
             idempotencyKey: $"auto-session-v3-created:{proposal.Id}");
+    }
+
+    internal static async Task PersistFailureAfterRollbackAsync(
+        IDbContextTransaction transaction,
+        ZaloAutoSessionStore store,
+        ZaloPollSessionProposalData proposal,
+        Exception exception,
+        CancellationToken cancellationToken = default)
+    {
+        await transaction.RollbackAsync(cancellationToken);
+
+        // DbContext.CurrentTransaction still points at the rolled-back transaction until it is
+        // disposed. ZaloAutoSessionStore attaches every command to CurrentTransaction, so trying
+        // to persist Failed before disposal can reuse an already-completed transaction and lose
+        // the recovery marker. Clear that ownership boundary first, then write the durable failure.
+        await transaction.DisposeAsync();
+
+        proposal.Status = ZaloPollSessionProposalStatus.Failed;
+        proposal.LastError = Truncate(exception.Message, 1000);
+        await store.UpsertProposalAsync(proposal, cancellationToken);
     }
 
     internal static void EnsureCandidatesMatchPollSource(
