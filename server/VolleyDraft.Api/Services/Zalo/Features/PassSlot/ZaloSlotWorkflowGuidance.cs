@@ -19,7 +19,7 @@ internal sealed record ZaloSlotWorkflowGuidanceResult(
 internal static class ZaloSlotWorkflowGuidance
 {
     private static readonly Regex HelpSignalPattern = new(
-        @"(?<![a-z0-9])(?:(?:go|ghi|viet|nhap|noi|lam|xu\s+ly)\s+(?:sao|the\s+nao|nhu\s+nao)|(?:the\s+nao|nhu\s+nao|cu\s+phap|huong\s+dan|lenh\s+gi|dung\s+lenh\s+gi|cach))(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:(?:go|ghi|viet|nhap|noi|lam|xu\s+ly|dung|su\s+dung)\s+(?:sao|the\s+nao|nhu\s+nao)|(?:the\s+nao|nhu\s+nao|cu\s+phap|huong\s+dan|lenh\s+gi|dung\s+lenh\s+gi|cach))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PassDomainPattern = new(
