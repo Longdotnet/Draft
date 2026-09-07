@@ -132,8 +132,8 @@ internal sealed class ZaloAutoSessionActionExecutor(
 
         await RunCommittedPostCreateAsync(async postCommitToken =>
         {
-            var syncFailureCount = 0;
-            var handoffFailureCount = 0;
+            var syncFailureSessionIds = new HashSet<string>(StringComparer.Ordinal);
+            var handoffFailureSessionIds = new HashSet<string>(StringComparer.Ordinal);
             var handoffStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
 
             foreach (var item in linked
@@ -150,7 +150,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 }
                 catch (Exception exception)
                 {
-                    handoffFailureCount++;
+                    handoffFailureSessionIds.Add(item.SessionId);
                     logger.LogWarning(exception,
                         "Auto Session V5 lifecycle handoff failed Session={SessionId}", item.SessionId);
                 }
@@ -166,7 +166,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                         item.Candidate.OptionContent);
                     if (!sync.IsSuccess)
                     {
-                        syncFailureCount++;
+                        syncFailureSessionIds.Add(item.SessionId);
                         logger.LogWarning(
                             "Auto Session V3 post-create poll sync returned failure Session={SessionId} Error={Error}",
                             item.SessionId,
@@ -185,7 +185,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 }
                 catch (Exception exception)
                 {
-                    syncFailureCount++;
+                    syncFailureSessionIds.Add(item.SessionId);
                     logger.LogWarning(exception, "Auto Session V3 post-create sync failed Session={SessionId}", item.SessionId);
                 }
             }
@@ -195,9 +195,9 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 : string.Join(", ", created.Select(item => BuildSessionName(item.Candidate)));
             var message = BuildPostCreateStatusMessage(
                 createdNames,
-                linked.Count,
-                handoffFailureCount,
-                syncFailureCount);
+                linked.Select(item => item.SessionId).Distinct(StringComparer.Ordinal).Count(),
+                handoffFailureSessionIds.Count,
+                syncFailureSessionIds.Count);
 
             await bridge.SendGroupMessageAsync(
                 connection.AccountZaloId,
