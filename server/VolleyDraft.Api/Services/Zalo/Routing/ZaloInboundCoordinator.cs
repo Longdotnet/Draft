@@ -182,7 +182,6 @@ public sealed class ZaloInboundCoordinator(
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(message => message.ProcessingStartedAt, nowUtc)
                 .SetProperty(message => message.ProcessingToken, token)
-                .SetProperty(message => message.ReplyAttemptCount, message => message.ReplyAttemptCount + 1)
                 .SetProperty(message => message.ReplyOutcome, "ingress_processing"), cancellationToken);
 
         if (claimed == 0)
