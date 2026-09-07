@@ -39,6 +39,7 @@ internal sealed class ZaloAutoSessionConversationService(
     private readonly ZaloAutoSessionStore autoSessions = new(db);
     private readonly ZaloAutoSessionV2Store runtimeStore = new(db);
     private readonly ZaloAutoSessionTrustedOrganizerStore trustedOrganizers = new(db);
+    private readonly ZaloAutoSessionMatchProposalV4ReconciliationStore matchProposalReconciliation = new(db);
 
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
@@ -261,7 +262,11 @@ internal sealed class ZaloAutoSessionConversationService(
 
         if (interpretation.Intent == ZaloAutoSessionConversationIntent.Reset)
         {
-            draft = DeserializeDraft(conversation.InitialDraftJson);
+            var sourceState = await matchProposalReconciliation.LoadSourceAsync(
+                conversation.ProposalId,
+                conversation.InitialDraftJson,
+                cancellationToken);
+            draft = sourceState?.Draft ?? DeserializeDraft(conversation.InitialDraftJson);
             conversation.DraftJson = JsonSerializer.Serialize(draft, JsonOptions);
             conversation.State = ZaloAutoSessionConversationState.Discussing;
             conversation.LastQuestionType = null;
@@ -693,28 +698,110 @@ internal sealed class ZaloAutoSessionConversationService(
         }
 
         var currentPoll = await bridge.GetPollAsync(credentials, conversation.PollId);
-        if (!string.Equals(
-                ZaloPollScheduleParser.ComputeStructureHash(currentPoll),
-                proposal.PollStructureHash,
-                StringComparison.Ordinal))
+        if (currentPoll.IsAnonymous || currentPoll.IsClosed)
         {
-            conversation.State = ZaloAutoSessionConversationState.Superseded;
-            conversation.NextFollowUpAt = null;
-            conversation.LastError = "poll_structure_changed_before_v3_confirmation";
+            conversation.State = ZaloAutoSessionConversationState.Clarifying;
+            conversation.LastQuestionType = "poll_source";
+            conversation.LastError = currentPoll.IsAnonymous
+                ? "poll_became_anonymous_before_execution"
+                : "poll_closed_before_execution";
             conversation.Version += 1;
             await conversations.SaveAsync(conversation, cancellationToken);
-
-            proposal.Status = ZaloPollSessionProposalStatus.Superseded;
-            proposal.LastError = conversation.LastError;
-            await autoSessions.UpsertProposalAsync(proposal, cancellationToken);
-
             await SendConversationTextAsync(
                 conversation,
                 organizerId,
                 organizerName,
-                "Poll hiện không còn giống bản preview ban đầu nên tui không tạo để tránh nhầm. Hãy để bot đọc poll mới lại.",
+                currentPoll.IsAnonymous
+                    ? "Poll hiện đang ẩn danh nên tui không thể xác minh roster authoritative để tạo lịch an toàn. Hãy dùng poll không ẩn danh; website vẫn chưa được tạo."
+                    : "Poll đã đóng trước lúc tạo lịch nên tui dừng ở bước xác nhận thay vì dùng snapshot cũ. Nếu vẫn muốn tạo lịch, hãy mở/đăng poll authoritative mới rồi xác nhận lại.",
                 cancellationToken);
             return true;
+        }
+
+        var durableDraft = DeserializeDraft(conversation.DraftJson);
+        var sourceState = await matchProposalReconciliation.LoadSourceAsync(
+            conversation.ProposalId,
+            conversation.InitialDraftJson,
+            cancellationToken);
+        var sourceDraft = sourceState?.Draft ?? DeserializeDraft(conversation.InitialDraftJson);
+        var revalidation = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            currentPoll,
+            tracked,
+            sourceDraft,
+            durableDraft);
+
+        if (revalidation.Issues.Count > 0)
+        {
+            conversation.State = ZaloAutoSessionConversationState.Clarifying;
+            conversation.LastQuestionType = "poll_source";
+            conversation.LastError = "poll_revalidation_ambiguous";
+            conversation.Version += 1;
+            await conversations.SaveAsync(conversation, cancellationToken);
+            await SendConversationTextAsync(
+                conversation,
+                organizerId,
+                organizerName,
+                ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(revalidation),
+                cancellationToken);
+            return true;
+        }
+
+        var currentHash = revalidation.CurrentStructureHash;
+        var sourceHash = sourceState?.StructureHash ?? proposal.PollStructureHash;
+        var unmodeledStructureChange = !string.Equals(currentHash, sourceHash, StringComparison.Ordinal) &&
+                                       !revalidation.Reconciliation.HasChanges;
+        if (revalidation.Reconciliation.HasChanges || unmodeledStructureChange)
+        {
+            conversation.Version += 1;
+            conversation.DraftJson = JsonSerializer.Serialize(revalidation.Reconciliation.Draft, JsonOptions);
+            var persisted = await matchProposalReconciliation.AppendReconciliationAsync(
+                conversation,
+                currentPoll,
+                sourceDraft,
+                revalidation,
+                organizerId,
+                cancellationToken);
+            if (persisted is null || !persisted.Accepted)
+            {
+                await SendConversationTextAsync(
+                    conversation,
+                    organizerId,
+                    organizerName,
+                    "Poll vừa được một trưởng/phó khác xử lý hoặc bản nháp đã đổi. Tui không ghi đè quyết định mới hơn; hãy kiểm tra lại tin bot mới nhất.",
+                    cancellationToken);
+                return true;
+            }
+
+            conversation.DraftJson = persisted.Revision.DraftJson;
+            proposal.PollQuestion = currentPoll.Question;
+            proposal.PollUpdatedAtUnixMs = currentPoll.UpdatedAtUnixMs;
+            proposal.PollStructureHash = currentHash;
+            proposal.LastError = null;
+            await autoSessions.UpsertProposalAsync(proposal, cancellationToken);
+
+            if (revalidation.RequiresOrganizerConfirmation || unmodeledStructureChange)
+            {
+                conversation.State = ZaloAutoSessionConversationState.ReadyToConfirm;
+                conversation.LastQuestionType = "poll_changed";
+                conversation.LastError = unmodeledStructureChange
+                    ? "poll_source_changed_requires_confirmation"
+                    : "poll_material_change_requires_confirmation";
+                await conversations.SaveAsync(conversation, cancellationToken);
+
+                var prefix = unmodeledStructureChange
+                    ? "Poll đã đổi thông tin nguồn sau preview. Phần lịch vẫn khớp, nhưng tui chưa tự đoán ý nghĩa thay đổi ngoài lịch; hãy kiểm tra bản nháp mới rồi xác nhận lại."
+                    : ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(revalidation);
+                await SendConversationTextAsync(
+                    conversation,
+                    organizerId,
+                    organizerName,
+                    BuildDraftSummary(revalidation.Reconciliation.Draft, tracked, prefix),
+                    cancellationToken);
+                return true;
+            }
+
+            conversation.LastError = null;
+            await conversations.SaveAsync(conversation, cancellationToken);
         }
 
         var draft = DeserializeDraft(conversation.DraftJson);
