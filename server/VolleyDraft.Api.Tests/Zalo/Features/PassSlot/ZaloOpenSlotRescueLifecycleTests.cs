@@ -117,14 +117,14 @@ public sealed class ZaloOpenSlotRescueLifecycleTests
     }
 
     [Fact]
-    public async Task Rescue_closes_stale_offer_when_owner_is_no_longer_present()
+    public async Task Rescue_expires_offer_after_window_even_when_owner_is_no_longer_present()
     {
         await using var fixture = await Fixture.CreateSessionAsync();
         var now = DateTimeOffset.UtcNow;
         var store = new ZaloOpenSlotOfferStore(fixture.Db);
         await store.OpenAsync(
             "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T6", "m1",
-            now.AddHours(3), now.AddMinutes(-1));
+            now.AddMinutes(-1), now.AddMinutes(-2));
 
         var player = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == "owner-player");
         player.IsPresent = false;
