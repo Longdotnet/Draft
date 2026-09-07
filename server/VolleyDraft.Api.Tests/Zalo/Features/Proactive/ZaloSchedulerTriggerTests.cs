@@ -65,6 +65,71 @@ public sealed class ZaloSchedulerTriggerTests
         Assert.Equal(expectedMinutes, interval.TotalMinutes);
     }
 
+    [Theory]
+    [InlineData(15, 5)]
+    [InlineData(60, 20)]
+    public void ResolveLeaseRenewalInterval_renews_well_before_expiry(double leaseMinutes, double expectedMinutes)
+    {
+        var interval = ZaloSchedulerWorker.ResolveLeaseRenewalInterval(TimeSpan.FromMinutes(leaseMinutes));
+
+        Assert.Equal(expectedMinutes, interval.TotalMinutes);
+    }
+
+    [Fact]
+    public async Task RunWithLeaseHeartbeat_renews_while_long_stage_is_still_running()
+    {
+        var renewalObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishStage = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var run = ZaloSchedulerWorker.RunWithLeaseHeartbeatAsync(
+            async cancellationToken =>
+            {
+                await finishStage.Task.WaitAsync(cancellationToken);
+                return 42;
+            },
+            _ =>
+            {
+                renewalObserved.TrySetResult();
+                return Task.FromResult(true);
+            },
+            TimeSpan.FromMilliseconds(60),
+            CancellationToken.None);
+
+        await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(run.IsCompleted);
+
+        finishStage.TrySetResult();
+        Assert.Equal(42, await run.WaitAsync(TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public async Task RunWithLeaseHeartbeat_cancels_stage_and_fails_closed_when_renewal_loses_ownership()
+    {
+        var stageCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var run = ZaloSchedulerWorker.RunWithLeaseHeartbeatAsync(
+            async cancellationToken =>
+            {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    return 1;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    stageCancelled.TrySetResult();
+                    throw;
+                }
+            },
+            _ => Task.FromResult(false),
+            TimeSpan.FromMilliseconds(60),
+            CancellationToken.None);
+
+        await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
+            await run.WaitAsync(TimeSpan.FromSeconds(1)));
+        await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
     [Fact]
     public async Task Durable_lease_blocks_second_instance_until_expiry_then_allows_failover()
     {
