@@ -1,0 +1,57 @@
+name: Autopilot Draft Pass Slot Patch
+
+on:
+  push:
+    branches:
+      - autopilot/draft-pass-slot-final-gate
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[autopatch]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: autopilot/draft-pass-slot-final-gate
+      - name: Apply exact mutation guard
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("server/VolleyDraft.Api/Services/SessionDraftService.cs")
+          text = path.read_text(encoding="utf-8")
+          anchor = "        await ClearDraftRunArtifacts(sessionId);"
+          if text.count(anchor) != 1:
+              raise SystemExit(f"expected one mutation anchor, found {text.count(anchor)}")
+
+          guard = '''        if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId) &&
+              !string.IsNullOrWhiteSpace(session.ZaloGroupId))
+          {
+              var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)
+                  .CountActiveForSessionAsync(
+                      session.ZaloConnectionId,
+                      session.ZaloGroupId,
+                      session.Id);
+              if (unresolvedPassSlotCount > 0)
+              {
+                  return Conflict<DraftStateResponse>(
+                      $"Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận. " +
+                      "Hoàn tất việc chuyển suất trước: nếu đổi ý, người nhường gõ `huỷ pass`; " +
+                      "nếu đang nhận suất, người nhận vote xong rồi gõ `xong`. " +
+                      "Khi NPC xác nhận xong mới gõ lại `@Npc 9`.");
+              }
+          }
+
+  '''
+          path.write_text(text.replace(anchor, guard + anchor), encoding="utf-8")
+      - name: Commit patch
+        run: |
+          git config user.name "Longdotnet"
+          git config user.email "189841499+Longdotnet@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs
+          git diff --cached --check
+          git commit -m "fix(zalo): gate draft on unresolved pass slots [autopatch]"
+          git push origin HEAD:autopilot/draft-pass-slot-final-gate
