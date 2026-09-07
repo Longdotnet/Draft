@@ -58,6 +58,53 @@ public sealed class ZaloDraftPreparationReminderObservationTests
     }
 
     [Fact]
+    public void MissingProfileIdentityReplacement_ReopensSameBucketWhenCountIsUnchanged()
+    {
+        var before = Snapshot(
+            18,
+            18,
+            1,
+            "fp-18",
+            ZaloDraftReadinessState.MissingProfiles,
+            missingProfileNames: ["An"]);
+        var after = Snapshot(
+            18,
+            18,
+            1,
+            "fp-18",
+            ZaloDraftReadinessState.MissingProfiles,
+            missingProfileNames: ["Bình"]);
+        var previous = Previous(before, 0);
+
+        Assert.True(ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, after, 0));
+        Assert.NotEqual(
+            ZaloDraftPreparationReminderObservation.BuildIdempotencySuffix(before, 0),
+            ZaloDraftPreparationReminderObservation.BuildIdempotencySuffix(after, 0));
+    }
+
+    [Fact]
+    public void MissingProfileOrderingAndCase_DoNotManufactureAChange()
+    {
+        var before = Snapshot(
+            18,
+            18,
+            2,
+            "fp-18",
+            ZaloDraftReadinessState.MissingProfiles,
+            missingProfileNames: ["An", "Bình"]);
+        var after = Snapshot(
+            18,
+            18,
+            2,
+            "fp-18",
+            ZaloDraftReadinessState.MissingProfiles,
+            missingProfileNames: [" bình ", "AN"]);
+        var previous = Previous(before, 0);
+
+        Assert.False(ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, after, 0));
+    }
+
+    [Fact]
     public void SameCountRosterReplacement_ReopensSameBucket()
     {
         var before = Snapshot(15, 15, 0, "fp-a");
@@ -74,6 +121,29 @@ public sealed class ZaloDraftPreparationReminderObservationTests
         var previous = new ZaloDraftPreparationReminderState(
             "session-1", "20260907-1200", 15, 0, "fp-15",
             DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        Assert.False(ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, readiness, 0));
+        Assert.True(ZaloDraftPreparationReminderObservation.NeedsSilentUpgrade(previous));
+    }
+
+    [Fact]
+    public void PreviousObservationVersion_IsUpgradedWithoutDeploymentDuplicate()
+    {
+        var readiness = Snapshot(
+            18,
+            18,
+            1,
+            "fp-18",
+            ZaloDraftReadinessState.MissingProfiles,
+            missingProfileNames: ["An"]);
+        var previous = new ZaloDraftPreparationReminderState(
+            "session-1",
+            "20260907-1200",
+            readiness.EffectiveSlotCount,
+            0,
+            ZaloDraftPreparationReminderObservation.BuildPreviousVersionFingerprintForEval(readiness, 0),
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddMinutes(-5));
 
         Assert.False(ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, readiness, 0));
         Assert.True(ZaloDraftPreparationReminderObservation.NeedsSilentUpgrade(previous));
@@ -109,7 +179,8 @@ public sealed class ZaloDraftPreparationReminderObservationTests
         int missingProfiles,
         string fingerprint,
         ZaloDraftReadinessState state = ZaloDraftReadinessState.RosterNotFull,
-        bool canEscalate = false) =>
+        bool canEscalate = false,
+        IReadOnlyList<string>? missingProfileNames = null) =>
         new(
             SessionId: "session-1",
             SessionName: "CN 13/09 18:00",
@@ -121,7 +192,9 @@ public sealed class ZaloDraftPreparationReminderObservationTests
             EffectiveSlotCount: effective,
             Capacity: 18,
             MissingProfileCount: missingProfiles,
-            MissingProfileNames: missingProfiles == 0 ? [] : ["A"],
+            MissingProfileNames: missingProfiles == 0
+                ? []
+                : missingProfileNames ?? ["A"],
             HasTeams: false,
             HasLinkedPoll: true,
             Fingerprint: fingerprint,
