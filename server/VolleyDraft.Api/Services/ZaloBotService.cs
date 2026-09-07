@@ -454,9 +454,6 @@ public sealed partial class ZaloBotService(
                 ProtectedTerms: memberActivityAnswer.ProtectedTerms);
         }
 
-        // Resolve an outstanding confirmation before parsing the new text as a
-        // fresh command. This is what makes "xác nhận" execute the exact
-        // previewed reminder instead of re-parsing the word "xác nhận".
         var pending = await ResolvePendingConversationAsync(activeConnectionId, groupId, incoming.SenderId, normalizedQuestion, sessions, cancellationToken);
         if (pending.Cancelled)
         {
@@ -832,12 +829,17 @@ public sealed partial class ZaloBotService(
             var state = await draftService.GetDraftStateAsync(session.AdminUserId, session.Id);
             if (!state.IsSuccess || state.Value is null)
                 return new BotAnswer(state.Error ?? "Mình chưa đọc được đội hình của buổi này.", null, decision.Intent);
+            var readiness = await new ZaloDraftReadinessService(db)
+                .BuildAsync(session.Id, cancellationToken: cancellationToken);
             var lineup = await BuildTeamLineupMessageAsync(
                 session.Name,
                 state.Value.TeamPreview,
                 ZaloTeamLineupFormatter.WantsPlayerMentions(question),
-                cancellationToken);
-            var imageUrl = decision.Intent == ZaloBotIntent.TeamImage ? teamCards.GetPublicUrl(session.Id) : null;
+                cancellationToken,
+                readiness);
+            var imageUrl = decision.Intent == ZaloBotIntent.TeamImage && readiness?.HasTeams == true
+                ? teamCards.GetPublicUrl(session.Id)
+                : null;
             return new BotAnswer(lineup.Text, imageUrl, decision.Intent, Mentions: lineup.Mentions);
         }
 
@@ -2217,10 +2219,6 @@ public sealed partial class ZaloBotService(
         string senderId,
         CancellationToken cancellationToken)
     {
-        // A normal member may self-service share only when the freshly synced
-        // linked poll proves that their UID is still in the selected option.
-        // Post-draft poll sync is intentionally unavailable, so those cases keep
-        // the existing operator requirement instead of trusting stale data.
         if (session.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection))
             return false;
 
@@ -2473,9 +2471,6 @@ public sealed partial class ZaloBotService(
             if (members.TryGetValue(normalizedZaloId, out var member) && !string.IsNullOrWhiteSpace(member.DisplayName))
                 return member.DisplayName.Trim().TrimStart('@');
 
-            // The UID is still the identity source. The visible label captured from
-            // that same mention is safe as a display-only fallback if member lookup
-            // is temporarily unavailable.
             return string.IsNullOrWhiteSpace(command.SponsorReference)
                 ? null
                 : command.SponsorReference.Trim().TrimStart('@');
@@ -2927,16 +2922,12 @@ public sealed partial class ZaloBotService(
             var mentionId = commandPartnerId ?? mention?.ZaloUserId;
             var normalizedMentionId = NormalizeId(mentionId ?? string.Empty);
             var suppliedDisplayName = !string.IsNullOrWhiteSpace(mention?.DisplayName)
-        ? mention!.DisplayName
-        : partnerName;
+                ? mention!.DisplayName
+                : partnerName;
             var existingByUid = normalizedMentionId.Length > 0 &&
                                 session.PlayerNamesByZaloUserId.TryGetValue(normalizedMentionId, out var mentionedPartnerName)
                 ? mentionedPartnerName
                 : null;
-
-            // Structured mention UID wins over parsed/fuzzy display text. Prefer the
-            // canonical session identity when it exists; otherwise preserve the real
-            // visible mention label and let the domain canonicalize a global UID profile.
             var existing = existingByUid ?? ResolvePlayerReference(suppliedDisplayName, session.PlayerNames);
             mentionedMembers.TryGetValue(normalizedMentionId, out var member);
             var displayName = existing ?? (NormalizeText(suppliedDisplayName) == "ban"
@@ -3596,8 +3587,6 @@ public sealed partial class ZaloBotService(
                 var includePaymentQr = deterministicCommand.IncludePaymentQr;
                 command = extracted with
                 {
-                    // AI extracts entities and phrasing; the validated router owns the
-                    // operation so a model response cannot turn a query into a mutation.
                     Kind = command.Kind,
                     LocalTime = extracted.LocalTime ?? deterministicCommand.LocalTime,
                     DelayMinutes = (extracted.LocalTime ?? deterministicCommand.LocalTime) is not null
@@ -3605,8 +3594,6 @@ public sealed partial class ZaloBotService(
                         : extracted.DelayMinutes ?? deterministicCommand.DelayMinutes,
                     ExplicitLocalDate = extracted.ExplicitLocalDate ?? deterministicCommand.ExplicitLocalDate,
                     UseSessionDate = extracted.UseSessionDate || deterministicCommand.UseSessionDate,
-                    // Prefer the AI's final wording, but reject a response that merely
-                    // repeats the scheduling instruction. Quoted text remains a safe fallback.
                     CustomMessage = SelectReminderMessage(
                         extracted.CustomMessage,
                         deterministicCommand.CustomMessage,
@@ -4236,16 +4223,21 @@ public sealed partial class ZaloBotService(
         string sessionName,
         IReadOnlyList<TeamPreviewResponse> teams,
         bool mentionPlayers,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ZaloDraftReadinessSnapshot? readiness = null)
     {
-        if (!mentionPlayers) return ZaloTeamLineupFormatter.Format(sessionName, teams);
+        if (readiness is { HasTeams: false })
+            return ZaloTeamLineupFormatter.Format(sessionName, teams, readiness: readiness);
+        if (!mentionPlayers)
+            return ZaloTeamLineupFormatter.Format(sessionName, teams, readiness: readiness);
 
         var slotIds = teams
             .SelectMany(team => team.Slots)
             .Select(slot => slot.Id)
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        if (slotIds.Count == 0) return ZaloTeamLineupFormatter.Format(sessionName, teams);
+        if (slotIds.Count == 0)
+            return ZaloTeamLineupFormatter.Format(sessionName, teams, readiness: readiness);
 
         var links = await db.DraftSlotPlayers
             .AsNoTracking()
@@ -4269,7 +4261,7 @@ public sealed partial class ZaloBotService(
                     .Select(link => new ZaloTeamMentionPlayer(link.DisplayName, Clean(link.ZaloUserId, 100)))
                     .ToList(),
                 StringComparer.Ordinal);
-        return ZaloTeamLineupFormatter.Format(sessionName, teams, playersBySlot);
+        return ZaloTeamLineupFormatter.Format(sessionName, teams, playersBySlot, readiness);
     }
 
     private async Task<bool> IsAiCallAllowedAsync(string connectionId, string groupId, string senderId, CancellationToken cancellationToken)
@@ -4755,14 +4747,19 @@ public sealed partial class ZaloBotService(
             var teamSession = teamSelection.Session!;
             var state = await draftService.GetDraftStateAsync(teamSession.AdminUserId, teamSession.Id);
             if (!state.IsSuccess || state.Value is null) return new BotAnswer(state.Error ?? "Không đọc được đội hình.", null, decision.Intent, true);
+            var readiness = await new ZaloDraftReadinessService(db)
+                .BuildAsync(teamSession.Id, cancellationToken: cancellationToken);
             var lineup = await BuildTeamLineupMessageAsync(
                 teamSession.Name,
                 state.Value.TeamPreview,
                 ZaloTeamLineupFormatter.WantsPlayerMentions(ExtractQuestion(incoming)),
-                cancellationToken);
+                cancellationToken,
+                readiness);
             return new BotAnswer(
                 lineup.Text,
-                decision.Intent == ZaloBotIntent.TeamImage ? teamCards.GetPublicUrl(teamSession.Id) : null,
+                decision.Intent == ZaloBotIntent.TeamImage && readiness?.HasTeams == true
+                    ? teamCards.GetPublicUrl(teamSession.Id)
+                    : null,
                 decision.Intent,
                 true,
                 Mentions: lineup.Mentions);

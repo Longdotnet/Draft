@@ -24,12 +24,18 @@ public static class ZaloTeamLineupFormatter
     public static ZaloTeamLineupMessage Format(
         string sessionName,
         IReadOnlyList<TeamPreviewResponse> teams,
-        IReadOnlyDictionary<string, IReadOnlyList<ZaloTeamMentionPlayer>>? playersBySlot = null)
+        IReadOnlyDictionary<string, IReadOnlyList<ZaloTeamMentionPlayer>>? playersBySlot = null,
+        ZaloDraftReadinessSnapshot? readiness = null)
     {
-        if (teams.Count == 0 || teams.All(team => team.Slots.Count == 0))
+        // A draft-state projection can contain captain/partial assignments while a draft
+        // is still in progress. Never turn those rows into a user-visible "team result".
+        // The canonical readiness snapshot owns whether a result is authoritative.
+        if (readiness is { HasTeams: false } ||
+            teams.Count == 0 ||
+            teams.All(team => team.Slots.Count == 0))
         {
             return new ZaloTeamLineupMessage(
-                ZaloTeamResultRecoveryPolicy.BuildNoResultMessage(sessionName),
+                ZaloTeamResultRecoveryPolicy.BuildNoResultMessage(sessionName, readiness),
                 []);
         }
 
