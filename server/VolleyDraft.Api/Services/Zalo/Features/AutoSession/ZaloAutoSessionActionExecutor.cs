@@ -125,12 +125,15 @@ internal sealed class ZaloAutoSessionActionExecutor(
         }
         catch (Exception exception)
         {
+            // Recovery must not inherit a request token that may already be cancelled; otherwise
+            // the rollback/failure marker itself can be cancelled and the durable proposal remains
+            // looking executable after a failed mutation attempt.
             await PersistFailureAfterRollbackAsync(
                 transaction,
                 store,
                 proposal,
                 exception,
-                cancellationToken);
+                CancellationToken.None);
             throw;
         }
 
