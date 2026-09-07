@@ -184,4 +184,98 @@ public sealed class ZaloAutoSessionLifecycleHandoffRecoveryV5Tests
         var leastRecent = Assert.Single(await store.GetMissingAsync(limit: 1));
         Assert.Equal("session-1", leastRecent.SessionId);
     }
+
+    [Fact]
+    public async Task Proposal_ownership_is_not_handed_off_until_every_linked_session_has_snapshot()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var tracked = await new ZaloAutoSessionSettingsStore(db).InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin-a",
+            ZaloConnectionId = "connection-a",
+            GroupId = "group-a",
+            GroupName = "Bóng UTE"
+        });
+        var autoSessions = new ZaloAutoSessionStore(db);
+        var proposal = await autoSessions.UpsertProposalAsync(new ZaloPollSessionProposalData
+        {
+            TrackedGroupId = tracked.Id,
+            PollId = "poll-1",
+            PollQuestion = "Kèo tuần sau",
+            PollCreatorId = "captain-a",
+            PollStructureHash = "hash-1",
+            Status = ZaloPollSessionProposalStatus.Created
+        });
+        foreach (var index in new[] { 1, 2 })
+        {
+            await autoSessions.AddLinkAsync(new ZaloAutoSessionLinkData(
+                $"link-{index}", tracked.Id, "poll-1", $"option-{index}", $"session-{index}", DateTimeOffset.UtcNow));
+        }
+
+        var store = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+        await store.EnsureAsync();
+        await InsertHandoffAsync(db, proposal.Id, "session-1");
+
+        Assert.False(await store.TryFinalizeProposalOwnershipAsync(proposal.Id));
+        Assert.False(await store.HasHandedOffOwnershipAsync(proposal.Id));
+
+        await InsertHandoffAsync(db, proposal.Id, "session-2");
+
+        Assert.True(await store.TryFinalizeProposalOwnershipAsync(proposal.Id));
+        Assert.True(await store.HasHandedOffOwnershipAsync(proposal.Id));
+    }
+
+    [Fact]
+    public async Task Restart_reconciliation_backfills_handed_off_ownership_without_retrying_sessions()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var tracked = await new ZaloAutoSessionSettingsStore(db).InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin-a",
+            ZaloConnectionId = "connection-a",
+            GroupId = "group-a",
+            GroupName = "Bóng UTE"
+        });
+        var autoSessions = new ZaloAutoSessionStore(db);
+        var proposal = await autoSessions.UpsertProposalAsync(new ZaloPollSessionProposalData
+        {
+            TrackedGroupId = tracked.Id,
+            PollId = "poll-1",
+            PollQuestion = "Kèo tuần sau",
+            PollCreatorId = "captain-a",
+            PollStructureHash = "hash-1",
+            Status = ZaloPollSessionProposalStatus.Created
+        });
+        await autoSessions.AddLinkAsync(new ZaloAutoSessionLinkData(
+            "link-1", tracked.Id, "poll-1", "option-1", "session-1", DateTimeOffset.UtcNow));
+
+        var oldStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+        await oldStore.EnsureAsync();
+        await InsertHandoffAsync(db, proposal.Id, "session-1");
+
+        var restartedStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+        Assert.Empty(await restartedStore.GetMissingAsync());
+        Assert.False(await restartedStore.HasHandedOffOwnershipAsync(proposal.Id));
+
+        Assert.Equal(1, await restartedStore.ReconcileCompletedOwnershipsAsync());
+        Assert.True(await restartedStore.HasHandedOffOwnershipAsync(proposal.Id));
+    }
+
+    private static Task InsertHandoffAsync(VolleyDraftDbContext db, string proposalId, string sessionId) =>
+        db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "ZaloAutoSessionLifecycleHandoffs"
+                ("SessionId", "ProposalId", "Stage", "Owner", "NeedsWebsite", "ReasonCode", "SnapshotJson", "HandedOffAt")
+            VALUES
+                ({{sessionId}}, {{proposalId}}, {{"Recruiting"}}, {{"ZaloBot"}}, {{0}}, {{"ready"}}, {{"{}"}}, {{DateTimeOffset.UtcNow.ToString("O")}});
+            """);
 }
