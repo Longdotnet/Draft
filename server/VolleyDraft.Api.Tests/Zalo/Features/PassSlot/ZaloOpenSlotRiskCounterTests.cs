@@ -34,6 +34,31 @@ public sealed class ZaloOpenSlotRiskCounterTests
     }
 
     [Fact]
+    public async Task Counter_joins_the_current_ef_transaction()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        await store.OpenAsync(
+            "conn-1",
+            "g1",
+            "owner-uid",
+            "Hoàng",
+            "s1",
+            "T6",
+            "m-pass",
+            DateTimeOffset.UtcNow.AddHours(1),
+            null);
+
+        await using var transaction = await fixture.Db.Database.BeginTransactionAsync();
+
+        var count = await new ZaloOpenSlotRiskCounter(fixture.Db)
+            .CountActiveForSessionAsync("conn-1", "g1", "s1");
+
+        Assert.Equal(1, count);
+        await transaction.RollbackAsync();
+    }
+
+    [Fact]
     public async Task Claim_pending_and_applying_stay_risky_until_offer_completes()
     {
         await using var fixture = await Fixture.CreateAsync();
