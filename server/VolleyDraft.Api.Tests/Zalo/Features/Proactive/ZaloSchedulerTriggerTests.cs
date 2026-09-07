@@ -1,4 +1,7 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -60,5 +63,68 @@ public sealed class ZaloSchedulerTriggerTests
         var interval = ZaloSchedulerWorker.ResolveWatchdogInterval(configuration);
 
         Assert.Equal(expectedMinutes, interval.TotalMinutes);
+    }
+
+    [Fact]
+    public async Task Durable_lease_blocks_second_instance_until_expiry_then_allows_failover()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloSchedulerLeaseStore(db);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
+        Assert.False(await store.TryAcquireAsync("instance-b", now.AddMinutes(14), TimeSpan.FromMinutes(15)));
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(15), TimeSpan.FromMinutes(15)));
+
+        var lease = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
+        Assert.Equal("instance-b", lease.OwnerId);
+        Assert.Equal(now.AddMinutes(30), lease.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task Current_owner_can_renew_without_opening_a_second_instance_window()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloSchedulerLeaseStore(db);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
+        Assert.True(await store.TryAcquireAsync("instance-a", now.AddMinutes(10), TimeSpan.FromMinutes(15)));
+        Assert.False(await store.TryAcquireAsync("instance-b", now.AddMinutes(16), TimeSpan.FromMinutes(15)));
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(25), TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
+    public async Task Scheduler_heartbeat_survives_store_restart_and_keeps_success_separate_from_failure()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+        var store = new ZaloSchedulerLeaseStore(db);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
+        await store.MarkAttemptAsync("instance-a", now.AddSeconds(1));
+        await store.MarkSuccessAsync("instance-a", now.AddSeconds(2));
+        await store.MarkFailureAsync("instance-a", now.AddMinutes(1));
+
+        var restartedStore = new ZaloSchedulerLeaseStore(db);
+        var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await restartedStore.GetAsync());
+        Assert.Equal(now.AddSeconds(1), snapshot.LastAttemptAt);
+        Assert.Equal(now.AddSeconds(2), snapshot.LastSuccessAt);
+        Assert.Equal(now.AddMinutes(1), snapshot.LastFailureAt);
     }
 }
