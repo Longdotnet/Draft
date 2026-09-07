@@ -175,45 +175,19 @@ public sealed partial class ZaloOverbookService
         }
     }
 
-    private async Task<int> CountActiveSlotRisksAsync(
+    private Task<int> CountActiveSlotRisksAsync(
         MatchSession session,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(session.ZaloConnectionId) ||
             string.IsNullOrWhiteSpace(session.ZaloGroupId))
-            return 0;
+            return Task.FromResult(0);
 
-        var ownerIds = await db.SessionPlayers
-            .AsNoTracking()
-            .Where(player => player.SessionId == session.Id &&
-                             player.IsPresent &&
-                             player.PlayerProfile != null &&
-                             player.PlayerProfile.ZaloUserId != null)
-            .Select(player => player.PlayerProfile!.ZaloUserId!)
-            .ToListAsync(cancellationToken);
-        ownerIds = ownerIds
-            .Select(ZaloOverbookLogic.NormalizeId)
-            .Where(item => item.Length > 0)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        if (ownerIds.Count == 0) return 0;
-
-        var offerStore = new ZaloOpenSlotOfferStore(db);
-        var activeOfferIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var ownerId in ownerIds)
-        {
-            var offers = await offerStore.ListOwnedActiveAsync(
-                session.ZaloConnectionId!,
-                session.ZaloGroupId!,
-                ownerId,
-                cancellationToken);
-            foreach (var offer in offers)
-            {
-                if (string.Equals(offer.SessionId, session.Id, StringComparison.Ordinal))
-                    activeOfferIds.Add(offer.Id);
-            }
-        }
-        return activeOfferIds.Count;
+        return new ZaloOpenSlotRiskCounter(db).CountActiveForSessionAsync(
+            session.ZaloConnectionId!,
+            session.ZaloGroupId!,
+            session.Id,
+            cancellationToken);
     }
 
     private async Task DeactivateRemovedLinkedPollPlayersAsync(
