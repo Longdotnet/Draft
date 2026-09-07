@@ -15,6 +15,7 @@ internal enum ZaloAutoSessionConversationState
     ReadyToConfirm,
     Executing,
     Created,
+    HandedOff,
     Cancelled,
     Expired,
     Superseded,
@@ -246,7 +247,11 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
             cancellationToken);
         AddParameter(command, "@ProposalId", proposalId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
+        var conversation = await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
+        await reader.DisposeAsync();
+        return conversation is null
+            ? null
+            : await ApplyLifecycleOwnershipAsync(conversation, cancellationToken);
     }
 
     public async Task<ZaloAutoSessionConversationData?> GetByIdAsync(
@@ -261,9 +266,9 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var conversation = await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
         await reader.DisposeAsync();
-        return conversation is null
-            ? null
-            : await matchProposalsV4.HydrateDraftAsync(conversation, cancellationToken);
+        if (conversation is null) return null;
+        conversation = await matchProposalsV4.HydrateDraftAsync(conversation, cancellationToken);
+        return await ApplyLifecycleOwnershipAsync(conversation, cancellationToken);
     }
 
     public async Task<ZaloAutoSessionConversationData?> FindByQuotedBotMessageAsync(
@@ -367,6 +372,9 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        if (conversation.State == ZaloAutoSessionConversationState.Created)
+            conversation = await ApplyLifecycleOwnershipAsync(conversation, cancellationToken);
+
         var durable = await matchProposalsV4.SaveConversationDraftAsync(conversation, cancellationToken);
         if (durable is not null)
         {
@@ -472,8 +480,27 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken)
     {
         foreach (var conversation in conversations)
+        {
             await matchProposalsV4.HydrateDraftAsync(conversation, cancellationToken);
+            await ApplyLifecycleOwnershipAsync(conversation, cancellationToken);
+        }
         return conversations;
+    }
+
+    private async Task<ZaloAutoSessionConversationData> ApplyLifecycleOwnershipAsync(
+        ZaloAutoSessionConversationData conversation,
+        CancellationToken cancellationToken)
+    {
+        if (conversation.State != ZaloAutoSessionConversationState.Created)
+            return conversation;
+
+        var lifecycle = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+        if (!await lifecycle.HasHandedOffOwnershipAsync(conversation.ProposalId, cancellationToken))
+            return conversation;
+
+        conversation.State = ZaloAutoSessionConversationState.HandedOff;
+        conversation.NextFollowUpAt = null;
+        return conversation;
     }
 
     private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
