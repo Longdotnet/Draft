@@ -137,47 +137,71 @@ internal sealed class ZaloAutoSessionActionExecutor(
             throw;
         }
 
-        var syncFailures = new List<string>();
-        foreach (var item in created)
+        // The authoritative MatchSession/proposal mutation is committed at this point. Request
+        // cancellation must no longer be allowed to make the caller believe creation did not
+        // happen. Continue best-effort post-create bookkeeping with a non-request token, and
+        // normalize any cancellation from downstream timeouts/providers into a normal exception
+        // so the caller can reload the durable Created proposal and finalize conversation state.
+        await RunCommittedPostCreateAsync(async postCommitToken =>
         {
-            try
+            var syncFailures = new List<string>();
+            foreach (var item in created)
             {
-                var sync = await integration.SyncLatestPollAsync(
-                    tracked.AdminUserId,
-                    item.SessionId,
-                    item.Candidate.OptionContent);
-                if (!sync.IsSuccess) syncFailures.Add($"{item.Candidate.DayKey}: {sync.Error}");
+                try
+                {
+                    var sync = await integration.SyncLatestPollAsync(
+                        tracked.AdminUserId,
+                        item.SessionId,
+                        item.Candidate.OptionContent);
+                    if (!sync.IsSuccess) syncFailures.Add($"{item.Candidate.DayKey}: {sync.Error}");
 
-                var overbookStore = new ZaloOverbookStateStore(db);
-                var state = await overbookStore.GetAsync(item.SessionId, cancellationToken)
-                            ?? new ZaloOverbookStateData { SessionId = item.SessionId };
-                state.Enabled = true;
-                state.GraceMinutes = Math.Clamp(configuration.GetValue("AutoSession:OverbookGraceMinutes", 5), 0, 120);
-                state.ReminderIntervalMinutes = Math.Clamp(configuration.GetValue("AutoSession:OverbookReminderMinutes", 30), 5, 240);
-                state.MaxReminders = Math.Clamp(configuration.GetValue("AutoSession:OverbookMaxReminders", 5), 1, 20);
-                await overbookStore.SaveAsync(state, cancellationToken);
-                await overbook.ObserveAsync(item.SessionId, null, cancellationToken);
+                    var overbookStore = new ZaloOverbookStateStore(db);
+                    var state = await overbookStore.GetAsync(item.SessionId, postCommitToken)
+                                ?? new ZaloOverbookStateData { SessionId = item.SessionId };
+                    state.Enabled = true;
+                    state.GraceMinutes = Math.Clamp(configuration.GetValue("AutoSession:OverbookGraceMinutes", 5), 0, 120);
+                    state.ReminderIntervalMinutes = Math.Clamp(configuration.GetValue("AutoSession:OverbookReminderMinutes", 30), 5, 240);
+                    state.MaxReminders = Math.Clamp(configuration.GetValue("AutoSession:OverbookMaxReminders", 5), 1, 20);
+                    await overbookStore.SaveAsync(state, postCommitToken);
+                    await overbook.ObserveAsync(item.SessionId, null, postCommitToken);
+                }
+                catch (Exception exception)
+                {
+                    syncFailures.Add($"{item.Candidate.DayKey}: {exception.Message}");
+                    logger.LogWarning(exception, "Auto Session V3 post-create sync failed Session={SessionId}", item.SessionId);
+                }
             }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                syncFailures.Add($"{item.Candidate.DayKey}: {exception.Message}");
-                logger.LogWarning(exception, "Auto Session V3 post-create sync failed Session={SessionId}", item.SessionId);
-            }
+
+            var createdNames = created.Count == 0
+                ? "không có lịch mới (các option này đã được tạo trước đó)"
+                : string.Join(", ", created.Select(item => BuildSessionName(item.Candidate)));
+            var message = $"Đã tạo trên website: {createdNames}. Poll đã được liên kết theo từng option và roster sẽ tiếp tục sync theo vote.";
+            if (syncFailures.Count > 0)
+                message += $" Có {syncFailures.Count} lỗi sync cần kiểm tra: {string.Join(" | ", syncFailures.Select(item => Truncate(item, 180)))}";
+
+            await bridge.SendGroupMessageAsync(
+                connection.AccountZaloId,
+                tracked.GroupId,
+                message,
+                [],
+                idempotencyKey: $"auto-session-v3-created:{proposal.Id}");
+        });
+    }
+
+    internal static async Task RunCommittedPostCreateAsync(Func<CancellationToken, Task> work)
+    {
+        try
+        {
+            await work(CancellationToken.None);
         }
-
-        var createdNames = created.Count == 0
-            ? "không có lịch mới (các option này đã được tạo trước đó)"
-            : string.Join(", ", created.Select(item => BuildSessionName(item.Candidate)));
-        var message = $"Đã tạo trên website: {createdNames}. Poll đã được liên kết theo từng option và roster sẽ tiếp tục sync theo vote.";
-        if (syncFailures.Count > 0)
-            message += $" Có {syncFailures.Count} lỗi sync cần kiểm tra: {string.Join(" | ", syncFailures.Select(item => Truncate(item, 180)))}";
-
-        await bridge.SendGroupMessageAsync(
-            connection.AccountZaloId,
-            tracked.GroupId,
-            message,
-            [],
-            idempotencyKey: $"auto-session-v3-created:{proposal.Id}");
+        catch (OperationCanceledException exception)
+        {
+            // Once the creation transaction committed, cancellation is no longer evidence that
+            // the mutation was aborted. Convert it so the caller's durable-status recovery path
+            // handles this exactly like any other post-create failure and marks the conversation
+            // Created instead of leaving it stranded in an execution-claimed state.
+            throw new InvalidOperationException("auto_session_post_commit_cancelled", exception);
+        }
     }
 
     internal static async Task PersistFailureAfterRollbackAsync(
