@@ -61,6 +61,66 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
     }
 
     [Fact]
+    public async Task Later_unrelated_bot_reply_prevents_stale_draft_selection_takeover()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            ZaloBotIntent.AutoDraft.ToString(),
+            withDraftCandidates: true);
+        await fixture.AddLaterReplyAsync(ZaloBotIntent.GeneralChat);
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "cn");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
+    public async Task Draft_selection_requires_the_current_pending_prompt_to_have_reached_user()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            ZaloBotIntent.AutoDraft.ToString(),
+            withDraftCandidates: true,
+            withDraftPromptReply: false);
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "cn");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
+    public async Task Older_same_intent_reply_cannot_revive_a_newer_pending_selector()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            ZaloBotIntent.AutoDraft.ToString(),
+            withDraftCandidates: true,
+            withDraftPromptReply: false);
+        await fixture.AddReplyAsync(
+            ZaloBotIntent.AutoDraft,
+            fixture.PendingUpdatedAt.AddSeconds(-1),
+            "older-autodraft");
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "cn");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
+    public async Task Later_unrelated_bot_reply_also_prevents_stale_draft_cancellation()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            ZaloBotIntent.AutoDraft.ToString(),
+            withDraftCandidates: true);
+        await fixture.AddLaterReplyAsync(ZaloBotIntent.MissingSlots);
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "huỷ");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
     public async Task Strong_confirmation_does_not_skip_missing_session_selection()
     {
         await using var fixture = await Fixture.CreateAsync(
@@ -176,20 +236,26 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private Fixture(SqliteConnection connection, VolleyDraftDbContext db)
+        private Fixture(
+            SqliteConnection connection,
+            VolleyDraftDbContext db,
+            DateTimeOffset pendingUpdatedAt)
         {
             Connection = connection;
             Db = db;
+            PendingUpdatedAt = pendingUpdatedAt;
         }
 
         public SqliteConnection Connection { get; }
         public VolleyDraftDbContext Db { get; }
+        public DateTimeOffset PendingUpdatedAt { get; }
 
         public static async Task<Fixture> CreateAsync(
             string pendingIntent,
             DateTimeOffset? expiresAt = null,
             bool withDraftCandidates = false,
-            string candidateGroupId = "g1")
+            string candidateGroupId = "g1",
+            bool withDraftPromptReply = true)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -249,6 +315,7 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
                 candidateIds.AddRange([sunday.Id, wednesday.Id]);
             }
 
+            var pendingUpdatedAt = DateTimeOffset.UtcNow.AddSeconds(-5);
             db.ZaloBotConversationStates.Add(new ZaloBotConversationState
             {
                 Id = "pending-1",
@@ -258,11 +325,62 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
                 SenderZaloUserId = "user-long",
                 PendingIntent = pendingIntent,
                 PendingPayloadJson = System.Text.Json.JsonSerializer.Serialize(candidateIds),
-                ExpiresAt = expiresAt ?? DateTimeOffset.UtcNow.AddMinutes(5)
+                ExpiresAt = expiresAt ?? DateTimeOffset.UtcNow.AddMinutes(5),
+                CreatedAt = pendingUpdatedAt,
+                UpdatedAt = pendingUpdatedAt
             });
+            if (withDraftCandidates && withDraftPromptReply)
+            {
+                db.ZaloGroupMessages.Add(new ZaloGroupMessage
+                {
+                    Id = "draft-prompt-row",
+                    ZaloConnectionId = zalo.Id,
+                    ZaloConnection = zalo,
+                    GroupId = "g1",
+                    MessageId = "draft-prompt",
+                    SenderId = "user-long",
+                    SenderName = "Long",
+                    Content = "@Npc 9",
+                    IsFromBot = false,
+                    SentAt = pendingUpdatedAt.AddSeconds(-1),
+                    ReceivedAt = pendingUpdatedAt.AddSeconds(-1),
+                    BotReplySentAt = pendingUpdatedAt.AddSeconds(1),
+                    SelectedIntent = pendingIntent,
+                    ReplyOutcome = "sent"
+                });
+            }
+
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
-            return new Fixture(connection, db);
+            return new Fixture(connection, db, pendingUpdatedAt);
+        }
+
+        public Task AddLaterReplyAsync(ZaloBotIntent intent) =>
+            AddReplyAsync(intent, DateTimeOffset.UtcNow, $"later-{intent}");
+
+        public async Task AddReplyAsync(
+            ZaloBotIntent intent,
+            DateTimeOffset botReplySentAt,
+            string messageId)
+        {
+            Db.ZaloGroupMessages.Add(new ZaloGroupMessage
+            {
+                Id = $"{messageId}-row",
+                ZaloConnectionId = "conn-1",
+                GroupId = "g1",
+                MessageId = messageId,
+                SenderId = "user-long",
+                SenderName = "Long",
+                Content = "unrelated",
+                IsFromBot = false,
+                SentAt = botReplySentAt.AddMilliseconds(-100),
+                ReceivedAt = botReplySentAt.AddMilliseconds(-100),
+                BotReplySentAt = botReplySentAt,
+                SelectedIntent = intent.ToString(),
+                ReplyOutcome = "sent"
+            });
+            await Db.SaveChangesAsync();
+            Db.ChangeTracker.Clear();
         }
 
         public async ValueTask DisposeAsync()
