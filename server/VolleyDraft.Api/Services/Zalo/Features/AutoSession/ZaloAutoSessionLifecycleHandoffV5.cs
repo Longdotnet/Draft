@@ -72,7 +72,7 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             INSERT INTO "ZaloAutoSessionLifecycleHandoffs"
                 ("SessionId", "ProposalId", "Stage", "Owner", "NeedsWebsite", "ReasonCode", "SnapshotJson", "HandedOffAt")
             VALUES
-                ({{sessionId}}, {{proposalId}}, {{lifecycle.Value.Stage.ToString()}}, {{lifecycle.Value.Owner.ToString()}}, {{lifecycle.Value.NeedsWebsite ? 1 : 0}}, {{lifecycle.Value.ReasonCode}}, {{snapshotJson}}, {{handedOffAt.ToString("O")}})
+                ({{sessionId}}, {{proposalId}}, {{lifecycle.Value.Stage.ToString()}}, {{lifecycle.Value.Owner.ToString()}}, {{(lifecycle.Value.NeedsWebsite ? 1 : 0)}}, {{lifecycle.Value.ReasonCode}}, {{snapshotJson}}, {{handedOffAt.ToString("O")}})
             ON CONFLICT ("SessionId") DO UPDATE SET
                 "ProposalId" = excluded."ProposalId",
                 "Stage" = excluded."Stage",
