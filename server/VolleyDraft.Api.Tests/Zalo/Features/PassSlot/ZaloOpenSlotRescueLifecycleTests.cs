@@ -124,7 +124,7 @@ public sealed class ZaloOpenSlotRescueLifecycleTests
         var store = new ZaloOpenSlotOfferStore(fixture.Db);
         await store.OpenAsync(
             "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T6", "m1",
-            now.AddMinutes(-1), now.AddMinutes(-2));
+            now.AddMinutes(1), now.AddSeconds(30));
 
         var player = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == "owner-player");
         player.IsPresent = false;
@@ -132,7 +132,7 @@ public sealed class ZaloOpenSlotRescueLifecycleTests
         fixture.Db.ChangeTracker.Clear();
 
         var handler = new RecordingHandler();
-        var result = await CreateService(fixture.Db, handler).RunDueAsync(now);
+        var result = await CreateService(fixture.Db, handler).RunDueAsync(now.AddMinutes(2));
 
         Assert.Equal(1, result.ClosedCount);
         Assert.Equal(0, handler.SendCount);
