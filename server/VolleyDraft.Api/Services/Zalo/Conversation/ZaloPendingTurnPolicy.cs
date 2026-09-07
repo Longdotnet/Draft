@@ -19,22 +19,36 @@ public static class ZaloPendingTurnPolicy
         if (ZaloMenuCommandParser.TryParse(currentQuestion, out _, out _))
             return ZaloPendingTurnDisposition.SwitchToNewIntent;
 
-        // A high-confidence fresh deterministic intent must win before generic cancel
-        // language is considered. Otherwise domain commands such as `hủy reminder`
-        // can be swallowed by an unrelated pending session selector merely because
-        // they begin with a natural cancel token.
-        if (!string.IsNullOrWhiteSpace(freshIntent) &&
-            freshConfidence >= .85 &&
-            !string.Equals(pendingIntent, freshIntent, StringComparison.OrdinalIgnoreCase))
-            return ZaloPendingTurnDisposition.SwitchToNewIntent;
+        var shared = ZaloPendingOwnershipPolicy.ClassifySharedControl(
+            pendingIntent,
+            currentQuestion,
+            freshIntent,
+            freshConfidence);
+        switch (shared)
+        {
+            case ZaloPendingOwnershipPolicy.SharedDisposition.CancelPending:
+                return ZaloPendingTurnDisposition.CancelPending;
+            case ZaloPendingOwnershipPolicy.SharedDisposition.SwitchToFreshIntent:
+                return ZaloPendingTurnDisposition.SwitchToNewIntent;
+            case ZaloPendingOwnershipPolicy.SharedDisposition.ConfirmPending:
+                // A session-choice prompt still needs an actual selector. Bare
+                // confirmation belongs to no candidate, so explicit addressing
+                // returns it to normal routing while ambient text stays ignored.
+                return mentionedBot
+                    ? ZaloPendingTurnDisposition.SwitchToNewIntent
+                    : ZaloPendingTurnDisposition.IgnoreCurrentTurn;
+        }
 
+        // Domain-specific natural cancellation stays local to this session-selector
+        // workflow. Shared ownership only decides exact bare controls and clearly
+        // different deterministic intents; it does not own feature grammar.
         if (IsNaturalCancel(currentQuestion))
             return ZaloPendingTurnDisposition.CancelPending;
 
         if (ZaloSessionResolver.LooksLikeSelector(currentQuestion))
             return ZaloPendingTurnDisposition.ContinuePending;
 
-        // A session-choice prompt requires an actual session selector. A bare
+        // A session-choice prompt requires an actual session selector. A broad
         // confirmation cannot safely choose among T4/T6 and therefore must not let
         // old pending state consume a fresh bot-addressed action.
         if (IsStrongConfirmation(currentQuestion))
