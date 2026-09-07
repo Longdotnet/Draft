@@ -15,11 +15,11 @@ internal static class ZaloDraftPreparationReminderObservation
     {
         var missingProfiles = readiness.MissingProfileNames
             .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(name => name, StringComparer.Ordinal)
-            .ToList();
+            .Select(name => name.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+        var missingProfileIdentity = BuildFramedCanonical(missingProfiles);
 
         var canonical = BuildFramedCanonical(
             readiness.Fingerprint ?? string.Empty,
@@ -28,7 +28,7 @@ internal static class ZaloDraftPreparationReminderObservation
             readiness.PresentPlayerCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
             readiness.Capacity.ToString(System.Globalization.CultureInfo.InvariantCulture),
             readiness.MissingProfileCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            string.Join('\n', missingProfiles),
+            missingProfileIdentity,
             readiness.HasTeams ? "1" : "0",
             readiness.CanEscalate ? "1" : "0",
             Math.Max(0, activeSlotRiskCount).ToString(System.Globalization.CultureInfo.InvariantCulture));
