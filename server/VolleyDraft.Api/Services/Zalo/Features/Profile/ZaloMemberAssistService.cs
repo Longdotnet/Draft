@@ -54,7 +54,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex TargetedTransferPattern = new(
-        @"(?<![a-z0-9])(?:pass|share|nhuong|tra|chuyen)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)\s+(?:voi|cho)\s+(?!tui\b|toi\b|minh\b|em\b)[a-z0-9]",
+        @"(?<![a-z0-9])(?:pass|share|nhuong|tra|chuyen)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)\s+(?:voi|cho)\s+[a-z0-9]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PossibleOpenSlotTurnPattern = new(
