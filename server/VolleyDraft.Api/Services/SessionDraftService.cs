@@ -2723,6 +2723,9 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var teamIdByCaptainId = session.Teams.ToDictionary(
             team => team.CaptainSessionPlayerId!,
             team => team.Id);
+        // Final mutation boundary: reconcile durable preferences against the authoritative current roster.
+        await new TeamPreferenceRosterReconciler(db).ReconcileAsync(sessionId);
+
         var preferenceError = await ValidateCaptainPreferenceGroupsAsync(sessionId, teamIdByCaptainId);
         if (preferenceError is not null)
         {
