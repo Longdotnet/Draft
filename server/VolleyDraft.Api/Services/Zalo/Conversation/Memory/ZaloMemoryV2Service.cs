@@ -44,6 +44,16 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         // names / approved aliases to metadata-only mentions before routing.
         await TryEnrichLegacyIdentityAsync(groupId, incoming, cancellationToken);
 
+        // Capture what the ambient proposal actually disclosed before the one-shot
+        // handoff completes it. The domain planner may legitimately expand the pair
+        // through existing same-team/shared-slot relationships; that broader plan
+        // must be shown again instead of being silently applied by this confirmation.
+        var teamPreferenceGuard = new ZaloAmbientTeamPreferenceConfirmationGuard(db);
+        var teamPreferenceDisclosure = await teamPreferenceGuard.CaptureDisclosureAsync(
+            groupId,
+            sender.Id,
+            cancellationToken);
+
         // An ambient proposal stays read-only until the requester replies to the
         // exact provider message that presented the latest ready proposal. When that
         // deterministic confirmation is present, promote only a short-lived legacy
@@ -51,8 +61,17 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         // webhook continues into the existing atomic ZaloBotService apply path.
         try
         {
-            await new ZaloAmbientTeamPreferenceHandoff(db)
+            var promoted = await new ZaloAmbientTeamPreferenceHandoff(db)
                 .TryPromoteExactReplyConfirmationAsync(incoming, cancellationToken);
+            if (promoted)
+            {
+                var confirmationDrift = await teamPreferenceGuard.RejectUndisclosedExpansionAsync(
+                    teamPreferenceDisclosure,
+                    incoming,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(confirmationDrift))
+                    return new(true, confirmationDrift, null, null);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
