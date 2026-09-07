@@ -56,6 +56,9 @@ public sealed class ZaloTeamCardService(
         var posterTemplateId = 1;
         try
         {
+            // Preserve a poster already claimed during rollout. If there is no persisted
+            // assignment, only sessions created after the collection rollout join the deck.
+            // Older sessions keep the Neon Arena graphic they historically used.
             var existingAssignment = await TeamPosterRotationStore.GetAssignmentAsync(db, session.Id, cancellationToken);
             if (existingAssignment is not null)
             {
@@ -69,6 +72,8 @@ public sealed class ZaloTeamCardService(
         }
         catch (Exception exception)
         {
+            // Keep image generation available even if the poster-deck persistence layer
+            // is temporarily unavailable. Template 1 is the safe visual fallback.
             logger.LogWarning(exception,
                 "Could not resolve poster template for Session={SessionId}; using Neon Arena fallback",
                 session.Id);
@@ -176,6 +181,9 @@ public sealed class ZaloTeamCardService(
         }
         catch (Exception exception)
         {
+            // Keep @bot 10 operational even if a future premium-renderer change hits
+            // an unexpected Skia/font edge case in production. The old renderer is
+            // intentionally retained as a last-resort safety net.
             logger.LogWarning(
                 exception,
                 "Tournament team poster render failed for Session={SessionId} Template={TemplateId}; falling back to legacy card",
