@@ -135,4 +135,53 @@ public sealed class ZaloAutoSessionLifecycleHandoffRecoveryV5Tests
 
         Assert.Empty(await new ZaloAutoSessionLifecycleHandoffStoreV5(db).GetMissingAsync());
     }
+
+    [Fact]
+    public async Task Reconciliation_batch_prioritizes_never_then_least_recently_attempted_sessions()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var tracked = await new ZaloAutoSessionSettingsStore(db).InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin-a",
+            ZaloConnectionId = "connection-a",
+            GroupId = "group-a",
+            GroupName = "Bóng UTE"
+        });
+        var autoSessions = new ZaloAutoSessionStore(db);
+        foreach (var index in new[] { 1, 2 })
+        {
+            await autoSessions.UpsertProposalAsync(new ZaloPollSessionProposalData
+            {
+                TrackedGroupId = tracked.Id,
+                PollId = $"poll-{index}",
+                PollQuestion = $"Kèo {index}",
+                PollCreatorId = "captain-a",
+                PollStructureHash = $"hash-{index}",
+                Status = ZaloPollSessionProposalStatus.Created
+            });
+            await autoSessions.AddLinkAsync(new ZaloAutoSessionLinkData(
+                $"link-{index}",
+                tracked.Id,
+                $"poll-{index}",
+                $"option-{index}",
+                $"session-{index}",
+                DateTimeOffset.UtcNow.AddMinutes(index)));
+        }
+
+        var store = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+        var firstAttempt = DateTimeOffset.UtcNow.AddMinutes(-10);
+        await store.MarkAttemptAsync("session-1", firstAttempt);
+
+        var neverAttempted = Assert.Single(await store.GetMissingAsync(limit: 1));
+        Assert.Equal("session-2", neverAttempted.SessionId);
+
+        await store.MarkAttemptAsync("session-2", DateTimeOffset.UtcNow);
+        var leastRecent = Assert.Single(await store.GetMissingAsync(limit: 1));
+        Assert.Equal("session-1", leastRecent.SessionId);
+    }
 }
