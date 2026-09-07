@@ -40,15 +40,12 @@ internal sealed class ZaloAutoSessionActionExecutor(
         int? teamSizeOverride,
         CancellationToken cancellationToken = default)
     {
-        // The persisted conversation draft is the plan that was previewed. Before any
-        // proposal status mutation, link claim, or MatchSession write, prove that each
-        // selected item still agrees with the authoritative source option. This catches
-        // stale/bad persisted plans even if an upstream parser regresses in the future.
         EnsureCandidatesMatchPollSource(poll, selected);
 
         var effectiveTeamSize = Math.Clamp(teamSizeOverride ?? tracked.DefaultTeamSize, 2, 30);
         var effectiveLocation = locationOverride ?? tracked.DefaultLocation;
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
+        var linked = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
 
         proposal.Status = ZaloPollSessionProposalStatus.Approved;
         proposal.ApprovedByZaloUserId = NormalizeId(approvedByZaloUserId);
@@ -63,7 +60,11 @@ internal sealed class ZaloAutoSessionActionExecutor(
                          .Select(group => group.First()))
             {
                 var existingLink = await store.GetLinkAsync(tracked.Id, poll.Id, candidate.OptionId, cancellationToken);
-                if (existingLink is not null) continue;
+                if (existingLink is not null)
+                {
+                    linked.Add((existingLink.SessionId, candidate));
+                    continue;
+                }
 
                 var sessionId = Guid.NewGuid().ToString("n");
                 await store.AddLinkAsync(
@@ -99,9 +100,8 @@ internal sealed class ZaloAutoSessionActionExecutor(
                     UpdatedAt = DateTimeOffset.UtcNow
                 };
                 foreach (var teamName in new[] { "Team A", "Team B", "Team C" })
-                {
                     session.Teams.Add(new Team { SessionId = sessionId, Name = teamName });
-                }
+
                 session.PollImports.Add(new PollImport
                 {
                     SessionId = sessionId,
@@ -115,6 +115,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 });
                 db.MatchSessions.Add(session);
                 created.Add((sessionId, candidate));
+                linked.Add((sessionId, candidate));
             }
 
             proposal.Status = ZaloPollSessionProposalStatus.Created;
@@ -125,26 +126,36 @@ internal sealed class ZaloAutoSessionActionExecutor(
         }
         catch (Exception exception)
         {
-            // Recovery must not inherit a request token that may already be cancelled; otherwise
-            // the rollback/failure marker itself can be cancelled and the durable proposal remains
-            // looking executable after a failed mutation attempt.
-            await PersistFailureAfterRollbackAsync(
-                transaction,
-                store,
-                proposal,
-                exception,
-                CancellationToken.None);
+            await PersistFailureAfterRollbackAsync(transaction, store, proposal, exception, CancellationToken.None);
             throw;
         }
 
-        // The authoritative MatchSession/proposal mutation is committed at this point. Request
-        // cancellation must no longer be allowed to make the caller believe creation did not
-        // happen. Continue best-effort post-create bookkeeping with a non-request token, and
-        // normalize any cancellation from downstream timeouts/providers into a normal exception
-        // so the caller can reload the durable Created proposal and finalize conversation state.
         await RunCommittedPostCreateAsync(async postCommitToken =>
         {
             var syncFailures = new List<string>();
+            var handoffFailures = new List<string>();
+            var handoffStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+
+            foreach (var item in linked
+                         .GroupBy(item => item.SessionId, StringComparer.Ordinal)
+                         .Select(group => group.First()))
+            {
+                try
+                {
+                    await handoffStore.HandOffAsync(
+                        proposal.Id,
+                        tracked.AdminUserId,
+                        item.SessionId,
+                        postCommitToken);
+                }
+                catch (Exception exception)
+                {
+                    handoffFailures.Add($"{item.Candidate.DayKey}: {exception.Message}");
+                    logger.LogWarning(exception,
+                        "Auto Session V5 lifecycle handoff failed Session={SessionId}", item.SessionId);
+                }
+            }
+
             foreach (var item in created)
             {
                 try
@@ -176,6 +187,10 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 ? "không có lịch mới (các option này đã được tạo trước đó)"
                 : string.Join(", ", created.Select(item => BuildSessionName(item.Candidate)));
             var message = $"Đã tạo trên website: {createdNames}. Poll đã được liên kết theo từng option và roster sẽ tiếp tục sync theo vote.";
+            if (handoffFailures.Count == 0 && linked.Count > 0)
+                message += " Match Lifecycle đã nhận trạng thái authoritative để tiếp tục recruiting/waitlist/pass-slot/profile/draft readiness.";
+            if (handoffFailures.Count > 0)
+                message += $" Có {handoffFailures.Count} lifecycle handoff chưa đạt gate an toàn: {string.Join(" | ", handoffFailures.Select(item => Truncate(item, 180)))}";
             if (syncFailures.Count > 0)
                 message += $" Có {syncFailures.Count} lỗi sync cần kiểm tra: {string.Join(" | ", syncFailures.Select(item => Truncate(item, 180)))}";
 
@@ -196,10 +211,6 @@ internal sealed class ZaloAutoSessionActionExecutor(
         }
         catch (OperationCanceledException exception)
         {
-            // Once the creation transaction committed, cancellation is no longer evidence that
-            // the mutation was aborted. Convert it so the caller's durable-status recovery path
-            // handles this exactly like any other post-create failure and marks the conversation
-            // Created instead of leaving it stranded in an execution-claimed state.
             throw new InvalidOperationException("auto_session_post_commit_cancelled", exception);
         }
     }
@@ -212,13 +223,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
         CancellationToken cancellationToken = default)
     {
         await transaction.RollbackAsync(cancellationToken);
-
-        // DbContext.CurrentTransaction still points at the rolled-back transaction until it is
-        // disposed. ZaloAutoSessionStore attaches every command to CurrentTransaction, so trying
-        // to persist Failed before disposal can reuse an already-completed transaction and lose
-        // the recovery marker. Clear that ownership boundary first, then write the durable failure.
         await transaction.DisposeAsync();
-
         proposal.Status = ZaloPollSessionProposalStatus.Failed;
         proposal.LastError = Truncate(exception.Message, 1000);
         await store.UpsertProposalAsync(proposal, cancellationToken);
