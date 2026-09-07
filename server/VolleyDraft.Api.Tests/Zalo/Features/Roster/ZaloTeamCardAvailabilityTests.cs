@@ -10,9 +10,11 @@ public sealed class ZaloTeamCardAvailabilityTests
     [InlineData(SessionStatus.Setup, false, false)]
     [InlineData(SessionStatus.CaptainSelection, false, false)]
     [InlineData(SessionStatus.Drafting, false, false)]
+    [InlineData(SessionStatus.Cancelled, false, false)]
     [InlineData(SessionStatus.Setup, true, true)]
     [InlineData(SessionStatus.CaptainSelection, true, true)]
-    [InlineData(SessionStatus.Drafting, true, true)]
+    [InlineData(SessionStatus.Drafting, true, false)]
+    [InlineData(SessionStatus.Cancelled, true, false)]
     [InlineData(SessionStatus.Finished, false, true)]
     [InlineData(SessionStatus.Finished, true, true)]
     public void Card_is_only_exposed_when_authoritative_team_result_exists(
