@@ -15,6 +15,18 @@ public sealed class ZaloDraftPreparationReminderObservationTests
     }
 
     [Fact]
+    public void SameBucketRefresh_IsThrottledUntilObservationIntervalPasses()
+    {
+        var readiness = Snapshot(15, 15, 0, "fp-15");
+        var now = DateTimeOffset.UtcNow;
+        var recent = Previous(readiness, 0) with { UpdatedAt = now.AddMinutes(-4) };
+        var due = Previous(readiness, 0) with { UpdatedAt = now.AddMinutes(-5) };
+
+        Assert.False(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(recent, now));
+        Assert.True(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(due, now));
+    }
+
+    [Fact]
     public void SlotDelta_ReopensSameBucket()
     {
         var before = Snapshot(15, 15, 0, "fp-15");
