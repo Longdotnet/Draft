@@ -12,4 +12,5 @@ Keep these boundaries:
 - post-draft transfer remains revalidated and confirmation-gated;
 - delegated transfer/share continues to enforce server-side permission and stable UID checks;
 - action turns and pass-slot fact queries must not be stolen by the help recognizer;
-- ordinary unmentioned group chatter must not wake contextual help.
+- ordinary unmentioned group chatter must not wake contextual help;
+- addressed guidance must resolve provider account + group through the durable tracked-group ownership boundary, with legacy bot-enabled MatchSession fallback only for pre-seeding compatibility. A configured group must not lose informational help merely because it temporarily has no current bot-enabled match.
