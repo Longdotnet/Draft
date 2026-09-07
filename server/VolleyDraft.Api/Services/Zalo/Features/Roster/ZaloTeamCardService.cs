@@ -26,8 +26,11 @@ public sealed class ZaloTeamCardService(
     internal static bool ShouldJoinPosterRotation(DateTimeOffset createdAt) =>
         createdAt >= PosterCollectionRolloutAt;
 
-    internal static bool HasRenderableTeamResult(SessionStatus status, bool hasNonCaptainAssignment) =>
-        status == SessionStatus.Finished || hasNonCaptainAssignment;
+    internal static bool HasRenderableTeamResult(SessionStatus status, bool hasNonCaptainAssignment)
+    {
+        if (status is SessionStatus.Cancelled or SessionStatus.Drafting) return false;
+        return status == SessionStatus.Finished || hasNonCaptainAssignment;
+    }
 
     public async Task<GeneratedTeamCard?> GenerateAsync(string sessionId, CancellationToken cancellationToken = default)
     {
