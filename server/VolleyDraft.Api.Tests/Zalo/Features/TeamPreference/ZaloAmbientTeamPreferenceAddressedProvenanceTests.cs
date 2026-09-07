@@ -218,8 +218,7 @@ public sealed class ZaloAmbientTeamPreferenceAddressedProvenanceTests
                 ReceivedAt = botReplySentAt.AddSeconds(-1),
                 FirstObservedAt = botReplySentAt.AddSeconds(-1),
                 LastObservedAt = botReplySentAt.AddSeconds(-1),
-                BotReplySentAt = botReplySentAt,
-                BotReplyText = "bot reply"
+                BotReplySentAt = botReplySentAt
             });
             await Db.SaveChangesAsync();
             Db.ChangeTracker.Clear();
