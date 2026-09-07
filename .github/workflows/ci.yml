@@ -8,64 +8,7 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-
 jobs:
-  autopatch:
-    name: Autopilot exact source patch
-    if: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.head.sha, 'never-match') }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout branch head
-        uses: actions/checkout@v4
-        with:
-          ref: autopilot/draft-pass-slot-final-gate
-
-      - name: Patch final draft mutation guard once
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path("server/VolleyDraft.Api/Services/SessionDraftService.cs")
-          text = path.read_text(encoding="utf-8")
-          marker = "var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)"
-          if marker in text:
-              raise SystemExit(0)
-          anchor = "        await ClearDraftRunArtifacts(sessionId);"
-          if text.count(anchor) != 1:
-              raise SystemExit(f"expected one mutation anchor, found {text.count(anchor)}")
-          guard = '''        if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId) &&
-              !string.IsNullOrWhiteSpace(session.ZaloGroupId))
-          {
-              var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)
-                  .CountActiveForSessionAsync(
-                      session.ZaloConnectionId,
-                      session.ZaloGroupId,
-                      session.Id);
-              if (unresolvedPassSlotCount > 0)
-              {
-                  return Conflict<DraftStateResponse>(
-                      $"Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận. " +
-                      "Hoàn tất việc chuyển suất trước: nếu đổi ý, người nhường gõ `huỷ pass`; " +
-                      "nếu đang nhận suất, người nhận vote xong rồi gõ `xong`. " +
-                      "Khi NPC xác nhận xong mới gõ lại `@Npc 9`.");
-              }
-          }
-
-  '''
-          path.write_text(text.replace(anchor, guard + anchor), encoding="utf-8")
-          PY
-          if git diff --quiet -- server/VolleyDraft.Api/Services/SessionDraftService.cs; then
-            exit 0
-          fi
-          git config user.name "Longdotnet"
-          git config user.email "189841499+Longdotnet@users.noreply.github.com"
-          git add server/VolleyDraft.Api/Services/SessionDraftService.cs
-          git diff --cached --check
-          git commit -m "fix(zalo): gate draft on unresolved pass slots [autopatch]"
-          git push origin HEAD:autopilot/draft-pass-slot-final-gate
-
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
