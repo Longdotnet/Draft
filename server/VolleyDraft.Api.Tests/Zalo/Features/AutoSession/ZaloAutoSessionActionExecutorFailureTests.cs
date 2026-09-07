@@ -50,4 +50,36 @@ public sealed class ZaloAutoSessionActionExecutorFailureTests
         Assert.Equal(ZaloPollSessionProposalStatus.Failed, persisted!.Status);
         Assert.Equal("session creation failed", persisted.LastError);
     }
+
+    [Fact]
+    public async Task RunCommittedPostCreateAsync_DoesNotInheritCancelledRequestLifetime()
+    {
+        using var request = new CancellationTokenSource();
+        request.Cancel();
+        var observedCanBeCanceled = true;
+        var completed = false;
+
+        await ZaloAutoSessionActionExecutor.RunCommittedPostCreateAsync(token =>
+        {
+            observedCanBeCanceled = token.CanBeCanceled;
+            token.ThrowIfCancellationRequested();
+            completed = true;
+            return Task.CompletedTask;
+        });
+
+        Assert.True(request.IsCancellationRequested);
+        Assert.False(observedCanBeCanceled);
+        Assert.True(completed);
+    }
+
+    [Fact]
+    public async Task RunCommittedPostCreateAsync_NormalizesDownstreamCancellationAfterCommit()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ZaloAutoSessionActionExecutor.RunCommittedPostCreateAsync(_ =>
+                throw new OperationCanceledException("provider timeout after commit")));
+
+        Assert.Equal("auto_session_post_commit_cancelled", exception.Message);
+        Assert.IsType<OperationCanceledException>(exception.InnerException);
+    }
 }
