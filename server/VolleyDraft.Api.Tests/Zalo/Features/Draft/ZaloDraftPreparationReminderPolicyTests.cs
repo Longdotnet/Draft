@@ -181,8 +181,10 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness, risks: 1);
 
         Assert.NotNull(message);
-        Assert.Contains("pass/huỷ", message!);
-        Assert.Contains("Chưa chốt draft", message);
+        Assert.Contains("1 suất đang nhường/chờ nhận", message!);
+        Assert.Contains("`huỷ pass`", message);
+        Assert.Contains("`xong`", message);
+        Assert.Contains("`huỷ nhận`", message);
         Assert.DoesNotContain("`draft đi`", message);
     }
 
