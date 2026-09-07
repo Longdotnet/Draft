@@ -132,8 +132,8 @@ internal sealed class ZaloAutoSessionActionExecutor(
 
         await RunCommittedPostCreateAsync(async postCommitToken =>
         {
-            var syncFailures = new List<string>();
-            var handoffFailures = new List<string>();
+            var syncFailureSessionIds = new HashSet<string>(StringComparer.Ordinal);
+            var handoffFailureSessionIds = new HashSet<string>(StringComparer.Ordinal);
             var handoffStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
 
             foreach (var item in linked
@@ -150,7 +150,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 }
                 catch (Exception exception)
                 {
-                    handoffFailures.Add($"{item.Candidate.DayKey}: {exception.Message}");
+                    handoffFailureSessionIds.Add(item.SessionId);
                     logger.LogWarning(exception,
                         "Auto Session V5 lifecycle handoff failed Session={SessionId}", item.SessionId);
                 }
@@ -164,7 +164,14 @@ internal sealed class ZaloAutoSessionActionExecutor(
                         tracked.AdminUserId,
                         item.SessionId,
                         item.Candidate.OptionContent);
-                    if (!sync.IsSuccess) syncFailures.Add($"{item.Candidate.DayKey}: {sync.Error}");
+                    if (!sync.IsSuccess)
+                    {
+                        syncFailureSessionIds.Add(item.SessionId);
+                        logger.LogWarning(
+                            "Auto Session V3 post-create poll sync returned failure Session={SessionId} Error={Error}",
+                            item.SessionId,
+                            Truncate(sync.Error, 500));
+                    }
 
                     var overbookStore = new ZaloOverbookStateStore(db);
                     var state = await overbookStore.GetAsync(item.SessionId, postCommitToken)
@@ -178,7 +185,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 }
                 catch (Exception exception)
                 {
-                    syncFailures.Add($"{item.Candidate.DayKey}: {exception.Message}");
+                    syncFailureSessionIds.Add(item.SessionId);
                     logger.LogWarning(exception, "Auto Session V3 post-create sync failed Session={SessionId}", item.SessionId);
                 }
             }
@@ -186,13 +193,11 @@ internal sealed class ZaloAutoSessionActionExecutor(
             var createdNames = created.Count == 0
                 ? "không có lịch mới (các option này đã được tạo trước đó)"
                 : string.Join(", ", created.Select(item => BuildSessionName(item.Candidate)));
-            var message = $"Đã tạo trên website: {createdNames}. Poll đã được liên kết theo từng option và roster sẽ tiếp tục sync theo vote.";
-            if (handoffFailures.Count == 0 && linked.Count > 0)
-                message += " Match Lifecycle đã nhận trạng thái authoritative để tiếp tục recruiting/waitlist/pass-slot/profile/draft readiness.";
-            if (handoffFailures.Count > 0)
-                message += $" Có {handoffFailures.Count} lifecycle handoff chưa đạt gate an toàn: {string.Join(" | ", handoffFailures.Select(item => Truncate(item, 180)))}";
-            if (syncFailures.Count > 0)
-                message += $" Có {syncFailures.Count} lỗi sync cần kiểm tra: {string.Join(" | ", syncFailures.Select(item => Truncate(item, 180)))}";
+            var message = BuildPostCreateStatusMessage(
+                createdNames,
+                linked.Select(item => item.SessionId).Distinct(StringComparer.Ordinal).Count(),
+                handoffFailureSessionIds.Count,
+                syncFailureSessionIds.Count);
 
             await bridge.SendGroupMessageAsync(
                 connection.AccountZaloId,
@@ -201,6 +206,23 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 [],
                 idempotencyKey: $"auto-session-v3-created:{proposal.Id}");
         });
+    }
+
+    internal static string BuildPostCreateStatusMessage(
+        string createdNames,
+        int linkedCount,
+        int handoffFailureCount,
+        int syncFailureCount)
+    {
+        var message = $"Đã tạo trên website: {createdNames}. Poll đã được liên kết theo từng option và roster sẽ tiếp tục sync theo vote.";
+        if (handoffFailureCount == 0 && linkedCount > 0)
+            message += " Match Lifecycle đã nhận snapshot authoritative của session.";
+        if (handoffFailureCount > 0)
+            message += $" Có {handoffFailureCount} lifecycle handoff chưa hoàn tất. Session đã được tạo; bot không suy đoán trạng thái lifecycle từ lỗi hậu xử lý.";
+        if (syncFailureCount > 0)
+            message += $" Có {syncFailureCount} lượt đồng bộ hậu tạo chưa hoàn tất. Session vẫn đã được tạo và cần đồng bộ lại từ poll authoritative.";
+
+        return message;
     }
 
     internal static async Task RunCommittedPostCreateAsync(Func<CancellationToken, Task> work)
