@@ -3,6 +3,12 @@ using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
 
+internal enum ZaloSchedulerWakeReason
+{
+    ExternalTrigger,
+    Watchdog
+}
+
 public sealed class ZaloSchedulerTrigger
 {
     private readonly Channel<byte> channel = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
@@ -14,8 +20,25 @@ public sealed class ZaloSchedulerTrigger
 
     public bool TryTrigger() => channel.Writer.TryWrite(1);
 
-    internal ValueTask<byte> WaitAsync(CancellationToken cancellationToken) =>
-        channel.Reader.ReadAsync(cancellationToken);
+    internal async ValueTask<ZaloSchedulerWakeReason> WaitAsync(
+        TimeSpan watchdogInterval,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(watchdogInterval, TimeSpan.Zero);
+
+        using var watchdogCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        watchdogCancellation.CancelAfter(watchdogInterval);
+
+        try
+        {
+            await channel.Reader.ReadAsync(watchdogCancellation.Token);
+            return ZaloSchedulerWakeReason.ExternalTrigger;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return ZaloSchedulerWakeReason.Watchdog;
+        }
+    }
 
     internal void Drain()
     {
@@ -28,16 +51,41 @@ public sealed class ZaloSchedulerTrigger
 public sealed class ZaloSchedulerWorker(
     ZaloSchedulerTrigger trigger,
     IServiceScopeFactory scopeFactory,
+    IConfiguration configuration,
     ILogger<ZaloSchedulerWorker> logger) : BackgroundService
 {
+    private static readonly TimeSpan DefaultWatchdogInterval = TimeSpan.FromMinutes(15);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var watchdogInterval = ResolveWatchdogInterval(configuration);
+
+        // Durable reminders, pass-slot rescue and Auto Session lifecycle handoff should catch up
+        // whenever the API process becomes available, even if the external scheduler missed the
+        // wake-up that originally should have driven them.
+        await RunCycleAsync(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
-            await trigger.WaitAsync(stoppingToken);
-            trigger.Drain();
+            var wakeReason = await trigger.WaitAsync(watchdogInterval, stoppingToken);
+            if (wakeReason == ZaloSchedulerWakeReason.ExternalTrigger)
+                trigger.Drain();
+            else
+                logger.LogWarning(
+                    "Zalo scheduler watchdog started a recovery cycle after {WatchdogMinutes} minutes without an external tick",
+                    watchdogInterval.TotalMinutes);
+
             await RunCycleAsync(stoppingToken);
         }
+    }
+
+    internal static TimeSpan ResolveWatchdogInterval(IConfiguration configuration)
+    {
+        var configuredMinutes = configuration.GetValue<double?>("Scheduler:WatchdogIntervalMinutes");
+        if (configuredMinutes is > 0 and <= 60)
+            return TimeSpan.FromMinutes(configuredMinutes.Value);
+
+        return DefaultWatchdogInterval;
     }
 
     private async Task RunCycleAsync(CancellationToken cancellationToken)
