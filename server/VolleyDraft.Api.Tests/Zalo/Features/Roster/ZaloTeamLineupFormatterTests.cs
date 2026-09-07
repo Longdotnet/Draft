@@ -44,6 +44,17 @@ public sealed class ZaloTeamLineupFormatterTests
     }
 
     [Fact]
+    public void Missing_authoritative_session_name_never_invents_a_selector()
+    {
+        var result = ZaloTeamLineupFormatter.Format("   ", []);
+
+        Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 9 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@Npc 10 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Precreated_empty_team_rows_are_still_treated_as_no_draft_result()
     {
         var teams = new[]
