@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
@@ -12,6 +14,16 @@ internal sealed record ZaloAutoSessionLifecycleHandoffResultV5(
     bool NeedsWebsite,
     string ReasonCode,
     DateTimeOffset EvaluatedAt);
+
+internal sealed record ZaloAutoSessionLifecycleHandoffCandidateV5(
+    string ProposalId,
+    string AdminUserId,
+    string SessionId);
+
+internal sealed record ZaloAutoSessionLifecycleReconciliationResultV5(
+    int CandidateCount,
+    int HandedOffCount,
+    int FailedCount);
 
 internal static class ZaloAutoSessionLifecycleHandoffPolicyV5
 {
@@ -90,5 +102,97 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             lifecycle.Value.NeedsWebsite,
             lifecycle.Value.ReasonCode,
             handedOffAt);
+    }
+
+    public async Task<IReadOnlyList<ZaloAutoSessionLifecycleHandoffCandidateV5>> GetMissingAsync(
+        int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
+        await EnsureAsync(cancellationToken);
+        limit = Math.Clamp(limit, 1, 200);
+
+        await using var command = await CreateCommandAsync(
+            """
+            SELECT DISTINCT p."Id", g."AdminUserId", l."SessionId"
+            FROM "ZaloAutoSessionLinks" l
+            INNER JOIN "ZaloPollSessionProposals" p
+                ON p."TrackedGroupId" = l."TrackedGroupId"
+               AND p."PollId" = l."PollId"
+            INNER JOIN "ZaloTrackedGroups" g
+                ON g."Id" = l."TrackedGroupId"
+            LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
+                ON h."SessionId" = l."SessionId"
+            WHERE p."Status" = 'Created'
+              AND h."SessionId" IS NULL
+            ORDER BY l."CreatedAt" ASC
+            LIMIT @Limit;
+            """,
+            cancellationToken);
+        AddParameter(command, "@Limit", limit);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<ZaloAutoSessionLifecycleHandoffCandidateV5>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new ZaloAutoSessionLifecycleHandoffCandidateV5(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2)));
+        }
+
+        return result;
+    }
+
+    public async Task<ZaloAutoSessionLifecycleReconciliationResultV5> ReconcileMissingAsync(
+        ILogger logger,
+        CancellationToken cancellationToken = default)
+    {
+        var candidates = await GetMissingAsync(cancellationToken: cancellationToken);
+        var handedOff = 0;
+        var failed = 0;
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                await HandOffAsync(
+                    candidate.ProposalId,
+                    candidate.AdminUserId,
+                    candidate.SessionId,
+                    cancellationToken);
+                handedOff++;
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                failed++;
+                logger.LogWarning(
+                    exception,
+                    "Auto Session V5 lifecycle reconciliation deferred Proposal={ProposalId} Session={SessionId}",
+                    candidate.ProposalId,
+                    candidate.SessionId);
+            }
+        }
+
+        return new ZaloAutoSessionLifecycleReconciliationResultV5(candidates.Count, handedOff, failed);
+    }
+
+    private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(cancellationToken);
+        var command = connection.CreateCommand();
+        command.CommandText = sql;
+        if (db.Database.CurrentTransaction is { } transaction)
+            command.Transaction = transaction.GetDbTransaction();
+        return command;
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 }
