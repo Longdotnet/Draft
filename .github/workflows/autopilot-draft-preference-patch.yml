@@ -23,11 +23,16 @@ jobs:
           from pathlib import Path
           source = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
           text = source.read_text()
+          method = '    private async Task<ServiceResult<DraftStateResponse>> StartDraftRunAsync('
           anchor = '        var preferenceError = await ValidateCaptainPreferenceGroupsAsync(sessionId, teamIdByCaptainId);'
-          if text.count(anchor) != 1:
-              raise SystemExit(f'anchor count={text.count(anchor)}')
+          if text.count(method) != 1:
+              raise SystemExit(f'method count={text.count(method)}')
+          before, after = text.split(method, 1)
+          if after.count(anchor) < 1:
+              raise SystemExit('StartDraftRun anchor not found')
           insertion = '        // Final mutation boundary: reconcile durable preferences against the authoritative current roster.\n        await new TeamPreferenceRosterReconciler(db).ReconcileAsync(sessionId);\n\n'
-          source.write_text(text.replace(anchor, insertion + anchor, 1))
+          after = after.replace(anchor, insertion + anchor, 1)
+          source.write_text(before + method + after)
           Path('.github/workflows/autopilot-draft-preference-patch.yml').unlink()
           PY
           git config user.name "github-actions[bot]"
