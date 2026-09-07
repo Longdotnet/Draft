@@ -39,7 +39,7 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationDriftTests
             .ToListAsync();
         var group = Assert.Single(groups);
         Assert.Equal(
-            new[] { "session-toan", "session-chi" },
+            new[] { "session-chi", "session-toan" },
             group.Players.Select(link => link.SessionPlayerId).OrderBy(id => id).ToArray());
     }
 
