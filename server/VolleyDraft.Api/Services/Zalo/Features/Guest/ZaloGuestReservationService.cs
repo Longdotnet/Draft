@@ -201,7 +201,8 @@ internal sealed class ZaloGuestReservationService(VolleyDraftDbContext db)
                 if (player is not null) player.IsPresent = false;
             }
         }
-        await db.SaveChangesAsync(cancellationToken);
+        await new TeamPreferenceRosterReconciler(db)
+            .ReconcileAsync(session.Id, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new ZaloGuestUpdateResult(session.Id, session.Name, selected.Items);
     }
