@@ -89,7 +89,7 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
         {
             var selectors = string.Join(", ", added.Select(item => item.DayKey).Distinct(StringComparer.OrdinalIgnoreCase));
             var example = added[0].DayKey;
-            return $"Lựa chọn mới đang để CHƯA chọn để fail-closed. Muốn lấy thêm thì nói “thêm {example}”" +
+            return $"Lựa chọn mới đang để CHƯA chọn để tránh tự ý thêm lịch. Muốn lấy thêm thì nói “thêm {example}”" +
                    (added.Count > 1 ? $" (các lựa chọn mới: {selectors})" : string.Empty) +
                    "; nếu giữ bản nháp hiện tại thì nói “tạo đi”.";
         }
@@ -103,15 +103,15 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
             if (item is not null)
             {
                 var local = item.StartTime.ToOffset(TimeSpan.FromHours(7));
-                return $"Giờ authoritative mới của {item.DayKey} là {local:HH:mm}. Nếu giờ này đúng thì nói “tạo đi”; muốn sửa thì nói kiểu “{item.DayKey} 18h”.";
+                return $"Giờ mới trong poll của {item.DayKey} là {local:HH:mm}. Nếu giờ này đúng thì nói “tạo đi”; muốn sửa thì nói kiểu “{item.DayKey} 18h”.";
             }
         }
 
         if (material.Any(change => change.Kind == ZaloAutoSessionPollChangeKindV4.OptionRemoved))
-            return "Lựa chọn đã bị xóa khỏi poll cũng đã bị loại khỏi bản nháp. Nếu đó là ý bạn thì nói “tạo đi”; nếu không, hãy sửa poll authoritative trước.";
+            return "Lựa chọn đã bị xóa khỏi poll cũng đã bị loại khỏi bản nháp. Nếu đó là ý bạn thì nói “tạo đi”; nếu không, hãy sửa lại poll trước.";
 
         if (material.Any(change => change.Kind == ZaloAutoSessionPollChangeKindV4.OptionIdentityChanged))
-            return "Ngày/lịch nguồn đã đổi nên tui dùng dữ liệu poll mới và không tự giữ identity cũ. Nếu bản nháp mới đúng thì nói “tạo đi”; nếu không, hãy sửa poll authoritative trước.";
+            return "Ngày/lịch trong poll đã đổi nên tui dùng lịch mới, không tự giữ ngày cũ. Nếu bản nháp mới đúng thì nói “tạo đi”; nếu không, hãy sửa lại poll trước.";
 
         return "Hãy kiểm tra đúng phần vừa đổi; nếu bản nháp mới đúng thì nói “tạo đi”, còn muốn chỉnh thì nói trực tiếp ngày/giờ/sân cần đổi.";
     }
