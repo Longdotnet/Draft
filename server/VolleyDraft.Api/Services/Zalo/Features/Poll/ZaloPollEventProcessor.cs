@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
@@ -8,17 +10,78 @@ namespace VolleyDraft.Api.Services;
 
 public sealed class ZaloPollEventQueue
 {
-    private readonly Channel<ZaloPollBoardEvent> channel = Channel.CreateBounded<ZaloPollBoardEvent>(
-        new BoundedChannelOptions(500)
+    private readonly record struct ScopeKey(string AccountId, string GroupId);
+
+    private readonly Channel<ScopeKey> ready = Channel.CreateUnbounded<ScopeKey>(
+        new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropOldest
+            AllowSynchronousContinuations = false
         });
+    private readonly ConcurrentDictionary<ScopeKey, ZaloPollBoardEvent> pending = new();
+    private readonly ConcurrentDictionary<ScopeKey, byte> scheduled = new();
 
-    public bool TryEnqueue(ZaloPollBoardEvent incoming) => channel.Writer.TryWrite(incoming);
-    public IAsyncEnumerable<ZaloPollBoardEvent> ReadAllAsync(CancellationToken cancellationToken) =>
-        channel.Reader.ReadAllAsync(cancellationToken);
+    public bool TryEnqueue(ZaloPollBoardEvent incoming)
+    {
+        var key = CreateScopeKey(incoming);
+        if (key.AccountId.Length == 0 || key.GroupId.Length == 0) return false;
+
+        pending.AddOrUpdate(
+            key,
+            incoming,
+            (_, current) => IsNewer(incoming, current) ? incoming : current);
+
+        if (!scheduled.TryAdd(key, 0)) return true;
+        if (ready.Writer.TryWrite(key)) return true;
+
+        scheduled.TryRemove(key, out _);
+        pending.TryRemove(key, out _);
+        return false;
+    }
+
+    public async IAsyncEnumerable<ZaloPollBoardEvent> ReadAllAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var key in ready.Reader.ReadAllAsync(cancellationToken))
+        {
+            if (!pending.TryRemove(key, out var incoming))
+            {
+                scheduled.TryRemove(key, out _);
+                ScheduleFollowUpIfDirty(key);
+                continue;
+            }
+
+            // Release ownership before yielding so changes that arrive while the worker
+            // processes this scope can schedule one follow-up turn. A producer that raced
+            // with the pending removal but still saw this key as scheduled is recovered by
+            // ScheduleFollowUpIfDirty below.
+            scheduled.TryRemove(key, out _);
+            ScheduleFollowUpIfDirty(key);
+            yield return incoming;
+        }
+    }
+
+    internal int PendingScopeCount => pending.Count;
+
+    private void ScheduleFollowUpIfDirty(ScopeKey key)
+    {
+        if (!pending.ContainsKey(key) || !scheduled.TryAdd(key, 0)) return;
+        if (ready.Writer.TryWrite(key)) return;
+        scheduled.TryRemove(key, out _);
+    }
+
+    private static ScopeKey CreateScopeKey(ZaloPollBoardEvent incoming) =>
+        new(NormalizeId(incoming.AccountId), NormalizeId(incoming.GroupId));
+
+    private static bool IsNewer(ZaloPollBoardEvent candidate, ZaloPollBoardEvent current) =>
+        candidate.OccurredAtUnixMs >= current.OccurredAtUnixMs;
+
+    private static string NormalizeId(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        return normalized.EndsWith("_0", StringComparison.Ordinal) ? normalized[..^2] : normalized;
+    }
 }
 
 public sealed class ZaloPollEventWorker(
