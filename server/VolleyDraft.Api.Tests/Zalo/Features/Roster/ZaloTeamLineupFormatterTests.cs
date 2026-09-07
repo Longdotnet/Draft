@@ -32,18 +32,19 @@ public sealed class ZaloTeamLineupFormatterTests
 
         Assert.Empty(result.Mentions);
         Assert.Contains("chưa có kết quả chia team", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("không cần thử lệnh 10 liên tục", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("lệnh 10 chỉ đọc kết quả đã có", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần biết các từ như roster, draft hay sync", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("thiếu người", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("dư người", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("hồ sơ chưa đủ", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("suất đang nhường/chờ người nhận", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
+        Assert.Contains("@Npc 4 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
+        Assert.Contains("cập nhật Nick Tran: nam", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("huỷ pass", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("xong", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("huỷ nhận", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("trưởng nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("phó nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không có quyền", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("lệnh 10 không thể tự tạo đội hình", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("AI có tắt", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("operator", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("session", result.Text, StringComparison.OrdinalIgnoreCase);
     }
@@ -53,8 +54,10 @@ public sealed class ZaloTeamLineupFormatterTests
     {
         var result = ZaloTeamLineupFormatter.Format("   ", []);
 
+        Assert.Contains("`@Npc 4`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 4 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("@Npc 9 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("@Npc 10 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
     }
@@ -67,8 +70,10 @@ public sealed class ZaloTeamLineupFormatterTests
     {
         var result = ZaloTeamLineupFormatter.Format(sessionName, []);
 
+        Assert.Contains("`@Npc 4`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain($"@Npc 4 {sessionName}", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain($"@Npc 9 {sessionName}", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain($"@Npc 10 {sessionName}", result.Text, StringComparison.Ordinal);
     }
@@ -79,8 +84,10 @@ public sealed class ZaloTeamLineupFormatterTests
         var result = ZaloTeamLineupFormatter.Format("  CN 13/9\nSân A  ", []);
 
         Assert.StartsWith("CN 13/9 Sân A chưa có kết quả chia team", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 4`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 4 CN 13/9 Sân A", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("@Npc 9 CN 13/9 Sân A", result.Text, StringComparison.Ordinal);
     }
 
@@ -91,8 +98,10 @@ public sealed class ZaloTeamLineupFormatterTests
 
         var result = ZaloTeamLineupFormatter.Format(sessionName, []);
 
+        Assert.Contains("`@Npc 4`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
         Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain($"@Npc 4 {sessionName}", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain($"@Npc 9 {sessionName}", result.Text, StringComparison.Ordinal);
     }
 
@@ -108,6 +117,7 @@ public sealed class ZaloTeamLineupFormatterTests
 
         var result = ZaloTeamLineupFormatter.Format("Thứ 4 09/9", teams);
 
+        Assert.Contains("@Npc 4 Thứ 4 09/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 9 Thứ 4 09/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 Thứ 4 09/9", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("Đội hình Thứ 4 09/9:", result.Text, StringComparison.Ordinal);
