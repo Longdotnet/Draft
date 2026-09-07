@@ -115,7 +115,7 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
 
         await using var command = await CreateCommandAsync(
             """
-            SELECT DISTINCT p."Id", g."AdminUserId", l."SessionId"
+            SELECT p."Id", g."AdminUserId", l."SessionId"
             FROM "ZaloAutoSessionLinks" l
             INNER JOIN "ZaloPollSessionProposals" p
                 ON p."TrackedGroupId" = l."TrackedGroupId"
@@ -130,15 +130,18 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             LIMIT @Limit;
             """,
             cancellationToken);
-        AddParameter(command, "@Limit", limit);
+        AddParameter(command, "@Limit", Math.Min(limit * 4, 800));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ZaloAutoSessionLifecycleHandoffCandidateV5>();
-        while (await reader.ReadAsync(cancellationToken))
+        var seenSessionIds = new HashSet<string>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken) && result.Count < limit)
         {
+            var sessionId = reader.GetString(2);
+            if (!seenSessionIds.Add(sessionId)) continue;
             result.Add(new ZaloAutoSessionLifecycleHandoffCandidateV5(
                 reader.GetString(0),
                 reader.GetString(1),
-                reader.GetString(2)));
+                sessionId));
         }
 
         return result;
