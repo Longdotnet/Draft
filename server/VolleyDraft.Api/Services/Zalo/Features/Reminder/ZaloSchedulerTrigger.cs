@@ -50,15 +50,22 @@ public sealed class ZaloSchedulerWorker(
             var result = await scope.ServiceProvider.GetRequiredService<ZaloReminderService>()
                 .SendDueRemindersAsync(cancellationToken);
 
+            var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
             var rescueService = new ZaloOpenSlotRescueService(
-                scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>(),
+                db,
                 scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>(),
                 scope.ServiceProvider.GetRequiredService<IConfiguration>(),
                 scope.ServiceProvider.GetRequiredService<ILogger<ZaloOpenSlotRescueService>>());
             var rescue = await rescueService.RunDueAsync(cancellationToken);
 
+            // Match creation commits before V5 lifecycle handoff. A transient failure in that
+            // post-commit window must survive request loss/restart and be retried from durable
+            // Created proposal + link state rather than depending on the original webhook.
+            var handoff = await new ZaloAutoSessionLifecycleHandoffStoreV5(db)
+                .ReconcileMissingAsync(logger, cancellationToken);
+
             logger.LogInformation(
-                "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed}",
+                "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed} LifecycleCandidates={LifecycleCandidates} LifecycleHandedOff={LifecycleHandedOff} LifecycleFailed={LifecycleFailed}",
                 result.GroupCount,
                 result.SentCount,
                 result.FailedCount,
@@ -66,7 +73,10 @@ public sealed class ZaloSchedulerWorker(
                 rescue.NudgedCount,
                 rescue.ClaimReleasedCount,
                 rescue.ClosedCount,
-                rescue.FailedCount);
+                rescue.FailedCount,
+                handoff.CandidateCount,
+                handoff.HandedOffCount,
+                handoff.FailedCount);
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
