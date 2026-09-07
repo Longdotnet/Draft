@@ -18,11 +18,11 @@ public static class ZaloTeamResultRecoveryPolicy
         var imageCommand = canEmbedSelector ? $"@Npc 10 {normalizedName}" : "@Npc 10";
 
         return $"{name} chưa có kết quả chia team nên hiện chưa có card 3 đội để gửi.\n" +
-               "Bạn không cần thử lệnh 10 liên tục. Trước khi chia đội, hãy chắc rằng danh sách người chơi đã chốt, " +
-               "các suất đang nhường/chờ người nhận đã xử lý xong và hồ sơ người chơi đã đủ.\n" +
-               $"Nếu bạn là trưởng nhóm, phó nhóm hoặc người được admin cấp quyền, gõ `{draftCommand}` để bắt đầu luồng chia đội; " +
-               "NPC sẽ dùng dữ liệu backend và báo lại nếu còn điều kiện nào chưa đạt.\n" +
-               $"Khi NPC báo draft xong, gõ `{imageCommand}` để lấy card 3 đội.";
+               "Bạn không cần biết các từ như roster, draft hay sync, và cũng không cần thử lệnh 10 liên tục. Làm theo đúng vòng này:\n" +
+               $"1) Trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ kiểm dữ liệu backend thật trước khi chia đội; nếu còn thiếu người, dư người, hồ sơ chưa đủ hoặc còn suất đang nhường/chờ người nhận, NPC sẽ chặn và hướng dẫn bước cần xử lý tiếp.\n" +
+               "2) Làm xong đúng blocker NPC vừa báo rồi gõ lại lệnh 9. Không cần tự đoán trạng thái trong nhóm chat.\n" +
+               $"3) Chỉ khi NPC báo draft đã xong, gõ `{imageCommand}` để lấy card 3 đội.\n" +
+               "Nếu bạn không có quyền chạy lệnh 9, gửi đúng hướng dẫn này cho trưởng/phó nhóm; lệnh 10 không thể tự tạo đội hình.";
     }
 
     private static string NormalizeDisplayName(string? sessionName)
