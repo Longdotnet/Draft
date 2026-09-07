@@ -72,7 +72,14 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
                 return new ZaloAmbientLeasePendingContinuation(pendingIntent, isCancellation);
             }
 
-            if (AllowedSessionSelectionPendingIntents.Contains(pendingIntent))
+            if (AllowedSessionSelectionPendingIntents.Contains(pendingIntent) &&
+                await IsLatestPendingPromptReplyAsync(
+                    state,
+                    pendingIntent,
+                    connectionId,
+                    groupId,
+                    senderId,
+                    cancellationToken))
             {
                 if (isCancellation)
                     return new ZaloAmbientLeasePendingContinuation(pendingIntent, IsCancellation: true);
@@ -136,6 +143,49 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         return new ZaloAmbientLeasePendingContinuation(
             ZaloBotIntent.TeamPreferenceConfirm,
             IsCancellation: false);
+    }
+
+    private async Task<bool> IsLatestPendingPromptReplyAsync(
+        VolleyDraft.Api.Models.ZaloBotConversationState state,
+        ZaloBotIntent pendingIntent,
+        string connectionId,
+        string groupId,
+        string senderId,
+        CancellationToken cancellationToken)
+    {
+        // A generic recent bot reply is not enough to resume an old draft selector.
+        // The latest successful reply for this sender/group must be the prompt that
+        // created/refreshed this exact pending intent. Otherwise a newer unrelated
+        // conversation could accidentally hand a short "cn" or "huỷ" back to stale
+        // AutoDraft state.
+        var repliedRows = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .Where(item =>
+                item.ZaloConnectionId == connectionId &&
+                item.GroupId == groupId &&
+                item.SenderId == senderId &&
+                !item.IsFromBot &&
+                item.BotReplySentAt != null)
+            .Select(item => new
+            {
+                item.SelectedIntent,
+                item.BotReplySentAt
+            })
+            .ToListAsync(cancellationToken);
+
+        var latest = repliedRows
+            .Where(item => item.BotReplySentAt is not null)
+            .OrderByDescending(item => item.BotReplySentAt!.Value)
+            .FirstOrDefault();
+        if (latest is null ||
+            !string.Equals(latest.SelectedIntent, pendingIntent.ToString(), StringComparison.Ordinal))
+            return false;
+
+        // Pending state is saved before the clarification is sent. Requiring the
+        // successful reply to be at or after that state update also prevents an older
+        // same-intent reply from reviving a newly-created pending selector whose
+        // clarification never reached Zalo.
+        return latest.BotReplySentAt!.Value >= state.UpdatedAt;
     }
 
     private async Task<bool> ResolvesPendingSessionSelectorAsync(
