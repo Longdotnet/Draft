@@ -38,21 +38,15 @@ public static class ZaloConversationStateMigrationPolicy
         var confidence = freshIntent is null ? 0 : deterministic.Confidence;
         ZaloTopicSwitchDecision decision;
 
-        // Domain-qualified fresh commands own the turn before broad conversation-level
-        // helpers such as IsCancel/IsConfirmation get a chance to consume it. This keeps
-        // `hủy reminder` and `chốt slot` available to their deterministic handlers even
-        // while an unrelated legacy confirmation is still pending.
-        if (!sameIntentFamily && freshIntent is not null && confidence >= .85)
-        {
-            decision = ZaloTopicSwitchDecision.SwitchToNewIntent;
-        }
         // A confirmation state has already collected every mutation argument. It may own
         // only an acknowledgement/cancel or a clearly same-family correction. Arbitrary
         // new chat such as `test` or `100+200` must not be trapped behind a stale preview.
-        else if (IsConfirmationBoundary(pendingIntent) &&
-                 !ZaloBotIntelligence.IsConfirmation(question) &&
-                 !ZaloBotIntelligence.IsCancel(question) &&
-                 freshIntent is null)
+        // Fresh deterministic ownership is intentionally not reimplemented here: V2 now
+        // delegates that cross-domain precedence to ZaloPendingOwnershipPolicy.
+        if (IsConfirmationBoundary(pendingIntent) &&
+            !ZaloBotIntelligence.IsConfirmation(question) &&
+            !ZaloBotIntelligence.IsCancel(question) &&
+            freshIntent is null)
         {
             decision = ZaloTopicSwitchDecision.SwitchToNewIntent;
         }
