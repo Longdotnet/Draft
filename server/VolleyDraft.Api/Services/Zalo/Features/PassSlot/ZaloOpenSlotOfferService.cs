@@ -259,9 +259,13 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             var claimantPresent = IsSenderAlreadyPresent(session, claimantId, incoming.SenderName);
             if (!ownerStillPresent && claimantPresent)
             {
-                if (await store.TryBeginApplyAsync(offer.Id, claimantId, cancellationToken))
-                    await store.CompleteAsync(offer.Id, claimantId, cancellationToken);
-                return new(true, $"Oke 👌 roster {session.Name} giờ đã thấy {FriendlyName(incoming.SenderName)} vào và {FriendlyName(offer.OwnerDisplayName)} ra rồi, slot coi như chốt.");
+                return await FinalizePreDraftClaimAsync(
+                    offer.Id,
+                    claimantId,
+                    session.Name,
+                    incoming.SenderName,
+                    offer.OwnerDisplayName,
+                    cancellationToken);
             }
 
             return new(
@@ -332,6 +336,35 @@ public sealed class ZaloOpenSlotOfferService(VolleyDraftDbContext db)
             $"Done 😆 {transferred.Value.ToPlayerName} hốt slot {transferred.Value.FromPlayerName} ở {session.Name} rồi, vào {transferred.Value.TeamName}.{profileNote}",
             ZaloBotIntent.SlotTransferConfirm.ToString(),
             session.Id);
+    }
+
+    internal async Task<ZaloOpenSlotOfferHandleResult> FinalizePreDraftClaimAsync(
+        string offerId,
+        string claimantId,
+        string sessionName,
+        string? claimantName,
+        string? ownerName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await store.TryBeginApplyAsync(offerId, claimantId, cancellationToken))
+        {
+            return new(
+                true,
+                $"Slot {sessionName} vừa đổi trạng thái ở lượt khác nên tui chưa báo chốt nha. Tui giữ theo ledger mới nhất thay vì đoán handoff đã xong.",
+                "OpenSlotOfferPreDraftClaim");
+        }
+
+        if (!await store.CompleteAsync(offerId, claimantId, cancellationToken))
+        {
+            return new(
+                true,
+                $"Roster {sessionName} đã đổi đúng nhưng ledger slot vừa có lượt khác chạm vào. Tui chưa báo hoàn tất khi chưa xác minh được trạng thái cuối.",
+                "OpenSlotOfferPreDraftClaim");
+        }
+
+        return new(
+            true,
+            $"Oke 👌 roster {sessionName} giờ đã thấy {FriendlyName(claimantName)} vào và {FriendlyName(ownerName)} ra rồi, slot coi như chốt.");
     }
 
     private async Task<ZaloOpenSlotOfferHandleResult> CancelOwnedOfferAsync(
