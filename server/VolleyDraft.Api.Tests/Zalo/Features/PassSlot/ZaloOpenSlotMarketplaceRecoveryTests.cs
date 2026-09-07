@@ -36,6 +36,64 @@ public sealed class ZaloOpenSlotMarketplaceRecoveryTests
     }
 
     [Fact]
+    public async Task Rescue_keeps_open_offer_active_when_owner_already_unvoted()
+    {
+        await using var fixture = await Fixture.CreateFinishedAsync();
+        var now = DateTimeOffset.UtcNow;
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        await store.OpenAsync(
+            "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T6", "m1",
+            now.AddHours(2), now.AddMinutes(-1));
+
+        var owner = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == "owner-player");
+        owner.IsPresent = false;
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var handler = new RecordingHandler(sent: true);
+        var result = await CreateService(fixture.Db, handler).RunDueAsync(now);
+
+        Assert.Equal(0, result.ClosedCount);
+        Assert.Equal(1, result.NudgedCount);
+        Assert.Equal(1, handler.SendCount);
+        var active = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
+        Assert.Equal(ZaloOpenSlotOfferStatus.Open, active.Status);
+        Assert.Equal(1, active.NudgeCount);
+    }
+
+    [Fact]
+    public async Task Rescue_releases_timed_out_claim_instead_of_completing_when_owner_unvoted()
+    {
+        await using var fixture = await Fixture.CreateFinishedAsync();
+        var baseNow = DateTimeOffset.UtcNow;
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        var offer = await store.OpenAsync(
+            "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T6", "m1",
+            baseNow.AddHours(2), baseNow.AddMinutes(30));
+        Assert.True(await store.TryClaimAsync(
+            offer,
+            "claimant",
+            "Vivian",
+            "m2",
+            baseNow.AddMinutes(1)));
+
+        var owner = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == "owner-player");
+        owner.IsPresent = false;
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var result = await CreateService(fixture.Db, new RecordingHandler(sent: true))
+            .RunDueAsync(baseNow.AddMinutes(2));
+
+        Assert.Equal(0, result.ClosedCount);
+        Assert.Equal(1, result.ClaimReleasedCount);
+        Assert.Null(await store.LoadPendingClaimAsync("conn", "g1", "claimant"));
+        var reopened = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
+        Assert.Equal(ZaloOpenSlotOfferStatus.Open, reopened.Status);
+        Assert.Null(reopened.ClaimantZaloUserId);
+    }
+
+    [Fact]
     public async Task Stale_applying_reopens_when_canonical_roster_still_has_owner()
     {
         await using var fixture = await Fixture.CreateFinishedAsync();
