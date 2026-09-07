@@ -127,8 +127,8 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         var evidence = BuildInitialEvidence(proposal, tracked, normalized.Value.Draft);
         var revision = BuildRevision(
             proposal,
-            conversation,
             revision: 1,
+            conversationVersion: 0,
             normalized.Value.Json,
             JsonSerializer.Serialize(evidence, JsonOptions),
             normalized.Value.Fingerprint,
@@ -181,19 +181,16 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         if (!HasSameAuthoritativeOptionIdentity(previousDraft.Value.Draft, normalized.Value.Draft))
             return new ZaloAutoSessionMatchProposalV4WriteResult(latest, false, "authoritative_option_identity_changed");
 
-        // A stale process must never replace a newer durable draft. Conversation V3
-        // versions are not the V4 revision number, but they still provide a monotonic
-        // stale-write fence for organizer turns that actually change the draft.
-        if (conversation.Version < latest.ConversationVersion)
-            return new ZaloAutoSessionMatchProposalV4WriteResult(latest, false, "stale_conversation_version");
+        if (conversation.Version <= latest.ConversationVersion)
+            return new ZaloAutoSessionMatchProposalV4WriteResult(latest, false, "stale_or_conflicting_conversation_version");
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
             latest = await GetLatestAsync(conversation.ProposalId, cancellationToken) ?? latest;
             if (string.Equals(latest.DraftFingerprint, normalized.Value.Fingerprint, StringComparison.Ordinal))
                 return new ZaloAutoSessionMatchProposalV4WriteResult(latest, true, "already_persisted");
-            if (conversation.Version < latest.ConversationVersion)
-                return new ZaloAutoSessionMatchProposalV4WriteResult(latest, false, "stale_conversation_version");
+            if (conversation.Version <= latest.ConversationVersion)
+                return new ZaloAutoSessionMatchProposalV4WriteResult(latest, false, "stale_or_conflicting_conversation_version");
 
             previousDraft = NormalizeDraft(latest.DraftJson);
             if (previousDraft is null ||
@@ -249,8 +246,8 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
 
     private static ZaloAutoSessionMatchProposalV4Revision BuildRevision(
         ZaloPollSessionProposalData proposal,
-        ZaloAutoSessionConversationData conversation,
         int revision,
+        int conversationVersion,
         string draftJson,
         string evidenceJson,
         string fingerprint,
@@ -261,7 +258,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
             proposal.TrackedGroupId,
             proposal.PollId,
             revision,
-            conversation.Version,
+            conversationVersion,
             proposal.PollQuestion,
             proposal.PollUpdatedAtUnixMs,
             proposal.PollStructureHash,
@@ -336,15 +333,9 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         {
             var old = previousById[item.OptionId];
             if (old.StartTime != item.StartTime)
-                evidence.StartTimes[item.OptionId] = OrganizerEvidence(
-                    actor,
-                    cleanIntent,
-                    item.StartTime.ToString("O", CultureInfo.InvariantCulture));
+                evidence.StartTimes[item.OptionId] = OrganizerEvidence(actor, cleanIntent, item.StartTime.ToString("O", CultureInfo.InvariantCulture));
             if (old.Selected != item.Selected)
-                evidence.Selections[item.OptionId] = OrganizerEvidence(
-                    actor,
-                    cleanIntent,
-                    item.Selected ? "true" : "false");
+                evidence.Selections[item.OptionId] = OrganizerEvidence(actor, cleanIntent, item.Selected ? "true" : "false");
         }
 
         return evidence;
@@ -370,10 +361,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         return evidence;
     }
 
-    private static ZaloAutoSessionProposalEvidenceValueV4 OrganizerEvidence(
-        string? actor,
-        string? intent,
-        string? detail) => new()
+    private static ZaloAutoSessionProposalEvidenceValueV4 OrganizerEvidence(string? actor, string? intent, string? detail) => new()
     {
         Source = "organizer_correction",
         ActorZaloUserId = actor,
@@ -383,14 +371,8 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
 
     private static ZaloAutoSessionProposalEvidenceV4? DeserializeEvidence(string json)
     {
-        try
-        {
-            return JsonSerializer.Deserialize<ZaloAutoSessionProposalEvidenceV4>(json, JsonOptions);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
+        try { return JsonSerializer.Deserialize<ZaloAutoSessionProposalEvidenceV4>(json, JsonOptions); }
+        catch (JsonException) { return null; }
     }
 
     private static bool HasSameAuthoritativeOptionIdentity(
@@ -419,10 +401,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
             var canonical = JsonSerializer.Serialize(draft, JsonOptions);
             return (draft, canonical, Fingerprint(canonical));
         }
-        catch (JsonException)
-        {
-            return null;
-        }
+        catch (JsonException) { return null; }
     }
 
     private static string Fingerprint(string value)
@@ -431,9 +410,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private async Task<bool> TryInsertAsync(
-        ZaloAutoSessionMatchProposalV4Revision revision,
-        CancellationToken cancellationToken)
+    private async Task<bool> TryInsertAsync(ZaloAutoSessionMatchProposalV4Revision revision, CancellationToken cancellationToken)
     {
         await EnsureAsync(cancellationToken);
         const string sql = """
@@ -472,8 +449,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
         command.CommandText = sql;
-        if (db.Database.CurrentTransaction is { } transaction)
-            command.Transaction = transaction.GetDbTransaction();
+        if (db.Database.CurrentTransaction is { } transaction) command.Transaction = transaction.GetDbTransaction();
         return command;
     }
 
@@ -505,33 +481,25 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
     private static string? ReadString(DbDataReader reader, string name)
     {
         var ordinal = reader.GetOrdinal(name);
-        return reader.IsDBNull(ordinal)
-            ? null
-            : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+        return reader.IsDBNull(ordinal) ? null : Convert.ToString(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
     }
 
     private static int ReadInt(DbDataReader reader, string name)
     {
         var ordinal = reader.GetOrdinal(name);
-        return reader.IsDBNull(ordinal)
-            ? 0
-            : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+        return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
     }
 
     private static long ReadLong(DbDataReader reader, string name)
     {
         var ordinal = reader.GetOrdinal(name);
-        return reader.IsDBNull(ordinal)
-            ? 0
-            : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+        return reader.IsDBNull(ordinal) ? 0 : Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
     }
 
     private static DateTimeOffset? ReadDate(DbDataReader reader, string name)
     {
         var raw = ReadString(reader, name);
-        return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value)
-            ? value
-            : null;
+        return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value) ? value : null;
     }
 
     private static string Clean(string? value, int maxLength, string fallback = "")
