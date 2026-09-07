@@ -26,11 +26,32 @@ public sealed class ZaloTeamCardService(
     internal static bool ShouldJoinPosterRotation(DateTimeOffset createdAt) =>
         createdAt >= PosterCollectionRolloutAt;
 
+    internal static bool HasRenderableTeamResult(SessionStatus status, bool hasNonCaptainAssignment)
+    {
+        if (status is SessionStatus.Cancelled or SessionStatus.Drafting) return false;
+        return status == SessionStatus.Finished || hasNonCaptainAssignment;
+    }
+
     public async Task<GeneratedTeamCard?> GenerateAsync(string sessionId, CancellationToken cancellationToken = default)
     {
         var session = await db.MatchSessions.AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
         if (session is null) return null;
+
+        var hasNonCaptainAssignment = await db.DraftSlots.AsNoTracking()
+            .AnyAsync(slot =>
+                slot.SessionId == sessionId &&
+                slot.AssignedTeamId != null &&
+                !slot.IsCaptainSlot,
+                cancellationToken);
+        if (!HasRenderableTeamResult(session.Status, hasNonCaptainAssignment))
+        {
+            logger.LogInformation(
+                "Team card suppressed because no authoritative team result exists Session={SessionId} Status={Status}",
+                session.Id,
+                session.Status);
+            return null;
+        }
 
         var posterTemplateId = 1;
         try
@@ -183,8 +204,20 @@ public sealed class ZaloTeamCardService(
         return fallbackAvatarByName.GetValueOrDefault(player.DisplayName);
     }
 
-    public string GetPublicUrl(string sessionId)
+    public string? GetPublicUrl(string sessionId)
     {
+        var sessionStatus = db.MatchSessions.AsNoTracking()
+            .Where(session => session.Id == sessionId)
+            .Select(session => (SessionStatus?)session.Status)
+            .SingleOrDefault();
+        if (sessionStatus is null) return null;
+
+        var hasNonCaptainAssignment = db.DraftSlots.AsNoTracking().Any(slot =>
+            slot.SessionId == sessionId &&
+            slot.AssignedTeamId != null &&
+            !slot.IsCaptainSlot);
+        if (!HasRenderableTeamResult(sessionStatus.Value, hasNonCaptainAssignment)) return null;
+
         var configured = configuration["Public:BaseUrl"]?.TrimEnd('/');
         if (string.IsNullOrWhiteSpace(configured) && Uri.TryCreate(configuration["Zalo:WebhookUrl"], UriKind.Absolute, out var webhook))
             configured = webhook.GetLeftPart(UriPartial.Authority);
