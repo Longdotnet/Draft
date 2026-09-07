@@ -165,13 +165,26 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         double freshConfidence = 1)
     {
         var normalized = ZaloBotIntelligence.Normalize(currentQuestion ?? string.Empty);
+
+        // Explicit pending controls remain authoritative even if an unrelated classifier
+        // guess is high-confidence. This preserves the established V2 contract for a bare
+        // `hủy` / `xác nhận` turn while still allowing qualified domain commands below.
+        if (normalized is "huy" or "cancel" or "thoi khoi")
+            return ZaloTopicSwitchDecision.CancelPending;
+        if (normalized == "xac nhan")
+            return ZaloTopicSwitchDecision.ContinuePending;
+
+        // Fresh deterministic ownership must beat broad conversation-level cancel helpers.
+        // Otherwise domain-qualified commands such as `hủy reminder` can be consumed as
+        // cancellation of an unrelated pending workflow merely because they start with `hủy`.
+        if (!string.IsNullOrWhiteSpace(freshIntent) &&
+            freshConfidence >= .85 &&
+            !string.Equals(pendingIntent, freshIntent, StringComparison.OrdinalIgnoreCase))
+            return ZaloTopicSwitchDecision.SwitchToNewIntent;
+
         if (ZaloBotIntelligence.IsCancel(normalized)) return ZaloTopicSwitchDecision.CancelPending;
         if (ZaloBotIntelligence.IsConfirmation(normalized)) return ZaloTopicSwitchDecision.ContinuePending;
-        if (string.IsNullOrWhiteSpace(freshIntent) || freshConfidence < .85)
-            return ZaloTopicSwitchDecision.ContinuePending;
-        if (string.Equals(pendingIntent, freshIntent, StringComparison.OrdinalIgnoreCase))
-            return ZaloTopicSwitchDecision.ContinuePending;
-        return ZaloTopicSwitchDecision.SwitchToNewIntent;
+        return ZaloTopicSwitchDecision.ContinuePending;
     }
 
     private async Task<int> SetStatusAsync(
