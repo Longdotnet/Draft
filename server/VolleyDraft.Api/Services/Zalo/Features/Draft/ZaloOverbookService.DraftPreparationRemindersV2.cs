@@ -164,10 +164,13 @@ public sealed partial class ZaloOverbookService
             var bucket = candidate.Bucket!;
             var previous = await reminderStore.GetAsync(session.Id, cancellationToken);
             var sameBucket = string.Equals(previous?.LastBucketKey, bucket.Key, StringComparison.Ordinal);
+            if (sameBucket && previous is not null &&
+                !ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(previous, now))
+                continue;
 
             // A time bucket is only a cadence boundary, not authority that the product
-            // state is unchanged. Fresh-sync even inside the same bucket, then suppress
-            // only when roster/pass/profile/readiness state is materially identical.
+            // state is unchanged. Re-check same-bucket state on a bounded cadence, then
+            // suppress only when roster/pass/profile/readiness state is materially identical.
             var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
             if (!sync.Success)
             {
@@ -189,16 +192,12 @@ public sealed partial class ZaloOverbookService
             if (sameBucket && previous is not null &&
                 !ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, readiness, activeSlotRisks))
             {
-                // Existing deployments stored the raw roster fingerprint. Upgrade that
-                // row silently so future same-bucket profile/readiness transitions are
-                // observable without sending a deployment-induced duplicate reminder.
-                if (ZaloDraftPreparationReminderObservation.NeedsSilentUpgrade(previous))
-                {
-                    await reminderStore.UpdateObservationFingerprintAsync(
-                        session.Id,
-                        observationFingerprint,
-                        cancellationToken);
-                }
+                // Touch unchanged observations so the worker does not degrade into a
+                // provider poll every heavy cycle. Legacy rows are upgraded silently too.
+                await reminderStore.UpdateObservationFingerprintAsync(
+                    session.Id,
+                    observationFingerprint,
+                    cancellationToken);
                 continue;
             }
 
@@ -294,9 +293,6 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
-            // Reuse the same authoritative lifecycle snapshot the admin control room
-            // uses. This turns the reminder into an exception-first Match Brief without
-            // inventing a second state machine or another proactive message lane.
             var lifecycle = await new MatchLifecycleCoordinator(db)
                 .GetAsync(session.AdminUserId, session.Id, cancellationToken);
             if (lifecycle.IsSuccess && lifecycle.Value is not null)
