@@ -163,8 +163,11 @@ public sealed partial class ZaloOverbookService
             var session = candidate.Session;
             var bucket = candidate.Bucket!;
             var previous = await reminderStore.GetAsync(session.Id, cancellationToken);
-            if (string.Equals(previous?.LastBucketKey, bucket.Key, StringComparison.Ordinal)) continue;
+            var sameBucket = string.Equals(previous?.LastBucketKey, bucket.Key, StringComparison.Ordinal);
 
+            // A time bucket is only a cadence boundary, not authority that the product
+            // state is unchanged. Fresh-sync even inside the same bucket, then suppress
+            // only when roster/pass/profile/readiness state is materially identical.
             var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
             if (!sync.Success)
             {
@@ -179,6 +182,25 @@ public sealed partial class ZaloOverbookService
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
             var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
+            var observationFingerprint = ZaloDraftPreparationReminderObservation.BuildFingerprint(
+                readiness,
+                activeSlotRisks);
+
+            if (sameBucket && previous is not null &&
+                !ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, readiness, activeSlotRisks))
+            {
+                // Existing deployments stored the raw roster fingerprint. Upgrade that
+                // row silently so future same-bucket profile/readiness transitions are
+                // observable without sending a deployment-induced duplicate reminder.
+                if (ZaloDraftPreparationReminderObservation.NeedsSilentUpgrade(previous))
+                {
+                    await reminderStore.UpdateObservationFingerprintAsync(
+                        session.Id,
+                        observationFingerprint,
+                        cancellationToken);
+                }
+                continue;
+            }
 
             var decision = await decisionStore.GetAsync(session.Id, cancellationToken);
             var decisionWasStale = false;
@@ -206,7 +228,7 @@ public sealed partial class ZaloOverbookService
                     bucket.Key,
                     readiness.EffectiveSlotCount,
                     activeSlotRisks,
-                    readiness.Fingerprint,
+                    observationFingerprint,
                     null,
                     cancellationToken);
                 continue;
@@ -227,7 +249,7 @@ public sealed partial class ZaloOverbookService
                     bucket.Key,
                     readiness.EffectiveSlotCount,
                     activeSlotRisks,
-                    readiness.Fingerprint,
+                    observationFingerprint,
                     null,
                     cancellationToken);
                 continue;
@@ -266,7 +288,7 @@ public sealed partial class ZaloOverbookService
                     bucket.Key,
                     readiness.EffectiveSlotCount,
                     activeSlotRisks,
-                    readiness.Fingerprint,
+                    observationFingerprint,
                     null,
                     cancellationToken);
                 continue;
@@ -313,7 +335,7 @@ public sealed partial class ZaloOverbookService
                     bucket.Key,
                     readiness.EffectiveSlotCount,
                     activeSlotRisks,
-                    readiness.Fingerprint,
+                    observationFingerprint,
                     null,
                     cancellationToken);
                 continue;
@@ -379,7 +401,7 @@ public sealed partial class ZaloOverbookService
                     bucket.Key,
                     readiness.EffectiveSlotCount,
                     activeSlotRisks,
-                    readiness.Fingerprint,
+                    observationFingerprint,
                     null,
                     cancellationToken);
                 continue;
@@ -398,7 +420,7 @@ public sealed partial class ZaloOverbookService
                     session,
                     outgoing.Message,
                     outgoing.Mentions,
-                    $"draft-prep-v2:{session.Id}:{bucket.Key}",
+                    $"draft-prep-v2:{session.Id}:{bucket.Key}:{ZaloDraftPreparationReminderObservation.BuildIdempotencySuffix(readiness, activeSlotRisks)}",
                     cancellationToken);
 
                 if (approvalRequest is not null && approvalExpiry is not null)
@@ -427,7 +449,7 @@ public sealed partial class ZaloOverbookService
                     bucket.Key,
                     readiness.EffectiveSlotCount,
                     activeSlotRisks,
-                    readiness.Fingerprint,
+                    observationFingerprint,
                     now,
                     cancellationToken);
                 sent += 1;
