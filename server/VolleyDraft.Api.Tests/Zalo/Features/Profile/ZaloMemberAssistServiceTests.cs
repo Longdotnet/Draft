@@ -76,7 +76,8 @@ public sealed class ZaloMemberAssistServiceTests
         Assert.Equal("session-t6", reply.SessionId);
         Assert.Contains("pass slot T6", reply.Text, StringComparison.OrdinalIgnoreCase);
 
-        var offers = await fixture.Db.ZaloOpenSlotOffers.AsNoTracking().ToListAsync();
+        var offers = await new ZaloOpenSlotOfferStore(fixture.Db)
+            .ListOwnedActiveAsync("conn-1", "g1", "user-nguyen");
         var offer = Assert.Single(offers);
         Assert.Equal("user-nguyen", offer.OwnerZaloUserId);
         Assert.Equal("session-t6", offer.SessionId);
