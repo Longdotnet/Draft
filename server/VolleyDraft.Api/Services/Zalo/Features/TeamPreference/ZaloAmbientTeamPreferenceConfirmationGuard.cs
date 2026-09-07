@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
