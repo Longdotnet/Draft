@@ -89,8 +89,6 @@ public sealed class ZaloPollEventWorker(
     IServiceScopeFactory scopeFactory,
     ILogger<ZaloPollEventWorker> logger) : BackgroundService
 {
-    private readonly Dictionary<string, DateTimeOffset> lastProcessed = new(StringComparer.Ordinal);
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var incoming in queue.ReadAllAsync(stoppingToken))
@@ -99,12 +97,6 @@ public sealed class ZaloPollEventWorker(
             var accountId = NormalizeId(incoming.AccountId);
             var groupId = NormalizeId(incoming.GroupId);
             if (accountId.Length == 0 || groupId.Length == 0) continue;
-            var key = $"{accountId}:{groupId}";
-            var now = DateTimeOffset.UtcNow;
-            if (lastProcessed.TryGetValue(key, out var previous) && now - previous < TimeSpan.FromSeconds(2)) continue;
-            lastProcessed[key] = now;
-            foreach (var stale in lastProcessed.Where(item => now - item.Value > TimeSpan.FromHours(1)).Select(item => item.Key).ToList())
-                lastProcessed.Remove(stale);
 
             try
             {
