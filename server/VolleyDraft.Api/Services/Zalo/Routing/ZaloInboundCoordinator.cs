@@ -38,6 +38,7 @@ public sealed class ZaloInboundCoordinator(
             TryClaimAsync,
             async (message, token) =>
                 await overbookService.TryHandleZaloProfileUpdatePreRouteAsync(message, token) ||
+                await overbookService.TryHandlePassSlotGuidancePreRouteAsync(message, token) ||
                 await overbookService.TryHandleAddressedOpenSlotOfferPreRouteAsync(message, token) ||
                 await overbookService.TryHandleZaloPreRouteAsync(message, token),
             async (message, token) => await botService.HandleIncomingAsync(message, token),
@@ -181,6 +182,7 @@ public sealed class ZaloInboundCoordinator(
             .ExecuteUpdateAsync(updates => updates
                 .SetProperty(message => message.ProcessingStartedAt, nowUtc)
                 .SetProperty(message => message.ProcessingToken, token)
+                .SetProperty(message => message.ReplyAttemptCount, message => message.ReplyAttemptCount + 1)
                 .SetProperty(message => message.ReplyOutcome, "ingress_processing"), cancellationToken);
 
         if (claimed == 0)
