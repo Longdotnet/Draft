@@ -362,7 +362,11 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         await EnsureAsync(cancellationToken);
         var durable = await matchProposalsV4.SaveConversationDraftAsync(conversation, cancellationToken);
         if (durable is not null)
+        {
             conversation.DraftJson = durable.Revision.DraftJson;
+            if (!durable.Accepted)
+                return await GetByIdAsync(conversation.Id, cancellationToken) ?? conversation;
+        }
 
         conversation.UpdatedAt = DateTimeOffset.UtcNow;
         const string sql = """
@@ -381,11 +385,13 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
                 "ExpiresAt" = @ExpiresAt,
                 "LastError" = @LastError,
                 "UpdatedAt" = @UpdatedAt
-            WHERE "Id" = @Id;
+            WHERE "Id" = @Id AND "Version" <= @Version;
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         BindConversation(command, conversation);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        var changed = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (changed == 0)
+            return await GetByIdAsync(conversation.Id, cancellationToken) ?? conversation;
         return conversation;
     }
 
