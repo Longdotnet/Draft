@@ -33,12 +33,17 @@ public sealed class ZaloTeamLineupFormatterTests
         Assert.Empty(result.Mentions);
         Assert.Contains("chưa có kết quả chia team", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần thử lệnh 10 liên tục", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần biết các từ như roster, draft hay sync", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("thiếu người", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("dư người", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("hồ sơ chưa đủ", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("suất đang nhường/chờ người nhận", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("hồ sơ người chơi", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("trưởng nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("phó nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không có quyền", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("lệnh 10 không thể tự tạo đội hình", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("operator", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("session", result.Text, StringComparison.OrdinalIgnoreCase);
     }
