@@ -1,5 +1,6 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
 
 namespace VolleyDraft.Api.Services;
@@ -39,6 +40,12 @@ public sealed class ZaloOpenSlotRiskCounter(VolleyDraftDbContext db)
         try
         {
             await using var command = connection.CreateCommand();
+            // The final draft mutation gate runs inside SessionDraftService's EF
+            // transaction. Raw provider commands must join that transaction explicitly;
+            // otherwise SQLite (and some relational providers) reject the command and
+            // turn a safety check into a runtime failure.
+            if (db.Database.CurrentTransaction is { } currentTransaction)
+                command.Transaction = currentTransaction.GetDbTransaction();
             command.CommandText = """
                 SELECT COUNT(*)
                 FROM "ZaloOpenSlotOffers"

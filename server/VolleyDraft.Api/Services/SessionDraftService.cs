@@ -2774,6 +2774,24 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 $"Cần ít nhất {session.TeamCount * 2} slot và tổng số slot sau khi tính người share ({effectiveSlotCount}) phải chia hết cho {session.TeamCount} team.");
         }
 
+        if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId) &&
+            !string.IsNullOrWhiteSpace(session.ZaloGroupId))
+        {
+            var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)
+                .CountActiveForSessionAsync(
+                    session.ZaloConnectionId,
+                    session.ZaloGroupId,
+                    session.Id);
+            if (unresolvedPassSlotCount > 0)
+            {
+                return Conflict<DraftStateResponse>(
+                    $"Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận. " +
+                    "Hoàn tất việc chuyển suất trước: nếu đổi ý, người nhường gõ `huỷ pass`; " +
+                    "nếu đang nhận suất, người nhận vote xong rồi gõ `xong`. " +
+                    "Khi NPC xác nhận xong mới gõ lại `@Npc 9`.");
+            }
+        }
+
         await ClearDraftRunArtifacts(sessionId);
         await EnsureCaptainSlots(session);
         await AttachCaptainSharedSlots(sessionId, teamIdByCaptainId);
