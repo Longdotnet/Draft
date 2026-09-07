@@ -44,14 +44,25 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         // names / approved aliases to metadata-only mentions before routing.
         await TryEnrichLegacyIdentityAsync(groupId, incoming, cancellationToken);
 
+        // Capture what the ambient proposal actually disclosed before the one-shot
+        // handoff completes it. The domain planner may legitimately expand the pair
+        // through existing same-team/shared-slot relationships; that broader plan
+        // must be shown again instead of being silently applied by this confirmation.
+        var teamPreferenceGuard = new ZaloAmbientTeamPreferenceConfirmationGuard(db);
+        var teamPreferenceDisclosure = await teamPreferenceGuard.CaptureDisclosureAsync(
+            groupId,
+            sender.Id,
+            cancellationToken);
+
         // An ambient proposal stays read-only until the requester replies to the
         // exact provider message that presented the latest ready proposal. When that
         // deterministic confirmation is present, promote only a short-lived legacy
         // confirmation envelope; return-path remains unhandled so the same inbound
         // webhook continues into the existing atomic ZaloBotService apply path.
+        var teamPreferencePromoted = false;
         try
         {
-            await new ZaloAmbientTeamPreferenceHandoff(db)
+            teamPreferencePromoted = await new ZaloAmbientTeamPreferenceHandoff(db)
                 .TryPromoteExactReplyConfirmationAsync(incoming, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -62,6 +73,35 @@ public sealed class ZaloMemoryV2Service(VolleyDraftDbContext db)
         {
             // Proposal handoff is additive. A malformed/stale proposal or graph
             // lookup problem must never block the explicit legacy router.
+        }
+
+        if (teamPreferencePromoted)
+        {
+            try
+            {
+                var confirmationDrift = await teamPreferenceGuard.RejectUndisclosedExpansionAsync(
+                    teamPreferenceDisclosure,
+                    incoming,
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(confirmationDrift))
+                    return new(true, confirmationDrift, null, null);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // Once a write-capable envelope exists, comparison failure must not
+                // fall through into mutation. Best-effort remove this exact one-shot
+                // confirmation and force the member to request a fresh preview.
+                await teamPreferenceGuard.AbortPromotedConfirmationAsync(incoming, cancellationToken);
+                return new(
+                    true,
+                    "Mình chưa kiểm tra chắc được nhóm chung team hiện tại nên chưa áp dụng. Hãy gửi lại yêu cầu chung team để mình tính và hiện phương án mới đầy đủ trước khi bạn xác nhận.",
+                    null,
+                    null);
+            }
         }
 
         var store = new ZaloUserConceptStore(db);
