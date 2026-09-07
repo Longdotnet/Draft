@@ -175,6 +175,14 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
     }
 }
 
+internal sealed class ZaloSchedulerLeaseLostException : Exception
+{
+    internal ZaloSchedulerLeaseLostException()
+        : base("Durable scheduler lease ownership changed while a scheduler stage was running.")
+    {
+    }
+}
+
 public sealed class ZaloSchedulerWorker(
     ZaloSchedulerTrigger trigger,
     IServiceScopeFactory scopeFactory,
@@ -216,6 +224,55 @@ public sealed class ZaloSchedulerWorker(
         return DefaultWatchdogInterval;
     }
 
+    internal static TimeSpan ResolveLeaseRenewalInterval(TimeSpan leaseDuration)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(leaseDuration, TimeSpan.Zero);
+        return TimeSpan.FromTicks(Math.Max(1, leaseDuration.Ticks / 3));
+    }
+
+    internal static async Task<T> RunWithLeaseHeartbeatAsync<T>(
+        Func<CancellationToken, Task<T>> operation,
+        Func<CancellationToken, Task<bool>> renewLease,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(renewLease);
+
+        var renewalInterval = ResolveLeaseRenewalInterval(leaseDuration);
+        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var operationTask = operation(operationCancellation.Token);
+
+        while (!operationTask.IsCompleted)
+        {
+            await Task.WhenAny(operationTask, Task.Delay(renewalInterval, cancellationToken));
+            cancellationToken.ThrowIfCancellationRequested();
+            if (operationTask.IsCompleted)
+                break;
+
+            bool renewed;
+            try
+            {
+                renewed = await renewLease(cancellationToken);
+            }
+            catch
+            {
+                operationCancellation.Cancel();
+                await ObserveAfterLeaseCancellationAsync(operationTask);
+                throw;
+            }
+
+            if (renewed)
+                continue;
+
+            operationCancellation.Cancel();
+            await ObserveAfterLeaseCancellationAsync(operationTask);
+            throw new ZaloSchedulerLeaseLostException();
+        }
+
+        return await operationTask;
+    }
+
     private async Task RunCycleAsync(TimeSpan leaseDuration, CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -233,37 +290,57 @@ public sealed class ZaloSchedulerWorker(
         try
         {
             var coordinator = scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>();
-            await coordinator.EnsureAllAsync(cancellationToken);
-            var result = await scope.ServiceProvider.GetRequiredService<ZaloReminderService>()
-                .SendDueRemindersAsync(cancellationToken);
+            await RunWithLeaseHeartbeatAsync(
+                async stageToken =>
+                {
+                    await coordinator.EnsureAllAsync(stageToken);
+                    return true;
+                },
+                RenewLeaseAsync,
+                leaseDuration,
+                cancellationToken);
 
-            // Long-running reminder/provider work may consume most of the lease. Renew only if this
-            // instance still owns it; if ownership was lost after expiry, fail closed and let the
-            // new owner continue durable rescue/reconciliation instead of overlapping it.
-            if (!await lease.TryAcquireAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, cancellationToken))
-            {
-                logger.LogWarning("Stopped Zalo scheduler cycle after durable lease ownership changed");
-                return;
-            }
+            var result = await RunWithLeaseHeartbeatAsync(
+                stageToken => scope.ServiceProvider.GetRequiredService<ZaloReminderService>()
+                    .SendDueRemindersAsync(stageToken),
+                RenewLeaseAsync,
+                leaseDuration,
+                cancellationToken);
+
+            // Every potentially long provider/domain stage renews the lease from a separate scope.
+            // This prevents a second API instance from taking ownership mid-stage merely because
+            // the stage exceeded the watchdog interval used as the lease duration.
+            if (!await RenewLeaseAsync(cancellationToken))
+                throw new ZaloSchedulerLeaseLostException();
 
             var rescueService = new ZaloOpenSlotRescueService(
                 db,
                 scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>(),
                 scope.ServiceProvider.GetRequiredService<IConfiguration>(),
                 scope.ServiceProvider.GetRequiredService<ILogger<ZaloOpenSlotRescueService>>());
-            var rescue = await rescueService.RunDueAsync(cancellationToken);
+            var rescue = await RunWithLeaseHeartbeatAsync(
+                rescueService.RunDueAsync,
+                RenewLeaseAsync,
+                leaseDuration,
+                cancellationToken);
 
-            if (!await lease.TryAcquireAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, cancellationToken))
-            {
-                logger.LogWarning("Stopped Zalo scheduler cycle before lifecycle reconciliation because durable lease ownership changed");
-                return;
-            }
+            if (!await RenewLeaseAsync(cancellationToken))
+                throw new ZaloSchedulerLeaseLostException();
 
             // Match creation commits before V5 lifecycle handoff. A transient failure in that
             // post-commit window must survive request loss/restart and be retried from durable
             // Created proposal + link state rather than depending on the original webhook.
-            var handoff = await new ZaloAutoSessionLifecycleHandoffStoreV5(db)
-                .ReconcileMissingAsync(logger, cancellationToken);
+            var handoffStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
+            var handoff = await RunWithLeaseHeartbeatAsync(
+                stageToken => handoffStore.ReconcileMissingAsync(logger, stageToken),
+                RenewLeaseAsync,
+                leaseDuration,
+                cancellationToken);
+
+            // Do not record or announce success if ownership changed in the narrow window after the
+            // last stage. A successor is then responsible for the next authoritative cycle.
+            if (!await RenewLeaseAsync(cancellationToken))
+                throw new ZaloSchedulerLeaseLostException();
 
             await lease.MarkSuccessAsync(instanceId, DateTimeOffset.UtcNow, cancellationToken);
             logger.LogInformation(
@@ -280,10 +357,37 @@ public sealed class ZaloSchedulerWorker(
                 handoff.HandedOffCount,
                 handoff.FailedCount);
         }
+        catch (ZaloSchedulerLeaseLostException)
+        {
+            logger.LogWarning("Stopped Zalo scheduler cycle because durable lease ownership changed while work was in progress");
+        }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             await lease.MarkFailureAsync(instanceId, DateTimeOffset.UtcNow, CancellationToken.None);
             logger.LogError(exception, "Triggered Zalo scheduler cycle failed");
+        }
+
+        async Task<bool> RenewLeaseAsync(CancellationToken renewCancellationToken)
+        {
+            // Lease heartbeats must not share the stage DbContext: provider/domain work can be using
+            // that context concurrently, and EF DbContext is not safe for concurrent operations.
+            await using var renewalScope = scopeFactory.CreateAsyncScope();
+            var renewalDb = renewalScope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+            return await new ZaloSchedulerLeaseStore(renewalDb)
+                .TryAcquireAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
+        }
+    }
+
+    private static async Task ObserveAfterLeaseCancellationAsync(Task operationTask)
+    {
+        try
+        {
+            await operationTask;
+        }
+        catch
+        {
+            // The lease-loss decision is authoritative here. The operation is awaited only to avoid
+            // leaving scoped services running in the background after their owning cycle exits.
         }
     }
 }
