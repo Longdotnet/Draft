@@ -23,12 +23,15 @@ jobs:
           path = Path("server/VolleyDraft.Api/Services/SessionDraftService.cs")
           text = path.read_text(encoding="utf-8")
           marker = "Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận."
+          method = "    private async Task<ServiceResult<DraftStateResponse>> StartDraftRunAsync("
           anchor = "        await ClearDraftRunArtifacts(sessionId);"
           guard = "        if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId) &&\n            !string.IsNullOrWhiteSpace(session.ZaloGroupId))\n        {\n            var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)\n                .CountActiveForSessionAsync(\n                    session.ZaloConnectionId,\n                    session.ZaloGroupId,\n                    session.Id);\n            if (unresolvedPassSlotCount > 0)\n            {\n                return Conflict<DraftStateResponse>(\n                    $\"Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận. \" +\n                    \"Hoàn tất việc chuyển suất trước: nếu đổi ý, người nhường gõ `huỷ pass`; \" +\n                    \"nếu đang nhận suất, người nhận vote xong rồi gõ `xong`. \" +\n                    \"Khi NPC xác nhận xong mới gõ lại `@Npc 9`.\");\n            }\n        }\n\n"
-          if marker not in text:
-              if text.count(anchor) != 1:
-                  raise SystemExit(f"expected exactly one draft mutation anchor, found {text.count(anchor)}")
-              path.write_text(text.replace(anchor, guard + anchor), encoding="utf-8")
+          method_start = text.index(method)
+          anchor_index = text.index(anchor, method_start)
+          method_tail = text[method_start:]
+          if marker not in method_tail:
+              text = text[:anchor_index] + guard + text[anchor_index:]
+              path.write_text(text, encoding="utf-8")
           PY
       - name: Run focused regression
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release --filter "FullyQualifiedName~ZaloOpenSlotRiskCounterTests|FullyQualifiedName~ZaloDraftPassSlotFinalGateTests"
