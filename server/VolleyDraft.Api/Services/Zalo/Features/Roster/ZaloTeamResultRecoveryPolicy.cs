@@ -10,11 +10,10 @@ public static class ZaloTeamResultRecoveryPolicy
 {
     public static string BuildNoResultMessage(string sessionName)
     {
-        var name = string.IsNullOrWhiteSpace(sessionName)
-            ? "trận này"
-            : sessionName.Trim();
-        var draftCommand = $"@Npc 9 {name}";
-        var imageCommand = $"@Npc 10 {name}";
+        var hasGroundedName = !string.IsNullOrWhiteSpace(sessionName);
+        var name = hasGroundedName ? sessionName.Trim() : "Buổi này";
+        var draftCommand = hasGroundedName ? $"@Npc 9 {name}" : "@Npc 9";
+        var imageCommand = hasGroundedName ? $"@Npc 10 {name}" : "@Npc 10";
 
         return $"{name} chưa có kết quả chia team nên hiện chưa có card 3 đội để gửi.\n" +
                "Bạn không cần thử lệnh 10 liên tục. Trước khi chia đội, hãy chắc rằng danh sách người chơi đã chốt, " +
