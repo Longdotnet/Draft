@@ -7,11 +7,11 @@ namespace VolleyDraft.Api.Services;
 public sealed partial class ZaloOverbookService
 {
     private static readonly Regex PassSlotGuidanceTopicPattern = new(
-        @"(?<![a-z0-9])(?:pass|nhuong|bo)\s+(?:slot|suat|cho|keo)(?![a-z0-9])|(?<![a-z0-9])(?:slot|suat)\s+(?:pass|nhuong)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:pass|share|nhuong|bo)\s+(?:slot|suat|cho|keo)(?![a-z0-9])|(?<![a-z0-9])(?:slot|suat)\s+(?:pass|share|nhuong)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PassSlotGuidanceHelpPattern = new(
-        @"(?<![a-z0-9])(?:go|nhap|noi)\s+(?:gi|sao|the\s+nao)(?![a-z0-9])|(?<![a-z0-9])(?:lam\s+sao|cach\s+(?:nao|lam)|cu\s+phap|huong\s+dan|dung\s+sao|su\s+dung\s+sao)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:go|nhap|noi)\s+(?:gi|sao|nhu\s+nao|the\s+nao)(?![a-z0-9])|(?<![a-z0-9])(?:lam\s+sao|cach\s+(?:nao|lam)|cu\s+phap|huong\s+dan|dung\s+sao|su\s+dung\s+sao)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
