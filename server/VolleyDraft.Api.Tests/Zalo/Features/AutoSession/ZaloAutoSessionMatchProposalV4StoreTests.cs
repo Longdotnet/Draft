@@ -84,10 +84,9 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
     }
 
     [Theory]
-    [InlineData("changed-content", "T6 changed", "T6")]
-    [InlineData("changed-day", "T6 11/9", "CN")]
+    [InlineData("T6 changed", "T6")]
+    [InlineData("T6 11/9", "CN")]
     public async Task AuthoritativeOptionIdentityChange_IsRejected(
-        string _,
         string optionContent,
         string dayKey)
     {
@@ -183,7 +182,8 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
         var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
         await using var db = new VolleyDraftDbContext(options);
         var tracked = await new ZaloAutoSessionSettingsStore(db).InsertIfMissingAsync(BuildTracked());
-        var proposal = BuildProposal() withTracked(tracked.Id);
+        var proposal = BuildProposal();
+        proposal.TrackedGroupId = tracked.Id;
         proposal = await new ZaloAutoSessionStore(db).UpsertProposalAsync(proposal);
         var conversationStore = new ZaloAutoSessionConversationStore(db);
         var configuration = new ConfigurationBuilder().AddInMemoryCollection().Build();
@@ -239,12 +239,6 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
         Status = ZaloPollSessionProposalStatus.AwaitingApproval,
         ProposalMessageId = "preview-1"
     };
-
-    private static ZaloPollSessionProposalData withTracked(this ZaloPollSessionProposalData proposal, string trackedGroupId)
-    {
-        proposal.TrackedGroupId = trackedGroupId;
-        return proposal;
-    }
 
     private static ZaloTrackedGroupData BuildTracked() => new()
     {
