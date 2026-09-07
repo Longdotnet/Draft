@@ -94,7 +94,7 @@ public sealed class ZaloAutoSessionPollRevalidationV4Tests
         var message = ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(result);
         Assert.Contains("bỏ lựa chọn", message);
         Assert.Contains("loại khỏi bản nháp", message);
-        Assert.Contains("sửa poll authoritative", message);
+        Assert.Contains("sửa lại poll", message);
     }
 
     [Fact]
