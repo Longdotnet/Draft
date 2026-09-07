@@ -102,6 +102,42 @@ internal sealed class ZaloDraftPreparationReminderStore(VolleyDraftDbContext db)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task ResetBucketAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            UPDATE "ZaloDraftPreparationReminderStates"
+            SET "LastBucketKey" = NULL,
+                "UpdatedAt" = @UpdatedAt
+            WHERE "SessionId" = @SessionId;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        AddParameter(command, "@SessionId", Clean(sessionId, 100));
+        AddParameter(command, "@UpdatedAt", FormatDate(DateTimeOffset.UtcNow));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdateObservationFingerprintAsync(
+        string sessionId,
+        string fingerprint,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            UPDATE "ZaloDraftPreparationReminderStates"
+            SET "LastFingerprint" = @LastFingerprint,
+                "UpdatedAt" = @UpdatedAt
+            WHERE "SessionId" = @SessionId;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        AddParameter(command, "@SessionId", Clean(sessionId, 100));
+        AddParameter(command, "@LastFingerprint", Clean(fingerprint, 160));
+        AddParameter(command, "@UpdatedAt", FormatDate(DateTimeOffset.UtcNow));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
     {
         var connection = db.Database.GetDbConnection();
