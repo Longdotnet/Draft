@@ -1,9 +1,9 @@
 namespace VolleyDraft.Api.Services;
 
 /// <summary>
-/// Beginner-safe deterministic recovery when a team-lineup/card request has no
-/// authoritative team result yet. The card command remains read-only; this policy
-/// teaches only syntax that existing grounded handlers already own.
+/// Beginner-safe deterministic recovery when a team-lineup/card request cannot
+/// return a complete authoritative team result. The card command remains read-only;
+/// this policy teaches only syntax that existing grounded handlers already own.
 /// </summary>
 public static class ZaloTeamResultRecoveryPolicy
 {
@@ -18,6 +18,14 @@ public static class ZaloTeamResultRecoveryPolicy
         var draftCommand = canEmbedSelector ? $"@Npc 9 {normalizedName}" : "@Npc 9";
         var imageCommand = canEmbedSelector ? $"@Npc 10 {normalizedName}" : "@Npc 10";
         var missingCommand = canEmbedSelector ? $"@Npc 4 {normalizedName}" : "@Npc 4";
+
+        if (readiness?.HasTeams == true)
+        {
+            return $"{name} đã có kết quả chia team trong backend nhưng NPC chưa đọc được card/đội hình đầy đủ. " +
+                   $"Thử lại `{imageCommand}`; nếu vẫn lặp lại, nhờ admin kiểm tra. " +
+                   "Không chạy lại lệnh 9 chỉ để chữa card vì có thể làm thay đổi đội hình. " +
+                   "Thông tin này lấy trực tiếp từ dữ liệu trận và không phụ thuộc AI.";
+        }
 
         var header = $"{name} chưa có kết quả chia team chính thức nên hiện chưa có card 3 đội để gửi.\n" +
                      "Lệnh 10 chỉ đọc kết quả đã có, không tự tạo đội hình.";
@@ -48,11 +56,6 @@ public static class ZaloTeamResultRecoveryPolicy
         string imageCommand,
         string missingCommand)
     {
-        if (readiness.HasTeams)
-        {
-            return $"Backend đã ghi nhận kết quả đội nhưng NPC chưa đọc được card đầy đủ. Thử lại `{imageCommand}`; nếu vẫn lặp lại, nhờ admin kiểm tra. Không chạy lại lệnh 9 chỉ để chữa card vì có thể làm thay đổi đội hình.";
-        }
-
         return readiness.State switch
         {
             ZaloDraftReadinessState.Ready =>
