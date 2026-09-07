@@ -76,16 +76,16 @@ public sealed class ZaloPendingOwnershipPolicyTests
         ZaloTopicSwitchDecision expectedV2)
     {
         var session = ZaloPendingTurnPolicy.ClassifySessionTurn(
-            "AutoDraftConfirm",
-            question,
+            pendingIntent: "AutoDraftConfirm",
+            currentQuestion: question,
             mentionedBot: true,
-            freshIntent,
-            confidence);
+            freshIntent: freshIntent,
+            freshConfidence: confidence);
         var v2 = ZaloConversationStateV2Store.DecideTopicSwitch(
-            "AutoDraftConfirm",
-            question,
-            freshIntent,
-            confidence);
+            pendingIntent: "AutoDraftConfirm",
+            currentQuestion: question,
+            freshIntent: freshIntent,
+            freshConfidence: confidence);
 
         Assert.Equal(expectedSession, session);
         Assert.Equal(expectedV2, v2);
@@ -95,14 +95,14 @@ public sealed class ZaloPendingOwnershipPolicyTests
     public void Bare_confirmation_keeps_domain_specific_semantics_after_shared_classification()
     {
         var session = ZaloPendingTurnPolicy.ClassifySessionTurn(
-            "AutoDraft",
-            "xác nhận",
+            pendingIntent: "AutoDraft",
+            currentQuestion: "xác nhận",
             mentionedBot: true,
             freshIntent: null,
             freshConfidence: 0);
         var v2 = ZaloConversationStateV2Store.DecideTopicSwitch(
-            "AutoDraftConfirm",
-            "xác nhận",
+            pendingIntent: "AutoDraftConfirm",
+            currentQuestion: "xác nhận",
             freshIntent: null,
             freshConfidence: 0);
 
