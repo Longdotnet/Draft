@@ -53,8 +53,8 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|share|nhuong|bo\s+(?:slot|suat|cho))(?![a-z0-9])|(?<![a-z0-9])(?:khong|ko|k)\s+(?:pass|share|nhuong)\s+nua(?![a-z0-9])|(?<![a-z0-9])(?:dung|khong|ko|k)\s+nghi\s+(?:tran|keo|bua|buoi)(?![a-z0-9])|(?<![a-z0-9])(?:dung|khong|ko|k)\s+cho\s+nguoi\s+khac\s+(?:danh|choi)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private static readonly Regex TargetedSharePattern = new(
-        @"(?<![a-z0-9])share\s+(?:slot|suat)\s+(?:voi|cho)\s+[a-z0-9]",
+    private static readonly Regex TargetedTransferPattern = new(
+        @"(?<![a-z0-9])(?:pass|share|nhuong|tra|chuyen)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)\s+(?:voi|cho)\s+[a-z0-9]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PossibleOpenSlotTurnPattern = new(
@@ -71,7 +71,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         return normalized.Length > 0 &&
                (PassSlotPattern.IsMatch(normalized) || NaturalSelfWithdrawalPattern.IsMatch(normalized)) &&
                !NegatedPassPattern.IsMatch(normalized) &&
-               !TargetedSharePattern.IsMatch(normalized);
+               !TargetedTransferPattern.IsMatch(normalized);
     }
 
     public async Task<ZaloMemberAssistReply?> TryBuildAsync(
