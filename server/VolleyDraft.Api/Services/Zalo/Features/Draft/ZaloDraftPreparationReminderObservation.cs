@@ -6,6 +6,7 @@ namespace VolleyDraft.Api.Services;
 internal static class ZaloDraftPreparationReminderObservation
 {
     private const string VersionPrefix = "obs2:";
+    internal static readonly TimeSpan SameBucketRefreshInterval = TimeSpan.FromMinutes(5);
 
     internal static string BuildFingerprint(
         ZaloDraftReadinessSnapshot readiness,
@@ -29,6 +30,11 @@ internal static class ZaloDraftPreparationReminderObservation
         ZaloDraftReadinessSnapshot readiness,
         int activeSlotRiskCount) =>
         BuildFingerprint(readiness, activeSlotRiskCount)[VersionPrefix.Length..(VersionPrefix.Length + 24)];
+
+    internal static bool ShouldRefreshSameBucket(
+        ZaloDraftPreparationReminderState previous,
+        DateTimeOffset now) =>
+        now - previous.UpdatedAt >= SameBucketRefreshInterval;
 
     internal static bool HasMaterialChange(
         ZaloDraftPreparationReminderState previous,
