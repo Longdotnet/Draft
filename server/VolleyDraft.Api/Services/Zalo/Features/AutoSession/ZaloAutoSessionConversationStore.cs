@@ -66,6 +66,7 @@ internal sealed class ZaloAutoSessionConversationData
 internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
 {
     private bool ensured;
+    private readonly ZaloAutoSessionMatchProposalV4Store matchProposalsV4 = new(db);
 
     public async Task EnsureAsync(CancellationToken cancellationToken = default)
     {
@@ -121,6 +122,7 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await matchProposalsV4.EnsureAsync(cancellationToken);
         ensured = true;
     }
 
@@ -179,6 +181,15 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
                 UpdatedAt = now
             },
             cancellationToken);
+
+        await matchProposalsV4.InitializeFromPreviewAsync(
+            proposal,
+            tracked,
+            conversation,
+            cancellationToken);
+        var durable = await matchProposalsV4.SaveConversationDraftAsync(conversation, cancellationToken);
+        if (durable is not null)
+            conversation.DraftJson = durable.Revision.DraftJson;
 
         await AddTurnAsync(
             conversation.Id,
@@ -248,7 +259,11 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
             cancellationToken);
         AddParameter(command, "@Id", conversationId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
+        var conversation = await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
+        await reader.DisposeAsync();
+        return conversation is null
+            ? null
+            : await matchProposalsV4.HydrateDraftAsync(conversation, cancellationToken);
     }
 
     public async Task<ZaloAutoSessionConversationData?> FindByQuotedBotMessageAsync(
@@ -345,6 +360,14 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var durable = await matchProposalsV4.SaveConversationDraftAsync(conversation, cancellationToken);
+        if (durable is not null)
+        {
+            conversation.DraftJson = durable.Revision.DraftJson;
+            if (!durable.Accepted)
+                return await GetByIdAsync(conversation.Id, cancellationToken) ?? conversation;
+        }
+
         conversation.UpdatedAt = DateTimeOffset.UtcNow;
         const string sql = """
             UPDATE "ZaloAutoSessionConversations"
@@ -362,11 +385,13 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
                 "ExpiresAt" = @ExpiresAt,
                 "LastError" = @LastError,
                 "UpdatedAt" = @UpdatedAt
-            WHERE "Id" = @Id;
+            WHERE "Id" = @Id AND "Version" <= @Version;
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         BindConversation(command, conversation);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        var changed = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (changed == 0)
+            return await GetByIdAsync(conversation.Id, cancellationToken) ?? conversation;
         return conversation;
     }
 

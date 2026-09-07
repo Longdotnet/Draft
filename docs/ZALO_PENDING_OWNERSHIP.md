@@ -2,7 +2,7 @@
 
 ## Why this exists
 
-Auto Session V5 needs one predictable ownership boundary before larger proposal/policy work is safe.
+Auto Session V4 needs one predictable ownership boundary before durable proposal/recovery work can become authoritative. V5 builds on that completed V4 foundation; it is not a direct rename or jump from Conversation V3.
 
 Historically, session-selector pending state and ConversationState V2 each implemented their own ordering for:
 
@@ -41,12 +41,22 @@ Examples kept outside the shared layer:
 
 This avoids creating one giant global parser while still preventing ownership precedence from drifting again.
 
-## Auto Session V5 direction
+## Auto Session V4/V5 progression
 
-This is the first ownership slice, not the final V5 architecture.
+This shared ownership contract is a **V4 foundation**, not evidence that Auto Session has already reached V5.
 
-Future Auto Session work should continue toward:
+The intended progression is:
 
-`normalized turn -> addressing/context evidence -> one conversation owner -> deterministic/optional-AI interpretation -> deterministic validation -> domain action`
+```text
+V3 stateful conversation
+  -> V4 unified ownership + durable MatchProposal + provenance/recovery/reconciliation
+  -> V5 policy-driven Match Birth + lifecycle handoff
+```
+
+During V4, Auto Session should continue toward:
+
+`normalized turn -> addressing/context evidence -> one conversation owner -> deterministic/optional-AI interpretation -> durable proposal revision -> deterministic validation -> domain action`
+
+V5 can then place policy evaluation and lifecycle handoff on top of that stable proposal/ownership contract.
 
 New pending workflows should reuse the shared ownership boundary instead of copying fresh-intent/cancel ordering into another helper.
