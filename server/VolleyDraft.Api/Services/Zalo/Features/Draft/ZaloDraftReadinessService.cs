@@ -58,6 +58,18 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
 {
     private sealed record SharedMembership(string DraftSlotId, string SessionPlayerId);
 
+    internal static bool HasAuthoritativeTeamResult(
+        SessionStatus status,
+        bool hasNonCaptainAssignments)
+    {
+        // Team rows and captain assignments exist before a completed draft. Conversely,
+        // a persisted Finished flag on its own is not enough evidence that a usable team
+        // result survived a partial write/import. Require an actual non-captain assignment
+        // and never expose in-progress/cancelled allocations as final truth.
+        if (status is SessionStatus.Drafting or SessionStatus.Cancelled) return false;
+        return hasNonCaptainAssignments;
+    }
+
     public async Task<ZaloDraftReadinessSnapshot?> BuildAsync(
         string sessionId,
         DateTimeOffset? now = null,
@@ -102,8 +114,7 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
 
         // MatchSession creates Team rows before draft starts and captain selection also
         // assigns captain slots to teams. Neither is proof that a lineup exists. Only a
-        // completed draft (or a non-captain assignment left by a completed/partial run)
-        // counts as an existing team allocation for this safety gate.
+        // non-captain assignment outside an in-progress/cancelled draft is authoritative.
         var hasNonCaptainAssignments = await db.DraftSlots
             .AsNoTracking()
             .AnyAsync(slot =>
@@ -111,7 +122,7 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
                 slot.AssignedTeamId != null &&
                 !slot.IsCaptainSlot,
                 cancellationToken);
-        var hasTeams = session.Status == SessionStatus.Finished || hasNonCaptainAssignments;
+        var hasTeams = HasAuthoritativeTeamResult(session.Status, hasNonCaptainAssignments);
         var hasLinkedPoll = await db.PollImports.AsNoTracking()
             .AnyAsync(import => import.SessionId == session.Id, cancellationToken);
 
@@ -161,10 +172,17 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
                           activePassSlotRiskCount == 0;
         var canEscalate = false;
 
-        if (session.Status == SessionStatus.Finished)
+        if (session.Status == SessionStatus.Finished && hasTeams)
         {
             state = ZaloDraftReadinessState.AlreadyDrafted;
             reason = "draft_already_exists";
+        }
+        else if (session.Status == SessionStatus.Finished)
+        {
+            // A stale/corrupt Finished flag must not send users into the @Npc 10
+            // "team already exists" path when no authoritative team allocation exists.
+            state = ZaloDraftReadinessState.InvalidStatus;
+            reason = "draft_blocked_finished_without_team_result";
         }
         else if (session.Status == SessionStatus.Drafting)
         {
