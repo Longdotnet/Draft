@@ -30,7 +30,7 @@ public sealed class ZaloAutoSessionPollRevalidationV4Tests
     }
 
     [Fact]
-    public void AddedOption_FailsClosedUntilOrganizerConfirms()
+    public void AddedOption_FailsClosedUntilOrganizerConfirms_AndOffersDeterministicSelector()
     {
         var source = Draft(Item("t6", "T6 11/9", "T6", 11, 17, 30, 8));
         var poll = Poll(
@@ -46,11 +46,15 @@ public sealed class ZaloAutoSessionPollRevalidationV4Tests
         Assert.Contains(result.Reconciliation.Changes, change =>
             change.Kind == ZaloAutoSessionPollChangeKindV4.OptionAdded && change.OptionId == "cn");
         Assert.False(result.Reconciliation.Draft.Items.Single(item => item.OptionId == "cn").Selected);
-        Assert.Contains("thêm lựa chọn", ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(result));
+        var message = ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(result);
+        Assert.Contains("thêm lựa chọn", message);
+        Assert.Contains("CHƯA chọn", message);
+        Assert.Contains("thêm CN", message);
+        Assert.Contains("tạo đi", message);
     }
 
     [Fact]
-    public void ExplicitSourceTimeChange_OverridesOldOrganizerCorrection()
+    public void ExplicitSourceTimeChange_OverridesOldOrganizerCorrection_AndShowsAuthoritativeTime()
     {
         var source = Draft(Item("t6", "T6 11/9 17:45", "T6", 11, 17, 45, 8));
         var durable = source with
@@ -67,6 +71,30 @@ public sealed class ZaloAutoSessionPollRevalidationV4Tests
         Assert.Equal(At(11, 19, 0), Assert.Single(result.Reconciliation.Draft.Items).StartTime);
         Assert.Contains(result.Reconciliation.Changes, change =>
             change.Kind == ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged);
+        var message = ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(result);
+        Assert.Contains("19:00", message);
+        Assert.Contains("T6 18h", message);
+        Assert.Contains("tạo đi", message);
+    }
+
+    [Fact]
+    public void RemovedOption_ExplainsFailClosedDraftAndAuthoritativePollRecovery()
+    {
+        var source = Draft(
+            Item("t6", "T6 11/9", "T6", 11, 17, 30, 8),
+            Item("cn", "CN 13/9", "CN", 13, 17, 30, 6));
+        var poll = Poll("Vote sân UTE", Option("t6", "T6 11/9", 9));
+
+        var result = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, Tracked(), source, source, Now);
+
+        Assert.False(result.CanExecute);
+        Assert.True(result.RequiresOrganizerConfirmation);
+        Assert.DoesNotContain(result.Reconciliation.Draft.Items, item => item.OptionId == "cn");
+        var message = ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(result);
+        Assert.Contains("bỏ lựa chọn", message);
+        Assert.Contains("loại khỏi bản nháp", message);
+        Assert.Contains("sửa lại poll", message);
     }
 
     [Fact]

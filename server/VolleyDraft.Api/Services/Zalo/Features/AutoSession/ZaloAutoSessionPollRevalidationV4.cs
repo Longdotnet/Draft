@@ -68,8 +68,52 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
 
         var details = material.Take(4).Select(DescribeChange).ToList();
         var suffix = material.Count > details.Count ? $"; và {material.Count - details.Count} thay đổi khác" : string.Empty;
+        var nextAction = BuildGroundedNextAction(result, material);
         return "Poll đã đổi sau preview: " + string.Join("; ", details) + suffix +
-               ". Tui giữ các chỉnh sửa còn hợp lệ nhưng chưa tạo website. Hãy kiểm tra bản nháp mới rồi xác nhận lại.";
+               ". Tui giữ các chỉnh sửa còn hợp lệ và website vẫn chưa được tạo. " + nextAction;
+    }
+
+    private static string BuildGroundedNextAction(
+        ZaloAutoSessionPollRevalidationV4 result,
+        IReadOnlyList<ZaloAutoSessionPollChangeV4> material)
+    {
+        var added = material
+            .Where(change => change.Kind == ZaloAutoSessionPollChangeKindV4.OptionAdded)
+            .Select(change => result.Reconciliation.Draft.Items.FirstOrDefault(item =>
+                string.Equals(item.OptionId, change.OptionId, StringComparison.Ordinal)))
+            .Where(item => item is not null)
+            .Cast<ZaloAutoSessionConversationDraftItem>()
+            .ToList();
+
+        if (added.Count > 0)
+        {
+            var selectors = string.Join(", ", added.Select(item => item.DayKey).Distinct(StringComparer.OrdinalIgnoreCase));
+            var example = added[0].DayKey;
+            return $"Lựa chọn mới đang để CHƯA chọn để tránh tự ý thêm lịch. Muốn lấy thêm thì nói “thêm {example}”" +
+                   (added.Count > 1 ? $" (các lựa chọn mới: {selectors})" : string.Empty) +
+                   "; nếu giữ bản nháp hiện tại thì nói “tạo đi”.";
+        }
+
+        var timeChange = material.FirstOrDefault(change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged);
+        if (timeChange is not null)
+        {
+            var item = result.Reconciliation.Draft.Items.FirstOrDefault(candidate =>
+                string.Equals(candidate.OptionId, timeChange.OptionId, StringComparison.Ordinal));
+            if (item is not null)
+            {
+                var local = item.StartTime.ToOffset(TimeSpan.FromHours(7));
+                return $"Giờ mới trong poll của {item.DayKey} là {local:HH:mm}. Nếu giờ này đúng thì nói “tạo đi”; muốn sửa thì nói kiểu “{item.DayKey} 18h”.";
+            }
+        }
+
+        if (material.Any(change => change.Kind == ZaloAutoSessionPollChangeKindV4.OptionRemoved))
+            return "Lựa chọn đã bị xóa khỏi poll cũng đã bị loại khỏi bản nháp. Nếu đó là ý bạn thì nói “tạo đi”; nếu không, hãy sửa lại poll trước.";
+
+        if (material.Any(change => change.Kind == ZaloAutoSessionPollChangeKindV4.OptionIdentityChanged))
+            return "Ngày/lịch trong poll đã đổi nên tui dùng lịch mới, không tự giữ ngày cũ. Nếu bản nháp mới đúng thì nói “tạo đi”; nếu không, hãy sửa lại poll trước.";
+
+        return "Hãy kiểm tra đúng phần vừa đổi; nếu bản nháp mới đúng thì nói “tạo đi”, còn muốn chỉnh thì nói trực tiếp ngày/giờ/sân cần đổi.";
     }
 
     private static string DescribeChange(ZaloAutoSessionPollChangeV4 change) => change.Kind switch
