@@ -29,7 +29,7 @@ public static class ZaloTeamLineupFormatter
         if (teams.Count == 0 || teams.All(team => team.Slots.Count == 0))
         {
             return new ZaloTeamLineupMessage(
-                $"{sessionName} chưa có kết quả chia team. Dùng lệnh 9 nếu bạn là operator và muốn tự chạy draft.",
+                ZaloTeamResultRecoveryPolicy.BuildNoResultMessage(sessionName),
                 []);
         }
 

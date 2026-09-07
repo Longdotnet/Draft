@@ -26,6 +26,70 @@ public sealed class ZaloTeamLineupFormatterTests
     }
 
     [Fact]
+    public void Empty_team_result_teaches_the_complete_deterministic_npc10_recovery_loop()
+    {
+        var result = ZaloTeamLineupFormatter.Format("CN 13/9", []);
+
+        Assert.Empty(result.Mentions);
+        Assert.Contains("chưa có kết quả chia team", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần thử lệnh 10 liên tục", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("suất đang nhường/chờ người nhận", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("hồ sơ người chơi", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
+        Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
+        Assert.Contains("trưởng nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("phó nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("operator", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("session", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Missing_authoritative_session_name_never_invents_a_selector()
+    {
+        var result = ZaloTeamLineupFormatter.Format("   ", []);
+
+        Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 9 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@Npc 10 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Precreated_empty_team_rows_are_still_treated_as_no_draft_result()
+    {
+        var teams = new[]
+        {
+            new TeamPreviewResponse("team-a", "Team A", null, []),
+            new TeamPreviewResponse("team-b", "Team B", null, []),
+            new TeamPreviewResponse("team-c", "Team C", null, [])
+        };
+
+        var result = ZaloTeamLineupFormatter.Format("Thứ 4 09/9", teams);
+
+        Assert.Contains("@Npc 9 Thứ 4 09/9", result.Text, StringComparison.Ordinal);
+        Assert.Contains("@Npc 10 Thứ 4 09/9", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Đội hình Thứ 4 09/9:", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Existing_team_result_does_not_show_recovery_instructions()
+    {
+        var teams = new[]
+        {
+            new TeamPreviewResponse(
+                "team-a",
+                "Team A",
+                "Thanh Tuyền",
+                [Slot("slot-1", "Thanh Tuyền")])
+        };
+
+        var result = ZaloTeamLineupFormatter.Format("CN 13/9", teams);
+
+        Assert.StartsWith("Đội hình CN 13/9:", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 9", result.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Formatter_mentions_known_zalo_players_and_keeps_guests_as_plain_text()
     {
         var teams = new[]
