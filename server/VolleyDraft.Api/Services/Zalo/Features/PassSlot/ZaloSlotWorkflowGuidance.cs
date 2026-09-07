@@ -48,15 +48,16 @@ internal static class ZaloSlotWorkflowGuidance
     }
 
     private static string BuildPassSlotHelp() =>
-        "Pass/nhường slot làm như này nha:\n" +
-        "1) Người đang có slot tự nói `pass slot T6` (hoặc `nhường suất CN`). NPC sẽ kiểm roster/session rồi mở slot cho nhóm; bước này chưa tự sửa roster.\n" +
+        "Pass/nhường slot = người đang có suất nhường hẳn suất đó cho người khác. NPC luôn kiểm owner/session từ roster hoặc poll thật, không đoán theo tên chat.\n" +
+        "1) Dễ nhất, người đang có slot tự nói `pass slot T6` (hoặc `nhường suất CN`). NPC kiểm đúng người + đúng kèo rồi mở slot; bước này chưa tự sửa roster.\n" +
         "2) Người muốn lấy nói `tui nhận T6`; nếu chỉ có đúng một slot đang mở thì `tui nhận` cũng được.\n" +
         "3) Trước draft: owner bỏ vote, người nhận vote vào đúng kèo rồi nói `xong`; NPC chỉ chốt khi roster thật đã đổi. Sau draft: người đang giữ claim nói `chốt`; NPC revalidate rồi mới chuyển.\n" +
-        "4) Admin/operator chỉ nên làm hộ khi đã biết rõ cả người nhường lẫn người nhận. Với luồng chuyển trực tiếp sau draft có thể dùng `@A pass slot cho @B`; NPC vẫn kiểm quyền + session + trạng thái, tên trùng thì nên mention đúng người. Trước draft không dùng lệnh admin để lách poll.";
+        "4) Owner đổi ý trước khi hoàn tất có thể nói `huỷ pass`; người đang giữ claim muốn nhả thì nói `huỷ nhận`.\n" +
+        "5) Admin/operator chỉ nên làm hộ khi đã biết rõ cả người nhường lẫn người nhận. Cú pháp deterministic: `@Npc @A pass slot cho @B`. NPC vẫn kiểm quyền + UID + session + trạng thái; nếu có nhiều kèo thì sẽ hỏi lại thay vì đoán. Trước draft không dùng lệnh admin để lách poll.";
 
     private static string BuildShareSlotHelp() =>
         "Share slot khác pass slot nha: share là 2-3 người dùng chung một slot/luân phiên, không phải nhường hẳn suất cho người khác.\n" +
-        "- Tự share: `tui muốn share slot với @To An T6`.\n" +
-        "- Admin/operator làm hộ: `@A muốn share slot với @B T6` (có thể thêm người thứ 3 nếu feature cho phép).\n" +
+        "- Tự share: `@Npc tui muốn share slot với @To An T6`.\n" +
+        "- Admin/operator làm hộ: `@Npc @A muốn share slot với @B T6` (có thể thêm người thứ 3 nếu feature cho phép).\n" +
         "NPC sẽ bind mention vào Zalo UID và kiểm roster/session trước khi thay đổi. Nếu mục tiêu là bỏ hẳn suất để người khác nhận thì dùng flow pass: `pass slot T6` → người khác `tui nhận T6`.";
 }
