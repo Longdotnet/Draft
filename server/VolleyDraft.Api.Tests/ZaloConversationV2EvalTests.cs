@@ -29,6 +29,50 @@ public sealed class ZaloConversationV2EvalTests
         Assert.Equal(ZaloTopicSwitchDecision.SwitchToNewIntent, decision);
     }
 
+    [Theory]
+    [InlineData("hủy reminder", "CancelReminder")]
+    [InlineData("cancel reminder", "CancelReminder")]
+    [InlineData("hủy share slot", "CancelShareSlot")]
+    public void Eval_domain_cancel_command_escapes_unrelated_pending_workflow(
+        string question,
+        string freshIntent)
+    {
+        var decision = ZaloConversationStateV2Store.DecideTopicSwitch(
+            "AutoDraftConfirm",
+            question,
+            freshIntent,
+            .98);
+
+        Assert.Equal(ZaloTopicSwitchDecision.SwitchToNewIntent, decision);
+    }
+
+    [Theory]
+    [InlineData("hủy")]
+    [InlineData("cancel")]
+    [InlineData("thôi khỏi")]
+    public void Eval_bare_cancel_still_cancels_pending_workflow(string question)
+    {
+        var decision = ZaloConversationStateV2Store.DecideTopicSwitch(
+            "AutoDraftConfirm",
+            question,
+            null,
+            0);
+
+        Assert.Equal(ZaloTopicSwitchDecision.CancelPending, decision);
+    }
+
+    [Fact]
+    public void Eval_low_confidence_fresh_guess_does_not_override_explicit_cancel()
+    {
+        var decision = ZaloConversationStateV2Store.DecideTopicSwitch(
+            "AutoDraftConfirm",
+            "hủy",
+            "GeneralChat",
+            .4);
+
+        Assert.Equal(ZaloTopicSwitchDecision.CancelPending, decision);
+    }
+
     [Fact]
     public void Eval_ambiguous_alias_requires_clarification_not_mutation()
     {
