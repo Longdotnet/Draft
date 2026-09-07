@@ -12,6 +12,46 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         bool decisionWasStale,
         int? staleDecisionSlotCount,
         int? previousObservedSlotCount,
+        bool urgent) =>
+        BuildMessageCore(
+            session,
+            readiness,
+            decision,
+            decisionWasStale,
+            staleDecisionSlotCount,
+            previousObservedSlotCount,
+            readiness.ActivePassSlotRiskCount,
+            urgent);
+
+    // Compatibility overload for focused policy tests and older in-process callers.
+    // Production reminder execution uses the overload above so pass/share authority
+    // comes from the same readiness snapshot as roster/profile/draft state.
+    internal static string? BuildMessage(
+        MatchSession session,
+        ZaloDraftReadinessSnapshot readiness,
+        ZaloDraftPreparationDecisionSnapshot? decision,
+        bool decisionWasStale,
+        int? staleDecisionSlotCount,
+        int? previousObservedSlotCount,
+        int activeSlotRiskCount,
+        bool urgent) =>
+        BuildMessageCore(
+            session,
+            readiness,
+            decision,
+            decisionWasStale,
+            staleDecisionSlotCount,
+            previousObservedSlotCount,
+            activeSlotRiskCount,
+            urgent);
+
+    private static string? BuildMessageCore(
+        MatchSession session,
+        ZaloDraftReadinessSnapshot readiness,
+        ZaloDraftPreparationDecisionSnapshot? decision,
+        bool decisionWasStale,
+        int? staleDecisionSlotCount,
+        int? previousObservedSlotCount,
         int activeSlotRiskCount,
         bool urgent)
     {
@@ -25,8 +65,12 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
 
         if (activeSlotRiskCount > 0)
         {
-            var risk = activeSlotRiskCount == 1 ? "1 slot" : $"{activeSlotRiskCount} slot";
-            return $"Tui vừa sync {name}: {rawLabel}, nhưng đang có {risk} báo pass/huỷ chưa xử lý xong 😭 Chưa chốt draft nha; roster/poll sạch lại rồi tui tính tiếp theo quyết định của trưởng/phó.";
+            var risk = activeSlotRiskCount == 1
+                ? "1 suất đang nhường/chờ nhận"
+                : $"{activeSlotRiskCount} suất đang nhường/chờ nhận";
+            return $"Tui vừa kiểm tra {name}: {rawLabel}, còn {risk} chưa hoàn tất nên chưa chia team nha. " +
+                   "Người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ lượt nhận muốn nhả dùng `huỷ nhận`. " +
+                   "Xử lý xong tui sẽ đọc lại trạng thái thật rồi mới cho đi tiếp.";
         }
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
@@ -184,7 +228,11 @@ public sealed partial class ZaloOverbookService
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
-            var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
+
+            // Readiness owns unresolved pass/share authority. Keep the entire reminder
+            // decision, anti-spam fingerprint and escalation gate on this one coherent
+            // snapshot instead of issuing a second ledger query that can race it.
+            var activeSlotRisks = readiness.ActivePassSlotRiskCount;
             var observationFingerprint = ZaloDraftPreparationReminderObservation.BuildFingerprint(
                 readiness,
                 activeSlotRisks);
@@ -278,7 +326,6 @@ public sealed partial class ZaloOverbookService
                 decisionWasStale,
                 staleDecisionSlotCount,
                 previous?.LastSlotCount,
-                activeSlotRisks,
                 bucket.Urgent);
             if (string.IsNullOrWhiteSpace(body))
             {
