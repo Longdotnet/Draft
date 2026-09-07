@@ -58,6 +58,14 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             );
             CREATE INDEX IF NOT EXISTS "IX_ZaloAutoSessionLifecycleHandoffs_Proposal"
                 ON "ZaloAutoSessionLifecycleHandoffs" ("ProposalId", "HandedOffAt");
+
+            CREATE TABLE IF NOT EXISTS "ZaloAutoSessionLifecycleHandoffAttempts" (
+                "SessionId" TEXT PRIMARY KEY,
+                "LastAttemptAt" TEXT NOT NULL,
+                "AttemptCount" INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ZaloAutoSessionLifecycleHandoffAttempts_LastAttempt"
+                ON "ZaloAutoSessionLifecycleHandoffAttempts" ("LastAttemptAt");
             """,
             cancellationToken);
         ensured = true;
@@ -124,27 +132,47 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                 ON g."Id" = l."TrackedGroupId"
             LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
                 ON h."SessionId" = l."SessionId"
+            LEFT JOIN "ZaloAutoSessionLifecycleHandoffAttempts" a
+                ON a."SessionId" = l."SessionId"
             WHERE p."Status" = 'Created'
               AND h."SessionId" IS NULL
-            ORDER BY l."CreatedAt" ASC
+            GROUP BY p."Id", g."AdminUserId", l."SessionId", a."LastAttemptAt"
+            ORDER BY
+                CASE WHEN a."LastAttemptAt" IS NULL THEN 0 ELSE 1 END ASC,
+                a."LastAttemptAt" ASC,
+                MIN(l."CreatedAt") ASC
             LIMIT @Limit;
             """,
             cancellationToken);
-        AddParameter(command, "@Limit", Math.Min(limit * 4, 800));
+        AddParameter(command, "@Limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ZaloAutoSessionLifecycleHandoffCandidateV5>();
-        var seenSessionIds = new HashSet<string>(StringComparer.Ordinal);
-        while (await reader.ReadAsync(cancellationToken) && result.Count < limit)
+        while (await reader.ReadAsync(cancellationToken))
         {
-            var sessionId = reader.GetString(2);
-            if (!seenSessionIds.Add(sessionId)) continue;
             result.Add(new ZaloAutoSessionLifecycleHandoffCandidateV5(
                 reader.GetString(0),
                 reader.GetString(1),
-                sessionId));
+                reader.GetString(2)));
         }
 
         return result;
+    }
+
+    internal async Task MarkAttemptAsync(
+        string sessionId,
+        DateTimeOffset attemptedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "ZaloAutoSessionLifecycleHandoffAttempts"
+                ("SessionId", "LastAttemptAt", "AttemptCount")
+            VALUES
+                ({{sessionId}}, {{attemptedAt.ToString("O")}}, 1)
+            ON CONFLICT ("SessionId") DO UPDATE SET
+                "LastAttemptAt" = excluded."LastAttemptAt",
+                "AttemptCount" = "ZaloAutoSessionLifecycleHandoffAttempts"."AttemptCount" + 1;
+            """, cancellationToken);
     }
 
     public async Task<ZaloAutoSessionLifecycleReconciliationResultV5> ReconcileMissingAsync(
@@ -157,6 +185,10 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
 
         foreach (var candidate in candidates)
         {
+            // Persist scheduling fairness before invoking the lifecycle coordinator. If this
+            // process dies mid-attempt, the candidate is delayed behind never/less-recently
+            // attempted sessions instead of monopolizing every future batch.
+            await MarkAttemptAsync(candidate.SessionId, DateTimeOffset.UtcNow, cancellationToken);
             try
             {
                 await HandOffAsync(
