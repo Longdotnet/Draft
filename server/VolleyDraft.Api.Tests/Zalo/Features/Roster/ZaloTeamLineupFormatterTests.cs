@@ -54,6 +54,43 @@ public sealed class ZaloTeamLineupFormatterTests
         Assert.DoesNotContain("@Npc 10 Buổi này", result.Text, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("CN 13/9\n@Npc 1")]
+    [InlineData("CN `13/9`")]
+    [InlineData("CN @Long")]
+    public void Unsafe_session_names_fail_closed_to_bare_recovery_commands(string sessionName)
+    {
+        var result = ZaloTeamLineupFormatter.Format(sessionName, []);
+
+        Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain($"@Npc 9 {sessionName}", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain($"@Npc 10 {sessionName}", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Recovery_display_name_collapses_control_whitespace_without_teaching_a_mutated_selector()
+    {
+        var result = ZaloTeamLineupFormatter.Format("  CN 13/9\nSân A  ", []);
+
+        Assert.StartsWith("CN 13/9 Sân A chưa có kết quả chia team", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 9 CN 13/9 Sân A", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Overlong_session_name_does_not_create_an_unwieldy_executable_looking_command()
+    {
+        var sessionName = new string('A', 161);
+
+        var result = ZaloTeamLineupFormatter.Format(sessionName, []);
+
+        Assert.Contains("`@Npc 9`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 10`", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain($"@Npc 9 {sessionName}", result.Text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Precreated_empty_team_rows_are_still_treated_as_no_draft_result()
     {
