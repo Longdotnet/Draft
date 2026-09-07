@@ -42,11 +42,19 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     private static readonly TimeSpan FirstNudgeDelay = TimeSpan.FromMinutes(45);
 
     private static readonly Regex PassSlotPattern = new(
-        @"(?<![a-z0-9])(?:pass|nhuong|tra|bo|huy|cancel)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:pass|nhuong|tra|bo|huy|cancel|share)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex NaturalSelfWithdrawalPattern = new(
+        @"(?<![a-z0-9])(?:(?:tui|toi|minh|em|anh|chi|tao)\s+)?(?:nghi|khong\s+(?:choi|danh|di))\s+(?:tran|keo|bua|buoi)(?![a-z0-9])|(?<![a-z0-9])cho\s+nguoi\s+khac\s+(?:danh|choi)(?![a-z0-9])|(?<![a-z0-9])ai\s+(?:muon\s+)?(?:lay|nhan|hot|giu)\s+(?:slot|suat)\s+cua\s+(?:tui|toi|minh|em)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex NegatedPassPattern = new(
-        @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|nhuong|bo\s+(?:slot|suat|cho))(?![a-z0-9])|(?<![a-z0-9])(?:khong|ko|k)\s+(?:pass|nhuong)\s+nua(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|share|nhuong|bo\s+(?:slot|suat|cho))(?![a-z0-9])|(?<![a-z0-9])(?:khong|ko|k)\s+(?:pass|share|nhuong)\s+nua(?![a-z0-9])|(?<![a-z0-9])(?:dung|khong|ko|k)\s+nghi\s+(?:tran|keo|bua|buoi)(?![a-z0-9])|(?<![a-z0-9])(?:dung|khong|ko|k)\s+cho\s+nguoi\s+khac\s+(?:danh|choi)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex TargetedSharePattern = new(
+        @"(?<![a-z0-9])share\s+(?:slot|suat)\s+(?:voi|cho)\s+[a-z0-9]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PossibleOpenSlotTurnPattern = new(
@@ -61,8 +69,9 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     {
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
         return normalized.Length > 0 &&
-               PassSlotPattern.IsMatch(normalized) &&
-               !NegatedPassPattern.IsMatch(normalized);
+               (PassSlotPattern.IsMatch(normalized) || NaturalSelfWithdrawalPattern.IsMatch(normalized)) &&
+               !NegatedPassPattern.IsMatch(normalized) &&
+               !TargetedSharePattern.IsMatch(normalized);
     }
 
     public async Task<ZaloMemberAssistReply?> TryBuildAsync(

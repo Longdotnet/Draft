@@ -17,6 +17,11 @@ public sealed class ZaloMemberAssistServiceTests
     [InlineData("pass cái kèo tối nay")]
     [InlineData("huỷ slot thôi")]
     [InlineData("huy slot T6 nha")]
+    [InlineData("share slot T6 nha")]
+    [InlineData("nghỉ trận này nha")]
+    [InlineData("tui không đánh trận T6 này")]
+    [InlineData("ai lấy slot của tui không")]
+    [InlineData("cho người khác đánh trận này đi")]
     public void Pass_slot_slang_is_a_help_opportunity(string text)
     {
         Assert.True(ZaloMemberAssistService.IsPassSlotHelpOpportunity(text));
@@ -26,6 +31,10 @@ public sealed class ZaloMemberAssistServiceTests
     [InlineData("tối nay ai đánh vậy")]
     [InlineData("share slot với To An")]
     [InlineData("pass bóng cho tui")]
+    [InlineData("không nghỉ trận này")]
+    [InlineData("đừng share slot nha")]
+    [InlineData("không cho người khác đánh trận này")]
+    [InlineData("ai lấy slot của Nam vậy")]
     public void Unrelated_chat_is_not_a_pass_slot_help_opportunity(string text)
     {
         Assert.False(ZaloMemberAssistService.IsPassSlotHelpOpportunity(text));
@@ -47,6 +56,31 @@ public sealed class ZaloMemberAssistServiceTests
         Assert.DoesNotContain("operator", reply.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
         Assert.Empty(await fixture.Db.DraftSlotPlayers.AsNoTracking().ToListAsync());
+    }
+
+    [Theory]
+    [InlineData("nghỉ trận này nha")]
+    [InlineData("tui không đánh trận T6 này")]
+    [InlineData("ai lấy slot của tui không")]
+    [InlineData("cho người khác đánh trận này đi")]
+    [InlineData("share slot T6 nha")]
+    public async Task Natural_self_pass_wording_opens_the_same_grounded_offer_without_ai(string text)
+    {
+        await using var fixture = await Fixture.CreateAsync(sessionCount: 1);
+
+        var reply = await new ZaloMemberAssistService(fixture.Db)
+            .TryBuildAsync("conn-1", "g1", Message($"natural-{Guid.NewGuid():n}", text));
+
+        Assert.NotNull(reply);
+        Assert.Equal(ZaloMemberAssistKind.PassSlotHelp, reply!.Kind);
+        Assert.Equal("session-t6", reply.SessionId);
+        Assert.Contains("pass slot T6", reply.Text, StringComparison.OrdinalIgnoreCase);
+
+        var offers = await new ZaloOpenSlotOfferStore(fixture.Db)
+            .ListOwnedActiveAsync("conn-1", "g1", "user-nguyen");
+        var offer = Assert.Single(offers);
+        Assert.Equal("user-nguyen", offer.OwnerZaloUserId);
+        Assert.Equal("session-t6", offer.SessionId);
     }
 
     [Fact]
