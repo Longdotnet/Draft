@@ -66,6 +66,15 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             );
             CREATE INDEX IF NOT EXISTS "IX_ZaloAutoSessionLifecycleHandoffAttempts_LastAttempt"
                 ON "ZaloAutoSessionLifecycleHandoffAttempts" ("LastAttemptAt");
+
+            CREATE TABLE IF NOT EXISTS "ZaloAutoSessionLifecycleOwnerships" (
+                "ProposalId" TEXT PRIMARY KEY,
+                "State" TEXT NOT NULL,
+                "LinkedSessionCount" INTEGER NOT NULL,
+                "HandedOffAt" TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ZaloAutoSessionLifecycleOwnerships_State"
+                ON "ZaloAutoSessionLifecycleOwnerships" ("State", "HandedOffAt");
             """,
             cancellationToken);
         ensured = true;
@@ -103,6 +112,8 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                 "SnapshotJson" = excluded."SnapshotJson",
                 "HandedOffAt" = excluded."HandedOffAt";
             """, cancellationToken);
+
+        await TryFinalizeProposalOwnershipAsync(proposalId, cancellationToken);
 
         return new ZaloAutoSessionLifecycleHandoffResultV5(
             sessionId,
@@ -175,6 +186,93 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             """, cancellationToken);
     }
 
+    internal async Task<bool> TryFinalizeProposalOwnershipAsync(
+        string proposalId,
+        CancellationToken cancellationToken = default)
+    {
+        await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
+        await EnsureAsync(cancellationToken);
+        var handedOffAt = DateTimeOffset.UtcNow.ToString("O");
+        await using var command = await CreateCommandAsync(
+            """
+            INSERT INTO "ZaloAutoSessionLifecycleOwnerships"
+                ("ProposalId", "State", "LinkedSessionCount", "HandedOffAt")
+            SELECT p."Id", 'HandedOff', COUNT(DISTINCT l."SessionId"), @HandedOffAt
+            FROM "ZaloPollSessionProposals" p
+            INNER JOIN "ZaloAutoSessionLinks" l
+                ON l."TrackedGroupId" = p."TrackedGroupId"
+               AND l."PollId" = p."PollId"
+            WHERE p."Id" = @ProposalId
+              AND p."Status" = 'Created'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "ZaloAutoSessionLinks" missing
+                  LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
+                    ON h."SessionId" = missing."SessionId"
+                  WHERE missing."TrackedGroupId" = p."TrackedGroupId"
+                    AND missing."PollId" = p."PollId"
+                    AND h."SessionId" IS NULL
+              )
+            GROUP BY p."Id"
+            HAVING COUNT(DISTINCT l."SessionId") > 0
+            ON CONFLICT ("ProposalId") DO UPDATE SET
+                "State" = excluded."State",
+                "LinkedSessionCount" = excluded."LinkedSessionCount";
+            """,
+            cancellationToken);
+        AddParameter(command, "@ProposalId", proposalId);
+        AddParameter(command, "@HandedOffAt", handedOffAt);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    internal async Task<int> ReconcileCompletedOwnershipsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
+        await EnsureAsync(cancellationToken);
+        var handedOffAt = DateTimeOffset.UtcNow.ToString("O");
+        await using var command = await CreateCommandAsync(
+            """
+            INSERT INTO "ZaloAutoSessionLifecycleOwnerships"
+                ("ProposalId", "State", "LinkedSessionCount", "HandedOffAt")
+            SELECT p."Id", 'HandedOff', COUNT(DISTINCT l."SessionId"), @HandedOffAt
+            FROM "ZaloPollSessionProposals" p
+            INNER JOIN "ZaloAutoSessionLinks" l
+                ON l."TrackedGroupId" = p."TrackedGroupId"
+               AND l."PollId" = p."PollId"
+            LEFT JOIN "ZaloAutoSessionLifecycleOwnerships" ownership
+                ON ownership."ProposalId" = p."Id"
+            WHERE p."Status" = 'Created'
+              AND ownership."ProposalId" IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "ZaloAutoSessionLinks" missing
+                  LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
+                    ON h."SessionId" = missing."SessionId"
+                  WHERE missing."TrackedGroupId" = p."TrackedGroupId"
+                    AND missing."PollId" = p."PollId"
+                    AND h."SessionId" IS NULL
+              )
+            GROUP BY p."Id"
+            HAVING COUNT(DISTINCT l."SessionId") > 0;
+            """,
+            cancellationToken);
+        AddParameter(command, "@HandedOffAt", handedOffAt);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    internal async Task<bool> HasHandedOffOwnershipAsync(
+        string proposalId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        await using var command = await CreateCommandAsync(
+            "SELECT 1 FROM \"ZaloAutoSessionLifecycleOwnerships\" WHERE \"ProposalId\" = @ProposalId AND \"State\" = 'HandedOff' LIMIT 1;",
+            cancellationToken);
+        AddParameter(command, "@ProposalId", proposalId);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
     public async Task<ZaloAutoSessionLifecycleReconciliationResultV5> ReconcileMissingAsync(
         ILogger logger,
         CancellationToken cancellationToken = default)
@@ -208,6 +306,10 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                     candidate.SessionId);
             }
         }
+
+        // Backfill the proposal-level ownership terminal for sessions handed off before this
+        // aggregate existed, including clean restarts where no per-session retry is needed.
+        await ReconcileCompletedOwnershipsAsync(cancellationToken);
 
         return new ZaloAutoSessionLifecycleReconciliationResultV5(candidates.Count, handedOff, failed);
     }
