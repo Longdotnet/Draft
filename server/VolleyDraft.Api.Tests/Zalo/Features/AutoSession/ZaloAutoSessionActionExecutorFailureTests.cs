@@ -82,4 +82,36 @@ public sealed class ZaloAutoSessionActionExecutorFailureTests
         Assert.Equal("auto_session_post_commit_cancelled", exception.Message);
         Assert.IsType<OperationCanceledException>(exception.InnerException);
     }
+
+    [Fact]
+    public void BuildPostCreateStatusMessage_PostCommitFailuresKeepCommittedCreationTruth()
+    {
+        var message = ZaloAutoSessionActionExecutor.BuildPostCreateStatusMessage(
+            "T6 11/09 17:45",
+            linkedCount: 1,
+            handoffFailureCount: 1,
+            syncFailureCount: 2);
+
+        Assert.Contains("Đã tạo trên website", message, StringComparison.Ordinal);
+        Assert.Contains("Session đã được tạo", message, StringComparison.Ordinal);
+        Assert.Contains("Session vẫn đã được tạo", message, StringComparison.Ordinal);
+        Assert.Contains("1 lifecycle handoff chưa hoàn tất", message, StringComparison.Ordinal);
+        Assert.Contains("2 lượt đồng bộ hậu tạo chưa hoàn tất", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("failed", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("exception", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("stack", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildPostCreateStatusMessage_SuccessClaimsSnapshotNotFutureLifecycleStage()
+    {
+        var message = ZaloAutoSessionActionExecutor.BuildPostCreateStatusMessage(
+            "T6 11/09 17:45",
+            linkedCount: 1,
+            handoffFailureCount: 0,
+            syncFailureCount: 0);
+
+        Assert.Contains("Match Lifecycle đã nhận snapshot authoritative", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("recruiting/waitlist/pass-slot/profile/draft readiness", message, StringComparison.Ordinal);
+    }
 }
