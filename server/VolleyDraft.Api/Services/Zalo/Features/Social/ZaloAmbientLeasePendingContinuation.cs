@@ -16,11 +16,12 @@ public sealed record ZaloAmbientLeasePendingContinuation(
 /// domain mutation itself.
 ///
 /// Preview confirmations use an explicit allowlist and strong confirmation grammar.
-/// Draft session-selection continuations are different: while AutoDraft/Redraft is
+/// Session-selection continuations are different: while AutoDraft/Redraft/TeamImage is
 /// waiting for a session, only a cancellation or a selector that resolves against the
 /// authoritative pending candidate sessions may promote the turn. This keeps short
 /// follow-ups such as "cn" or "13/9" usable without making ordinary ambient chat an
-/// implicit bot address.
+/// implicit bot address. TeamImage is read-only, but it still uses the same grounded
+/// pending-session selector and provenance boundary as draft workflows.
 /// </summary>
 public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbContext db)
 {
@@ -34,7 +35,8 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
     private static readonly HashSet<ZaloBotIntent> AllowedSessionSelectionPendingIntents =
     [
         ZaloBotIntent.AutoDraft,
-        ZaloBotIntent.Redraft
+        ZaloBotIntent.Redraft,
+        ZaloBotIntent.TeamImage
     ];
 
     public async Task<ZaloAmbientLeasePendingContinuation?> TryResolveAsync(
@@ -153,11 +155,11 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         string senderId,
         CancellationToken cancellationToken)
     {
-        // A generic recent bot reply is not enough to resume an old draft selector.
+        // A generic recent bot reply is not enough to resume an old session selector.
         // The latest successful reply for this sender/group must be the prompt that
         // created/refreshed this exact pending intent. Otherwise a newer unrelated
         // conversation could accidentally hand a short "cn" or "huỷ" back to stale
-        // AutoDraft state.
+        // workflow state.
         var repliedRows = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(item =>
