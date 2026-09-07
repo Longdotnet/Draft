@@ -1,0 +1,227 @@
+name: Autopilot draft preference patch
+
+on:
+  push:
+    branches:
+      - autopilot/draft-preference-final-reconcile
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: autopilot/draft-preference-final-reconcile
+      - name: Apply exact patch and regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
+          text = source.read_text()
+          old = '''        var teamIdByCaptainId = session.Teams.ToDictionary(
+              team => team.CaptainSessionPlayerId!,
+              team => team.Id);
+          var preferenceError = await ValidateCaptainPreferenceGroupsAsync(sessionId, teamIdByCaptainId);'''
+          new = '''        var teamIdByCaptainId = session.Teams.ToDictionary(
+              team => team.CaptainSessionPlayerId!,
+              team => team.Id);
+
+          // Final mutation boundary: historical data or a newly-added roster mutation path
+          // may have skipped feature-specific cleanup. Reconcile durable preferences against
+          // the authoritative current roster inside this draft transaction before any
+          // preference validation or draft artifact mutation can consume stale identities.
+          await new TeamPreferenceRosterReconciler(db).ReconcileAsync(sessionId);
+
+          var preferenceError = await ValidateCaptainPreferenceGroupsAsync(sessionId, teamIdByCaptainId);'''
+          if old not in text:
+              raise SystemExit('SessionDraftService anchor not found')
+          source.write_text(text.replace(old, new, 1))
+
+          test = Path('server/VolleyDraft.Api.Tests/Zalo/Features/TeamPreference/ZaloDraftTeamPreferenceFinalReconcileTests.cs')
+          test.parent.mkdir(parents=True, exist_ok=True)
+          test.write_text(r'''using Microsoft.Data.Sqlite;
+          using Microsoft.EntityFrameworkCore;
+          using VolleyDraft.Api.Contracts;
+          using VolleyDraft.Api.Data;
+          using VolleyDraft.Api.Models;
+          using VolleyDraft.Api.Services;
+          using Xunit;
+
+          namespace VolleyDraft.Api.Tests;
+
+          public sealed class ZaloDraftTeamPreferenceFinalReconcileTests
+          {
+              [Fact]
+              public async Task Draft_reconciles_historical_stale_preference_before_consuming_constraints()
+              {
+                  await using var connection = new SqliteConnection("Data Source=:memory:");
+                  await connection.OpenAsync();
+                  await using var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                      .UseSqlite(connection)
+                      .Options);
+                  await db.Database.EnsureCreatedAsync();
+
+                  var admin = new User
+                  {
+                      Id = "admin-pref-final",
+                      DisplayName = "Admin",
+                      Email = "admin-pref-final@example.test",
+                      PasswordHash = "test"
+                  };
+                  db.Users.Add(admin);
+                  await db.SaveChangesAsync();
+
+                  var service = new SessionDraftService(db);
+                  var created = await service.CreateSessionAsync(admin.Id, new CreateSessionRequest("CN", 3, 2));
+                  Assert.True(created.IsSuccess);
+                  var sessionId = created.Value!.Id;
+
+                  var playerIds = new List<string>();
+                  for (var i = 1; i <= 10; i++)
+                  {
+                      var added = await service.AddPlayerAsync(
+                          admin.Id,
+                          sessionId,
+                          new AddPlayerRequest($"P{i}", PlayerRole.New, PlayerLevel.New, PlayerGender.Male));
+                      Assert.True(added.IsSuccess);
+                      playerIds.Add(added.Value!.Id);
+                  }
+
+                  var captains = await service.SetManualCaptainsAsync(
+                      admin.Id,
+                      sessionId,
+                      new ManualCaptainsRequest(playerIds.Take(3).ToList()));
+                  Assert.True(captains.IsSuccess);
+
+                  // Simulate historical/imported state or a future mutation path that forgot
+                  // feature-specific cleanup: P10 left the authoritative roster, but its
+                  // durable same-team link survived with two still-present players.
+                  var stalePlayer = await db.SessionPlayers.SingleAsync(player => player.Id == playerIds[9]);
+                  stalePlayer.IsPresent = false;
+                  var group = new TeamPreferenceGroup { SessionId = sessionId };
+                  group.Players.Add(new TeamPreferenceGroupPlayer
+                  {
+                      TeamPreferenceGroupId = group.Id,
+                      SessionPlayerId = playerIds[0],
+                      RotationOrder = 1
+                  });
+                  group.Players.Add(new TeamPreferenceGroupPlayer
+                  {
+                      TeamPreferenceGroupId = group.Id,
+                      SessionPlayerId = playerIds[3],
+                      RotationOrder = 2
+                  });
+                  group.Players.Add(new TeamPreferenceGroupPlayer
+                  {
+                      TeamPreferenceGroupId = group.Id,
+                      SessionPlayerId = playerIds[9],
+                      RotationOrder = 3
+                  });
+                  db.TeamPreferenceGroups.Add(group);
+                  await db.SaveChangesAsync();
+
+                  var started = await service.StartDraftAsync(admin.Id, sessionId);
+
+                  Assert.True(started.IsSuccess, started.Error);
+                  Assert.Equal(SessionStatus.Drafting, started.Value!.SessionStatus);
+                  var remaining = await db.TeamPreferenceGroupPlayers.AsNoTracking()
+                      .Where(link => link.TeamPreferenceGroupId == group.Id)
+                      .OrderBy(link => link.RotationOrder)
+                      .ToListAsync();
+                  Assert.Equal([playerIds[0], playerIds[3]], remaining.Select(link => link.SessionPlayerId).ToArray());
+                  Assert.Equal([1, 2], remaining.Select(link => link.RotationOrder).ToArray());
+                  Assert.DoesNotContain(remaining, link => link.SessionPlayerId == playerIds[9]);
+              }
+
+              [Fact]
+              public async Task Draft_deletes_stale_preference_when_fewer_than_two_members_remain()
+              {
+                  await using var connection = new SqliteConnection("Data Source=:memory:");
+                  await connection.OpenAsync();
+                  await using var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                      .UseSqlite(connection)
+                      .Options);
+                  await db.Database.EnsureCreatedAsync();
+
+                  var admin = new User
+                  {
+                      Id = "admin-pref-delete",
+                      DisplayName = "Admin",
+                      Email = "admin-pref-delete@example.test",
+                      PasswordHash = "test"
+                  };
+                  db.Users.Add(admin);
+                  await db.SaveChangesAsync();
+
+                  var service = new SessionDraftService(db);
+                  var created = await service.CreateSessionAsync(admin.Id, new CreateSessionRequest("T6", 3, 2));
+                  Assert.True(created.IsSuccess);
+                  var sessionId = created.Value!.Id;
+
+                  var playerIds = new List<string>();
+                  for (var i = 1; i <= 11; i++)
+                  {
+                      var added = await service.AddPlayerAsync(
+                          admin.Id,
+                          sessionId,
+                          new AddPlayerRequest($"P{i}", PlayerRole.New, PlayerLevel.New, PlayerGender.Male));
+                      Assert.True(added.IsSuccess);
+                      playerIds.Add(added.Value!.Id);
+                  }
+
+                  var captains = await service.SetManualCaptainsAsync(
+                      admin.Id,
+                      sessionId,
+                      new ManualCaptainsRequest(playerIds.Take(3).ToList()));
+                  Assert.True(captains.IsSuccess);
+
+                  // Leave exactly 9 active players so the roster itself is valid, while a
+                  // three-person preference has only one active member left.
+                  (await db.SessionPlayers.SingleAsync(player => player.Id == playerIds[9])).IsPresent = false;
+                  (await db.SessionPlayers.SingleAsync(player => player.Id == playerIds[10])).IsPresent = false;
+                  var group = new TeamPreferenceGroup { SessionId = sessionId };
+                  group.Players.Add(new TeamPreferenceGroupPlayer
+                  {
+                      TeamPreferenceGroupId = group.Id,
+                      SessionPlayerId = playerIds[3],
+                      RotationOrder = 1
+                  });
+                  group.Players.Add(new TeamPreferenceGroupPlayer
+                  {
+                      TeamPreferenceGroupId = group.Id,
+                      SessionPlayerId = playerIds[9],
+                      RotationOrder = 2
+                  });
+                  group.Players.Add(new TeamPreferenceGroupPlayer
+                  {
+                      TeamPreferenceGroupId = group.Id,
+                      SessionPlayerId = playerIds[10],
+                      RotationOrder = 3
+                  });
+                  db.TeamPreferenceGroups.Add(group);
+                  await db.SaveChangesAsync();
+
+                  var started = await service.StartDraftAsync(admin.Id, sessionId);
+
+                  Assert.True(started.IsSuccess, started.Error);
+                  Assert.False(await db.TeamPreferenceGroups.AsNoTracking().AnyAsync(item => item.Id == group.Id));
+                  Assert.False(await db.TeamPreferenceGroupPlayers.AsNoTracking()
+                      .AnyAsync(link => link.TeamPreferenceGroupId == group.Id));
+              }
+          }
+          ''')
+
+          workflow = Path('.github/workflows/autopilot-draft-preference-patch.yml')
+          workflow.unlink()
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs server/VolleyDraft.Api.Tests/Zalo/Features/TeamPreference/ZaloDraftTeamPreferenceFinalReconcileTests.cs .github/workflows/autopilot-draft-preference-patch.yml
+          git commit -m "fix(draft): reconcile same-team preferences at final draft boundary"
+          git push origin HEAD:autopilot/draft-preference-final-reconcile
