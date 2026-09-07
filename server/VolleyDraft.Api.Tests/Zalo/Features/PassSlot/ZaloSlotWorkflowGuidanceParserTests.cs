@@ -21,6 +21,7 @@ public sealed class ZaloSlotWorkflowGuidanceParserTests
 
     [Theory]
     [InlineData("share slot dùng sao")]
+    [InlineData("share slot sử dụng sao")]
     [InlineData("cú pháp share slot")]
     [InlineData("hướng dẫn chung slot")]
     public void Share_help_variants_map_to_share_workflow(string text)
