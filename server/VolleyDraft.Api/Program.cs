@@ -124,6 +124,7 @@ builder.Services.AddAuthorization();
 var app = builder.Build();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapZaloSchedulerHealth();
 app.MapPost("/api/internal/scheduler/tick", (
     HttpContext httpContext,
     ZaloSchedulerTrigger trigger,
