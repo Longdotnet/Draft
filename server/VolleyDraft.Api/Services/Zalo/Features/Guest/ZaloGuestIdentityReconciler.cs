@@ -63,7 +63,11 @@ internal sealed class ZaloGuestIdentityReconciler(VolleyDraftDbContext db)
             changed += 1;
         }
 
-        if (changed > 0) await db.SaveChangesAsync(cancellationToken);
+        if (changed > 0)
+        {
+            await new TeamPreferenceRosterReconciler(db)
+                .ReconcileAsync(sessionId, cancellationToken);
+        }
         return changed;
     }
 

@@ -129,6 +129,53 @@ public sealed class ZaloGuestReservationServiceTests
     }
 
     [Fact]
+    public async Task CancellingGuest_RemovesTwoPersonSameTeamPreferenceImmediately()
+    {
+        await using var db = await CreateDbAsync(initialPlayers: 15);
+        var session = await db.MatchSessions.SingleAsync();
+        var service = new ZaloGuestReservationService(db);
+        var added = await service.AddAsync(
+            session,
+            "sponsor-1",
+            "Nick",
+            "message-1",
+            "recruitment-1",
+            new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.Add,
+                Guests: [new ZaloRecruitmentGuestSpec("Minh", PlayerGender.Male)]),
+            CancellationToken.None);
+        var guestPlayerId = added.Added.Single().SessionPlayerId!;
+        var group = new TeamPreferenceGroup { SessionId = session.Id };
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = "player-1",
+            RotationOrder = 1
+        });
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = guestPlayerId,
+            RotationOrder = 2
+        });
+        db.TeamPreferenceGroups.Add(group);
+        await db.SaveChangesAsync();
+
+        var cancel = await service.CancelAsync(
+            session,
+            "sponsor-1",
+            new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.Cancel,
+                SponsorSequence: 1),
+            CancellationToken.None);
+
+        Assert.False(cancel.NeedsClarification);
+        Assert.False((await db.SessionPlayers.SingleAsync(player => player.Id == guestPlayerId)).IsPresent);
+        Assert.Empty(await db.TeamPreferenceGroups.Where(item => item.SessionId == session.Id).ToListAsync());
+        Assert.Empty(await db.TeamPreferenceGroupPlayers.ToListAsync());
+    }
+
+    [Fact]
     public async Task ExactUniqueNamedGuest_IsCollapsedWhenSamePersonLaterAppearsFromPoll()
     {
         await using var db = await CreateDbAsync(initialPlayers: 15);
@@ -180,6 +227,81 @@ public sealed class ZaloGuestReservationServiceTests
         Assert.Equal(ZaloGuestReservationStatus.Linked, reservation.Status);
         Assert.Equal(pollPlayer.Id, reservation.SessionPlayerId);
         Assert.Equal(16, await db.SessionPlayers.CountAsync(player => player.IsPresent));
+    }
+
+    [Fact]
+    public async Task GuestIdentityCollapse_PrunesOnlyReplacedPlayerFromLargerSameTeamPreference()
+    {
+        await using var db = await CreateDbAsync(initialPlayers: 15);
+        var session = await db.MatchSessions.SingleAsync();
+        var service = new ZaloGuestReservationService(db);
+        var added = await service.AddAsync(
+            session,
+            "sponsor-1",
+            "Nick",
+            "message-1",
+            "recruitment-1",
+            new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.Add,
+                Guests: [new ZaloRecruitmentGuestSpec("Minh", PlayerGender.Male)]),
+            CancellationToken.None);
+        var manualPlayerId = added.Added.Single().SessionPlayerId!;
+        var group = new TeamPreferenceGroup { SessionId = session.Id };
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = "player-1",
+            RotationOrder = 1
+        });
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = manualPlayerId,
+            RotationOrder = 2
+        });
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = "player-2",
+            RotationOrder = 3
+        });
+        db.TeamPreferenceGroups.Add(group);
+
+        var profile = new PlayerProfile
+        {
+            Id = "profile-minh",
+            ZaloUserId = "zalo-minh",
+            DisplayName = "Minh",
+            Gender = PlayerGender.Male,
+            DefaultRole = PlayerRole.New,
+            DefaultLevel = PlayerLevel.New
+        };
+        db.PlayerProfiles.Add(profile);
+        db.SessionPlayers.Add(new SessionPlayer
+        {
+            Id = "poll-minh",
+            SessionId = session.Id,
+            PlayerProfileId = profile.Id,
+            PlayerProfile = profile,
+            DisplayName = "Minh",
+            Gender = PlayerGender.Male,
+            Role = PlayerRole.New,
+            Level = PlayerLevel.New,
+            IsPresent = true,
+            SourcePollId = "poll-1"
+        });
+        await db.SaveChangesAsync();
+
+        var changed = await new ZaloGuestIdentityReconciler(db).ReconcileAsync(session.Id);
+
+        Assert.Equal(1, changed);
+        var remaining = await db.TeamPreferenceGroupPlayers
+            .Where(link => link.TeamPreferenceGroupId == group.Id)
+            .OrderBy(link => link.RotationOrder)
+            .ToListAsync();
+        Assert.Equal(["player-1", "player-2"], remaining.Select(link => link.SessionPlayerId).ToArray());
+        Assert.Equal([1, 2], remaining.Select(link => link.RotationOrder).ToArray());
+        Assert.DoesNotContain(remaining, link => link.SessionPlayerId == manualPlayerId);
     }
 
     [Fact]
