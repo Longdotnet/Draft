@@ -13,19 +13,23 @@ public static class ZaloPendingTurnPolicy
         string? freshIntent = null,
         double freshConfidence = 0)
     {
-        if (IsNaturalCancel(currentQuestion))
-            return ZaloPendingTurnDisposition.CancelPending;
-
         // Exact deterministic commands own the current turn even when their suffix is
         // also a valid session selector (for example `8 T4`). A stale clarification
         // must never reinterpret a new command as its own short answer.
         if (ZaloMenuCommandParser.TryParse(currentQuestion, out _, out _))
             return ZaloPendingTurnDisposition.SwitchToNewIntent;
 
+        // A high-confidence fresh deterministic intent must win before generic cancel
+        // language is considered. Otherwise domain commands such as `hủy reminder`
+        // can be swallowed by an unrelated pending session selector merely because
+        // they begin with a natural cancel token.
         if (!string.IsNullOrWhiteSpace(freshIntent) &&
             freshConfidence >= .85 &&
             !string.Equals(pendingIntent, freshIntent, StringComparison.OrdinalIgnoreCase))
             return ZaloPendingTurnDisposition.SwitchToNewIntent;
+
+        if (IsNaturalCancel(currentQuestion))
+            return ZaloPendingTurnDisposition.CancelPending;
 
         if (ZaloSessionResolver.LooksLikeSelector(currentQuestion))
             return ZaloPendingTurnDisposition.ContinuePending;
