@@ -10,19 +10,22 @@ permissions:
 
 jobs:
   patch:
-    if: ${{ !contains(github.event.head_commit.message, '[autopatch]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: autopilot/draft-pass-slot-final-gate
       - name: Apply exact mutation guard
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           path = Path("server/VolleyDraft.Api/Services/SessionDraftService.cs")
           text = path.read_text(encoding="utf-8")
+          marker = "ZaloOpenSlotRiskCounter(db)"
+          if marker in text:
+              raise SystemExit(0)
           anchor = "        await ClearDraftRunArtifacts(sessionId);"
           if text.count(anchor) != 1:
               raise SystemExit(f"expected one mutation anchor, found {text.count(anchor)}")
@@ -47,8 +50,13 @@ jobs:
 
   '''
           path.write_text(text.replace(anchor, guard + anchor), encoding="utf-8")
-      - name: Commit patch
+          PY
+      - name: Commit patch when needed
+        shell: bash
         run: |
+          if git diff --quiet -- server/VolleyDraft.Api/Services/SessionDraftService.cs; then
+            exit 0
+          fi
           git config user.name "Longdotnet"
           git config user.email "189841499+Longdotnet@users.noreply.github.com"
           git add server/VolleyDraft.Api/Services/SessionDraftService.cs
