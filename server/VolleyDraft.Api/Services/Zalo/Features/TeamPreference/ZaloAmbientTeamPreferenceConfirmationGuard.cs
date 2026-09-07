@@ -169,7 +169,7 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationGuard(VolleyDraftDbCont
             ? $"@Npc xếp tui chung team với @{disclosure.PartnerDisplayName} đi"
             : $"@Npc xếp tui chung team với @{disclosure.PartnerDisplayName} ở {disclosure.SessionName} đi";
 
-        return $"Yêu cầu chung team đã đổi phạm vi: nếu xác nhận lúc này sẽ thành {currentNames}, không còn đúng đề xuất {disclosure.RequesterDisplayName} + {disclosure.PartnerDisplayName} ở {sessionLabel}. " +
+        return $"Yêu cầu chung team đã đổi phạm vi: nếu xác nhận lúc này sẽ thành {currentNames}, không còn chỉ {disclosure.RequesterDisplayName} + {disclosure.PartnerDisplayName} ở {sessionLabel}. " +
                $"Mình chưa áp dụng để tránh đổi thêm người mà bạn chưa xem. Gửi lại: {retrySyntax} (chọn đúng @mention); mình sẽ hiện phương án mới đầy đủ rồi bạn xác nhận.";
     }
 
