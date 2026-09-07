@@ -13,6 +13,8 @@ public sealed class ZaloMemberAssistTargetSafetyTests
     [InlineData("trả slot cho Long")]
     [InlineData("chuyển slot cho Phước")]
     [InlineData("PASS SLOT CHO NAM")]
+    [InlineData("ai share slot với tui")]
+    [InlineData("share slot cho mình")]
     public void Targeted_transfer_language_must_not_open_a_public_self_pass_offer(string text)
     {
         Assert.False(ZaloMemberAssistService.IsPassSlotHelpOpportunity(text));
