@@ -143,6 +143,7 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                 ON g."Id" = l."TrackedGroupId"
             LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
                 ON h."SessionId" = l."SessionId"
+               AND h."ProposalId" = p."Id"
             LEFT JOIN "ZaloAutoSessionLifecycleHandoffAttempts" a
                 ON a."SessionId" = l."SessionId"
             WHERE p."Status" = 'Created'
@@ -209,6 +210,7 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                   FROM "ZaloAutoSessionLinks" missing
                   LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
                     ON h."SessionId" = missing."SessionId"
+                   AND h."ProposalId" = p."Id"
                   WHERE missing."TrackedGroupId" = p."TrackedGroupId"
                     AND missing."PollId" = p."PollId"
                     AND h."SessionId" IS NULL
@@ -249,6 +251,7 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                   FROM "ZaloAutoSessionLinks" missing
                   LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
                     ON h."SessionId" = missing."SessionId"
+                   AND h."ProposalId" = p."Id"
                   WHERE missing."TrackedGroupId" = p."TrackedGroupId"
                     AND missing."PollId" = p."PollId"
                     AND h."SessionId" IS NULL
