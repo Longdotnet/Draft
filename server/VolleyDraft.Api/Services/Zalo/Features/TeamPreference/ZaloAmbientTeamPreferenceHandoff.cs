@@ -103,6 +103,34 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
                     cancellationToken);
             if (proposalSource?.BotReplySentAt is null)
                 return false;
+
+            // A visible @Npc mention proves that this turn addresses the bot, but it
+            // does not prove which older workflow the user means to confirm. Require
+            // the proposal prompt to still be the latest successful bot turn for this
+            // sender/group. Exact provider replies above remain intentionally stronger:
+            // quoting the old proposal itself is an explicit provenance edge and may
+            // still confirm it even after another conversation happened later.
+            var repliedRows = await db.ZaloGroupMessages
+                .AsNoTracking()
+                .Where(item =>
+                    item.ZaloConnectionId == connectionId &&
+                    item.GroupId == groupId &&
+                    item.SenderId == senderId &&
+                    !item.IsFromBot &&
+                    item.BotReplySentAt != null)
+                .Select(item => new
+                {
+                    item.MessageId,
+                    item.BotReplySentAt
+                })
+                .ToListAsync(cancellationToken);
+            var latest = repliedRows
+                .Where(item => item.BotReplySentAt is not null)
+                .OrderByDescending(item => item.BotReplySentAt!.Value)
+                .FirstOrDefault();
+            if (latest is null ||
+                !string.Equals(latest.MessageId, proposalSourceMessageId, StringComparison.Ordinal))
+                return false;
         }
 
         var collected = ParseObject(state.CollectedArgumentsJson);
