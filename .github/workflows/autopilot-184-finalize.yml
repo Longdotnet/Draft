@@ -1,0 +1,147 @@
+name: Autopilot 184 Finalize
+
+on:
+  push:
+    branches:
+      - autopilot/draft-pass-slot-final-gate
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: autopilot/draft-pass-slot-final-gate
+      - name: Apply final draft mutation gate and regression
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          service_path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
+          text = service_path.read_text(encoding='utf-8')
+          marker = 'Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận.'
+          anchor = '        await ClearDraftRunArtifacts(sessionId);'
+          if marker not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'expected exactly one draft mutation anchor, found {text.count(anchor)}')
+              guard = '''        if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId) &&\n            !string.IsNullOrWhiteSpace(session.ZaloGroupId))\n        {\n            var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)\n                .CountActiveForSessionAsync(\n                    session.ZaloConnectionId,\n                    session.ZaloGroupId,\n                    session.Id);\n            if (unresolvedPassSlotCount > 0)\n            {\n                return Conflict<DraftStateResponse>(\n                    $"Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận. " +\n                    "Hoàn tất việc chuyển suất trước: nếu đổi ý, người nhường gõ `huỷ pass`; " +\n                    "nếu đang nhận suất, người nhận vote xong rồi gõ `xong`. " +\n                    "Khi NPC xác nhận xong mới gõ lại `@Npc 9`.");\n            }\n        }\n\n'''
+              text = text.replace(anchor, guard + anchor)
+              service_path.write_text(text, encoding='utf-8')
+
+          test_path = Path('server/VolleyDraft.Api.Tests/Zalo/Features/PassSlot/ZaloDraftPassSlotFinalGateTests.cs')
+          test_path.write_text(r'''using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services;
+using Xunit;
+
+namespace VolleyDraft.Api.Tests;
+
+public sealed class ZaloDraftPassSlotFinalGateTests
+{
+    [Fact]
+    public async Task Draft_is_blocked_by_durable_offer_after_owner_left_roster_then_recovers_after_completion()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options);
+        await db.Database.EnsureCreatedAsync();
+
+        var admin = new User
+        {
+            Id = "admin-1",
+            DisplayName = "Admin",
+            Email = "admin@example.test",
+            PasswordHash = "test"
+        };
+        var zaloConnection = new ZaloConnection
+        {
+            Id = "conn-1",
+            AdminUserId = admin.Id,
+            AccountZaloId = "bot-uid",
+            DisplayName = "NPC",
+            EncryptedCredentials = "test"
+        };
+        db.Users.Add(admin);
+        db.ZaloConnections.Add(zaloConnection);
+        await db.SaveChangesAsync();
+
+        var service = new SessionDraftService(db);
+        var created = await service.CreateSessionAsync(admin.Id, new CreateSessionRequest("T6", 3, 2));
+        Assert.True(created.IsSuccess);
+        var sessionId = created.Value!.Id;
+        var session = await db.MatchSessions.SingleAsync(item => item.Id == sessionId);
+        session.ZaloConnectionId = zaloConnection.Id;
+        session.ZaloGroupId = "g1";
+        session.BotEnabled = true;
+        await db.SaveChangesAsync();
+
+        var playerIds = new List<string>();
+        for (var i = 1; i <= 6; i++)
+        {
+            var added = await service.AddPlayerAsync(
+                admin.Id,
+                sessionId,
+                new AddPlayerRequest($"P{i}", PlayerRole.New, PlayerLevel.New, PlayerGender.Male));
+            Assert.True(added.IsSuccess);
+            playerIds.Add(added.Value!.Id);
+        }
+
+        var captains = await service.SetManualCaptainsAsync(
+            admin.Id,
+            sessionId,
+            new ManualCaptainsRequest(playerIds.Take(3).ToList()));
+        Assert.True(captains.IsSuccess);
+
+        var offerStore = new ZaloOpenSlotOfferStore(db);
+        var offer = await offerStore.OpenAsync(
+            zaloConnection.Id,
+            "g1",
+            "owner-that-already-unvoted",
+            "Hoàng",
+            sessionId,
+            "T6",
+            "m-pass",
+            DateTimeOffset.UtcNow.AddHours(1),
+            null);
+
+        var blocked = await service.StartDraftAsync(admin.Id, sessionId);
+        Assert.False(blocked.IsSuccess);
+        Assert.Equal(409, blocked.StatusCode);
+        Assert.Contains("suất đang nhường", blocked.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(SessionStatus.CaptainSelection, (await db.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId)).Status);
+        Assert.Empty(await db.DraftRounds.AsNoTracking().Where(item => item.SessionId == sessionId).ToListAsync());
+
+        Assert.True(await offerStore.TryClaimAsync(offer, "claimant-uid", "Bình", "m-claim"));
+        Assert.True(await offerStore.TryBeginApplyAsync(offer.Id, "claimant-uid"));
+        Assert.True(await offerStore.CompleteAsync(offer.Id, "claimant-uid"));
+
+        var started = await service.StartDraftAsync(admin.Id, sessionId);
+        Assert.True(started.IsSuccess, started.Error);
+        Assert.Equal(SessionStatus.Drafting, started.Value!.SessionStatus);
+    }
+}
+''', encoding='utf-8')
+          PY
+      - name: Validate focused regression
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj --configuration Release --filter "FullyQualifiedName~ZaloOpenSlotRiskCounterTests|FullyQualifiedName~ZaloDraftPassSlotFinalGateTests"
+      - name: Commit finalized campaign
+        shell: bash
+        run: |
+          git config user.name "Longdotnet"
+          git config user.email "189841499+Longdotnet@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs server/VolleyDraft.Api.Tests/Zalo/Features/PassSlot/ZaloDraftPassSlotFinalGateTests.cs
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git diff --cached --check
+          git commit -m "fix(zalo): enforce pass-slot gate at draft mutation"
+          git push origin HEAD:autopilot/draft-pass-slot-final-gate
