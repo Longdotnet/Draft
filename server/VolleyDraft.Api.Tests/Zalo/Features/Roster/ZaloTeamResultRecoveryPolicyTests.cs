@@ -161,9 +161,10 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
 
         var result = ZaloTeamLineupFormatter.Format("CN 13/9", [], readiness: readiness);
 
-        Assert.Contains("Backend đã ghi nhận kết quả đội", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đã có kết quả chia team trong backend", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("chưa có kết quả chia team chính thức", result.Text, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ZaloDraftReadinessSnapshot Snapshot(
