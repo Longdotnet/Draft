@@ -22,28 +22,32 @@ public sealed partial class ZaloOverbookService
         var groupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
         if (accountId.Length == 0 || groupId.Length == 0) return false;
 
-        var connectionRows = await db.ZaloConnections
+        // Guidance is informational and belongs to the same durable account/group
+        // ownership boundary as inbound message claim. A configured group must not
+        // lose beginner help merely because it temporarily has no bot-enabled match.
+        // Resolve through ZaloTrackedGroups first, preserving the resolver's legacy
+        // MatchSession fallback for installations that have not been seeded yet.
+        var target = await new ZaloProactiveTargetResolver(db)
+            .ResolveTargetAsync(accountId, groupId, cancellationToken);
+        if (target is null) return false;
+
+        var connection = await db.ZaloConnections
             .AsNoTracking()
-            .Where(item => item.AccountZaloId == accountId &&
-                           item.MatchSessions.Any(session => session.BotEnabled && session.ZaloGroupId == groupId))
+            .Where(item => item.Id == target.ConnectionId)
             .Select(item => new
             {
                 item.Id,
                 item.AccountZaloId,
-                item.DisplayName,
-                item.UpdatedAt
+                item.DisplayName
             })
-            .ToListAsync(cancellationToken);
-        var connection = connectionRows
-            .OrderByDescending(item => item.UpdatedAt)
-            .FirstOrDefault();
+            .SingleOrDefaultAsync(cancellationToken);
         if (connection is null) return false;
 
         await SendDeterministicPreRouteResponseAsync(
             connection.Id,
             connection.AccountZaloId,
             connection.DisplayName,
-            groupId,
+            target.GroupId,
             incoming,
             guidance.Text,
             guidance.Intent == ZaloBotIntent.ShareSlot ? "ShareSlotGuidance" : "PassSlotGuidance",
