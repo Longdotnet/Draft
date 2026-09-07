@@ -287,7 +287,11 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         AddParameter(command, "@GroupId", groupId);
         AddParameter(command, "@MessageId", messageId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
+        var conversation = await reader.ReadAsync(cancellationToken) ? ReadConversation(reader) : null;
+        await reader.DisposeAsync();
+        return conversation is null
+            ? null
+            : await matchProposalsV4.HydrateDraftAsync(conversation, cancellationToken);
     }
 
     public async Task<IReadOnlyList<ZaloAutoSessionConversationData>> GetActiveForGroupAsync(
@@ -302,7 +306,8 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ZaloAutoSessionConversationData>();
         while (await reader.ReadAsync(cancellationToken)) result.Add(ReadConversation(reader));
-        return result;
+        await reader.DisposeAsync();
+        return await HydrateAllAsync(result, cancellationToken);
     }
 
     public async Task<IReadOnlyList<ZaloAutoSessionConversationProposalKey>> GetConversationEligibleProposalKeysAsync(
@@ -337,7 +342,8 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ZaloAutoSessionConversationData>();
         while (await reader.ReadAsync(cancellationToken)) result.Add(ReadConversation(reader));
-        return result;
+        await reader.DisposeAsync();
+        return await HydrateAllAsync(result, cancellationToken);
     }
 
     public async Task<IReadOnlyList<ZaloAutoSessionConversationData>> GetDueAsync(
@@ -352,7 +358,8 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new List<ZaloAutoSessionConversationData>();
         while (await reader.ReadAsync(cancellationToken)) result.Add(ReadConversation(reader));
-        return result;
+        await reader.DisposeAsync();
+        return await HydrateAllAsync(result, cancellationToken);
     }
 
     public async Task<ZaloAutoSessionConversationData> SaveAsync(
@@ -458,6 +465,15 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
         AddParameter(command, "@Confidence", confidence);
         AddParameter(command, "@CreatedAt", FormatDate(DateTimeOffset.UtcNow));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<ZaloAutoSessionConversationData>> HydrateAllAsync(
+        IReadOnlyList<ZaloAutoSessionConversationData> conversations,
+        CancellationToken cancellationToken)
+    {
+        foreach (var conversation in conversations)
+            await matchProposalsV4.HydrateDraftAsync(conversation, cancellationToken);
+        return conversations;
     }
 
     private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
