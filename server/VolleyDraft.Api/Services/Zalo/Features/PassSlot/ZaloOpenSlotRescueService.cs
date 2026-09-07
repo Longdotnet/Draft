@@ -233,15 +233,10 @@ public sealed class ZaloOpenSlotRescueService(
                     continue;
                 }
 
-                if (ZaloOpenSlotOfferService.ResolveOwner(session, candidate) is null)
-                {
-                    await store.CloseFromReminderAsync(
-                        candidate.Id, leaseToken, ZaloOpenSlotOfferStatus.Completed,
-                        "OwnerNoLongerPresent", now, cancellationToken);
-                    closed += 1;
-                    continue;
-                }
-
+                // Owner absence is expected during the documented pre-draft handoff:
+                // the owner may remove their poll vote before a claimant has completed
+                // the replacement. Only the Applying recovery path may infer completion,
+                // and only after proving the exact claimant in canonical roster/team state.
                 if (session.ZaloConnection is null || session.ZaloConnection.Status != ZaloConnectionStatus.Connected)
                 {
                     await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, now.Add(retryDelay), cancellationToken);
