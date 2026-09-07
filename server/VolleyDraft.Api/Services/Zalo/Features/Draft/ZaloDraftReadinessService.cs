@@ -9,6 +9,7 @@ public enum ZaloDraftReadinessState
 {
     Ready,
     AlreadyDrafted,
+    UnresolvedPassSlots,
     RosterNotFull,
     RosterOverCapacity,
     MissingProfiles,
@@ -36,12 +37,22 @@ public sealed record ZaloDraftReadinessSnapshot(
     ZaloDraftReadinessState State,
     string ReasonCode,
     bool IsRosterReady,
-    bool CanEscalate);
+    bool CanEscalate)
+{
+    /// <summary>
+    /// Number of durable pass/share-slot handoffs that are still Open, ClaimPending or Applying.
+    /// This remains authoritative even after the owner legitimately disappears from the current
+    /// roster by removing their poll vote during the handoff workflow.
+    /// </summary>
+    public int ActivePassSlotRiskCount { get; init; }
+}
 
 /// <summary>
 /// Single deterministic source of truth for the conversational/proactive draft pilot.
 /// This deliberately uses configured session capacity rather than the lower-level
 /// draft engine's divisibility minimum so the bot never urges a partial 9/12 draft.
+/// Durable pass-slot handoffs are part of readiness itself: callers must never have
+/// to remember a second ledger query before treating a roster as safe to draft.
 /// </summary>
 public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
 {
@@ -120,6 +131,13 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
             }
         }
 
+        var activePassSlotRiskCount = await new ZaloOpenSlotRiskCounter(db)
+            .CountActiveForSessionAsync(
+                session.ZaloConnectionId!,
+                session.ZaloGroupId!,
+                session.Id,
+                cancellationToken);
+
         string fingerprint;
         try
         {
@@ -137,7 +155,10 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
 
         var state = ZaloDraftReadinessState.Ready;
         var reason = "draft_ready";
-        var rosterReady = effectiveSlots == capacity && presentCount > 0 && missingNames.Count == 0;
+        var rosterReady = effectiveSlots == capacity &&
+                          presentCount > 0 &&
+                          missingNames.Count == 0 &&
+                          activePassSlotRiskCount == 0;
         var canEscalate = false;
 
         if (session.Status == SessionStatus.Finished)
@@ -166,6 +187,11 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
         {
             state = ZaloDraftReadinessState.SessionStarted;
             reason = "draft_blocked_session_started";
+        }
+        else if (activePassSlotRiskCount > 0)
+        {
+            state = ZaloDraftReadinessState.UnresolvedPassSlots;
+            reason = "draft_blocked_pass_slot_unresolved";
         }
         else if (presentCount == 0)
         {
@@ -220,6 +246,9 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
             state,
             reason,
             rosterReady,
-            canEscalate);
+            canEscalate)
+        {
+            ActivePassSlotRiskCount = activePassSlotRiskCount
+        };
     }
 }
