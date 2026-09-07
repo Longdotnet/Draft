@@ -29,7 +29,7 @@ public sealed class ZaloTeamCardService(
     internal static bool HasRenderableTeamResult(SessionStatus status, bool hasNonCaptainAssignment)
     {
         if (status is SessionStatus.Cancelled or SessionStatus.Drafting) return false;
-        return status == SessionStatus.Finished || hasNonCaptainAssignment;
+        return hasNonCaptainAssignment;
     }
 
     public async Task<GeneratedTeamCard?> GenerateAsync(string sessionId, CancellationToken cancellationToken = default)
