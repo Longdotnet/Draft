@@ -36,7 +36,6 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
             CREATE TABLE IF NOT EXISTS "ZaloAutoSessionLifecycleHandoffs" (
                 "SessionId" TEXT PRIMARY KEY,
                 "ProposalId" TEXT NOT NULL,
-                "ConversationId" TEXT NOT NULL,
                 "Stage" TEXT NOT NULL,
                 "Owner" TEXT NOT NULL,
                 "NeedsWebsite" INTEGER NOT NULL,
@@ -53,7 +52,6 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
 
     public async Task<ZaloAutoSessionLifecycleHandoffResultV5> HandOffAsync(
         string proposalId,
-        string conversationId,
         string adminUserId,
         string sessionId,
         CancellationToken cancellationToken = default)
@@ -72,12 +70,11 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
         var handedOffAt = DateTimeOffset.UtcNow;
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "ZaloAutoSessionLifecycleHandoffs"
-                ("SessionId", "ProposalId", "ConversationId", "Stage", "Owner", "NeedsWebsite", "ReasonCode", "SnapshotJson", "HandedOffAt")
+                ("SessionId", "ProposalId", "Stage", "Owner", "NeedsWebsite", "ReasonCode", "SnapshotJson", "HandedOffAt")
             VALUES
-                ({{sessionId}}, {{proposalId}}, {{conversationId}}, {{lifecycle.Value.Stage.ToString()}}, {{lifecycle.Value.Owner.ToString()}}, {{lifecycle.Value.NeedsWebsite ? 1 : 0}}, {{lifecycle.Value.ReasonCode}}, {{snapshotJson}}, {{handedOffAt.ToString("O")}})
+                ({{sessionId}}, {{proposalId}}, {{lifecycle.Value.Stage.ToString()}}, {{lifecycle.Value.Owner.ToString()}}, {{lifecycle.Value.NeedsWebsite ? 1 : 0}}, {{lifecycle.Value.ReasonCode}}, {{snapshotJson}}, {{handedOffAt.ToString("O")}})
             ON CONFLICT ("SessionId") DO UPDATE SET
                 "ProposalId" = excluded."ProposalId",
-                "ConversationId" = excluded."ConversationId",
                 "Stage" = excluded."Stage",
                 "Owner" = excluded."Owner",
                 "NeedsWebsite" = excluded."NeedsWebsite",
