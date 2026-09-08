@@ -15,13 +15,14 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
 
         Assert.NotNull(message);
         Assert.StartsWith("@all ", message!, StringComparison.Ordinal);
-        Assert.Contains("15/18", message);
-        Assert.Contains("thiếu 3 slot", message);
+        Assert.Contains("15/18 chỗ", message);
+        Assert.Contains("thiếu 3 chỗ", message);
         Assert.Contains("chưa vote", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("vào poll", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mở bình chọn", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("tiếp tục kiếm thêm", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("reply thẳng tin này `+1` hoặc `+2`", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("không cần ở trong group Zalo", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần ở trong nhóm Zalo", message, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -34,10 +35,11 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
         Assert.NotNull(message);
         Assert.StartsWith("@all ", message!, StringComparison.Ordinal);
         Assert.Contains("chưa vote", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("vào poll", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mở bình chọn", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("+1", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("+2", message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("ngoài group", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ngoài nhóm", message, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -51,28 +53,44 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
     }
 
     [Fact]
-    public void SharedRoster_DoesNotHideRawVersusEffectiveSlotFacts()
+    public void SharedRoster_PreservesRawAndCountedFactsWithoutEffectiveSlotJargon()
     {
         var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(Snapshot(16, 15, 18));
 
         Assert.NotNull(message);
-        Assert.Contains("16 người / 15 effective slot", message!);
-        Assert.Contains("mốc 18", message);
-        Assert.Contains("thiếu 3 slot", message);
+        Assert.Contains("16 người, tính ra 15/18 chỗ để chia đội", message!);
+        Assert.Contains("thiếu 3 chỗ", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
-    public void FullPollWithPassRisk_StillCallsForAReplacement()
+    public void FullVoteWithPassRisk_StillCallsForAReplacementInPlainLanguage()
     {
         var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
             Snapshot(18, 18, 18),
             activeSlotRiskCount: 1);
 
         Assert.NotNull(message);
-        Assert.Contains("18/18", message!);
-        Assert.Contains("1 slot", message);
-        Assert.Contains("pass/huỷ", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("18/18 chỗ", message!);
+        Assert.Contains("1 chỗ", message);
+        Assert.Contains("đang nhường/huỷ", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("người thay", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tự ngưng nhắc", message, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerLanguage(message);
+    }
+
+    [Fact]
+    public void UnderCapacityWithPassRisk_ExplainsBothMissingPeopleAndUnresolvedHandoff()
+    {
+        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+            Snapshot(15, 14, 18),
+            activeSlotRiskCount: 1);
+
+        Assert.NotNull(message);
+        Assert.Contains("15 người, tính ra 14/18 chỗ để chia đội", message!);
+        Assert.Contains("thiếu 4 chỗ", message);
+        Assert.Contains("1 chỗ đang nhường/huỷ chưa xử lý xong", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -110,6 +128,27 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
         Assert.Equal(firstKey, secondKey);
         Assert.NotEqual(firstKey, otherSession);
         Assert.StartsWith("draft-keep-recruiting:session-a:", firstKey, StringComparison.Ordinal);
+    }
+
+    private static void AssertBeginnerLanguage(string message)
+    {
+        var forbidden = new[]
+        {
+            "effective slot",
+            "roster",
+            "sync",
+            "delta",
+            "auto-draft",
+            "shared/rotation",
+            "over-slot",
+            "fingerprint",
+            "backend",
+            "poll",
+            " slot"
+        };
+
+        foreach (var term in forbidden)
+            Assert.DoesNotContain(term, message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IConfiguration Config(string cooldownMinutes) =>
