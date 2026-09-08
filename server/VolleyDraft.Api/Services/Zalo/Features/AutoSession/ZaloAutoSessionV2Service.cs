@@ -332,6 +332,41 @@ internal sealed class ZaloAutoSessionV2Service(
             return;
         }
 
+        var capacity = ZaloAutoSessionCapacityPolicyV5.Resolve(poll.Question);
+        if (capacity.HasExplicitCapacity && !capacity.IsValid)
+        {
+            proposal.Status = ZaloPollSessionProposalStatus.Ignored;
+            proposal.ClassifierConfidence = 0;
+            proposal.ClassifierReason = capacity.ErrorCode ?? "explicit_capacity_invalid";
+            proposal.LastError = Truncate(capacity.ErrorMessage, 1000);
+            proposal = await store.UpsertProposalAsync(proposal, cancellationToken);
+
+            try
+            {
+                var targets = new[] { pollCreatorId };
+                var names = await ResolveNamesAsync(credentials, targets);
+                var outgoing = BuildMentionMessage(targets, names, BuildCapacityConflictPrompt(poll, capacity));
+                var sent = await bridge.SendGroupMessageAsync(
+                    connection.AccountZaloId,
+                    tracked.GroupId,
+                    outgoing.Message,
+                    outgoing.Mentions,
+                    idempotencyKey: $"auto-session-v2-capacity:{tracked.Id}:{poll.Id}:{structureHash[..12]}");
+                if (!sent.Sent || string.IsNullOrWhiteSpace(sent.MessageId))
+                    throw new InvalidOperationException("Zalo bridge did not return capacity-conflict message id.");
+                proposal.ProposalMessageId = sent.MessageId.Trim();
+                await store.UpsertProposalAsync(proposal, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                proposal.Status = ZaloPollSessionProposalStatus.Failed;
+                proposal.LastError = Truncate(exception.Message, 1000);
+                await store.UpsertProposalAsync(proposal, cancellationToken);
+                throw;
+            }
+            return;
+        }
+
         var classification = await classifier.ClassifyAsync(poll, candidates, cancellationToken);
         proposal.ClassifierConfidence = classification.Confidence;
         proposal.ClassifierReason = classification.Reason;
@@ -356,13 +391,16 @@ internal sealed class ZaloAutoSessionV2Service(
             return;
         }
 
+        var previewTeamSize = capacity.HasExplicitCapacity
+            ? capacity.TeamSize
+            : Math.Max(2, tracked.DefaultTeamSize);
         var targetIds = new[] { pollCreatorId };
         var namesForPreview = await ResolveNamesAsync(credentials, targetIds);
         var body = BuildOrganizerPreview(
             poll,
             candidates,
-            3,
-            Math.Max(2, tracked.DefaultTeamSize),
+            ZaloAutoSessionCapacityPolicyV5.SupportedTeamCount,
+            previewTeamSize,
             Math.Max(1, tracked.DefaultTotalSets),
             tracked.DefaultLocation,
             rollout);
@@ -430,7 +468,9 @@ internal sealed class ZaloAutoSessionV2Service(
                 "poll_creator_is_not_group_organizer" or
                 "all_schedule_options_already_linked" or
                 "website_matches_already_exist" or
-                "schedule_conflict")
+                "schedule_conflict" or
+                "explicit_capacity_conflict" or
+                "explicit_capacity_not_supported")
             return false;
 
         var age = now - existing.UpdatedAt;
@@ -606,6 +646,18 @@ internal sealed class ZaloAutoSessionV2Service(
         return $"Tui chưa thể preview/tạo website từ poll “{Truncate(poll.Question, 180)}” vì ngày trong option đang mâu thuẫn hoặc không hợp lệ.\n\n" +
                $"{string.Join("\n", lines)}\n\n" +
                "Website CHƯA được tạo. Sau khi bạn sửa option/poll cho rõ, bot sẽ đọc lại từ đầu; tui không tự đoán ngày.";
+    }
+
+    internal static string BuildCapacityConflictPrompt(
+        BridgePoll poll,
+        ZaloAutoSessionCapacityResolutionV5 capacity)
+    {
+        var reason = string.IsNullOrWhiteSpace(capacity.ErrorMessage)
+            ? "Poll đang có khai báo capacity chưa đủ rõ để dùng an toàn. Hãy sửa poll trước khi tạo website."
+            : capacity.ErrorMessage.Trim();
+        return $"Tui chưa thể preview/tạo website từ poll “{Truncate(poll.Question, 180)}”.\n\n" +
+               $"{reason}\n\n" +
+               "Website CHƯA được tạo. Sau khi bạn sửa capacity trong poll, bot sẽ đọc lại deterministic; tui không dùng AI để đoán số slot.";
     }
 
     private async Task<ZaloConnection?> GetConnectionAsync(string connectionId, CancellationToken cancellationToken) =>

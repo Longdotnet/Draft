@@ -145,6 +145,10 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
             configuration.GetValue("AutoSession:ConversationExpiryHours", 24),
             3,
             72);
+        var capacity = ZaloAutoSessionCapacityPolicyV5.Resolve(proposal.PollQuestion);
+        var initialTeamSize = capacity.HasExplicitCapacity && capacity.IsValid
+            ? capacity.TeamSize
+            : Math.Max(2, tracked.DefaultTeamSize);
         var draft = new ZaloAutoSessionConversationDraft(
             candidates.Select(item => new ZaloAutoSessionConversationDraftItem(
                 item.OptionId,
@@ -154,7 +158,7 @@ internal sealed class ZaloAutoSessionConversationStore(VolleyDraftDbContext db)
                 item.VoteCount,
                 true)).ToList(),
             tracked.DefaultLocation,
-            Math.Max(2, tracked.DefaultTeamSize));
+            initialTeamSize);
         var json = System.Text.Json.JsonSerializer.Serialize(
             draft,
             new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
