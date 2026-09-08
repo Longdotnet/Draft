@@ -9,9 +9,12 @@ public sealed class ZaloListenerCoordinator(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     ZaloCredentialProtector credentialProtector,
+    ZaloActivityBackfillCoordinator activityBackfill,
     IConfiguration configuration,
     ILogger<ZaloListenerCoordinator> logger)
 {
+    private static readonly ZaloListenerRecoveryGate RecoveryGate = new();
+
     public async Task EnsureAllAsync(CancellationToken cancellationToken = default)
     {
         var accountIds = await db.ZaloConnections
@@ -50,7 +53,11 @@ public sealed class ZaloListenerCoordinator(
             return false;
         }
         var connectionIds = connections.Select(item => item.Id).ToList();
-        var groupIds = await ResolveListenerGroupIdsAsync(db, connectionIds, cancellationToken);
+        var listenerTargets = await ResolveListenerTargetsAsync(db, connectionIds, cancellationToken);
+        var groupIds = listenerTargets
+            .Select(target => target.GroupId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         try
         {
             if (groupIds.Count == 0)
@@ -66,12 +73,17 @@ public sealed class ZaloListenerCoordinator(
             var webhookKey = configuration["Zalo:WebhookKey"]
                 ?? configuration["Zalo:BridgeInternalKey"]
                 ?? "development-zalo-bridge-key";
-            await StartListenerWithRetryAsync(
+            var listener = await StartListenerWithRetryAsync(
                 connection.AccountZaloId,
                 credentials,
                 groupIds,
                 webhookUrl,
                 webhookKey,
+                cancellationToken);
+            await QueueMissedEventRecoveryAsync(
+                connection.AccountZaloId,
+                listener.StartedAt,
+                listenerTargets,
                 cancellationToken);
             return true;
         }
@@ -79,6 +91,68 @@ public sealed class ZaloListenerCoordinator(
         {
             logger.LogWarning(exception, "Could not reconcile Zalo listener for account {AccountId}", accountId);
             return false;
+        }
+    }
+
+    private async Task QueueMissedEventRecoveryAsync(
+        string accountId,
+        long listenerStartedAt,
+        IReadOnlyList<(string ConnectionId, string GroupId)> targets,
+        CancellationToken cancellationToken)
+    {
+        foreach (var target in targets)
+        {
+            if (!RecoveryGate.TryBegin(
+                    accountId,
+                    target.ConnectionId,
+                    target.GroupId,
+                    listenerStartedAt))
+                continue;
+
+            try
+            {
+                // The websocket remains the realtime authority. This only persists one
+                // bounded incremental recovery job when either process forgot the prior
+                // generation (API restart) or the bridge reports a newly-created listener
+                // generation (bridge restart/reconnect). The normal five-minute listener
+                // reconcile therefore does not become message-history polling.
+                await activityBackfill.QueueGroupAsync(
+                    target.ConnectionId,
+                    target.GroupId,
+                    false,
+                    cancellationToken);
+                logger.LogInformation(
+                    "Queued missed-event recovery Account={AccountId} Connection={ConnectionId} Group={GroupId} ListenerStartedAt={ListenerStartedAt}",
+                    accountId,
+                    target.ConnectionId,
+                    target.GroupId,
+                    listenerStartedAt);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                RecoveryGate.Release(
+                    accountId,
+                    target.ConnectionId,
+                    target.GroupId,
+                    listenerStartedAt);
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // A failed DB queue must be retryable on the next sparse listener
+                // reconcile. Do not tear down an otherwise healthy websocket listener.
+                RecoveryGate.Release(
+                    accountId,
+                    target.ConnectionId,
+                    target.GroupId,
+                    listenerStartedAt);
+                logger.LogWarning(
+                    exception,
+                    "Could not queue missed-event recovery Account={AccountId} Connection={ConnectionId} Group={GroupId}",
+                    accountId,
+                    target.ConnectionId,
+                    target.GroupId);
+            }
         }
     }
 
@@ -94,6 +168,18 @@ public sealed class ZaloListenerCoordinator(
         IReadOnlyList<string> connectionIds,
         CancellationToken cancellationToken = default)
     {
+        var targets = await ResolveListenerTargetsAsync(db, connectionIds, cancellationToken);
+        return targets
+            .Select(target => target.GroupId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    internal static async Task<IReadOnlyList<(string ConnectionId, string GroupId)>> ResolveListenerTargetsAsync(
+        VolleyDraftDbContext db,
+        IReadOnlyList<string> connectionIds,
+        CancellationToken cancellationToken = default)
+    {
         var allowedConnections = connectionIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Select(id => id.Trim())
@@ -102,10 +188,13 @@ public sealed class ZaloListenerCoordinator(
 
         var targets = await new ZaloProactiveTargetResolver(db).GetTargetsAsync(cancellationToken);
         return targets
-            .Where(target => allowedConnections.Contains(target.ConnectionId))
-            .Select(target => target.GroupId)
-            .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
-            .Distinct(StringComparer.Ordinal)
+            .Where(target =>
+                allowedConnections.Contains(target.ConnectionId) &&
+                !string.IsNullOrWhiteSpace(target.GroupId))
+            .Select(target => (
+                ConnectionId: target.ConnectionId.Trim(),
+                GroupId: target.GroupId.Trim()))
+            .Distinct()
             .ToList();
     }
 
