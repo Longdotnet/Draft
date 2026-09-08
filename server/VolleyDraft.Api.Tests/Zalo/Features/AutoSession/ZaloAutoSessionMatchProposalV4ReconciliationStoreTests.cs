@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
@@ -47,6 +48,7 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
             var durableAfter = Deserialize(saved.Revision.DraftJson);
             Assert.Equal(18, durableAfter.Items.Single(item => item.OptionId == "t6").StartTime.Hour);
             Assert.Equal(12, durableAfter.Items.Single(item => item.OptionId == "t6").VoteCount);
+            AssertEvidenceSource(saved.Revision.EvidenceJson, "startTimes", "t6", "organizer_correction");
         }
 
         await using var restartedDb = new VolleyDraftDbContext(options);
@@ -58,7 +60,7 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
     }
 
     [Fact]
-    public async Task ApprovedLocationPolicyRefresh_PersistsNewSourceBaseline_AndDoesNotLoopAfterRestart()
+    public async Task ApprovedLocationPolicyRefresh_PersistsNewSourceBaseline_AndRefreshesAuthorityEvidence()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -91,6 +93,8 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
             Assert.NotNull(saved);
             Assert.True(saved!.Accepted);
             Assert.Equal("Sân B", Deserialize(saved.Revision.DraftJson).Location);
+            AssertEvidenceSource(saved.Revision.EvidenceJson, "location", null, "approved_group_default");
+            AssertEvidenceDetail(saved.Revision.EvidenceJson, "location", null, "ZaloTrackedGroups.DefaultLocation=Sân B");
         }
 
         await using var restartedDb = new VolleyDraftDbContext(options);
@@ -112,7 +116,81 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
     }
 
     [Fact]
-    public async Task MaterialSourceTimeChange_BecomesNewBaseline_ThenSecondRevalidationDoesNotLoop()
+    public async Task ApprovedTeamSizePolicyRefresh_RefreshesAuthorityEvidence()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var revisions = new ZaloAutoSessionMatchProposalV4Store(db);
+        var conversation = Conversation(SourceJson());
+        await revisions.InitializeFromPreviewAsync(Proposal(), Tracked(), conversation);
+
+        var source = Deserialize(SourceJson());
+        var changedTracked = Tracked(teamSize: 7);
+        var poll = Poll();
+        var revalidation = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll,
+            changedTracked,
+            source,
+            source,
+            Now);
+        Assert.True(revalidation.CanExecute);
+        Assert.Equal(7, revalidation.Reconciliation.Draft.TeamSize);
+
+        conversation.Version = 1;
+        var store = new ZaloAutoSessionMatchProposalV4ReconciliationStore(db);
+        var saved = await store.AppendReconciliationAsync(conversation, poll, source, revalidation, "leader-1");
+
+        Assert.NotNull(saved);
+        Assert.True(saved!.Accepted);
+        AssertEvidenceSource(saved.Revision.EvidenceJson, "teamSize", null, "approved_group_default");
+        AssertEvidenceDetail(saved.Revision.EvidenceJson, "teamSize", null, "ZaloTrackedGroups.DefaultTeamSize=7");
+    }
+
+    [Fact]
+    public async Task OrganizerLocationCorrection_RemainsOrganizerOwnedAcrossLaterPolicyRefresh()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var revisions = new ZaloAutoSessionMatchProposalV4Store(db);
+        var conversation = Conversation(SourceJson());
+        await revisions.InitializeFromPreviewAsync(Proposal(), Tracked(), conversation);
+
+        var organizerDraft = Deserialize(SourceJson()) with { Location = "Sân organizer" };
+        conversation.Version = 1;
+        conversation.ActiveOrganizerId = "leader-1";
+        conversation.LastIntent = "ModifyDraft";
+        conversation.DraftJson = JsonSerializer.Serialize(organizerDraft, JsonOptions);
+        var organizerRevision = await revisions.SaveConversationDraftAsync(conversation);
+        Assert.True(organizerRevision!.Accepted);
+        AssertEvidenceSource(organizerRevision.Revision.EvidenceJson, "location", null, "organizer_correction");
+
+        var source = Deserialize(SourceJson());
+        var changedTracked = Tracked(location: "Sân admin mới");
+        var poll = Poll(t6Votes: 11);
+        var revalidation = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll,
+            changedTracked,
+            source,
+            organizerDraft,
+            Now);
+        Assert.True(revalidation.CanExecute);
+        Assert.Equal("Sân organizer", revalidation.Reconciliation.Draft.Location);
+
+        conversation.Version = 2;
+        var store = new ZaloAutoSessionMatchProposalV4ReconciliationStore(db);
+        var saved = await store.AppendReconciliationAsync(conversation, poll, source, revalidation, "leader-1");
+
+        Assert.NotNull(saved);
+        Assert.True(saved!.Accepted);
+        AssertEvidenceSource(saved.Revision.EvidenceJson, "location", null, "organizer_correction");
+    }
+
+    [Fact]
+    public async Task MaterialSourceTimeChange_BecomesNewBaseline_AndPersistsExplicitTitleAuthority()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -138,6 +216,8 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
         var store = new ZaloAutoSessionMatchProposalV4ReconciliationStore(db);
         var saved = await store.AppendReconciliationAsync(conversation, changedPoll, oldSource, first, "leader-1");
         Assert.True(saved!.Accepted);
+        AssertEvidenceSource(saved.Revision.EvidenceJson, "startTimes", "t6", "poll_title_explicit_time");
+        AssertEvidenceSource(saved.Revision.EvidenceJson, "startTimes", "cn", "poll_title_explicit_time");
 
         var newSource = await store.LoadSourceAsync("proposal-1", SourceJson());
         var durableAfter = Deserialize(saved.Revision.DraftJson);
@@ -149,6 +229,58 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
             Now);
         Assert.True(second.CanExecute);
         Assert.Empty(second.Reconciliation.Changes);
+    }
+
+    [Fact]
+    public async Task ReconciledDefaultTime_PersistsApprovedDefaultAuthorityInsteadOfGenericInference()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var revisions = new ZaloAutoSessionMatchProposalV4Store(db);
+        var conversation = Conversation(SourceJson());
+        await revisions.InitializeFromPreviewAsync(Proposal(), Tracked(), conversation);
+
+        var source = Deserialize(SourceJson());
+        var pollWithoutExplicitTime = new BridgePoll(
+            "poll-1",
+            "Vote sân UTE tuần sau. Max 18 slots/sân.",
+            "leader-1",
+            [
+                new BridgePollOption("t6", "T6 11/9", 11, []),
+                new BridgePollOption("cn", "CN 13/9", 9, [])
+            ],
+            true,
+            false,
+            false,
+            false,
+            20,
+            1788750000000,
+            1788750002000,
+            0);
+        var tracked = Tracked();
+        tracked.DefaultStartMinutes = 17 * 60 + 45;
+        var revalidation = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            pollWithoutExplicitTime,
+            tracked,
+            source,
+            source,
+            Now);
+
+        conversation.Version = 1;
+        var store = new ZaloAutoSessionMatchProposalV4ReconciliationStore(db);
+        var saved = await store.AppendReconciliationAsync(
+            conversation,
+            pollWithoutExplicitTime,
+            source,
+            revalidation,
+            "leader-1");
+
+        Assert.NotNull(saved);
+        Assert.True(saved!.Accepted);
+        AssertEvidenceSource(saved.Revision.EvidenceJson, "startTimes", "t6", "approved_group_default");
+        AssertEvidenceDetail(saved.Revision.EvidenceJson, "startTimes", "t6", "ZaloTrackedGroups.DefaultStartMinutes=1065");
     }
 
     [Fact]
@@ -253,6 +385,28 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
 
     private static ZaloAutoSessionConversationDraft Deserialize(string json) =>
         JsonSerializer.Deserialize<ZaloAutoSessionConversationDraft>(json, JsonOptions)!;
+
+    private static void AssertEvidenceSource(
+        string evidenceJson,
+        string property,
+        string? optionId,
+        string expected)
+    {
+        var node = JsonNode.Parse(evidenceJson)!;
+        var value = optionId is null ? node[property] : node[property]?[optionId];
+        Assert.Equal(expected, value?["source"]?.GetValue<string>());
+    }
+
+    private static void AssertEvidenceDetail(
+        string evidenceJson,
+        string property,
+        string? optionId,
+        string expected)
+    {
+        var node = JsonNode.Parse(evidenceJson)!;
+        var value = optionId is null ? node[property] : node[property]?[optionId];
+        Assert.Equal(expected, value?["detail"]?.GetValue<string>());
+    }
 
     private static DateTimeOffset At(int day, int hour) =>
         new(2026, 9, day, hour, 45, 0, TimeSpan.FromHours(7));
