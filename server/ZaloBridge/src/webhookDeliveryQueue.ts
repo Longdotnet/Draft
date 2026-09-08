@@ -69,8 +69,10 @@ function retryableStatus(status: number): boolean {
  * unavailable. Deliveries are serialized per account + endpoint so conversation order
  * is preserved without allowing one sleeping API target to block another account.
  *
- * This queue never calls Zalo. If the bridge process itself restarts, listener-generation
- * recovery in the API remains the durable fallback for the gap across that restart.
+ * This queue never calls Zalo. Planned bridge shutdowns can drain accepted deliveries
+ * before the process exits. A hard process/container loss can still lose memory-only
+ * work, so listener-generation recovery remains the fallback where provider history is
+ * available.
  */
 export class WebhookDeliveryQueue {
   private readonly serial = new KeyedSerialExecutor();
@@ -87,6 +89,7 @@ export class WebhookDeliveryQueue {
   private readonly onLog: (event: Record<string, unknown>) => void;
   private readonly pendingByAccount = new Map<string, number>();
   private readonly inFlightIds = new Set<string>();
+  private readonly activeDeliveries = new Set<Promise<void>>();
   private readonly stats: WebhookDeliveryStats = {
     pending: 0,
     accepted: 0,
@@ -138,7 +141,7 @@ export class WebhookDeliveryQueue {
     this.stats.accepted += 1;
     const serialKey = `${accountId}:${request.url}`;
 
-    return this.serial.run(serialKey, () => this.deliverWithRetry(request))
+    const delivery = this.serial.run(serialKey, () => this.deliverWithRetry(request))
       .finally(() => {
         this.inFlightIds.delete(deliveryId);
         const remaining = Math.max(0, (this.pendingByAccount.get(accountId) ?? 1) - 1);
@@ -146,10 +149,41 @@ export class WebhookDeliveryQueue {
         else this.pendingByAccount.set(accountId, remaining);
         this.stats.pending = Math.max(0, this.stats.pending - 1);
       });
+
+    this.activeDeliveries.add(delivery);
+    void delivery.then(
+      () => this.activeDeliveries.delete(delivery),
+      () => this.activeDeliveries.delete(delivery),
+    );
+    return delivery;
   }
 
   snapshot(): WebhookDeliveryStats {
     return { ...this.stats };
+  }
+
+  /**
+   * Waits for deliveries already accepted by the queue to settle, bounded by the host's
+   * shutdown grace period. Callers should stop listener ingress before invoking this so
+   * the active set cannot grow indefinitely while shutdown is in progress.
+   */
+  async drain(maxWaitMs: number): Promise<boolean> {
+    const timeoutMs = Math.max(0, Math.trunc(maxWaitMs));
+    const active = [...this.activeDeliveries];
+    if (active.length === 0) return true;
+    if (timeoutMs === 0) return false;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.allSettled(active).then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async deliverWithRetry(request: WebhookDeliveryRequest): Promise<void> {
