@@ -6,7 +6,9 @@ internal enum ZaloAutoSessionPollChangeKindV4
     OptionRemoved,
     OptionIdentityChanged,
     ExplicitStartTimeChanged,
-    VoteCountChanged
+    VoteCountChanged,
+    ApprovedLocationChanged,
+    ApprovedTeamSizeChanged
 }
 
 internal sealed record ZaloAutoSessionPollChangeV4(
@@ -28,12 +30,12 @@ internal sealed record ZaloAutoSessionPollReconciliationV4(
 /// Deterministic Auto Session V4 poll reconciliation.
 ///
 /// The caller supplies three independently meaningful states:
-/// - sourceSnapshot: authoritative poll-derived draft captured when the proposal was born;
+/// - sourceSnapshot: authoritative poll/policy-derived draft captured when the proposal was born;
 /// - durableDraft: latest organizer-approved MatchProposal draft;
-/// - currentSnapshot: newly parsed authoritative poll state.
+/// - currentSnapshot: newly parsed authoritative poll plus current approved group-policy state.
 ///
 /// This separation is important: comparing only the durable draft to the current poll cannot
-/// tell an organizer correction from a source-poll mutation. AI has no role in this decision.
+/// tell an organizer correction from a source/policy mutation. AI has no role in this decision.
 /// </summary>
 internal static class ZaloAutoSessionPollReconcilerV4
 {
@@ -125,12 +127,51 @@ internal static class ZaloAutoSessionPollReconcilerV4
                 durable.Selected));
         }
 
+        // Group policy is authoritative only while the organizer has not explicitly overridden
+        // that field. This mirrors V4 provenance semantics without allowing a later admin default
+        // change to erase an organizer-owned correction.
+        var organizerChangedLocation = !string.Equals(
+            durableDraft.Location,
+            sourceSnapshot.Location,
+            StringComparison.Ordinal);
+        var locationPolicyChanged = !string.Equals(
+            sourceSnapshot.Location,
+            currentSnapshot.Location,
+            StringComparison.Ordinal);
+        var reconciledLocation = organizerChangedLocation
+            ? durableDraft.Location
+            : currentSnapshot.Location;
+        if (!organizerChangedLocation && locationPolicyChanged)
+        {
+            changes.Add(new ZaloAutoSessionPollChangeV4(
+                ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged,
+                "location",
+                sourceSnapshot.Location,
+                currentSnapshot.Location,
+                false));
+        }
+
+        var organizerChangedTeamSize = durableDraft.TeamSize != sourceSnapshot.TeamSize;
+        var teamSizePolicyChanged = sourceSnapshot.TeamSize != currentSnapshot.TeamSize;
+        var reconciledTeamSize = organizerChangedTeamSize
+            ? durableDraft.TeamSize
+            : currentSnapshot.TeamSize;
+        if (!organizerChangedTeamSize && teamSizePolicyChanged)
+        {
+            changes.Add(new ZaloAutoSessionPollChangeV4(
+                ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged,
+                "team_size",
+                sourceSnapshot.TeamSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                currentSnapshot.TeamSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                false));
+        }
+
         var requiresConfirmation = changes.Any(change => change.RequiresConfirmation);
         return new ZaloAutoSessionPollReconciliationV4(
             new ZaloAutoSessionConversationDraft(
                 reconciled,
-                durableDraft.Location,
-                durableDraft.TeamSize),
+                reconciledLocation,
+                reconciledTeamSize),
             changes,
             requiresConfirmation);
     }
