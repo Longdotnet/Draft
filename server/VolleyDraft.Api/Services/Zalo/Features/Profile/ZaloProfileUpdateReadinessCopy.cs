@@ -53,8 +53,8 @@ public static class ZaloProfileUpdateReadinessCopy
     {
         var missing = Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount);
         return $" Hồ sơ đã đủ nhưng hiện mới có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ để chia đội, còn thiếu {missing}. " +
-               "Gõ `@Npc 4` để xem danh sách thật. Nếu trưởng/phó muốn vẫn chơi với số người hiện tại thì nói `vẫn đánh` (hoặc `chốt " +
-               readiness.EffectiveSlotCount + "`); nếu muốn tiếp tục tuyển thì nói `kiếm thêm`. Chỉ sau khi NPC chốt đúng hướng và kiểm lại danh sách mới dùng `draft đi`.";
+               $"Gõ `@Npc 4` để xem danh sách thật. Nếu trưởng/phó muốn vẫn chơi với số người hiện tại thì nói `vẫn đánh` (hoặc `chốt {readiness.EffectiveSlotCount}`); " +
+               "nếu muốn tiếp tục tuyển thì nói `kiếm thêm`. Chỉ sau khi NPC chốt đúng hướng và kiểm lại danh sách mới dùng `draft đi`.";
     }
 
     private static string BuildMissingProfiles(ZaloDraftReadinessSnapshot readiness)
