@@ -31,6 +31,8 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ReasonCode", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("draft_blocked", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -49,6 +51,9 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("trả lời chính tin đó", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -65,6 +70,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("19/18", message, StringComparison.Ordinal);
         Assert.Contains("dư 1 người/chỗ", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("đã đủ người và hồ sơ để chia đội", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -84,6 +90,8 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("@Npc cập nhật To An: nam", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("xác nhận draft", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -102,9 +110,14 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("trả lời chính tin đó bằng `xác nhận draft`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cảnh báo trước khi chia đội", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("`huỷ`", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("NPC sẽ kiểm dữ liệu backend thật và nói đúng blocker hiện tại", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("backend", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -114,6 +127,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
 
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("trả lời chính tin đó bằng `xác nhận draft`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cảnh báo trước khi chia đội", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("`huỷ`", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
@@ -122,6 +136,31 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("huỷ nhận", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("AI có tắt", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("backend", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("handler deterministic", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void No_roster_state_uses_plain_client_language_instead_of_internal_product_terms()
+    {
+        var readiness = Snapshot(
+            ZaloDraftReadinessState.NoRoster,
+            "draft_blocked_roster_empty",
+            effectiveSlots: 0,
+            capacity: 18);
+
+        var message = ZaloTeamResultRecoveryPolicy.BuildNoResultMessage("CN 13/9", readiness);
+
+        Assert.Contains("Danh sách hiện chưa có người chơi nào", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cập nhật lại vote đúng trận", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -167,7 +206,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
 
         var result = ZaloTeamLineupFormatter.Format("CN 13/9", partialTeams, readiness: readiness);
 
-        Assert.Contains("đang trong quá trình chia đội", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đang chia đội", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Đội hình CN 13/9:", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("Player A", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
@@ -189,6 +228,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("không có kết quả đội đầy đủ", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.DoesNotContain("draft lại", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("backend", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -203,10 +243,11 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
 
         var result = ZaloTeamLineupFormatter.Format("CN 13/9", [], readiness: readiness);
 
-        Assert.Contains("đã có kết quả chia team trong backend", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đã có kết quả chia team trong hệ thống", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.DoesNotContain("chưa có kết quả chia team chính thức", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("backend", result.Text, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ZaloDraftReadinessSnapshot Snapshot(
