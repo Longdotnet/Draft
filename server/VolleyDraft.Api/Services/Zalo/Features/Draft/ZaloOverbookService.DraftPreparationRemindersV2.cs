@@ -81,7 +81,11 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         {
             if (readiness.MissingProfileCount > 0)
             {
-                return $"Kèo {name} đã được trưởng/phó chốt vẫn chơi với {peopleLabel}, nhưng còn {readiness.MissingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt giúp tui rồi mới chia đội nha 😆";
+                return ZaloDraftPreparationClientCopy.MissingProfiles(
+                    $"Kèo {name} đã được trưởng/phó chốt vẫn chơi với {peopleLabel}. ",
+                    peopleLabel,
+                    readiness.MissingProfileCount,
+                    readiness.MissingProfileNames);
             }
 
             if (ZaloDraftPreparationDecisionPolicy.CanAutoDraftEvenly(count, teamCount))
@@ -131,7 +135,10 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         if (readiness.State != ZaloDraftReadinessState.RosterNotFull)
         {
             if (readiness.MissingProfileCount > 0)
-                return $"{name} còn {readiness.MissingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt giúp tui trước khi chia đội.";
+                return ZaloDraftPreparationClientCopy.MissingProfileBlocker(
+                    name,
+                    readiness.MissingProfileCount,
+                    readiness.MissingProfileNames);
             return null;
         }
 
