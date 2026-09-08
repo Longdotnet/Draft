@@ -48,6 +48,7 @@ Use this order:
 - Do not treat a caller idempotency key as globally unique. Outbound transport idempotency must be scoped by account and group, bind the key to the intended side-effect payload, coalesce equivalent concurrent retries, and fail closed when the same scoped key is reused for a different payload.
 - Do not expire an outbound idempotency entry while its provider side effect is still in flight. The replay TTL begins only after successful provider completion; otherwise a slow send can age out and a retry can execute the same side effect concurrently.
 - Do not encode multi-field idempotency scope with an ambiguous delimiter-concatenated string. Preserve account, group, and caller key as separately framed identity fields so punctuation in one field cannot alias another scope.
+- Do not let queued outbound Zalo work bypass pacing merely because the previous provider attempt failed. The account-scoped minimum gap applies after every actual upstream attempt, successful or failed; a 429 may extend that into a longer cooldown, but 5xx/auth/network failures must not cause immediate request amplification.
 - Do not collapse materially different AI failures into one generic "không kết nối được" message. Normalize provider/auth/quota/rate-limit/timeout/network/response failures into a safe failure taxonomy.
 - Do not expose provider response bodies, API keys, endpoints, stack traces or raw exception messages to group members. User-facing AI failure explanations state only the safe cause and what deterministic functionality still works.
 - Do not turn every token `mai` into “tomorrow”. `Mai` is also a common Vietnamese member name. Only resolve it as a relative session date when the surrounding wording is unmistakably schedule-shaped, such as `trận mai`, `tối mai`, `mai 17 giờ 30`, or `mai đánh mấy giờ`; member-shaped questions such as `Mai chơi không?` must not be stolen by session routing.
@@ -210,6 +211,7 @@ Always test:
 - superseding conflicting user concepts;
 - duplicate message delivery;
 - outbound idempotency isolation across accounts/groups, same-payload concurrent retry coalescing, conflicting payload reuse, failure release, expiry, in-flight work surviving the nominal TTL, replay TTL starting at completion, and punctuation-safe scope framing;
+- account-scoped outbound pacing after both successful and failed provider attempts, 429 cooldown isolation, and no immediate queued-call amplification after 5xx/auth/network failures;
 - AI unavailable;
 - AI auth/quota/rate-limit/timeout/network/provider/invalid-response failures produce safe distinct behavior without leaking provider details;
 - structured AI failure still yields to deterministic/backend fallback;
