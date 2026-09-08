@@ -130,32 +130,42 @@ public sealed class ZaloListenerCoordinator(
                     webhookUrl,
                     webhookKey);
             }
-            catch (Exception exception) when (IsTransientBridgeFailure(exception) && attempt < maxAttempts)
+            catch (Exception exception) when (ZaloListenerRetryPolicy.ShouldRetryImmediately(exception) && attempt < maxAttempts)
             {
-                var delay = TimeSpan.FromSeconds(attempt * 5);
+                var delay = ZaloListenerRetryPolicy.DelayForAttempt(attempt, Random.Shared.Next(0, 1001));
                 logger.LogWarning(
                     exception,
-                    "ZaloBridge listener start attempt {Attempt}/{MaxAttempts} failed for account {AccountId}; retrying in {DelaySeconds}s",
+                    "ZaloBridge listener start attempt {Attempt}/{MaxAttempts} failed for account {AccountId}; retrying in {DelayMilliseconds}ms",
                     attempt,
                     maxAttempts,
                     accountId,
-                    delay.TotalSeconds);
+                    delay.TotalMilliseconds);
                 await Task.Delay(delay, cancellationToken);
             }
         }
 
         throw new InvalidOperationException("ZaloBridge listener start failed after all retry attempts.");
     }
+}
 
-    private static bool IsTransientBridgeFailure(Exception exception) => exception switch
+internal static class ZaloListenerRetryPolicy
+{
+    internal static bool ShouldRetryImmediately(Exception exception) => exception switch
     {
         TaskCanceledException => true,
-        JsonException => true,
         HttpRequestException http => http.StatusCode is null ||
                                       (int)http.StatusCode >= 500 ||
-                                      (int)http.StatusCode is 408 or 429,
+                                      (int)http.StatusCode == 408,
         _ => false
     };
+
+    internal static TimeSpan DelayForAttempt(int attempt, int jitterMilliseconds)
+    {
+        var boundedAttempt = Math.Clamp(attempt, 1, 6);
+        var boundedJitter = Math.Clamp(jitterMilliseconds, 0, 1000);
+        var baseSeconds = 5 * Math.Pow(2, boundedAttempt - 1);
+        return TimeSpan.FromMilliseconds(baseSeconds * 1000 + boundedJitter);
+    }
 }
 
 internal static class ZaloListenerWorkerCadence

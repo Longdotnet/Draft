@@ -16,6 +16,7 @@ import type {
   StartListenerRequest,
   ZaloCredentials,
 } from "./contracts.js";
+import { KeyedSerialExecutor } from "./keyedSerialExecutor.js";
 import { ScopedOutboundIdempotency } from "./outboundIdempotency.js";
 import { isStickerReaction } from "./stickerLogic.js";
 import { sendGroupSticker } from "./stickerGateway.js";
@@ -48,6 +49,7 @@ const internalKey = configuredInternalKey || "development-zalo-bridge-key";
 const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
 const outboundMessageIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupMessage>>>();
 const outboundStickerIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupSticker>>>();
+const listenerLifecycle = new KeyedSerialExecutor();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
@@ -198,21 +200,33 @@ app.put("/v1/listeners/:accountId", async (request, response) => {
   }
   const accountId = request.params.accountId;
   const credentials = body.credentials;
-  zaloProviderTrafficGovernor.bindAccount(accountId, credentials);
-  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
-    credentials,
-    () => startListener({
-      accountId,
+  const result = await listenerLifecycle.run(accountId, async () => {
+    // Listener identity is account-scoped, while provider traffic is credential-scoped.
+    // Serialize the lifecycle first so concurrent refreshes with different credential
+    // generations cannot both observe "no current listener" and start duplicate sockets.
+    zaloProviderTrafficGovernor.bindAccount(accountId, credentials);
+    return zaloProviderTrafficGovernor.runWithCredentials(
       credentials,
-      groupIds: body.groupIds!.map(String),
-      webhookUrl: String(body.webhookUrl),
-      webhookKey: String(body.webhookKey),
-    }),
-  ));
+      () => startListener({
+        accountId,
+        credentials,
+        groupIds: body.groupIds!.map(String),
+        webhookUrl: String(body.webhookUrl),
+        webhookKey: String(body.webhookKey),
+      }),
+    );
+  });
+  response.json(result);
 });
 
-app.delete("/v1/listeners/:accountId", (request, response) => {
-  response.json(stopListener(request.params.accountId));
+app.delete("/v1/listeners/:accountId", async (request, response) => {
+  // Stop participates in the same account lifecycle queue. Without this, a cold-start
+  // Ensure call could finish after DELETE and resurrect a listener that the API already
+  // decided should be stopped.
+  response.json(await listenerLifecycle.run(
+    request.params.accountId,
+    async () => stopListener(request.params.accountId),
+  ));
 });
 
 app.get("/v1/listeners", (_request, response) => {
