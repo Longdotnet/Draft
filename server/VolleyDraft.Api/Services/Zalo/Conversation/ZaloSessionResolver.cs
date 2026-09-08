@@ -256,6 +256,14 @@ public static class ZaloSessionResolver
         return new(nearestIds, "nearest_weekday", true, nearestIds.Count == 1);
     }
 
+    /// <summary>
+    /// Detects an explicit clock using the same Vietnamese grammar that session resolution uses.
+    /// Consumers that only need provenance/intent evidence must call this instead of maintaining
+    /// a second clock regex that can drift from authoritative session parsing.
+    /// </summary>
+    public static bool ContainsExplicitSessionTime(string value) =>
+        SessionTimeRegex.IsMatch(ZaloTextNormalizer.Normalize(value));
+
     public static bool LooksLikeSelector(string value)
     {
         var normalized = ZaloTextNormalizer.Normalize(value);
