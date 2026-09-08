@@ -7,12 +7,34 @@ type AccountRateState = {
   tail: Promise<void>;
 };
 
+export type ZaloRateLimitEventType =
+  | "cooldown_rejected"
+  | "pacing_wait"
+  | "provider_attempt"
+  | "provider_success"
+  | "provider_failure";
+
+export type ZaloRateLimitEvent = {
+  type: ZaloRateLimitEventType;
+  scopeKey: string;
+  operation: string;
+  atUnixMs: number;
+  providerTouched: boolean;
+  waitMs?: number;
+  blockedUntilUnixMs?: number;
+  retryAfterSeconds?: number;
+  errorSource?: string;
+  errorKind?: string;
+  status?: number;
+};
+
 export type ZaloRateLimitGuardOptions = {
   minGapMs?: number;
   defaultCooldownMs?: number;
   maxCooldownMs?: number;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
+  onEvent?: (event: ZaloRateLimitEvent) => void;
 };
 
 const defaultSleep = (milliseconds: number) =>
@@ -26,6 +48,11 @@ const defaultSleep = (milliseconds: number) =>
  * The guard deliberately never retries an upstream failure. It serializes work for one
  * scope, keeps a small gap between provider attempts regardless of outcome, and opens a
  * local cooldown after an upstream 429 so concurrent callers cannot keep hammering Zalo.
+ *
+ * Observability events deliberately distinguish local rejection from a real provider
+ * attempt. They contain only a caller-supplied operation label and internal scope key;
+ * callers must not expose the scope key because credential-backed keys are hashed but
+ * still unnecessary operational identifiers.
  */
 export class ZaloRateLimitGuard {
   private readonly states = new Map<string, AccountRateState>();
@@ -34,6 +61,7 @@ export class ZaloRateLimitGuard {
   private readonly maxCooldownMs: number;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly onEvent?: (event: ZaloRateLimitEvent) => void;
 
   constructor(options: ZaloRateLimitGuardOptions = {}) {
     this.minGapMs = Math.max(0, options.minGapMs ?? 750);
@@ -41,10 +69,12 @@ export class ZaloRateLimitGuard {
     this.maxCooldownMs = Math.max(this.defaultCooldownMs, options.maxCooldownMs ?? 15 * 60_000);
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
+    this.onEvent = options.onEvent;
   }
 
-  async run<T>(scopeKey: string, operation: () => Promise<T>): Promise<T> {
+  async run<T>(scopeKey: string, operation: () => Promise<T>, operationName = "provider.call"): Promise<T> {
     const key = scopeKey.trim();
+    const normalizedOperation = operationName.trim() || "provider.call";
     if (!key) return operation();
 
     const state = this.stateFor(key);
@@ -60,6 +90,15 @@ export class ZaloRateLimitGuard {
       const startedAt = this.now();
       if (state.blockedUntil > startedAt) {
         const retryAfterSeconds = Math.max(1, Math.ceil((state.blockedUntil - startedAt) / 1_000));
+        this.emit({
+          type: "cooldown_rejected",
+          scopeKey: key,
+          operation: normalizedOperation,
+          atUnixMs: startedAt,
+          providerTouched: false,
+          blockedUntilUnixMs: state.blockedUntil,
+          retryAfterSeconds,
+        });
         throw new BridgeHttpError(
           429,
           "upstream-zalo",
@@ -71,23 +110,63 @@ export class ZaloRateLimitGuard {
       }
 
       if (state.nextAllowedAt > startedAt) {
-        await this.sleep(state.nextAllowedAt - startedAt);
+        const waitMs = state.nextAllowedAt - startedAt;
+        this.emit({
+          type: "pacing_wait",
+          scopeKey: key,
+          operation: normalizedOperation,
+          atUnixMs: startedAt,
+          providerTouched: false,
+          waitMs,
+        });
+        await this.sleep(waitMs);
       }
+
+      const attemptAt = this.now();
+      this.emit({
+        type: "provider_attempt",
+        scopeKey: key,
+        operation: normalizedOperation,
+        atUnixMs: attemptAt,
+        providerTouched: true,
+      });
 
       try {
         const result = await operation();
         state.consecutiveRateLimits = 0;
+        this.emit({
+          type: "provider_success",
+          scopeKey: key,
+          operation: normalizedOperation,
+          atUnixMs: this.now(),
+          providerTouched: true,
+        });
         return result;
       } catch (error) {
         const descriptor = classifyBridgeError(error);
+        let retryAfterSeconds: number | undefined;
         if (descriptor.source === "upstream-zalo" && descriptor.kind === "rate_limited") {
           state.consecutiveRateLimits += 1;
           const exponential = this.defaultCooldownMs * 2 ** Math.min(4, state.consecutiveRateLimits - 1);
-          const retryAfterMs = (upstreamRetryAfterSeconds(error, this.now()) ?? 0) * 1_000;
+          const upstreamRetryAfter = upstreamRetryAfterSeconds(error, this.now());
+          const retryAfterMs = (upstreamRetryAfter ?? 0) * 1_000;
           const cooldownMs = Math.min(this.maxCooldownMs, Math.max(exponential, retryAfterMs));
           state.blockedUntil = this.now() + cooldownMs;
           state.nextAllowedAt = state.blockedUntil;
+          retryAfterSeconds = Math.max(1, Math.ceil(cooldownMs / 1_000));
         }
+        this.emit({
+          type: "provider_failure",
+          scopeKey: key,
+          operation: normalizedOperation,
+          atUnixMs: this.now(),
+          providerTouched: true,
+          errorSource: descriptor.source,
+          errorKind: descriptor.kind,
+          status: descriptor.status,
+          ...(state.blockedUntil > this.now() ? { blockedUntilUnixMs: state.blockedUntil } : {}),
+          ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+        });
         throw error;
       } finally {
         // The spacing invariant applies to provider attempts, not only successful sends.
@@ -97,6 +176,14 @@ export class ZaloRateLimitGuard {
       }
     } finally {
       release();
+    }
+  }
+
+  private emit(event: ZaloRateLimitEvent): void {
+    try {
+      this.onEvent?.(event);
+    } catch {
+      // Telemetry is diagnostic only and must never alter provider traffic behavior.
     }
   }
 

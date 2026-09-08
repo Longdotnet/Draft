@@ -59,6 +59,7 @@ app.get("/health", (_request, response) => {
     status: "ok",
     mockMode: process.env.ZALO_BRIDGE_MOCK === "true",
     activeListenerCount: getListenerStatuses().length,
+    providerTraffic: zaloProviderTrafficGovernor.getHealthSnapshot(),
     apiKeepAlive: {
       ...apiKeepAliveConfiguration,
       ...getApiKeepAliveRuntimeStatus(),
@@ -84,6 +85,12 @@ app.use("/v1", (request, response, next) => {
     return;
   }
   next();
+});
+
+app.get("/v1/provider-traffic", (_request, response) => {
+  // Internal-only diagnostics. This endpoint is intentionally read-only and never calls
+  // Zalo, so incident inspection cannot itself increase provider traffic.
+  response.json(zaloProviderTrafficGovernor.getDiagnostics());
 });
 
 app.post("/v1/qr-logins", (_request, response) => {
@@ -121,6 +128,7 @@ app.post("/v1/groups", async (request, response) => {
       credentials,
       "groups",
       () => getGroups(credentials),
+      "groups.list",
     ),
   });
 });
@@ -133,6 +141,7 @@ app.post("/v1/groups/:groupId/polls", async (request, response) => {
       credentials,
       `group:${groupId}:polls`,
       () => getPolls(credentials, groupId),
+      "polls.list",
     ),
   });
 });
@@ -144,6 +153,7 @@ app.post("/v1/groups/:groupId/members", async (request, response) => {
     credentials,
     `group:${groupId}:members`,
     () => getGroupMemberDirectory(credentials, groupId),
+    "members.directory",
   ));
 });
 
@@ -156,6 +166,7 @@ app.post("/v1/groups/:groupId/board-pages", async (request, response) => {
     credentials,
     `group:${groupId}:board:${page}:${pageSize}`,
     () => getBoardPage(credentials, groupId, page, pageSize),
+    "board.page",
   ));
 });
 
@@ -167,6 +178,7 @@ app.post("/v1/groups/:groupId/message-history", async (request, response) => {
     credentials,
     `group:${groupId}:history:${count}`,
     () => getGroupMessageHistory(credentials, groupId, count),
+    "history.read",
   ));
 });
 
@@ -177,6 +189,7 @@ app.post("/v1/groups/:groupId/roles", async (request, response) => {
     credentials,
     `group:${groupId}:roles`,
     () => getGroupRoles(credentials, groupId),
+    "roles.read",
   ));
 });
 
@@ -187,6 +200,7 @@ app.post("/v1/polls/:pollId", async (request, response) => {
     credentials,
     `poll:${pollId}`,
     () => getPoll(credentials, pollId),
+    "poll.detail",
   ));
 });
 
@@ -203,6 +217,7 @@ app.post("/v1/group-members", async (request, response) => {
       credentials,
       `members:${normalizedMemberKey}`,
       () => getMembers(credentials, memberIds),
+      "members.resolve",
     ),
   });
 });
@@ -229,6 +244,7 @@ app.put("/v1/listeners/:accountId", async (request, response) => {
         webhookUrl: String(body.webhookUrl),
         webhookKey: String(body.webhookKey),
       }),
+      "listener.start",
     );
   });
   response.json(result);
@@ -271,6 +287,7 @@ app.post("/v1/group-messages", async (request, response) => {
     () => zaloProviderTrafficGovernor.runWithAccount(
       accountId,
       () => sendGroupMessage(outbound),
+      "message.send",
     ),
   ));
 });
@@ -299,6 +316,7 @@ app.post("/v1/group-stickers", async (request, response) => {
     () => zaloProviderTrafficGovernor.runWithCredentials(
       credentials,
       () => sendGroupSticker(outbound),
+      "sticker.send",
     ),
   ));
 });
