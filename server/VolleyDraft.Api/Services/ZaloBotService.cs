@@ -2334,10 +2334,9 @@ public sealed partial class ZaloBotService(
         await actionHistory.RecordAsync(session.Id, incoming.SenderId, incoming.SenderName,
             "UpdatePlayerProfile", $"Cập nhật hồ sơ {player.DisplayName} trong {session.Name}",
             profileBefore, CancellationToken.None);
-        var remaining = await draftService.GetIncompletePlayerProfilesAsync(session.AdminUserId, session.Id);
-        var remainingText = remaining.IsSuccess && remaining.Value is { Count: > 0 }
-            ? $" Còn hồ sơ chưa xác nhận: {string.Join(", ", remaining.Value.Take(10).Select(item => item.DisplayName))}."
-            : " Hồ sơ đã đủ điều kiện để draft.";
+        var readiness = await new ZaloDraftReadinessService(db)
+            .BuildAsync(session.Id);
+        var remainingText = ZaloProfileUpdateReadinessCopy.Build(readiness);
         return new BotAnswer(
             $"Đã cập nhật {player.DisplayName}: {FormatGender(player.Gender)}, {FormatRole(player.Role)}, {FormatLevel(player.Level)}.{remainingText}",
             null,
