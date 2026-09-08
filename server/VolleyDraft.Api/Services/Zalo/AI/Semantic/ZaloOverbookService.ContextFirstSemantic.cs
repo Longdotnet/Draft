@@ -330,6 +330,22 @@ public sealed partial class ZaloOverbookService
                     }
 
                     var freshMissing = GetMissingProfileFlags(freshPlayer!);
+                    if (!freshMissing.Gender && !freshMissing.Role && !freshMissing.Level)
+                    {
+                        var reply = await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            [],
+                            alreadyComplete: true,
+                            cancellationToken);
+                        await SendProfileConversationReplyAsync(session, prompt, message.MessageId, reply, cancellationToken);
+                        await MarkProfileInputHandledAsync(message.Id, "profile_semantic_already_complete", claim, cancellationToken);
+                        await MarkProfileSemanticAuditAsync(message.Id, cancellationToken);
+                        await promptStore.CompleteAsync(prompt.Id, message.SentAt, cancellationToken);
+                        handled += 1;
+                        break;
+                    }
+
                     var gender = freshMissing.Gender ? semantic.Gender : null;
                     var roleValue = freshMissing.Role ? semantic.Role : null;
                     var level = freshMissing.Level ? semantic.Level : null;
