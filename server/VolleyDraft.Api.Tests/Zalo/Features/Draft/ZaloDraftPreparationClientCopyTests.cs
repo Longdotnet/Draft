@@ -86,6 +86,20 @@ public sealed class ZaloDraftPreparationClientCopyTests
     }
 
     [Fact]
+    public void Partial_pass_risk_teaches_resolve_then_relock_before_drafting()
+    {
+        var text = ZaloDraftPreparationClientCopy.PartialPassRisk("CN 13/9", 1);
+
+        Assert.Contains("1 chỗ đang nhường/chờ nhận", text);
+        Assert.Contains("`huỷ pass`", text);
+        Assert.Contains("`xong`", text);
+        Assert.Contains("`huỷ nhận`", text);
+        Assert.Contains("`vẫn đánh`", text);
+        Assert.Contains("chốt lại", text);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
     public void Partial_non_even_state_teaches_relock_after_human_changes_the_list()
     {
         var text = ZaloDraftPreparationClientCopy.PartialNotEven(16, 3);
