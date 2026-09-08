@@ -116,7 +116,7 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
     }
 
     [Fact]
-    public async Task ApprovedTeamSizePolicyRefresh_RefreshesAuthorityEvidence()
+    public async Task ApprovedTeamSizePolicyRefresh_RefreshesAuthorityEvidence_WhenPollHasNoExplicitCapacity()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -128,7 +128,7 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
 
         var source = Deserialize(SourceJson());
         var changedTracked = Tracked(teamSize: 7);
-        var poll = Poll();
+        var poll = PollWithoutExplicitCapacity();
         var revalidation = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
             poll,
             changedTracked,
@@ -322,6 +322,23 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
         t6Votes + 9,
         1788750000000,
         1788750001000 + t6Votes + t6Hour,
+        0);
+
+    private static BridgePoll PollWithoutExplicitCapacity() => new(
+        "poll-1",
+        "Vote sân UTE tuần sau. 17:45-22:00",
+        "leader-1",
+        [
+            new BridgePollOption("t6", "T6 11/9", 10, []),
+            new BridgePollOption("cn", "CN 13/9", 9, [])
+        ],
+        true,
+        false,
+        false,
+        false,
+        19,
+        1788750000000,
+        1788750001010,
         0);
 
     private static ZaloPollSessionProposalData Proposal() => new()

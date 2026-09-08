@@ -7,6 +7,7 @@ internal enum ZaloAutoSessionPollChangeKindV4
     OptionIdentityChanged,
     ExplicitStartTimeChanged,
     ApprovedStartTimeChanged,
+    ExplicitCapacityChanged,
     VoteCountChanged,
     ApprovedLocationChanged,
     ApprovedTeamSizeChanged
@@ -44,7 +45,8 @@ internal static class ZaloAutoSessionPollReconcilerV4
         ZaloAutoSessionConversationDraft sourceSnapshot,
         ZaloAutoSessionConversationDraft durableDraft,
         ZaloAutoSessionConversationDraft currentSnapshot,
-        IReadOnlySet<string>? approvedDefaultStartOptionIds = null)
+        IReadOnlySet<string>? approvedDefaultStartOptionIds = null,
+        bool currentTeamSizeComesFromExplicitCapacity = false)
     {
         approvedDefaultStartOptionIds ??= new HashSet<string>(StringComparer.Ordinal);
         var sourceById = sourceSnapshot.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
@@ -164,18 +166,40 @@ internal static class ZaloAutoSessionPollReconcilerV4
         }
 
         var organizerChangedTeamSize = durableDraft.TeamSize != sourceSnapshot.TeamSize;
-        var teamSizePolicyChanged = sourceSnapshot.TeamSize != currentSnapshot.TeamSize;
-        var reconciledTeamSize = organizerChangedTeamSize
-            ? durableDraft.TeamSize
-            : currentSnapshot.TeamSize;
-        if (!organizerChangedTeamSize && teamSizePolicyChanged)
+        var teamSizeSourceChanged = sourceSnapshot.TeamSize != currentSnapshot.TeamSize;
+        int reconciledTeamSize;
+        if (currentTeamSizeComesFromExplicitCapacity)
         {
-            changes.Add(new ZaloAutoSessionPollChangeV4(
-                ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged,
-                "team_size",
-                sourceSnapshot.TeamSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                currentSnapshot.TeamSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                false));
+            // Explicit capacity in the poll is source truth. It outranks both an older approved
+            // group default and an organizer correction because executing a different capacity
+            // would contradict the poll the roster is being synchronized from.
+            reconciledTeamSize = currentSnapshot.TeamSize;
+            if (teamSizeSourceChanged)
+            {
+                changes.Add(new ZaloAutoSessionPollChangeV4(
+                    ZaloAutoSessionPollChangeKindV4.ExplicitCapacityChanged,
+                    "capacity",
+                    (sourceSnapshot.TeamSize * ZaloAutoSessionCapacityPolicyV5.SupportedTeamCount)
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    (currentSnapshot.TeamSize * ZaloAutoSessionCapacityPolicyV5.SupportedTeamCount)
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    true));
+            }
+        }
+        else
+        {
+            reconciledTeamSize = organizerChangedTeamSize
+                ? durableDraft.TeamSize
+                : currentSnapshot.TeamSize;
+            if (!organizerChangedTeamSize && teamSizeSourceChanged)
+            {
+                changes.Add(new ZaloAutoSessionPollChangeV4(
+                    ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged,
+                    "team_size",
+                    sourceSnapshot.TeamSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    currentSnapshot.TeamSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    false));
+            }
         }
 
         var requiresConfirmation = changes.Any(change => change.RequiresConfirmation);
