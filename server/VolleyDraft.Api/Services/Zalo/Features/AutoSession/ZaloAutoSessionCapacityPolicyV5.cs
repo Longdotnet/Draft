@@ -15,8 +15,9 @@ internal sealed record ZaloAutoSessionCapacityResolutionV5(
 /// Deterministic capacity authority for Auto Session V5.
 ///
 /// VolleyDraft currently supports exactly three teams. A poll may therefore override the
-/// approved per-team default only when it explicitly states a total capacity that can be
-/// represented safely by the current three-team domain model. AI never participates here.
+/// approved per-team default only when it explicitly states one unambiguous total capacity
+/// that can be represented safely by the current three-team domain model. AI never
+/// participates here.
 /// </summary>
 internal static partial class ZaloAutoSessionCapacityPolicyV5
 {
@@ -30,16 +31,45 @@ internal static partial class ZaloAutoSessionCapacityPolicyV5
     public static ZaloAutoSessionCapacityResolutionV5 Resolve(string? pollQuestion)
     {
         var normalized = ZaloPollScheduleParser.NormalizeText(pollQuestion);
-        var match = ExplicitCapacityRegex().Match(normalized);
-        if (!match.Success)
+        var matches = ExplicitCapacityRegex().Matches(normalized);
+        if (matches.Count == 0)
             return new ZaloAutoSessionCapacityResolutionV5(false, true, 0, 0, null, null);
 
-        if (!int.TryParse(
-                match.Groups["capacity"].Value,
-                NumberStyles.Integer,
-                CultureInfo.InvariantCulture,
-                out var capacity) ||
-            capacity < SupportedTeamCount * 2 ||
+        var capacities = new HashSet<int>();
+        foreach (Match match in matches)
+        {
+            if (!int.TryParse(
+                    match.Groups["capacity"].Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var parsedCapacity))
+            {
+                return new ZaloAutoSessionCapacityResolutionV5(
+                    true,
+                    false,
+                    0,
+                    0,
+                    "explicit_capacity_not_supported",
+                    "Poll có khai báo số người tối đa nhưng hệ thống không đọc được an toàn. Hãy sửa lại capacity trước khi tạo website.");
+            }
+
+            capacities.Add(parsedCapacity);
+        }
+
+        if (capacities.Count > 1)
+        {
+            var values = string.Join(", ", capacities.OrderBy(value => value));
+            return new ZaloAutoSessionCapacityResolutionV5(
+                true,
+                false,
+                0,
+                0,
+                "explicit_capacity_conflict",
+                $"Poll đang ghi nhiều mức tối đa khác nhau ({values} slot). Hãy giữ một capacity rõ ràng trước khi tạo website.");
+        }
+
+        var capacity = capacities.Single();
+        if (capacity < SupportedTeamCount * 2 ||
             capacity > SupportedTeamCount * 30 ||
             capacity % SupportedTeamCount != 0)
         {
