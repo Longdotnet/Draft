@@ -144,14 +144,15 @@ public sealed partial class ZaloOverbookService
                 actorName,
                 incoming.MessageId,
                 cancellationToken);
-            var change = BuildDecisionChangePrefix(previousDecision, command.Kind, null, actorName);
+            var change = ZaloDraftPreparationClientCopy.BuildDecisionChangePrefix(
+                previousDecision, command.Kind, null, actorName);
             await SendDraftReplyAsync(
                 connectionId,
                 connection.AccountZaloId,
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"{change}Ok, tui ghi nhận trưởng/phó chốt dừng kèo {session.Name}. Tui dừng draft reminder cho trận này nha. Tui chưa tự xoá session, poll hay thao tác huỷ sân bên ngoài.",
+                ZaloDraftPreparationClientCopy.StopMatch(change, session.Name),
                 [],
                 "draft_preparation_stop_match",
                 cancellationToken);
@@ -167,7 +168,7 @@ public sealed partial class ZaloOverbookService
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Tui nghe quyết định rồi nhưng chưa sync được đúng poll của {session.Name} nên chưa dám khóa trạng thái nha 😭 Thử lại sau khi poll đọc được giúp tui.",
+                ZaloDraftPreparationClientCopy.VoteRefreshFailed(session.Name),
                 [],
                 "draft_preparation_decision_poll_sync_failed",
                 cancellationToken);
@@ -207,7 +208,10 @@ public sealed partial class ZaloOverbookService
                     connection.DisplayName,
                     groupId,
                     incoming,
-                    $"Tui vừa sync {session.Name}: đang {readiness.EffectiveSlotCount}/{readiness.Capacity} rồi nha 😆 Tui tạm ngưng gọi thêm khi đang đủ; nếu sau đó hụt slot, tui tiếp tục kiếm theo quyết định này mà không bắt trưởng/phó chốt lại.",
+                    ZaloDraftPreparationClientCopy.KeepRecruitingAlreadyFull(
+                        session.Name,
+                        readiness.EffectiveSlotCount,
+                        readiness.Capacity),
                     [],
                     "draft_preparation_recruitment_already_full",
                     cancellationToken);
@@ -223,14 +227,19 @@ public sealed partial class ZaloOverbookService
                 actorName,
                 incoming.MessageId,
                 cancellationToken);
-            var change = BuildDecisionChangePrefix(previousDecision, command.Kind, null, actorName);
+            var change = ZaloDraftPreparationClientCopy.BuildDecisionChangePrefix(
+                previousDecision, command.Kind, null, actorName);
             await SendDraftReplyAsync(
                 connectionId,
                 connection.AccountZaloId,
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"{change}Ok, kèo {session.Name} tiếp tục kiếm thêm nha 👌 Tui vừa sync đang {readiness.EffectiveSlotCount}/{readiness.Capacity}; mấy lượt sau tui canh delta thôi, không tự đổi hướng nếu trưởng/phó chưa nói.",
+                ZaloDraftPreparationClientCopy.KeepRecruiting(
+                    change,
+                    session.Name,
+                    readiness.EffectiveSlotCount,
+                    readiness.Capacity),
                 [],
                 "draft_preparation_keep_recruiting",
                 cancellationToken);
@@ -245,7 +254,11 @@ public sealed partial class ZaloOverbookService
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Tui vừa sync {session.Name}: {readiness.EffectiveSlotCount}/{readiness.Capacity} nhưng đang có {activeSlotRisks} slot báo pass/huỷ chưa sạch. Chốt người thay/poll trước nha, rồi nói lại `vẫn đánh` hoặc `chốt {readiness.EffectiveSlotCount}` giúp tui.",
+                ZaloDraftPreparationClientCopy.PassRisk(
+                    session.Name,
+                    readiness.EffectiveSlotCount,
+                    readiness.Capacity,
+                    activeSlotRisks),
                 [],
                 "draft_preparation_play_current_slot_risk",
                 cancellationToken);
@@ -260,7 +273,10 @@ public sealed partial class ZaloOverbookService
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"{session.Name} đang {readiness.EffectiveSlotCount}/{readiness.Capacity}, còn vượt slot nên tui chưa khóa quyết định chơi roster này nha. Xử lý over-slot trước giúp tui.",
+                ZaloDraftPreparationClientCopy.OverCapacity(
+                    session.Name,
+                    readiness.EffectiveSlotCount,
+                    readiness.Capacity),
                 [],
                 "draft_preparation_play_current_over_capacity",
                 cancellationToken);
@@ -275,7 +291,10 @@ public sealed partial class ZaloOverbookService
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Tui vừa sync lại poll: hiện là {readiness.EffectiveSlotCount}/{readiness.Capacity}, không phải {requested} nha 😆 Nếu vẫn chốt roster hiện tại thì nói `chốt {readiness.EffectiveSlotCount}` giúp tui để khỏi khóa nhầm snapshot.",
+                ZaloDraftPreparationClientCopy.CountMismatch(
+                    readiness.EffectiveSlotCount,
+                    readiness.Capacity,
+                    requested),
                 [],
                 "draft_preparation_play_current_count_mismatch",
                 cancellationToken);
@@ -290,7 +309,7 @@ public sealed partial class ZaloOverbookService
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Poll {session.Name} đang 0/{readiness.Capacity} nên chưa có roster để chốt chơi nha.",
+                ZaloDraftPreparationClientCopy.Empty(session.Name, readiness.Capacity),
                 [],
                 "draft_preparation_play_current_empty",
                 cancellationToken);
@@ -305,7 +324,7 @@ public sealed partial class ZaloOverbookService
                 connection.DisplayName,
                 groupId,
                 incoming,
-                $"Tui vừa sync được roster {session.Name} nhưng chưa tạo được fingerprint an toàn, nên chưa khóa quyết định roster này. Tui giữ nguyên dữ liệu, thử lại sau nha.",
+                ZaloDraftPreparationClientCopy.SafeSnapshotUnavailable(session.Name),
                 [],
                 "draft_preparation_fingerprint_unavailable",
                 cancellationToken);
@@ -322,13 +341,13 @@ public sealed partial class ZaloOverbookService
             incoming.MessageId,
             cancellationToken);
 
-        var rawVsEffective = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
-            ? $"{readiness.EffectiveSlotCount} slot"
-            : $"{readiness.PresentPlayerCount} người / {readiness.EffectiveSlotCount} effective slot";
+        var countLabel = ZaloDraftPreparationClientCopy.PlayerCountLabel(
+            readiness.PresentPlayerCount,
+            readiness.EffectiveSlotCount);
         var evenlyDraftable = ZaloDraftPreparationDecisionPolicy.CanAutoDraftEvenly(
             readiness.EffectiveSlotCount,
             session.TeamCount);
-        var decisionChange = BuildDecisionChangePrefix(
+        var decisionChange = ZaloDraftPreparationClientCopy.BuildDecisionChangePrefix(
             previousDecision,
             ZaloDraftPreparationDecisionKind.PlayCurrentRoster,
             readiness.EffectiveSlotCount,
@@ -337,17 +356,29 @@ public sealed partial class ZaloOverbookService
         string outcome;
         if (readiness.MissingProfileCount > 0)
         {
-            reply = $"{decisionChange}Ok, tui ghi nhận kèo vẫn chơi với {rawVsEffective} 👌 Nhưng còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt trước khi draft nha.";
+            reply = ZaloDraftPreparationClientCopy.MissingProfiles(
+                decisionChange,
+                countLabel,
+                readiness.MissingProfileCount,
+                readiness.MissingProfileNames);
             outcome = "draft_preparation_play_current_missing_profiles";
         }
         else if (evenlyDraftable)
         {
-            reply = $"{decisionChange}Ok chốt kèo hiện tại: {rawVsEffective} → {session.TeamCount} team x{readiness.EffectiveSlotCount / session.TeamCount} 👌 Khi muốn chia nói `draft đi`; tui sẽ sync poll + check fingerprint lần cuối trước khi chạy.";
+            reply = ZaloDraftPreparationClientCopy.Locked(
+                decisionChange,
+                countLabel,
+                session.TeamCount,
+                readiness.EffectiveSlotCount / session.TeamCount);
             outcome = "draft_preparation_play_current_locked";
         }
         else
         {
-            reply = $"{decisionChange}Ok, tui ghi nhận kèo vẫn chơi với {rawVsEffective} 👌 Nhưng {readiness.EffectiveSlotCount} effective slot chưa chia đều được {session.TeamCount} team. Nếu muốn bot auto-draft thì cần chỉnh shared/rotation hoặc roster về số chia hết cho {session.TeamCount}; tui không tự bẻ roster.";
+            reply = ZaloDraftPreparationClientCopy.NotEven(
+                decisionChange,
+                countLabel,
+                readiness.EffectiveSlotCount,
+                session.TeamCount);
             outcome = "draft_preparation_play_current_not_even";
         }
         await SendDraftReplyAsync(
@@ -386,7 +417,7 @@ public sealed partial class ZaloOverbookService
                 senderId,
                 incoming,
                 resolution.Candidates,
-                "draft roster đã chốt",
+                "chia đội với danh sách đã chốt",
                 cancellationToken);
         }
 
@@ -406,7 +437,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                "Tui chưa xác minh được quyền trưởng/phó từ Zalo nên chưa draft nha. Dữ liệu vẫn giữ nguyên.",
+                "Tui chưa xác minh được quyền trưởng/phó từ Zalo nên chưa chia đội nha. Dữ liệu vẫn giữ nguyên.",
                 [],
                 "draft_partial_role_lookup_failed",
                 cancellationToken);
@@ -435,7 +466,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                $"Quyền trưởng/phó của người đã chốt roster {session.Name} không còn xác minh được, nên quyết định cũ hết hiệu lực. Tui chưa draft nha; chốt roster lại bằng người đang có quyền giúp tui.",
+                ZaloDraftPreparationClientCopy.DecisionActorRoleStale(session.Name),
                 [],
                 "draft_partial_decision_actor_role_stale",
                 cancellationToken);
@@ -451,7 +482,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                $"Tui chưa sync lại được đúng poll {session.Name}, nên chưa draft trên dữ liệu có thể cũ nha. Chi tiết: {sync.Error}",
+                ZaloDraftPreparationClientCopy.DraftVoteRefreshFailed(session.Name),
                 [],
                 "draft_partial_poll_refresh_failed",
                 cancellationToken);
@@ -472,7 +503,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                $"Roster {session.Name} vừa đổi so với lúc trưởng/phó chốt, nên quyết định cũ hết hiệu lực nha 😭 Tui chưa draft. Chốt lại roster hiện tại trước giúp tui.",
+                ZaloDraftPreparationClientCopy.PlayerListChanged(session.Name),
                 [],
                 "draft_partial_roster_changed",
                 cancellationToken);
@@ -507,7 +538,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                $"{session.Name} đang có {activeSlotRisks} slot pass/huỷ chưa xử lý xong nên tui chưa draft nha. Chốt poll/slot sạch trước giúp tui.",
+                ZaloDraftPreparationClientCopy.PartialPassRisk(session.Name, activeSlotRisks),
                 [],
                 "draft_partial_slot_risk",
                 cancellationToken);
@@ -522,7 +553,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                $"Chưa draft được nha, còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}.",
+                $"Chưa chia đội được nha, còn {readiness.MissingProfileCount} người thiếu thông tin: {string.Join(", ", readiness.MissingProfileNames.Take(6))}.",
                 [],
                 "draft_partial_missing_profiles",
                 cancellationToken);
@@ -539,7 +570,9 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                $"Kèo vẫn chơi thì ok, nhưng {readiness.EffectiveSlotCount} effective slot chưa chia đều được {session.TeamCount} team nên bot chưa auto-draft. Chỉnh shared/rotation hoặc roster trước nha.",
+                ZaloDraftPreparationClientCopy.PartialNotEven(
+                    readiness.EffectiveSlotCount,
+                    session.TeamCount),
                 [],
                 "draft_partial_not_even",
                 cancellationToken);
@@ -567,7 +600,7 @@ public sealed partial class ZaloOverbookService
                 session.ZaloConnection.DisplayName,
                 groupId,
                 incoming,
-                "Ông đang có một yêu cầu bot khác chờ xác nhận nên tui chưa ghi đè để draft. Xử lý/huỷ lượt kia rồi nói `draft đi` lại nha.",
+                "Ông đang có một yêu cầu NPC khác chờ xác nhận nên tui chưa ghi đè để chia đội. Xử lý/huỷ lượt kia rồi nói `draft đi` lại nha.",
                 [],
                 "draft_partial_pending_conflict",
                 cancellationToken);
@@ -718,38 +751,5 @@ public sealed partial class ZaloOverbookService
                 request.SecondaryApproverId,
                 session.Id,
                 cancellationToken);
-    }
-
-    private static string BuildDecisionChangePrefix(
-        ZaloDraftPreparationDecisionSnapshot? previous,
-        ZaloDraftPreparationDecisionKind nextKind,
-        int? nextSlots,
-        string actorName)
-    {
-        if (previous is null) return string.Empty;
-        if (previous.Kind == nextKind &&
-            (nextKind != ZaloDraftPreparationDecisionKind.PlayCurrentRoster ||
-             previous.EffectiveSlotCount == nextSlots))
-            return string.Empty;
-
-        var before = previous.Kind switch
-        {
-            ZaloDraftPreparationDecisionKind.KeepRecruiting => "tiếp tục kiếm thêm",
-            ZaloDraftPreparationDecisionKind.StopMatch => "dừng kèo",
-            ZaloDraftPreparationDecisionKind.PlayCurrentRoster => previous.EffectiveSlotCount is { } count
-                ? $"chơi roster {count}"
-                : "chơi roster hiện tại",
-            _ => previous.Kind.ToString()
-        };
-        var after = nextKind switch
-        {
-            ZaloDraftPreparationDecisionKind.KeepRecruiting => "tiếp tục kiếm thêm",
-            ZaloDraftPreparationDecisionKind.StopMatch => "dừng kèo",
-            ZaloDraftPreparationDecisionKind.PlayCurrentRoster => nextSlots is { } count
-                ? $"chơi roster {count}"
-                : "chơi roster hiện tại",
-            _ => nextKind.ToString()
-        };
-        return $"Update theo {actorName}: {before} → {after}. ";
     }
 }
