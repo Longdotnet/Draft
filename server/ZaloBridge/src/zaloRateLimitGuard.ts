@@ -32,6 +32,7 @@ export type ZaloRateLimitGuardOptions = {
   minGapMs?: number;
   defaultCooldownMs?: number;
   maxCooldownMs?: number;
+  maxRetryAfterMs?: number;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
   onEvent?: (event: ZaloRateLimitEvent) => void;
@@ -49,6 +50,12 @@ const defaultSleep = (milliseconds: number) =>
  * scope, keeps a small gap between provider attempts regardless of outcome, and opens a
  * local cooldown after an upstream 429 so concurrent callers cannot keep hammering Zalo.
  *
+ * `maxCooldownMs` caps only bridge-generated exponential backoff. A real Retry-After is
+ * provider authority and must not be shortened to that local cap; otherwise a one-hour
+ * provider directive could become a new request after fifteen minutes. Retry-After is
+ * separately bounded by `maxRetryAfterMs` to protect the process from malformed dates or
+ * absurd values while still allowing long provider-requested quiet periods.
+ *
  * Observability events deliberately distinguish local rejection from a real provider
  * attempt. They contain only a caller-supplied operation label and internal scope key;
  * callers must not expose the scope key because credential-backed keys are hashed but
@@ -59,6 +66,7 @@ export class ZaloRateLimitGuard {
   private readonly minGapMs: number;
   private readonly defaultCooldownMs: number;
   private readonly maxCooldownMs: number;
+  private readonly maxRetryAfterMs: number;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly onEvent?: (event: ZaloRateLimitEvent) => void;
@@ -67,6 +75,10 @@ export class ZaloRateLimitGuard {
     this.minGapMs = Math.max(0, options.minGapMs ?? 750);
     this.defaultCooldownMs = Math.max(1_000, options.defaultCooldownMs ?? 60_000);
     this.maxCooldownMs = Math.max(this.defaultCooldownMs, options.maxCooldownMs ?? 15 * 60_000);
+    this.maxRetryAfterMs = Math.max(
+      this.maxCooldownMs,
+      options.maxRetryAfterMs ?? 7 * 24 * 60 * 60_000,
+    );
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
     this.onEvent = options.onEvent;
@@ -148,9 +160,13 @@ export class ZaloRateLimitGuard {
         if (descriptor.source === "upstream-zalo" && descriptor.kind === "rate_limited") {
           state.consecutiveRateLimits += 1;
           const exponential = this.defaultCooldownMs * 2 ** Math.min(4, state.consecutiveRateLimits - 1);
+          const localCooldownMs = Math.min(this.maxCooldownMs, exponential);
           const upstreamRetryAfter = upstreamRetryAfterSeconds(error, this.now());
-          const retryAfterMs = (upstreamRetryAfter ?? 0) * 1_000;
-          const cooldownMs = Math.min(this.maxCooldownMs, Math.max(exponential, retryAfterMs));
+          const upstreamCooldownMs = Math.min(
+            this.maxRetryAfterMs,
+            Math.max(0, (upstreamRetryAfter ?? 0) * 1_000),
+          );
+          const cooldownMs = Math.max(localCooldownMs, upstreamCooldownMs);
           state.blockedUntil = this.now() + cooldownMs;
           state.nextAllowedAt = state.blockedUntil;
           retryAfterSeconds = Math.max(1, Math.ceil(cooldownMs / 1_000));
