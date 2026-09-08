@@ -135,6 +135,9 @@ internal sealed class ZaloAutoSessionV2Service(
             }
         }
 
+        // V2 owns discovery/preview. The proven legacy confirmation path still owns the
+        // transaction that creates sessions, but only Live proposals are left in
+        // AwaitingApproval, so PreviewOnly can never create a website session.
         if (hasLiveGroup &&
             !configuration.GetValue("AutoSession:ConversationV3Enabled", true))
             await legacyAutoSession.ProcessPendingConfirmationsAsync(cancellationToken);
@@ -338,19 +341,28 @@ internal sealed class ZaloAutoSessionV2Service(
             proposal.LastError = Truncate(capacity.ErrorMessage, 1000);
             proposal = await store.UpsertProposalAsync(proposal, cancellationToken);
 
-            var targets = new[] { pollCreatorId };
-            var names = await ResolveNamesAsync(credentials, targets);
-            var outgoing = BuildMentionMessage(targets, names, BuildCapacityConflictPrompt(poll, capacity));
-            var sent = await bridge.SendGroupMessageAsync(
-                connection.AccountZaloId,
-                tracked.GroupId,
-                outgoing.Message,
-                outgoing.Mentions,
-                idempotencyKey: $"auto-session-v2-capacity:{tracked.Id}:{poll.Id}:{structureHash[..12]}");
-            if (sent.Sent && !string.IsNullOrWhiteSpace(sent.MessageId))
+            try
             {
+                var targets = new[] { pollCreatorId };
+                var names = await ResolveNamesAsync(credentials, targets);
+                var outgoing = BuildMentionMessage(targets, names, BuildCapacityConflictPrompt(poll, capacity));
+                var sent = await bridge.SendGroupMessageAsync(
+                    connection.AccountZaloId,
+                    tracked.GroupId,
+                    outgoing.Message,
+                    outgoing.Mentions,
+                    idempotencyKey: $"auto-session-v2-capacity:{tracked.Id}:{poll.Id}:{structureHash[..12]}");
+                if (!sent.Sent || string.IsNullOrWhiteSpace(sent.MessageId))
+                    throw new InvalidOperationException("Zalo bridge did not return capacity-conflict message id.");
                 proposal.ProposalMessageId = sent.MessageId.Trim();
                 await store.UpsertProposalAsync(proposal, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                proposal.Status = ZaloPollSessionProposalStatus.Failed;
+                proposal.LastError = Truncate(exception.Message, 1000);
+                await store.UpsertProposalAsync(proposal, cancellationToken);
+                throw;
             }
             return;
         }
