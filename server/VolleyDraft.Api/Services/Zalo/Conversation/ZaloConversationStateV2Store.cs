@@ -39,9 +39,11 @@ public sealed record ZaloConversationStateV2Snapshot(
     DateTimeOffset UpdatedAt);
 
 /// <summary>
-/// Structured conversation state independent from a Zalo login connection.
-/// It is intentionally additive beside the legacy state table so V2 can roll out
-/// and roll back without corrupting existing confirmation workflows.
+/// Structured conversation state. The physical persistence key is connection-scoped
+/// whenever <see cref="ZaloConversationStateScope"/> is active so identical group/user
+/// identifiers on different Zalo connections cannot consume or overwrite each other's
+/// pending turns. Callers outside an incoming connection scope keep the legacy key shape
+/// for backward-compatible maintenance/tests.
 /// </summary>
 public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
 {
@@ -52,7 +54,8 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         string senderZaloUserId,
         CancellationToken cancellationToken = default)
     {
-        groupId = Clean(groupId, 100);
+        var logicalGroupId = Clean(groupId, 100);
+        groupId = ZaloConversationStateScope.ScopeGroupId(logicalGroupId);
         senderZaloUserId = Clean(senderZaloUserId, 100);
         if (groupId.Length == 0 || senderZaloUserId.Length == 0) return null;
         await EnsureSchemaAsync(cancellationToken);
@@ -72,10 +75,10 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         Add(command, "@senderId", senderZaloUserId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
-        var state = Read(reader);
+        var state = Read(reader) with { GroupId = logicalGroupId };
         if (state.ExpiresAt > DateTimeOffset.UtcNow) return state;
         await reader.DisposeAsync();
-        await SetStatusAsync(groupId, senderZaloUserId, ZaloConversationStateV2Status.Expired, cancellationToken);
+        await SetStatusPhysicalAsync(groupId, senderZaloUserId, ZaloConversationStateV2Status.Expired, cancellationToken);
         return null;
     }
 
@@ -91,7 +94,8 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         DateTimeOffset expiresAt,
         CancellationToken cancellationToken = default)
     {
-        groupId = Clean(groupId, 100);
+        var logicalGroupId = Clean(groupId, 100);
+        groupId = ZaloConversationStateScope.ScopeGroupId(logicalGroupId);
         senderZaloUserId = Clean(senderZaloUserId, 100);
         intent = Clean(intent, 120);
         collectedArgumentsJson = Json(collectedArgumentsJson);
@@ -148,16 +152,24 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         return new ZaloConversationStateV2Snapshot(
-            id, groupId, senderZaloUserId, intent, collectedArgumentsJson, missingArgumentsJson,
+            id, logicalGroupId, senderZaloUserId, intent, collectedArgumentsJson, missingArgumentsJson,
             candidateEntitiesJson, sourceMessageId, lastMessageId, version,
             ZaloConversationStateV2Status.Active, expiresAt, createdAt, now);
     }
 
     public Task<int> CancelAsync(string groupId, string senderZaloUserId, CancellationToken cancellationToken = default) =>
-        SetStatusAsync(groupId, senderZaloUserId, ZaloConversationStateV2Status.Cancelled, cancellationToken);
+        SetStatusPhysicalAsync(
+            ZaloConversationStateScope.ScopeGroupId(Clean(groupId, 100)),
+            Clean(senderZaloUserId, 100),
+            ZaloConversationStateV2Status.Cancelled,
+            cancellationToken);
 
     public Task<int> CompleteAsync(string groupId, string senderZaloUserId, CancellationToken cancellationToken = default) =>
-        SetStatusAsync(groupId, senderZaloUserId, ZaloConversationStateV2Status.Completed, cancellationToken);
+        SetStatusPhysicalAsync(
+            ZaloConversationStateScope.ScopeGroupId(Clean(groupId, 100)),
+            Clean(senderZaloUserId, 100),
+            ZaloConversationStateV2Status.Completed,
+            cancellationToken);
 
     public static ZaloTopicSwitchDecision DecideTopicSwitch(
         string pendingIntent,
@@ -189,12 +201,13 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         return ZaloTopicSwitchDecision.ContinuePending;
     }
 
-    private async Task<int> SetStatusAsync(
+    private async Task<int> SetStatusPhysicalAsync(
         string groupId,
         string senderZaloUserId,
         ZaloConversationStateV2Status status,
         CancellationToken cancellationToken)
     {
+        if (groupId.Length == 0 || senderZaloUserId.Length == 0) return 0;
         await EnsureSchemaAsync(cancellationToken);
         var connection = db.Database.GetDbConnection();
         await OpenIfNeededAsync(connection, cancellationToken);
@@ -206,8 +219,8 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
             """;
         Add(command, "@status", status.ToString());
         Add(command, "@updatedAt", DateTimeOffset.UtcNow);
-        Add(command, "@groupId", Clean(groupId, 100));
-        Add(command, "@senderId", Clean(senderZaloUserId, 100));
+        Add(command, "@groupId", groupId);
+        Add(command, "@senderId", senderZaloUserId);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
