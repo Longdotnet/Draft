@@ -5,28 +5,33 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloSelfProfileCompletionReadinessContractTests
 {
     [Fact]
-    public void Self_profile_completion_hands_off_to_canonical_draft_readiness()
+    public void Worker_profile_completion_uses_readiness_in_the_primary_ack_for_both_lanes()
     {
         var root = FindRepositoryRoot();
         var orchestrationPath = Path.Combine(
             root, "server", "VolleyDraft.Api", "Services", "Zalo", "Features", "Profile",
             "ZaloOverbookService.MissingProfileReplies.cs");
-        var handoffPath = Path.Combine(
+        var deterministicPath = Path.Combine(
             root, "server", "VolleyDraft.Api", "Services", "Zalo", "Features", "Profile",
-            "ZaloOverbookService.ProfileCompletionReadiness.cs");
+            "ZaloOverbookService.MissingProfileRepliesV2.cs");
+        var semanticPath = Path.Combine(
+            root, "server", "VolleyDraft.Api", "Services", "Zalo", "AI", "Semantic",
+            "ZaloOverbookService.ContextFirstSemantic.cs");
         var orchestration = File.ReadAllText(orchestrationPath);
-        var handoff = File.ReadAllText(handoffPath);
+        var deterministic = File.ReadAllText(deterministicPath);
+        var semantic = File.ReadAllText(semanticPath);
 
         Assert.Contains("ProcessMissingProfileRepliesContextFirstAsync", orchestration, StringComparison.Ordinal);
         Assert.Contains("ProcessMissingProfileRepliesDueV2Async", orchestration, StringComparison.Ordinal);
-        Assert.Contains("SendProfileCompletionReadinessFollowUpsAsync", orchestration, StringComparison.Ordinal);
+        Assert.DoesNotContain("SendProfileCompletionReadinessFollowUpsAsync", orchestration, StringComparison.Ordinal);
 
-        Assert.Contains("profile_semantic_updated", handoff, StringComparison.Ordinal);
-        Assert.Contains("profile_updated", handoff, StringComparison.Ordinal);
-        Assert.Contains("new ZaloDraftReadinessService(db)", handoff, StringComparison.Ordinal);
-        Assert.Contains("ZaloProfileUpdateReadinessCopy.Build(readiness)", handoff, StringComparison.Ordinal);
-        Assert.Contains("profile-readiness:{prompt.Id}", handoff, StringComparison.Ordinal);
-        Assert.DoesNotContain("không cần làm gì thêm", handoff, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("BuildSelfProfileCompletionReplyAsync", deterministic, StringComparison.Ordinal);
+        Assert.Contains("alreadyComplete: true", deterministic, StringComparison.Ordinal);
+        Assert.Contains("alreadyComplete: false", deterministic, StringComparison.Ordinal);
+        Assert.DoesNotContain("xong, không cần làm gì thêm", deterministic, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("BuildSelfProfileCompletionReplyAsync", semantic, StringComparison.Ordinal);
+        Assert.DoesNotContain("Hồ sơ kèo {session.Name} xong.\"", semantic, StringComparison.Ordinal);
     }
 
     [Fact]
