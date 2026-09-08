@@ -74,6 +74,21 @@ public sealed class ZaloSchedulerHealthTests
     }
 
     [Fact]
+    public void Evaluate_reports_expired_unterminated_attempt_instead_of_falling_back_to_recent_success()
+    {
+        var now = new DateTimeOffset(2026, 9, 8, 2, 0, 0, TimeSpan.Zero);
+        var snapshot = Snapshot(
+            leaseUntil: now.AddSeconds(-1),
+            lastAttemptAt: now.AddMinutes(-1),
+            lastSuccessAt: now.AddMinutes(-10));
+
+        var health = ZaloSchedulerHealth.Evaluate(snapshot, now, TimeSpan.FromMinutes(45));
+
+        Assert.Equal(ZaloSchedulerHealthState.Failed, health.State);
+        Assert.False(health.IsHealthy);
+    }
+
+    [Fact]
     public void Evaluate_reports_stale_when_scheduler_stopped_succeeding()
     {
         var now = new DateTimeOffset(2026, 9, 8, 2, 0, 0, TimeSpan.Zero);

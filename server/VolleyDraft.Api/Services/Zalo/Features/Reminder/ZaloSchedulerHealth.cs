@@ -55,11 +55,20 @@ internal static class ZaloSchedulerHealth
         }
 
         var latestTerminal = Max(snapshot.LastSuccessAt, snapshot.LastFailureAt);
-        var activeAttempt = snapshot.LastAttemptAt is not null
-            && (latestTerminal is null || snapshot.LastAttemptAt > latestTerminal)
-            && snapshot.LeaseUntil > now;
-        if (activeAttempt)
-            return Create(ZaloSchedulerHealthState.Running, true);
+        var unterminatedAttempt = snapshot.LastAttemptAt is not null
+            && (latestTerminal is null || snapshot.LastAttemptAt > latestTerminal);
+        if (unterminatedAttempt)
+        {
+            // An attempt newer than every terminal marker is only healthy while its
+            // distributed lease is still owned. Once that lease expires, the process
+            // died or lost ownership before recording success/failure. Never fall back
+            // to an older success and report this abandoned cycle as healthy.
+            return Create(
+                snapshot.LeaseUntil > now
+                    ? ZaloSchedulerHealthState.Running
+                    : ZaloSchedulerHealthState.Failed,
+                snapshot.LeaseUntil > now);
+        }
 
         if (snapshot.LastSuccessAt is null)
         {
