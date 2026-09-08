@@ -41,6 +41,87 @@ public sealed class ZaloAutoSessionApprovedDefaultProvenanceTests
     }
 
     [Fact]
+    public async Task InitialEvidence_ApprovesOnlyDefaultsThatStillMatchThePersistedDraft()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+
+        var result = await new ZaloAutoSessionMatchProposalV4Store(db)
+            .InitializeFromPreviewAsync(
+                BuildProposal("Vote tuần sau"),
+                BuildTracked(),
+                BuildConversation("T6 11/9"));
+
+        var evidence = JsonSerializer.Deserialize<ZaloAutoSessionProposalEvidenceV4>(
+            result!.Revision.EvidenceJson,
+            JsonOptions)!;
+
+        Assert.Equal("approved_group_default", evidence.Location.Source);
+        Assert.Equal("ZaloTrackedGroups.DefaultLocation", evidence.Location.Detail);
+        Assert.Equal("approved_group_default", evidence.TeamSize.Source);
+        Assert.Equal("ZaloTrackedGroups.DefaultTeamSize", evidence.TeamSize.Detail);
+        Assert.Equal("approved_group_default", evidence.StartTimes["t6"].Source);
+    }
+
+    [Fact]
+    public async Task LazyMigration_DoesNotBlessDefaultsThatChangedAfterPreview()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var tracked = BuildTracked();
+        var conversation = BuildConversation("T6 11/9");
+
+        // The durable V3 preview still contains the old approved values, but the admin has
+        // since changed group policy before V4 lazily initializes this proposal.
+        tracked.DefaultLocation = "Sân mới";
+        tracked.DefaultTeamSize = 7;
+        tracked.DefaultStartMinutes = 18 * 60 + 30;
+
+        var result = await new ZaloAutoSessionMatchProposalV4Store(db)
+            .InitializeFromPreviewAsync(BuildProposal("Vote tuần sau"), tracked, conversation);
+
+        var evidence = JsonSerializer.Deserialize<ZaloAutoSessionProposalEvidenceV4>(
+            result!.Revision.EvidenceJson,
+            JsonOptions)!;
+
+        Assert.Equal("stale_or_unapproved_default", evidence.Location.Source);
+        Assert.Contains("Sân UTE", evidence.Location.Detail);
+        Assert.Contains("Sân mới", evidence.Location.Detail);
+        Assert.Equal("stale_or_unapproved_default", evidence.TeamSize.Source);
+        Assert.Contains("draft=6", evidence.TeamSize.Detail);
+        Assert.Contains("current=7", evidence.TeamSize.Detail);
+        Assert.Equal("stale_or_unapproved_default", evidence.StartTimes["t6"].Source);
+        Assert.Contains("draft=1080", evidence.StartTimes["t6"].Detail);
+        Assert.Contains("current=1110", evidence.StartTimes["t6"].Detail);
+    }
+
+    [Fact]
+    public async Task ExplicitPollTime_RemainsAuthoritativeWhenGroupDefaultChanged()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var tracked = BuildTracked();
+        tracked.DefaultStartMinutes = 18 * 60 + 30;
+
+        var result = await new ZaloAutoSessionMatchProposalV4Store(db)
+            .InitializeFromPreviewAsync(
+                BuildProposal("Vote tuần sau"),
+                tracked,
+                BuildConversation("T6 11/9 18h"));
+
+        var evidence = JsonSerializer.Deserialize<ZaloAutoSessionProposalEvidenceV4>(
+            result!.Revision.EvidenceJson,
+            JsonOptions)!;
+        Assert.Equal("poll_option_explicit_time", evidence.StartTimes["t6"].Source);
+    }
+
+    [Fact]
     public async Task OrganizerTimeCorrection_ReplacesApprovedDefaultAuthority()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
