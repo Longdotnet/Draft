@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
@@ -63,6 +64,9 @@ internal sealed class ZaloAutoSessionProposalEvidenceV4
 internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext db)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly Regex ExplicitTimeEvidenceRegex = new(
+        @"(?<!\d)[0-2]?\d\s*(?:h|:)(?:\s*[0-5]?\d)?(?!\d)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private bool ensured;
 
     public async Task EnsureAsync(CancellationToken cancellationToken = default)
@@ -297,11 +301,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
                 Source = "poll_option",
                 Detail = item.OptionContent
             };
-            evidence.StartTimes[item.OptionId] = new ZaloAutoSessionProposalEvidenceValueV4
-            {
-                Source = "deterministic_poll_candidate",
-                Detail = item.StartTime.ToString("O", CultureInfo.InvariantCulture)
-            };
+            evidence.StartTimes[item.OptionId] = BuildInitialStartTimeEvidence(proposal, tracked, item);
             evidence.Selections[item.OptionId] = new ZaloAutoSessionProposalEvidenceValueV4
             {
                 Source = "poll_option_default_selected",
@@ -310,6 +310,36 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         }
 
         return evidence;
+    }
+
+    private static ZaloAutoSessionProposalEvidenceValueV4 BuildInitialStartTimeEvidence(
+        ZaloPollSessionProposalData proposal,
+        ZaloTrackedGroupData tracked,
+        ZaloAutoSessionConversationDraftItem item)
+    {
+        if (ExplicitTimeEvidenceRegex.IsMatch(item.OptionContent ?? string.Empty))
+        {
+            return new ZaloAutoSessionProposalEvidenceValueV4
+            {
+                Source = "poll_option_explicit_time",
+                Detail = item.StartTime.ToString("O", CultureInfo.InvariantCulture)
+            };
+        }
+
+        if (ExplicitTimeEvidenceRegex.IsMatch(proposal.PollQuestion ?? string.Empty))
+        {
+            return new ZaloAutoSessionProposalEvidenceValueV4
+            {
+                Source = "poll_title_explicit_time",
+                Detail = item.StartTime.ToString("O", CultureInfo.InvariantCulture)
+            };
+        }
+
+        return new ZaloAutoSessionProposalEvidenceValueV4
+        {
+            Source = "approved_group_default",
+            Detail = $"ZaloTrackedGroups.DefaultStartMinutes={tracked.DefaultStartMinutes.ToString(CultureInfo.InvariantCulture)}"
+        };
     }
 
     private static ZaloAutoSessionProposalEvidenceV4 EvolveEvidence(
