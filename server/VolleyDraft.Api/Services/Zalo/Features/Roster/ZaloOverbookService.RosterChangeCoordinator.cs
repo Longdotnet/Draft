@@ -139,13 +139,13 @@ public sealed partial class ZaloOverbookService
 
                 var from = transition.DropFrom ?? previous.StableEffectiveSlotCount;
                 var to = transition.DropTo ?? readiness.EffectiveSlotCount;
-                var incidentAt = previous.LastDropAt!.Value;
+                var recoveryIncidentAt = previous.LastDropAt!.Value;
                 if (!await TrySendRosterRecoveredReadyAsync(
                         session,
                         readiness,
                         from,
                         to,
-                        incidentAt,
+                        recoveryIncidentAt,
                         now,
                         cancellationToken))
                     continue;
