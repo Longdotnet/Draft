@@ -256,7 +256,7 @@ jobs:
           Failure kind: ${failure_kind}
           Diagnosis: ${failure_detail}
 
-          If the failure kind is `render_service_suspended`, resume the named Render service(s) first. Application retries cannot wake a service that Render reports as suspended by its owner.
+          If the failure kind is render_service_suspended, resume the named Render service(s) first. Application retries cannot wake a service that Render reports as suspended by its owner.
 
           This incident is deduplicated: repeated failures update this same open issue instead of creating notification spam. It will be closed automatically after a verified healthy scheduler cycle.
           EOF
