@@ -49,9 +49,32 @@ public sealed class ZaloDraftConversationPolicyTests
     [InlineData("chia team đi")]
     [InlineData("chốt team luôn")]
     [InlineData("triển draft")]
-    public void Strong_confirmation_requires_explicit_draft_action(string message)
+    [InlineData("đừng chờ nữa, draft đi")]
+    [InlineData("không cần đợi nữa, chia team đi")]
+    public void Strong_confirmation_requires_explicit_affirmative_draft_action(string message)
     {
         Assert.True(ZaloDraftConversationPolicy.IsStrongDraftConfirmation(message));
+    }
+
+    [Theory]
+    [InlineData("đừng draft đi")]
+    [InlineData("dung draft di")]
+    [InlineData("không chạy draft")]
+    [InlineData("ko triển draft nha")]
+    [InlineData("đừng xác nhận draft")]
+    [InlineData("không chia team đi")]
+    [InlineData("k chia đội luôn")]
+    [InlineData("đừng chốt team")]
+    [InlineData("thôi khỏi draft")]
+    [InlineData("thoi khoi chia team")]
+    [InlineData("không muốn draft đi")]
+    [InlineData("ko muon chay draft")]
+    [InlineData("không nên chia team đi")]
+    [InlineData("đừng có chốt team luôn")]
+    [InlineData("không được xác nhận draft")]
+    public void Negated_draft_actions_never_become_destructive_confirmation(string message)
+    {
+        Assert.False(ZaloDraftConversationPolicy.IsStrongDraftConfirmation(message));
     }
 
     [Theory]
