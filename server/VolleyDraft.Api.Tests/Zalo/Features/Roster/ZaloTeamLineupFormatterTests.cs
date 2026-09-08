@@ -33,7 +33,7 @@ public sealed class ZaloTeamLineupFormatterTests
         Assert.Empty(result.Mentions);
         Assert.Contains("chưa có kết quả chia team", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("lệnh 10 chỉ đọc kết quả đã có", result.Text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("không cần biết các từ như roster, draft hay sync", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần biết các từ kỹ thuật của hệ thống", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 4 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
@@ -41,12 +41,19 @@ public sealed class ZaloTeamLineupFormatterTests
         Assert.Contains("huỷ pass", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("xong", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("huỷ nhận", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("xác nhận draft", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần @Npc lại", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("trưởng nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("phó nhóm", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không có quyền", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("AI có tắt", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("operator", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("session", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("backend", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("handler deterministic", result.Text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
