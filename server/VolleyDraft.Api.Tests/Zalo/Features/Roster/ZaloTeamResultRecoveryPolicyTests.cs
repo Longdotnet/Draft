@@ -27,6 +27,8 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("huỷ nhận", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("`xác nhận draft`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ReasonCode", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("draft_blocked", message, StringComparison.OrdinalIgnoreCase);
     }
@@ -46,6 +48,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("thiếu 2 người/chỗ", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("trả lời chính tin đó", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -80,6 +83,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("Nick Tran", message, StringComparison.Ordinal);
         Assert.Contains("@Npc cập nhật To An: nam", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("xác nhận draft", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -97,7 +101,44 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("đã đủ người và hồ sơ để chia đội", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("trả lời chính tin đó bằng `xác nhận draft`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("`huỷ`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("NPC sẽ kiểm dữ liệu backend thật và nói đúng blocker hiện tại", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Unknown_readiness_uses_progressive_recovery_instead_of_dumping_unrelated_blocker_commands()
+    {
+        var message = ZaloTeamResultRecoveryPolicy.BuildNoResultMessage("CN 13/9");
+
+        Assert.Contains("Làm từng bước thôi", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("trả lời chính tin đó bằng `xác nhận draft`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("huỷ pass", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("huỷ nhận", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@Npc cập nhật Nick Tran", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unsafe_session_name_falls_back_to_bare_commands_and_never_splices_address_tokens()
+    {
+        var readiness = Snapshot(
+            ZaloDraftReadinessState.Ready,
+            "draft_ready",
+            effectiveSlots: 18,
+            capacity: 18,
+            canEscalate: true);
+
+        var message = ZaloTeamResultRecoveryPolicy.BuildNoResultMessage("CN @Npc 13/9", readiness);
+
+        Assert.Contains("`@Npc 9`", message, StringComparison.Ordinal);
+        Assert.Contains("`@Npc 10`", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 9 CN @Npc", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc 10 CN @Npc", message, StringComparison.Ordinal);
     }
 
     [Fact]
