@@ -60,7 +60,7 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("không cần @Npc", text);
         Assert.Contains("`@Npc cập nhật @Tên: nam, công, trung bình`", text);
         Assert.Contains("phải tag đúng người", text);
-        Assert.Contains("`draft đi`", text);
+        AssertSafePostProfileRecovery(text);
         AssertBeginnerSafe(text);
     }
 
@@ -77,7 +77,37 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("`nam`", text);
         Assert.Contains("`@Npc cập nhật @Tên: nam, công, trung bình`", text);
         Assert.Contains("admin/trưởng/phó", text);
-        Assert.Contains("`draft đi`", text);
+        AssertSafePostProfileRecovery(text);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
+    public void Proactive_missing_profile_reminder_does_not_imply_profiles_are_the_only_draft_gate()
+    {
+        var text = ZaloDraftPreparationClientCopy.MissingProfileReminder(
+            "CN 13/9",
+            1,
+            ["Hiệp"]);
+
+        Assert.Contains("Khi người cuối cùng cập nhật xong", text);
+        AssertSafePostProfileRecovery(text);
+        Assert.DoesNotContain("hồ sơ trận này đã đủ điều kiện để draft", text, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
+    public void Locked_list_missing_profile_reminder_keeps_post_recovery_draft_fail_closed()
+    {
+        var text = ZaloDraftPreparationClientCopy.LockedListMissingProfileReminder(
+            "CN 13/9",
+            "15 chỗ",
+            1,
+            ["Hiệp"]);
+
+        Assert.Contains("đã được trưởng/phó chốt", text);
+        AssertSafePostProfileRecovery(text);
+        Assert.Contains("Nếu còn vướng", text);
+        Assert.Contains("không tự chia", text);
         AssertBeginnerSafe(text);
     }
 
@@ -209,6 +239,17 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("chơi với 15 chỗ hiện tại", text);
         Assert.Contains("tiếp tục kiếm thêm", text);
         AssertBeginnerSafe(text);
+    }
+
+    private static void AssertSafePostProfileRecovery(string text)
+    {
+        Assert.Contains("trưởng/phó", text);
+        Assert.Contains("`draft đi`", text);
+        Assert.Contains("đọc lại vote", text);
+        Assert.Contains("nhường/chờ nhận", text);
+        Assert.Contains("số người/chỗ", text);
+        Assert.Contains("giờ trận", text);
+        Assert.Contains("quyền", text);
     }
 
     private static void AssertBeginnerSafe(string text)
