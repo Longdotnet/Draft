@@ -104,11 +104,13 @@ jobs:
 
           baseline_attempt=""
           baseline_success=""
+          baseline_failure=""
           baseline_status=$(read_scheduler_health /tmp/scheduler-health-baseline)
           if [ "$baseline_status" = "200" ] || [ "$baseline_status" = "503" ]; then
             baseline_attempt=$(jq -r '.lastAttemptAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
             baseline_success=$(jq -r '.lastSuccessAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
-            echo "Scheduler baseline: HTTP $baseline_status attempt=${baseline_attempt:-none} success=${baseline_success:-none}"
+            baseline_failure=$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
+            echo "Scheduler baseline: HTTP $baseline_status attempt=${baseline_attempt:-none} success=${baseline_success:-none} failure=${baseline_failure:-none}"
           else
             echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require a fresh healthy terminal state."
           fi
@@ -147,8 +149,9 @@ jobs:
             exit 1
           fi
 
-          # HTTP 202 proves only that the trigger was accepted. Verify durable scheduler
-          # progress after the baseline observation so a dead/stuck worker cannot look healthy.
+          # HTTP 202 proves only that the trigger was accepted. Verify a fresh durable
+          # terminal success after the baseline observation. A newer attempt alone is not
+          # enough: it may have died after taking the lease and before recording success.
           for attempt in $(seq 1 24); do
             health_http=$(read_scheduler_health /tmp/scheduler-health-current)
             health_state=$(jq -r '.status // "unknown"' /tmp/scheduler-health-current 2>/dev/null || printf 'unknown')
@@ -164,18 +167,22 @@ jobs:
             if [ -n "$current_attempt" ] && [ "$current_attempt" != "$baseline_attempt" ]; then
               attempt_advanced=1
             fi
+            failure_advanced=0
+            if [ -n "$current_failure" ] && [ "$current_failure" != "$baseline_failure" ]; then
+              failure_advanced=1
+            fi
 
-            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none}"
+            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none}"
 
             if [ "$health_http" = "200" ] && [ "$health_state" = "healthy" ] && \
-               { [ "$terminal_advanced" -eq 1 ] || [ "$attempt_advanced" -eq 1 ]; }; then
+               [ "$terminal_advanced" -eq 1 ]; then
               echo "Scheduler cycle reached a fresh durable healthy terminal state."
               exit 0
             fi
 
-            if [ "$health_state" = "failed" ] && [ -n "$current_failure" ] && \
-               { [ "$attempt_advanced" -eq 1 ] || [ "$current_failure" != "$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)" ]; }; then
-              echo "Scheduler recorded a fresh failed cycle."
+            if [ "$health_state" = "failed" ] && \
+               { [ "$failure_advanced" -eq 1 ] || [ "$attempt_advanced" -eq 1 ]; }; then
+              echo "Scheduler recorded a fresh failed or abandoned cycle."
               cat /tmp/scheduler-health-current
               exit 1
             fi
