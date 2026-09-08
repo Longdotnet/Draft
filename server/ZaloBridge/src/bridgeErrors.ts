@@ -168,12 +168,13 @@ export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
 }
 
 export function bridgeErrorLogFields(error: unknown, descriptor: BridgeErrorDescriptor) {
+  const retryAfterSeconds = upstreamRetryAfterSeconds(error);
   return {
     source: descriptor.source,
     kind: descriptor.kind,
     status: descriptor.status,
     retryable: descriptor.retryable,
     upstreamCode: upstreamCode(error),
-    retryAfterSeconds: upstreamRetryAfterSeconds(error),
+    ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
   };
 }
