@@ -316,20 +316,42 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
+            // An executing request owns this session's draft lane. Do not mutate reminder
+            // state or record the observation as handled: after execution reaches a terminal
+            // state, a later cycle must be able to re-evaluate authoritative readiness.
+            if (existingRequest?.State == ZaloDraftEscalationState.Executing)
+            {
+                logger.LogDebug(
+                    "Draft preparation reminder suppressed by active execution fence Session={SessionId} Request={RequestId}",
+                    session.Id,
+                    existingRequest.Id);
+                continue;
+            }
+
             if (existingRequest is not null &&
                 (existingRequest.State is ZaloDraftEscalationState.AwaitingRequesterConsent or
                                           ZaloDraftEscalationState.ProactiveSoft or
-                                          ZaloDraftEscalationState.ApproverTagged or
-                                          ZaloDraftEscalationState.Executing) &&
+                                          ZaloDraftEscalationState.ApproverTagged) &&
                 (!readiness.CanEscalate ||
                  activeSlotRisks > 0 ||
                  !string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
             {
-                await SupersedeDraftReminderRequestAsync(
+                var superseded = await TrySupersedeDraftReminderRequestAsync(
                     escalationStore,
                     existingRequest,
                     session,
                     cancellationToken);
+                if (!superseded)
+                {
+                    // Another instance may have claimed execution after this request was
+                    // loaded. Preserve that newer execution fence and fail closed for this
+                    // session/cycle instead of reseeding a competing reminder.
+                    logger.LogDebug(
+                        "Draft preparation reminder supersede lost execution race Session={SessionId} Request={RequestId}",
+                        session.Id,
+                        existingRequest.Id);
+                    continue;
+                }
                 existingRequest = null;
             }
 
