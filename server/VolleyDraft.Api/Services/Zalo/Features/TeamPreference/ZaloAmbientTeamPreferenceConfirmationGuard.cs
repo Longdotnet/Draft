@@ -94,8 +94,6 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationGuard(VolleyDraftDbCont
         }
         catch (JsonException)
         {
-            // A promoted confirmation that cannot be proven equivalent to the
-            // disclosed pair is unsafe to pass through. Fall through to rejection.
         }
 
         if (plan is not null && string.Equals(plan.SessionId, disclosure.SessionId, StringComparison.Ordinal))
@@ -134,13 +132,15 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationGuard(VolleyDraftDbCont
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken)
     {
+        var accountId = Clean(incoming.AccountId, 100);
         var groupId = Clean(incoming.GroupId, 100);
         var senderId = Clean(incoming.SenderId, 100);
         var messageId = Clean(incoming.MessageId, 160);
-        if (groupId.Length == 0 || senderId.Length == 0 || messageId.Length == 0) return null;
+        if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0 || messageId.Length == 0) return null;
 
         var pendingRows = await db.ZaloBotConversationStates
             .Where(state =>
+                state.ZaloConnection.AccountZaloId == accountId &&
                 state.GroupId == groupId &&
                 state.SenderZaloUserId == senderId &&
                 state.PendingIntent == ZaloBotIntent.TeamPreferenceConfirm.ToString())
@@ -155,9 +155,6 @@ public sealed class ZaloAmbientTeamPreferenceConfirmationGuard(VolleyDraftDbCont
         TeamPreferencePendingPlan? plan,
         CancellationToken cancellationToken)
     {
-        // The fresh plan is no longer provably identical to the two-person proposal
-        // that the member saw. Remove the one-shot legacy envelope so the same webhook
-        // cannot fall through and mutate an undisclosed transitive group.
         db.ZaloBotConversationStates.Remove(pending);
         await db.SaveChangesAsync(cancellationToken);
 
