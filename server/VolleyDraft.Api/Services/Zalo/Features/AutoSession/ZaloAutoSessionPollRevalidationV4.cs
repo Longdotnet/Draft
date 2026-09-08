@@ -52,9 +52,27 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
             }
         }
 
+        var capacity = ZaloAutoSessionCapacityPolicyV5.Resolve(currentPoll.Question);
         var organizerChangedTeamSize = durableDraft.TeamSize != sourceSnapshot.TeamSize;
         var currentTeamSize = sourceSnapshot.TeamSize;
-        if (!organizerChangedTeamSize)
+        if (capacity.HasExplicitCapacity)
+        {
+            if (!capacity.IsValid)
+            {
+                policyIssues.Add(new ZaloPollScheduleIssue(
+                    string.Empty,
+                    currentPoll.Question?.Trim() ?? string.Empty,
+                    capacity.ErrorCode ?? "explicit_capacity_not_supported",
+                    capacity.ErrorMessage ?? "Capacity trong poll chưa thể áp dụng an toàn."));
+            }
+            else
+            {
+                // Explicit poll capacity is source truth. It outranks an approved group default
+                // and any older organizer correction because roster sync must honor the poll.
+                currentTeamSize = capacity.TeamSize;
+            }
+        }
+        else if (!organizerChangedTeamSize)
         {
             if (tracked.DefaultTeamSize < 2)
             {
@@ -96,7 +114,8 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
             sourceSnapshot,
             durableDraft,
             currentSource,
-            approvedDefaultStartOptionIds);
+            approvedDefaultStartOptionIds,
+            capacity.HasExplicitCapacity && capacity.IsValid);
 
         return new ZaloAutoSessionPollRevalidationV4(
             currentSource,
@@ -147,6 +166,14 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
                    "; nếu giữ bản nháp hiện tại thì nói “tạo đi”.";
         }
 
+        var capacityChange = material.FirstOrDefault(change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ExplicitCapacityChanged);
+        if (capacityChange is not null)
+        {
+            return $"Poll đang ghi tối đa {capacityChange.After} slot và hệ thống sẽ chia đều cho " +
+                   $"{ZaloAutoSessionCapacityPolicyV5.SupportedTeamCount} đội. Nếu đúng thì nói “tạo đi”; nếu không, hãy sửa số slot trong poll trước.";
+        }
+
         var timeChange = material.FirstOrDefault(change =>
             change.Kind == ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged);
         if (timeChange is not null)
@@ -176,6 +203,7 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
         ZaloAutoSessionPollChangeKindV4.OptionIdentityChanged => $"đổi lịch {change.Before} → {change.After}",
         ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged => $"đổi giờ của {change.OptionId}",
         ZaloAutoSessionPollChangeKindV4.ApprovedStartTimeChanged => $"đổi giờ mặc định đã duyệt của {change.OptionId}",
+        ZaloAutoSessionPollChangeKindV4.ExplicitCapacityChanged => $"đổi capacity {change.Before} → {change.After} slot",
         ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged => $"đổi sân mặc định {change.Before} → {change.After}",
         ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged => $"đổi số người/đội mặc định {change.Before} → {change.After}",
         _ => $"thay đổi {change.OptionId}"
