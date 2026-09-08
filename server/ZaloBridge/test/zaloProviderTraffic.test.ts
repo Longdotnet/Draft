@@ -115,11 +115,14 @@ test("identical concurrent provider reads share one authoritative in-flight call
   const accountCredentials = credentials("coalesce");
   const governor = new ZaloProviderTrafficGovernor({ minGapMs: 0 });
   let providerCalls = 0;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
 
   const first = governor.runReadWithCredentials(accountCredentials, "group:123:polls", async () => {
     providerCalls += 1;
+    markStarted();
     await gate;
     return ["poll-a"];
   });
@@ -128,6 +131,7 @@ test("identical concurrent provider reads share one authoritative in-flight call
     return ["poll-b"];
   });
 
+  await started;
   assert.equal(providerCalls, 1, "the duplicate must not reach the provider while the first read is in flight");
   release();
   assert.deepEqual(await Promise.all([first, second]), [["poll-a"], ["poll-a"]]);
