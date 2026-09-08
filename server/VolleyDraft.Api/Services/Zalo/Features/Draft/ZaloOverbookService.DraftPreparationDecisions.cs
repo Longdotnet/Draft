@@ -51,6 +51,14 @@ internal static partial class ZaloDraftPreparationDecisionPolicy
         teamCount > 0 &&
         effectiveSlotCount >= teamCount * 2 &&
         effectiveSlotCount % teamCount == 0;
+
+    internal static bool ShouldSupersedeActiveDraftRequest(
+        ZaloDraftPreparationDecisionKind commandKind,
+        bool canEscalate,
+        int activeSlotRisks) =>
+        commandKind == ZaloDraftPreparationDecisionKind.KeepRecruiting ||
+        !canEscalate ||
+        activeSlotRisks > 0;
 }
 
 public sealed partial class ZaloOverbookService
@@ -171,23 +179,35 @@ public sealed partial class ZaloOverbookService
         if (readiness is null) return false;
         var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
-        // A roster that is no longer fully draft-ready must not retain a pending
-        // confirmation created when the session previously happened to be full.
-        if (!readiness.CanEscalate || activeSlotRisks > 0)
+        // A new KeepRecruiting direction always supersedes any pending draft request,
+        // even when the roster is currently full and otherwise draft-ready. The latest
+        // organizer intent must win over a stale confirmation seeded by an earlier turn.
+        if (ZaloDraftPreparationDecisionPolicy.ShouldSupersedeActiveDraftRequest(
+                command.Kind,
+                readiness.CanEscalate,
+                activeSlotRisks))
             await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting)
         {
             if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRisks == 0)
             {
-                await decisionStore.ClearAsync(session.Id, cancellationToken);
+                await decisionStore.SetAsync(
+                    session.Id,
+                    command.Kind,
+                    null,
+                    null,
+                    senderId,
+                    actorName,
+                    incoming.MessageId,
+                    cancellationToken);
                 await SendDraftReplyAsync(
                     connectionId,
                     connection.AccountZaloId,
                     connection.DisplayName,
                     groupId,
                     incoming,
-                    $"Tui vừa sync {session.Name}: đang {readiness.EffectiveSlotCount}/{readiness.Capacity} rồi nha 😆 Hết thiếu người rồi, giờ chỉ còn chốt roster/draft thôi.",
+                    $"Tui vừa sync {session.Name}: đang {readiness.EffectiveSlotCount}/{readiness.Capacity} rồi nha 😆 Tui tạm ngưng gọi thêm khi đang đủ; nếu sau đó hụt slot, tui tiếp tục kiếm theo quyết định này mà không bắt trưởng/phó chốt lại.",
                     [],
                     "draft_preparation_recruitment_already_full",
                     cancellationToken);
