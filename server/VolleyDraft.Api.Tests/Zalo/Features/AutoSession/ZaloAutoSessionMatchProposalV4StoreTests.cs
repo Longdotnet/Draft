@@ -13,7 +13,7 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
-    public async Task InitializeFromPreview_PersistsPollAndApprovedDefaultProvenance()
+    public async Task InitializeFromPreview_PersistsPollExplicitCapacityAndApprovedDefaultProvenance()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -40,7 +40,8 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
         Assert.NotNull(evidence);
         Assert.Equal(4, evidence!.SchemaVersion);
         Assert.Equal("approved_group_default", evidence.Location.Source);
-        Assert.Equal("approved_group_default", evidence.TeamSize.Source);
+        Assert.Equal("poll_title_explicit_capacity", evidence.TeamSize.Source);
+        Assert.Contains("capacity=18", evidence.TeamSize.Detail, StringComparison.Ordinal);
         Assert.Equal("poll_option", evidence.OptionIdentity["t6"].Source);
         Assert.Equal("poll_title_explicit_time", evidence.StartTimes["t6"].Source);
         Assert.Equal("poll_option_default_selected", evidence.Selections["cn"].Source);
@@ -79,7 +80,7 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
         Assert.Equal("organizer_correction", evidence.StartTimes["t6"].Source);
         Assert.Equal("leader-1", evidence.StartTimes["t6"].ActorZaloUserId);
         Assert.Equal("poll_title_explicit_time", evidence.StartTimes["cn"].Source);
-        Assert.Equal("approved_group_default", evidence.TeamSize.Source);
+        Assert.Equal("poll_title_explicit_capacity", evidence.TeamSize.Source);
         Assert.Equal("poll_option", evidence.OptionIdentity["t6"].Source);
     }
 
