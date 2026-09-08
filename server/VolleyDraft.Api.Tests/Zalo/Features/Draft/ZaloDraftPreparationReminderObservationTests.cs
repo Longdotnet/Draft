@@ -15,7 +15,7 @@ public sealed class ZaloDraftPreparationReminderObservationTests
     }
 
     [Fact]
-    public void SameBucketRefresh_IsThrottledUntilObservationIntervalPasses()
+    public void SameBucketRefresh_KeepsNormalObservationThrottle()
     {
         var readiness = Snapshot(15, 15, 0, "fp-15");
         var now = DateTimeOffset.UtcNow;
@@ -24,6 +24,18 @@ public sealed class ZaloDraftPreparationReminderObservationTests
 
         Assert.False(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(recent, now));
         Assert.True(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(due, now));
+    }
+
+    [Fact]
+    public void PassSlotBlockedObservation_RefreshesOnNextHeavyCycle()
+    {
+        var readiness = Snapshot(18, 18, 0, "fp-18", ZaloDraftReadinessState.UnresolvedPassSlots);
+        var now = DateTimeOffset.UtcNow;
+        var beforeNextHeavyCycle = Previous(readiness, 1) with { UpdatedAt = now.AddSeconds(-119) };
+        var nextHeavyCycle = Previous(readiness, 1) with { UpdatedAt = now.AddMinutes(-2) };
+
+        Assert.False(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(beforeNextHeavyCycle, now));
+        Assert.True(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(nextHeavyCycle, now));
     }
 
     [Fact]

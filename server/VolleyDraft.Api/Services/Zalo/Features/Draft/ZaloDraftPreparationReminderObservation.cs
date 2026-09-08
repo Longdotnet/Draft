@@ -8,6 +8,7 @@ internal static class ZaloDraftPreparationReminderObservation
     private const string VersionPrefix = "obs3:";
     private const string PreviousVersionPrefix = "obs2:";
     internal static readonly TimeSpan SameBucketRefreshInterval = TimeSpan.FromMinutes(5);
+    internal static readonly TimeSpan BlockedPassSlotRefreshInterval = TimeSpan.FromMinutes(2);
 
     internal static string BuildFingerprint(
         ZaloDraftReadinessSnapshot readiness,
@@ -42,8 +43,17 @@ internal static class ZaloDraftPreparationReminderObservation
 
     internal static bool ShouldRefreshSameBucket(
         ZaloDraftPreparationReminderState previous,
-        DateTimeOffset now) =>
-        now - previous.UpdatedAt >= SameBucketRefreshInterval;
+        DateTimeOffset now)
+    {
+        // A pass/share handoff is interactive product state, not a slow-changing reminder fact.
+        // Once NPC has told members to finish/undo the handoff, re-check on the next heavy worker
+        // cycle so clearing the blocker can immediately unlock the grounded "ready to draft" step.
+        // Clean states keep the wider throttle to avoid extra provider poll traffic.
+        var interval = previous.LastOpenOfferCount > 0
+            ? BlockedPassSlotRefreshInterval
+            : SameBucketRefreshInterval;
+        return now - previous.UpdatedAt >= interval;
+    }
 
     internal static bool HasMaterialChange(
         ZaloDraftPreparationReminderState previous,
