@@ -158,11 +158,57 @@ public sealed class ZaloListenerCoordinator(
     };
 }
 
-public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogger<ZaloListenerWorker> logger)
+internal static class ZaloListenerWorkerCadence
+{
+    internal static TimeSpan ResolveInterval(
+        IConfiguration configuration,
+        string key,
+        int defaultSeconds,
+        int minSeconds,
+        int maxSeconds)
+    {
+        var seconds = configuration.GetValue(key, defaultSeconds);
+        return TimeSpan.FromSeconds(Math.Clamp(seconds, minSeconds, maxSeconds));
+    }
+
+    internal static bool IsDue(DateTimeOffset now, DateTimeOffset nextAt) => now >= nextAt;
+
+    internal static DateTimeOffset Next(DateTimeOffset now, TimeSpan interval) => now.Add(interval);
+}
+
+public sealed class ZaloListenerWorker(
+    IServiceScopeFactory scopeFactory,
+    IConfiguration configuration,
+    ILogger<ZaloListenerWorker> logger)
     : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Keep the short loop for timing-sensitive deterministic jobs, but do not let it
+        // imply provider polling. Realtime Zalo board/message events are the primary path;
+        // these slower cadences are only control-plane and missed-event safety nets.
+        var loopInterval = ZaloListenerWorkerCadence.ResolveInterval(
+            configuration,
+            "Zalo:WorkerLoopSeconds",
+            defaultSeconds: 45,
+            minSeconds: 30,
+            maxSeconds: 300);
+        var listenerReconcileInterval = ZaloListenerWorkerCadence.ResolveInterval(
+            configuration,
+            "Zalo:ListenerReconcileSeconds",
+            defaultSeconds: 300,
+            minSeconds: 120,
+            maxSeconds: 1800);
+        var pollSafetyReconcileInterval = ZaloListenerWorkerCadence.ResolveInterval(
+            configuration,
+            "AutoSession:SafetyReconcileSeconds",
+            defaultSeconds: 900,
+            minSeconds: 300,
+            maxSeconds: 3600);
+
+        var nextListenerReconcileAt = DateTimeOffset.MinValue;
+        var nextPollSafetyReconcileAt = DateTimeOffset.MinValue;
+
         while (!stoppingToken.IsCancellationRequested)
         {
             // Daily greetings/social presence are timing-sensitive. Keep their failure
@@ -188,9 +234,28 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var autoSessions = ZaloAutoSessionV2Service.Create(scope.ServiceProvider);
                 await autoSessions.EnsureAsync(stoppingToken);
-                await scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>()
-                    .EnsureAllAsync(stoppingToken);
-                await autoSessions.ReconcileAsync(stoppingToken);
+
+                var now = DateTimeOffset.UtcNow;
+                if (ZaloListenerWorkerCadence.IsDue(now, nextListenerReconcileAt))
+                {
+                    // Bridge restart/cold-start recovery. The active websocket listener is
+                    // otherwise left alone instead of re-ensuring it every short worker tick.
+                    nextListenerReconcileAt = ZaloListenerWorkerCadence.Next(now, listenerReconcileInterval);
+                    await scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>()
+                        .EnsureAllAsync(stoppingToken);
+                }
+
+                if (ZaloListenerWorkerCadence.IsDue(now, nextPollSafetyReconcileAt))
+                {
+                    // Full board listing is deliberately a sparse missed-event safety net.
+                    // update_board websocket events are handled immediately by
+                    // ObservePollBoardEventAsync and do not wait for this interval.
+                    nextPollSafetyReconcileAt = ZaloListenerWorkerCadence.Next(now, pollSafetyReconcileInterval);
+                    await autoSessions.ReconcileAsync(stoppingToken);
+                }
+
+                // These jobs are already state/due-time gated before they touch Zalo and
+                // may keep the short loop for reminders and lead-window correctness.
                 await ZaloUpcomingMatchDiscoveryService.Create(scope.ServiceProvider)
                     .RunAsync(stoppingToken);
                 await ZaloAutoSessionConversationService.Create(scope.ServiceProvider)
@@ -205,7 +270,7 @@ public sealed class ZaloListenerWorker(IServiceScopeFactory scopeFactory, ILogge
                 logger.LogError(exception, "Zalo listener/auto-session reconciliation failed");
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(45), stoppingToken);
+            await Task.Delay(loopInterval, stoppingToken);
         }
     }
 }
