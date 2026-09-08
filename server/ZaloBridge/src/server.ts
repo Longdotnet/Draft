@@ -19,7 +19,7 @@ import type {
 import { ScopedOutboundIdempotency } from "./outboundIdempotency.js";
 import { isStickerReaction } from "./stickerLogic.js";
 import { sendGroupSticker } from "./stickerGateway.js";
-import { ZaloRateLimitGuard } from "./zaloRateLimitGuard.js";
+import { zaloProviderTrafficGovernor } from "./zaloProviderTraffic.js";
 import {
   createQrLogin,
   getActiveListenerWebhookUrls,
@@ -48,7 +48,6 @@ const internalKey = configuredInternalKey || "development-zalo-bridge-key";
 const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
 const outboundMessageIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupMessage>>>();
 const outboundStickerIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupSticker>>>();
-const outboundRateLimitGuard = new ZaloRateLimitGuard();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
@@ -114,43 +113,81 @@ function credentialsFrom(request: Request): ZaloCredentials {
 }
 
 app.post("/v1/groups", async (request, response) => {
-  response.json({ groups: await getGroups(credentialsFrom(request)) });
+  const credentials = credentialsFrom(request);
+  response.json({
+    groups: await zaloProviderTrafficGovernor.runWithCredentials(
+      credentials,
+      () => getGroups(credentials),
+    ),
+  });
 });
 
 app.post("/v1/groups/:groupId/polls", async (request, response) => {
-  response.json({ polls: await getPolls(credentialsFrom(request), request.params.groupId) });
+  const credentials = credentialsFrom(request);
+  response.json({
+    polls: await zaloProviderTrafficGovernor.runWithCredentials(
+      credentials,
+      () => getPolls(credentials, request.params.groupId),
+    ),
+  });
 });
 
 app.post("/v1/groups/:groupId/members", async (request, response) => {
-  response.json(await getGroupMemberDirectory(credentialsFrom(request), request.params.groupId));
+  const credentials = credentialsFrom(request);
+  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => getGroupMemberDirectory(credentials, request.params.groupId),
+  ));
 });
 
 app.post("/v1/groups/:groupId/board-pages", async (request, response) => {
+  const credentials = credentialsFrom(request);
   const page = Number(request.body?.page ?? 1);
   const pageSize = Number(request.body?.pageSize ?? 50);
-  response.json(await getBoardPage(credentialsFrom(request), request.params.groupId, page, pageSize));
+  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => getBoardPage(credentials, request.params.groupId, page, pageSize),
+  ));
 });
 
 app.post("/v1/groups/:groupId/message-history", async (request, response) => {
+  const credentials = credentialsFrom(request);
   const count = Number(request.body?.count ?? 500);
-  response.json(await getGroupMessageHistory(credentialsFrom(request), request.params.groupId, count));
+  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => getGroupMessageHistory(credentials, request.params.groupId, count),
+  ));
 });
 
 app.post("/v1/groups/:groupId/roles", async (request, response) => {
-  response.json(await getGroupRoles(credentialsFrom(request), request.params.groupId));
+  const credentials = credentialsFrom(request);
+  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => getGroupRoles(credentials, request.params.groupId),
+  ));
 });
 
 app.post("/v1/polls/:pollId", async (request, response) => {
-  response.json(await getPoll(credentialsFrom(request), request.params.pollId));
+  const credentials = credentialsFrom(request);
+  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => getPoll(credentials, request.params.pollId),
+  ));
 });
 
 app.post("/v1/group-members", async (request, response) => {
+  const credentials = credentialsFrom(request);
   const memberIds = Array.isArray(request.body?.memberIds) ? request.body.memberIds.map(String) : [];
   if (memberIds.length > 500) {
     response.status(400).json({ error: "A maximum of 500 member IDs is allowed" });
     return;
   }
-  response.json({ members: await getMembers(credentialsFrom(request), memberIds) });
+  response.json({
+    members: await zaloProviderTrafficGovernor.runWithCredentials(
+      credentials,
+      () => getMembers(credentials, memberIds),
+    ),
+  });
 });
 
 app.put("/v1/listeners/:accountId", async (request, response) => {
@@ -159,13 +196,19 @@ app.put("/v1/listeners/:accountId", async (request, response) => {
     response.status(400).json({ error: "credentials, groupIds, webhookUrl and webhookKey are required" });
     return;
   }
-  response.json(await startListener({
-    accountId: request.params.accountId,
-    credentials: body.credentials,
-    groupIds: body.groupIds.map(String),
-    webhookUrl: String(body.webhookUrl),
-    webhookKey: String(body.webhookKey),
-  }));
+  const accountId = request.params.accountId;
+  const credentials = body.credentials;
+  zaloProviderTrafficGovernor.bindAccount(accountId, credentials);
+  response.json(await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => startListener({
+      accountId,
+      credentials,
+      groupIds: body.groupIds!.map(String),
+      webhookUrl: String(body.webhookUrl),
+      webhookKey: String(body.webhookKey),
+    }),
+  ));
 });
 
 app.delete("/v1/listeners/:accountId", (request, response) => {
@@ -196,7 +239,10 @@ app.post("/v1/group-messages", async (request, response) => {
   response.json(await outboundMessageIdempotency.run(
     { accountId, groupId, idempotencyKey },
     { message: outbound.message, mentions: outbound.mentions, imageUrl: outbound.imageUrl },
-    () => outboundRateLimitGuard.run(accountId, () => sendGroupMessage(outbound)),
+    () => zaloProviderTrafficGovernor.runWithAccount(
+      accountId,
+      () => sendGroupMessage(outbound),
+    ),
   ));
 });
 
@@ -209,17 +255,22 @@ app.post("/v1/group-stickers", async (request, response) => {
   const accountId = String(body.accountId);
   const groupId = String(body.groupId);
   const idempotencyKey = body.idempotencyKey ? String(body.idempotencyKey) : null;
+  const credentials = credentialsFrom(request);
+  zaloProviderTrafficGovernor.bindAccount(accountId, credentials);
   const outbound = {
     accountId,
     groupId,
-    credentials: credentialsFrom(request),
+    credentials,
     reaction: body.reaction,
     idempotencyKey: null,
   };
   response.json(await outboundStickerIdempotency.run(
     { accountId, groupId, idempotencyKey },
     { reaction: outbound.reaction },
-    () => outboundRateLimitGuard.run(accountId, () => sendGroupSticker(outbound)),
+    () => zaloProviderTrafficGovernor.runWithCredentials(
+      credentials,
+      () => sendGroupSticker(outbound),
+    ),
   ));
 });
 
