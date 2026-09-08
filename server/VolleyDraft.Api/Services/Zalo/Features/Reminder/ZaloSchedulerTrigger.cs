@@ -254,6 +254,12 @@ public sealed class ZaloSchedulerWorker(
         return TimeSpan.FromTicks(Math.Max(1, leaseDuration.Ticks / 3));
     }
 
+    internal static bool HasStageFailures(
+        int reminderFailedCount,
+        int rescueFailedCount,
+        int lifecycleFailedCount) =>
+        reminderFailedCount > 0 || rescueFailedCount > 0 || lifecycleFailedCount > 0;
+
     internal static async Task<T> RunWithLeaseHeartbeatAsync<T>(
         Func<CancellationToken, Task<T>> operation,
         Func<CancellationToken, Task<bool>> renewLease,
@@ -378,7 +384,27 @@ public sealed class ZaloSchedulerWorker(
                 throw new ZaloSchedulerLeaseLostException();
 
             var completedAt = DateTimeOffset.UtcNow;
-            await lease.MarkSuccessAsync(instanceId, completedAt, cancellationToken);
+            var degraded = HasStageFailures(
+                result.FailedCount,
+                rescue.FailedCount,
+                handoff.FailedCount);
+            if (degraded)
+            {
+                // A cycle that executed to completion but failed durable/user-facing work is not a
+                // successful recovery signal. Keep LastSuccessAt unchanged so /health/scheduler and
+                // the external verifier cannot certify a Zalo delivery/reconciliation outage as healthy.
+                await lease.MarkFailureAsync(instanceId, completedAt, cancellationToken);
+                logger.LogWarning(
+                    "Zalo scheduler cycle completed degraded ReminderFailed={ReminderFailed} RescueFailed={RescueFailed} LifecycleFailed={LifecycleFailed}",
+                    result.FailedCount,
+                    rescue.FailedCount,
+                    handoff.FailedCount);
+            }
+            else
+            {
+                await lease.MarkSuccessAsync(instanceId, completedAt, cancellationToken);
+            }
+
             await lease.ReleaseAsync(instanceId, completedAt, cancellationToken);
             logger.LogInformation(
                 "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed} LifecycleCandidates={LifecycleCandidates} LifecycleHandedOff={LifecycleHandedOff} LifecycleFailed={LifecycleFailed}",
