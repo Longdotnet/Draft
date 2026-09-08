@@ -328,14 +328,14 @@ internal sealed class ZaloAutoSessionService(
         var classification = await classifier.ClassifyAsync(poll, candidates, cancellationToken);
         proposal.ClassifierConfidence = classification.Confidence;
         proposal.ClassifierReason = classification.Reason;
-        if (!classification.IsVolleyballSignupPoll)
+        if (!classification.ShouldOfferManualReview)
         {
             proposal.Status = ZaloPollSessionProposalStatus.Ignored;
             await store.UpsertProposalAsync(proposal, cancellationToken);
             return;
         }
 
-        if (!tracked.RequireOrganizerApproval)
+        if (classification.CanAutoExecute(tracked.RequireOrganizerApproval))
         {
             proposal.Status = ZaloPollSessionProposalStatus.Approved;
             proposal.ApprovedByZaloUserId = NormalizeId(poll.CreatorId);

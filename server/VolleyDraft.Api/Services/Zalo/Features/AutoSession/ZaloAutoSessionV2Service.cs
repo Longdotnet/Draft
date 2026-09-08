@@ -370,7 +370,7 @@ internal sealed class ZaloAutoSessionV2Service(
         var classification = await classifier.ClassifyAsync(poll, candidates, cancellationToken);
         proposal.ClassifierConfidence = classification.Confidence;
         proposal.ClassifierReason = classification.Reason;
-        if (!classification.IsVolleyballSignupPoll)
+        if (!classification.ShouldOfferManualReview)
         {
             proposal.Status = ZaloPollSessionProposalStatus.Ignored;
             await store.UpsertProposalAsync(proposal, cancellationToken);
