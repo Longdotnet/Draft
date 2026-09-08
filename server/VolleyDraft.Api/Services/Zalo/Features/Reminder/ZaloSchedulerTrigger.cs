@@ -212,17 +212,19 @@ public sealed class ZaloSchedulerWorker(
     ILogger<ZaloSchedulerWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan DefaultWatchdogInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan MinimumLeaseDuration = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan LeaseContentionRetryDelay = TimeSpan.FromSeconds(5);
     private readonly string instanceId = Guid.NewGuid().ToString("N");
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var watchdogInterval = ResolveWatchdogInterval(configuration);
+        var leaseDuration = ResolveLeaseDuration(configuration, watchdogInterval);
 
         // Durable reminders, pass-slot rescue and Auto Session lifecycle handoff should catch up
         // whenever the API process becomes available, even if the external scheduler missed the
         // wake-up that originally should have driven them.
-        await RunCycleAsync(watchdogInterval, retryOnLeaseContention: false, stoppingToken);
+        await RunCycleAsync(leaseDuration, retryOnLeaseContention: false, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -235,7 +237,7 @@ public sealed class ZaloSchedulerWorker(
                     "Zalo scheduler watchdog started a recovery cycle after {WatchdogMinutes} minutes without an external tick",
                     watchdogInterval.TotalMinutes);
 
-            await RunCycleAsync(watchdogInterval, retryOnLeaseContention: externalTrigger, stoppingToken);
+            await RunCycleAsync(leaseDuration, retryOnLeaseContention: externalTrigger, stoppingToken);
         }
     }
 
@@ -246,6 +248,21 @@ public sealed class ZaloSchedulerWorker(
             return TimeSpan.FromMinutes(configuredMinutes.Value);
 
         return DefaultWatchdogInterval;
+    }
+
+    internal static TimeSpan ResolveLeaseDuration(
+        IConfiguration configuration,
+        TimeSpan watchdogInterval)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(watchdogInterval, TimeSpan.Zero);
+
+        var configuredMinutes = configuration.GetValue<double?>("Scheduler:LeaseDurationMinutes");
+        if (configuredMinutes is > 0 and <= 60)
+            return TimeSpan.FromMinutes(configuredMinutes.Value);
+
+        return watchdogInterval > MinimumLeaseDuration
+            ? watchdogInterval
+            : MinimumLeaseDuration;
     }
 
     internal static TimeSpan ResolveLeaseRenewalInterval(TimeSpan leaseDuration)
@@ -350,7 +367,7 @@ public sealed class ZaloSchedulerWorker(
 
             // Every potentially long provider/domain stage renews the lease from a separate scope.
             // This prevents a second API instance from taking ownership mid-stage merely because
-            // the stage exceeded the watchdog interval used as the lease duration.
+            // the stage exceeded the lease duration.
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
