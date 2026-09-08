@@ -65,7 +65,7 @@ internal static partial class ZaloAutoSessionCapacityPolicyV5
                 0,
                 0,
                 "explicit_capacity_conflict",
-                $"Poll đang ghi nhiều mức tối đa khác nhau ({values} slot). Hãy giữ một capacity rõ ràng trước khi tạo website.");
+                $"Poll đang ghi nhiều mức tối đa khác nhau ({values} slot). Hãy sửa poll để chỉ giữ một capacity rõ ràng trước khi tạo website.");
         }
 
         var capacity = capacities.Single();
