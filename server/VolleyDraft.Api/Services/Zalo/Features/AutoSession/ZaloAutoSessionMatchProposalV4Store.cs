@@ -4,10 +4,10 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Services.Zalo.Conversation;
 
 namespace VolleyDraft.Api.Services;
 
@@ -64,9 +64,6 @@ internal sealed class ZaloAutoSessionProposalEvidenceV4
 internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext db)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private static readonly Regex ExplicitTimeEvidenceRegex = new(
-        @"(?<!\d)[0-2]?\d\s*(?:h|:)(?:\s*[0-5]?\d)?(?!\d)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private bool ensured;
 
     public async Task EnsureAsync(CancellationToken cancellationToken = default)
@@ -317,7 +314,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         ZaloTrackedGroupData tracked,
         ZaloAutoSessionConversationDraftItem item)
     {
-        if (ExplicitTimeEvidenceRegex.IsMatch(item.OptionContent ?? string.Empty))
+        if (ZaloSessionResolver.ContainsExplicitSessionTime(item.OptionContent ?? string.Empty))
         {
             return new ZaloAutoSessionProposalEvidenceValueV4
             {
@@ -326,7 +323,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
             };
         }
 
-        if (ExplicitTimeEvidenceRegex.IsMatch(proposal.PollQuestion ?? string.Empty))
+        if (ZaloSessionResolver.ContainsExplicitSessionTime(proposal.PollQuestion ?? string.Empty))
         {
             return new ZaloAutoSessionProposalEvidenceValueV4
             {
