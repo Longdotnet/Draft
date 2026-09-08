@@ -23,6 +23,18 @@ public static class ZaloDraftConversationPolicy
         @"(?<![a-z0-9])(?:draft\s*(?:di|luon|nha)|chay\s*draft|trien\s*draft|xac\s*nhan\s*draft|chia\s*(?:team|doi)\s*(?:di|luon|nha)|chot\s*team(?:\s*(?:di|luon|nha))?)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    // A destructive confirmation must fail closed when the user negates that same action.
+    // Keep this scoped to action-shaped phrases instead of rejecting any sentence that happens
+    // to contain a negation word (for example "đừng chờ nữa, draft đi" is still affirmative).
+    private static readonly Regex NegatedStrongConfirmation = new(
+        @"(?<![a-z0-9])(?:" +
+        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co)\s+)?(?:chay\s+|trien\s+|xac\s+nhan\s+)?draft|" +
+        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co)\s+)?chia\s*(?:team|doi)|" +
+        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co)\s+)?chot\s*team|" +
+        @"thoi\s+khoi\s+(?:draft|chia\s*(?:team|doi)|chot\s*team)" +
+        @")(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex EscalationConsent = new(
         @"(?<![a-z0-9])(?:(?:goi|tag|keu|nhan|nho)\b.*(?:di|luon|giup|truong|pho)|(?:u|uh|oke?|duoc|yes)\b.*(?:goi|tag|keu)|(?:goi|tag|keu)\s*(?:truong|pho|admin))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -52,8 +64,13 @@ public static class ZaloDraftConversationPolicy
         return hasReadinessCue && StandaloneReadinessSubject.IsMatch(normalized);
     }
 
-    public static bool IsStrongDraftConfirmation(string? content) =>
-        StrongConfirmation.IsMatch(Normalize(content));
+    public static bool IsStrongDraftConfirmation(string? content)
+    {
+        var normalized = Normalize(content);
+        return normalized.Length > 0 &&
+               !NegatedStrongConfirmation.IsMatch(normalized) &&
+               StrongConfirmation.IsMatch(normalized);
+    }
 
     public static bool IsEscalationConsent(string? content) =>
         EscalationConsent.IsMatch(Normalize(content));
