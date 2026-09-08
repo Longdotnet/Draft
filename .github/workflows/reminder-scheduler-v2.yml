@@ -11,10 +11,11 @@ concurrency:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   tick:
-    name: Wake services and check reminders
+    name: Wake services and verify scheduler cycle
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -24,14 +25,18 @@ jobs:
           echo "schedule=${{ github.event.schedule || 'manual' }}"
           echo "started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-      - name: Wake Render services
+      - name: Wake Render services, queue and verify scheduler cycle
+        id: scheduler
         env:
           SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
           SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
+          SCHEDULER_HEALTH_URL: ${{ vars.SCHEDULER_HEALTH_URL }}
           BACKEND_HEALTH_URL: ${{ vars.BACKEND_HEALTH_URL }}
           ZALO_BRIDGE_HEALTH_URL: ${{ vars.ZALO_BRIDGE_HEALTH_URL }}
         shell: bash
         run: |
+          set -u
+
           if [ -z "$SCHEDULER_URL" ] || [ -z "$SCHEDULER_KEY" ]; then
             echo "Configure Actions variable SCHEDULER_URL and secret SCHEDULER_KEY first."
             exit 1
@@ -41,6 +46,7 @@ jobs:
           # sufficient after deployment. Set them explicitly in Actions
           # Variables when a service URL changes.
           backend_health_url="${BACKEND_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health}"
+          scheduler_health_url="${SCHEDULER_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health/scheduler}"
           bridge_health_url="${ZALO_BRIDGE_HEALTH_URL:-https://draft-zalo-bridge.onrender.com/health}"
 
           wait_for_health() {
@@ -76,6 +82,18 @@ jobs:
             return 1
           }
 
+          read_scheduler_health() {
+            local response_file="$1"
+            curl \
+              --silent \
+              --show-error \
+              --connect-timeout 10 \
+              --max-time 20 \
+              --output "$response_file" \
+              --write-out "%{http_code}" \
+              "$scheduler_health_url" 2>/tmp/scheduler-health-error || printf '000'
+          }
+
           # Wake both free Render services in parallel before queueing work.
           wait_for_health "zalo-bridge" "$bridge_health_url" &
           bridge_health_pid=$!
@@ -84,7 +102,19 @@ jobs:
           wait "$bridge_health_pid" || true
           wait "$backend_health_pid" || true
 
+          baseline_attempt=""
+          baseline_success=""
+          baseline_status=$(read_scheduler_health /tmp/scheduler-health-baseline)
+          if [ "$baseline_status" = "200" ] || [ "$baseline_status" = "503" ]; then
+            baseline_attempt=$(jq -r '.lastAttemptAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
+            baseline_success=$(jq -r '.lastSuccessAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
+            echo "Scheduler baseline: HTTP $baseline_status attempt=${baseline_attempt:-none} success=${baseline_success:-none}"
+          else
+            echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require a fresh healthy terminal state."
+          fi
+
           echo "Queueing scheduler cycle: $SCHEDULER_URL"
+          queued=0
           for attempt in 1 2 3 4; do
             set +e
             status=$(curl \
@@ -102,7 +132,9 @@ jobs:
 
             if [ "$curl_exit" -eq 0 ] && [ "$status" = "202" ]; then
               cat /tmp/scheduler-response
-              exit 0
+              echo
+              queued=1
+              break
             fi
 
             echo "Scheduler attempt $attempt/4 failed: curl=$curl_exit HTTP=$status"
@@ -110,5 +142,100 @@ jobs:
             sleep 5
           done
 
-          echo "Scheduler did not return HTTP 202 after 4 attempts."
+          if [ "$queued" -ne 1 ]; then
+            echo "Scheduler did not return HTTP 202 after 4 attempts."
+            exit 1
+          fi
+
+          # HTTP 202 proves only that the trigger was accepted. Verify durable scheduler
+          # progress after the baseline observation so a dead/stuck worker cannot look healthy.
+          for attempt in $(seq 1 24); do
+            health_http=$(read_scheduler_health /tmp/scheduler-health-current)
+            health_state=$(jq -r '.status // "unknown"' /tmp/scheduler-health-current 2>/dev/null || printf 'unknown')
+            current_attempt=$(jq -r '.lastAttemptAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
+            current_success=$(jq -r '.lastSuccessAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
+            current_failure=$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
+
+            terminal_advanced=0
+            if [ -n "$current_success" ] && [ "$current_success" != "$baseline_success" ]; then
+              terminal_advanced=1
+            fi
+            attempt_advanced=0
+            if [ -n "$current_attempt" ] && [ "$current_attempt" != "$baseline_attempt" ]; then
+              attempt_advanced=1
+            fi
+
+            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none}"
+
+            if [ "$health_http" = "200" ] && [ "$health_state" = "healthy" ] && \
+               { [ "$terminal_advanced" -eq 1 ] || [ "$attempt_advanced" -eq 1 ]; }; then
+              echo "Scheduler cycle reached a fresh durable healthy terminal state."
+              exit 0
+            fi
+
+            if [ "$health_state" = "failed" ] && [ -n "$current_failure" ] && \
+               { [ "$attempt_advanced" -eq 1 ] || [ "$current_failure" != "$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)" ]; }; then
+              echo "Scheduler recorded a fresh failed cycle."
+              cat /tmp/scheduler-health-current
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          echo "Scheduler accepted the trigger but did not reach a fresh healthy terminal state within the verification window."
+          cat /tmp/scheduler-health-current 2>/dev/null || true
           exit 1
+
+      - name: Open or refresh scheduler reliability incident
+        if: failure() && steps.scheduler.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          title="Scheduler reliability: cycle verification failed"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body=$(cat <<EOF
+          The production reminder scheduler wake/queue/verification workflow failed.
+
+          Latest failed run: ${run_url}
+          Detected at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          This incident is deduplicated: repeated failures update this same open issue instead of creating notification spam. It will be closed automatically after a verified healthy scheduler cycle.
+          EOF
+          )
+
+          issue_number=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --search "\"${title}\" in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${title}\") | .number" \
+            | head -n 1)
+
+          if [ -n "$issue_number" ]; then
+            gh issue edit "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Updated existing scheduler incident #$issue_number."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+      - name: Close recovered scheduler reliability incident
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          title="Scheduler reliability: cycle verification failed"
+          issue_number=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --search "\"${title}\" in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"${title}\") | .number" \
+            | head -n 1)
+
+          if [ -n "$issue_number" ]; then
+            gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" --reason completed
+            echo "Closed recovered scheduler incident #$issue_number."
+          fi
