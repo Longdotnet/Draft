@@ -44,6 +44,8 @@ public sealed record ZaloDraftEscalationSnapshot(
 /// Durable, provider-portable state for one draft escalation per linked session.
 /// Runtime DDL follows the same additive SQLite/PostgreSQL rollout pattern used by
 /// the V2 conversation store, avoiding a migration dependency for the bot pilot.
+/// Once a request reaches Executing, its execution token is a fencing boundary:
+/// pre-execution reminders, cancellation, expiry and supersession cannot overwrite it.
 /// </summary>
 public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
 {
@@ -123,6 +125,10 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
 
         await EnsureSchemaAsync(cancellationToken);
         var existing = await LoadForSessionAsync(connectionId, groupId, sessionId, cancellationToken);
+        // An execution claim is the linearization point for the destructive draft path.
+        // No reminder/retry with a newer fingerprint may recycle this row underneath it.
+        if (existing?.State == ZaloDraftEscalationState.Executing)
+            return existing;
         if (existing is not null &&
             ActiveStates.Contains(existing.State) &&
             string.Equals(existing.RosterFingerprint, fingerprint, StringComparison.Ordinal))
@@ -163,7 +169,8 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
                 "ExecutionToken" = NULL,
                 "CreatedAt" = excluded."CreatedAt",
                 "ExpiresAt" = excluded."ExpiresAt",
-                "UpdatedAt" = excluded."UpdatedAt";
+                "UpdatedAt" = excluded."UpdatedAt"
+            WHERE "ZaloDraftEscalationRequests"."State" <> 'Executing';
             """;
         Add(command, "@id", id);
         Add(command, "@connectionId", connectionId);
@@ -189,7 +196,8 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         UpdateAsync(id,
             "\"State\" = 'ProactiveSoft', \"SoftNudgeSentAt\" = @sentAt, \"UpdatedAt\" = @sentAt",
             [("@sentAt", sentAt)],
-            cancellationToken);
+            cancellationToken,
+            " AND \"State\" IN ('AwaitingRequesterConsent','ProactiveSoft')");
 
     public Task<int> SetPrimaryApproverAsync(
         string id,
@@ -201,7 +209,8 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         UpdateAsync(id,
             "\"State\" = 'ApproverTagged', \"PrimaryApproverId\" = @approverId, \"PrimaryApproverMessageId\" = @messageId, \"PrimaryNudgeAt\" = @sentAt, \"ExpiresAt\" = @expiresAt, \"UpdatedAt\" = @sentAt",
             [("@approverId", Clean(approverId, 100)), ("@messageId", CleanOptional(providerMessageId, 160)), ("@sentAt", sentAt), ("@expiresAt", expiresAt)],
-            cancellationToken);
+            cancellationToken,
+            " AND \"State\" IN ('AwaitingRequesterConsent','ProactiveSoft','ApproverTagged')");
 
     public Task<int> SetSecondaryApproverAsync(
         string id,
@@ -213,7 +222,8 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         UpdateAsync(id,
             "\"State\" = 'ApproverTagged', \"SecondaryApproverId\" = @approverId, \"SecondaryApproverMessageId\" = @messageId, \"SecondaryNudgeAt\" = @sentAt, \"ExpiresAt\" = @expiresAt, \"UpdatedAt\" = @sentAt",
             [("@approverId", Clean(approverId, 100)), ("@messageId", CleanOptional(providerMessageId, 160)), ("@sentAt", sentAt), ("@expiresAt", expiresAt)],
-            cancellationToken);
+            cancellationToken,
+            " AND \"State\" IN ('AwaitingRequesterConsent','ProactiveSoft','ApproverTagged')");
 
     public async Task<string?> TryClaimExecutionAsync(
         ZaloDraftEscalationSnapshot request,
@@ -286,7 +296,9 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         ZaloDraftEscalationState state,
         CancellationToken cancellationToken = default)
     {
-        var executionGuard = state is ZaloDraftEscalationState.Superseded or ZaloDraftEscalationState.Expired
+        var executionGuard = state is ZaloDraftEscalationState.Superseded or
+                                         ZaloDraftEscalationState.Expired or
+                                         ZaloDraftEscalationState.Cancelled
             ? " AND \"State\" <> 'Executing'"
             : string.Empty;
         return UpdateAsync(id,
