@@ -67,6 +67,13 @@ public sealed partial class ZaloOverbookService
         MatchSession? Session,
         IReadOnlyList<MatchSession> Candidates);
 
+    private enum DraftRequestSupersessionResult
+    {
+        None,
+        Superseded,
+        CannotSupersedeSafely
+    }
+
     private async Task<bool> TryHandleDraftPreparationDecisionAsync(
         string connectionId,
         string groupId,
@@ -134,7 +141,22 @@ public sealed partial class ZaloOverbookService
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
         {
-            await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
+            var supersession = await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
+            if (supersession == DraftRequestSupersessionResult.CannotSupersedeSafely)
+            {
+                await SendDraftReplyAsync(
+                    connectionId,
+                    connection.AccountZaloId,
+                    connection.DisplayName,
+                    groupId,
+                    incoming,
+                    ZaloDraftPreparationClientCopy.ExecutionAlreadyStarted(session.Name),
+                    [],
+                    "draft_preparation_execution_already_started",
+                    cancellationToken);
+                return true;
+            }
+
             await decisionStore.SetAsync(
                 session.Id,
                 command.Kind,
@@ -180,14 +202,30 @@ public sealed partial class ZaloOverbookService
         if (readiness is null) return false;
         var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
-        // A new KeepRecruiting direction always supersedes any pending draft request,
-        // even when the roster is currently full and otherwise draft-ready. The latest
-        // organizer intent must win over a stale confirmation seeded by an earlier turn.
+        // Organizer decisions may supersede an unclaimed request, but once a valid
+        // approver has atomically claimed execution we cannot honestly pretend a later
+        // decision cancelled the mutation. The database CAS below chooses one winner.
         if (ZaloDraftPreparationDecisionPolicy.ShouldSupersedeActiveDraftRequest(
                 command.Kind,
                 readiness.CanEscalate,
                 activeSlotRisks))
-            await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
+        {
+            var supersession = await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
+            if (supersession == DraftRequestSupersessionResult.CannotSupersedeSafely)
+            {
+                await SendDraftReplyAsync(
+                    connectionId,
+                    connection.AccountZaloId,
+                    connection.DisplayName,
+                    groupId,
+                    incoming,
+                    ZaloDraftPreparationClientCopy.ExecutionAlreadyStarted(session.Name),
+                    [],
+                    "draft_preparation_execution_already_started",
+                    cancellationToken);
+                return true;
+            }
+        }
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting)
         {
@@ -713,15 +751,43 @@ public sealed partial class ZaloOverbookService
         return true;
     }
 
-    private async Task SupersedeAnyActiveDraftRequestAsync(
+    private async Task<DraftRequestSupersessionResult> SupersedeAnyActiveDraftRequestAsync(
         MatchSession session,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(session.ZaloConnectionId) ||
             string.IsNullOrWhiteSpace(session.ZaloGroupId))
-            return;
+            return DraftRequestSupersessionResult.None;
 
         var escalationStore = new ZaloDraftEscalationStore(db);
+        if (await escalationStore.TrySupersedeBeforeExecutionAsync(
+                session.ZaloConnectionId,
+                session.ZaloGroupId,
+                session.Id,
+                cancellationToken))
+        {
+            var superseded = await escalationStore.LoadForSessionAsync(
+                session.ZaloConnectionId,
+                session.ZaloGroupId,
+                session.Id,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(superseded?.PrimaryApproverId))
+                await RemoveDraftPendingAsync(
+                    session.ZaloConnectionId,
+                    session.ZaloGroupId,
+                    superseded.PrimaryApproverId,
+                    session.Id,
+                    cancellationToken);
+            if (!string.IsNullOrWhiteSpace(superseded?.SecondaryApproverId))
+                await RemoveDraftPendingAsync(
+                    session.ZaloConnectionId,
+                    session.ZaloGroupId,
+                    superseded.SecondaryApproverId,
+                    session.Id,
+                    cancellationToken);
+            return DraftRequestSupersessionResult.Superseded;
+        }
+
         var request = await escalationStore.LoadForSessionAsync(
             session.ZaloConnectionId,
             session.ZaloGroupId,
@@ -732,25 +798,11 @@ public sealed partial class ZaloOverbookService
                                   ZaloDraftEscalationState.ProactiveSoft or
                                   ZaloDraftEscalationState.ApproverTagged or
                                   ZaloDraftEscalationState.Executing))
-            return;
+            return DraftRequestSupersessionResult.None;
 
-        await escalationStore.SetStateAsync(
-            request.Id,
-            ZaloDraftEscalationState.Superseded,
-            cancellationToken);
-        if (!string.IsNullOrWhiteSpace(request.PrimaryApproverId))
-            await RemoveDraftPendingAsync(
-                session.ZaloConnectionId,
-                session.ZaloGroupId,
-                request.PrimaryApproverId,
-                session.Id,
-                cancellationToken);
-        if (!string.IsNullOrWhiteSpace(request.SecondaryApproverId))
-            await RemoveDraftPendingAsync(
-                session.ZaloConnectionId,
-                session.ZaloGroupId,
-                request.SecondaryApproverId,
-                session.Id,
-                cancellationToken);
+        // Either execution won the CAS or another active request appeared concurrently
+        // after our supersede statement. In both cases fail closed: do not persist a
+        // contradictory organizer direction or claim that an in-flight mutation stopped.
+        return DraftRequestSupersessionResult.CannotSupersedeSafely;
     }
 }

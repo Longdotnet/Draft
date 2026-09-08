@@ -12,6 +12,9 @@ internal static class ZaloDraftPreparationClientCopy
     internal static string StopMatch(string changePrefix, string sessionName) =>
         $"{changePrefix}Ok, tui ghi nhận trưởng/phó chốt dừng kèo {sessionName}. Tui ngưng nhắc chia đội cho trận này nha. Tui chưa tự xoá trận, vote hay thao tác huỷ sân bên ngoài.";
 
+    internal static string ExecutionAlreadyStarted(string sessionName) =>
+        $"Lượt chia đội của {sessionName} đã được một xác nhận hợp lệ claim và đang chạy rồi, nên tui chưa ghi nhận hướng mới như thể đã huỷ được nó nha. Đợi lượt đang chạy chốt trạng thái/đội hình xong rồi quyết định tiếp giúp tui; tui không nói đã dừng khi mutation có thể đã bắt đầu.";
+
     internal static string VoteRefreshFailed(string sessionName) =>
         $"Tui nghe quyết định rồi nhưng chưa đọc lại được đúng vote của {sessionName}, nên chưa dám chốt theo dữ liệu có thể cũ nha 😭 Tui chưa đổi gì; thử lại khi vote đọc được giúp tui.";
 
