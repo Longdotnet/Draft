@@ -258,7 +258,12 @@ public sealed class ZaloSchedulerWorker(
 
         var configuredMinutes = configuration.GetValue<double?>("Scheduler:LeaseDurationMinutes");
         if (configuredMinutes is > 0 and <= 60)
-            return TimeSpan.FromMinutes(configuredMinutes.Value);
+        {
+            var configuredDuration = TimeSpan.FromMinutes(configuredMinutes.Value);
+            return configuredDuration > MinimumLeaseDuration
+                ? configuredDuration
+                : MinimumLeaseDuration;
+        }
 
         return watchdogInterval > MinimumLeaseDuration
             ? watchdogInterval

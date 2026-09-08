@@ -46,6 +46,24 @@ public sealed class ZaloSchedulerLeaseDurationTests
     }
 
     [Theory]
+    [InlineData("0.25")]
+    [InlineData("1")]
+    [InlineData("1.999")]
+    public void ResolveLeaseDuration_ClampsExplicitConfigurationToSafetyFloor(string value)
+    {
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Scheduler:LeaseDurationMinutes"] = value
+        });
+
+        var lease = ZaloSchedulerWorker.ResolveLeaseDuration(
+            configuration,
+            TimeSpan.FromSeconds(15));
+
+        Assert.Equal(TimeSpan.FromMinutes(2), lease);
+    }
+
+    [Theory]
     [InlineData("0")]
     [InlineData("-1")]
     [InlineData("61")]
