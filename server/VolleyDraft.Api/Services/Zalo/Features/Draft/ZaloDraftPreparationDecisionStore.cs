@@ -153,15 +153,6 @@ internal sealed class ZaloDraftPreparationDecisionStore(VolleyDraftDbContext db)
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
-    public async Task ClearAsync(string sessionId, CancellationToken cancellationToken = default)
-    {
-        await EnsureAsync(cancellationToken);
-        const string sql = "DELETE FROM \"ZaloDraftPreparationDecisions\" WHERE \"SessionId\" = @SessionId;";
-        await using var command = await CreateCommandAsync(sql, cancellationToken);
-        AddParameter(command, "@SessionId", Clean(sessionId, 100));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
     private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
     {
         var connection = db.Database.GetDbConnection();
