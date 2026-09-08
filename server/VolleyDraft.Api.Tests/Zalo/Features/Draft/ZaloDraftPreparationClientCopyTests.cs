@@ -45,6 +45,43 @@ public sealed class ZaloDraftPreparationClientCopyTests
     }
 
     [Fact]
+    public void Missing_profiles_ack_teaches_affected_members_and_organizer_exact_recovery()
+    {
+        var text = ZaloDraftPreparationClientCopy.MissingProfiles(
+            string.Empty,
+            "15 chỗ",
+            2,
+            ["Hiệp", "Tín"]);
+
+        Assert.Contains("Hiệp", text);
+        Assert.Contains("Tín", text);
+        Assert.Contains("trả lời ngay tin hỏi hồ sơ", text);
+        Assert.Contains("`nam`", text);
+        Assert.Contains("không cần @Npc", text);
+        Assert.Contains("`@Npc cập nhật @Tên: nam, công, trung bình`", text);
+        Assert.Contains("phải tag đúng người", text);
+        Assert.Contains("`draft đi`", text);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
+    public void Full_roster_profile_blocker_uses_same_no_ai_recovery_contract()
+    {
+        var text = ZaloDraftPreparationClientCopy.MissingProfileBlocker(
+            "CN 13/9",
+            1,
+            ["Hiệp"]);
+
+        Assert.Contains("đã đủ người/chỗ", text);
+        Assert.Contains("Hiệp", text);
+        Assert.Contains("`nam`", text);
+        Assert.Contains("`@Npc cập nhật @Tên: nam, công, trung bình`", text);
+        Assert.Contains("admin/trưởng/phó", text);
+        Assert.Contains("`draft đi`", text);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
     public void Locked_partial_roster_ack_points_directly_to_next_action()
     {
         var text = ZaloDraftPreparationClientCopy.Locked(
