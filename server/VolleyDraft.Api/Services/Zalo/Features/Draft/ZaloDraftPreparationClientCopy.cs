@@ -68,7 +68,7 @@ internal static class ZaloDraftPreparationClientCopy
         $"Danh sách người chơi {sessionName} vừa đổi so với lúc trưởng/phó chốt, nên quyết định cũ hết hiệu lực nha 😭 Tui chưa chia đội. {RelockCurrentListHint}";
 
     internal static string PartialPassRisk(string sessionName, int riskCount) =>
-        $"{sessionName} đang có {riskCount} chỗ đang nhường/chờ nhận nên tui chưa chia đội nha. Xử lý người nhường/người nhận xong trước; khi đúng trường hợp có thể dùng `huỷ pass`, `xong` hoặc `huỷ nhận`.";
+        $"{sessionName} đang có {riskCount} chỗ đang nhường/chờ nhận nên tui chưa chia đội nha. Xử lý người nhường/người nhận xong trước; khi đúng trường hợp có thể dùng `huỷ pass`, `xong` hoặc `huỷ nhận`. Xử lý xong nói `vẫn đánh` để tui đọc lại vote và chốt lại đúng danh sách trước khi chia đội.";
 
     internal static string PartialNotEven(int effectiveSlotCount, int teamCount) =>
         $"Kèo vẫn chơi thì ok, nhưng {effectiveSlotCount} chỗ chưa chia đều được {teamCount} đội nên NPC chưa thể tự chia. Xử lý các chỗ chơi chung/luân phiên hoặc đổi số người trước nha. Sau khi danh sách đổi, nói `vẫn đánh` để tui đọc lại vote và chốt lại đúng danh sách mới.";
