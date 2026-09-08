@@ -148,11 +148,17 @@ public sealed partial class ZaloOverbookService
         var missing = GetMissingProfileFlags(player!);
         if (!missing.Gender && !missing.Role && !missing.Level)
         {
+            var reply = await BuildSelfProfileCompletionReplyAsync(
+                session,
+                prompt,
+                [],
+                alreadyComplete: true,
+                cancellationToken);
             await SendProfileConversationReplyAsync(
                 session,
                 prompt,
                 incoming.MessageId,
-                $"Hồ sơ {prompt.DisplayName} vừa đủ dữ liệu rồi 👌 Tui không ghi đè thêm nha.",
+                reply,
                 cancellationToken);
             await promptStore.CompleteAsync(prompt.Id, processedAt, cancellationToken);
             return true;
@@ -191,11 +197,17 @@ public sealed partial class ZaloOverbookService
         var freshMissing = GetMissingProfileFlags(freshPlayer!);
         if (!freshMissing.Gender && !freshMissing.Role && !freshMissing.Level)
         {
+            var reply = await BuildSelfProfileCompletionReplyAsync(
+                session,
+                prompt,
+                [],
+                alreadyComplete: true,
+                cancellationToken);
             await SendProfileConversationReplyAsync(
                 session,
                 prompt,
                 incoming.MessageId,
-                $"Hồ sơ {prompt.DisplayName} vừa đủ dữ liệu rồi 👌 Tui không ghi đè thêm nha.",
+                reply,
                 cancellationToken);
             await promptStore.CompleteAsync(prompt.Id, processedAt, cancellationToken);
             return true;
@@ -274,7 +286,12 @@ public sealed partial class ZaloOverbookService
         var completed = !remaining.Gender && !remaining.Role && !remaining.Level;
         var accepted = DescribeAcceptedProfileValues(parsed);
         var reply = completed
-            ? $"Ok {prompt.DisplayName} 😎 tui ghi {string.Join(" · ", accepted)} rồi. Hồ sơ kèo {session.Name} xong, không cần làm gì thêm."
+            ? await BuildSelfProfileCompletionReplyAsync(
+                session,
+                prompt,
+                accepted,
+                alreadyComplete: false,
+                cancellationToken)
             : $"Ok {prompt.DisplayName}, tui ghi {string.Join(" · ", accepted)} rồi 👌 Còn {BuildProfileMissingHint(remaining.Gender, remaining.Role, remaining.Level)} Cứ trả lời tiếp bình thường, không cần @bot.";
         await SendProfileConversationReplyAsync(
             session,
