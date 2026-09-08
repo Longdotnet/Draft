@@ -140,6 +140,21 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
             """, cancellationToken);
     }
 
+    internal async Task<bool> ReleaseAsync(
+        string ownerId,
+        DateTimeOffset at,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        await EnsureAsync(cancellationToken);
+        var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            UPDATE "ZaloSchedulerLeases"
+            SET "LeaseUntil" = {{at.ToUniversalTime().ToString("O")}}
+            WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
+            """, cancellationToken);
+        return affected > 0;
+    }
+
     internal async Task<ZaloSchedulerLeaseSnapshot?> GetAsync(CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
@@ -342,7 +357,9 @@ public sealed class ZaloSchedulerWorker(
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
-            await lease.MarkSuccessAsync(instanceId, DateTimeOffset.UtcNow, cancellationToken);
+            var completedAt = DateTimeOffset.UtcNow;
+            await lease.MarkSuccessAsync(instanceId, completedAt, cancellationToken);
+            await lease.ReleaseAsync(instanceId, completedAt, cancellationToken);
             logger.LogInformation(
                 "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed} LifecycleCandidates={LifecycleCandidates} LifecycleHandedOff={LifecycleHandedOff} LifecycleFailed={LifecycleFailed}",
                 result.GroupCount,
@@ -363,7 +380,9 @@ public sealed class ZaloSchedulerWorker(
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
-            await lease.MarkFailureAsync(instanceId, DateTimeOffset.UtcNow, CancellationToken.None);
+            var failedAt = DateTimeOffset.UtcNow;
+            await lease.MarkFailureAsync(instanceId, failedAt, CancellationToken.None);
+            await lease.ReleaseAsync(instanceId, failedAt, CancellationToken.None);
             logger.LogError(exception, "Triggered Zalo scheduler cycle failed");
         }
 
