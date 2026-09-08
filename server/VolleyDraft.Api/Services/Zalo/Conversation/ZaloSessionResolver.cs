@@ -274,6 +274,42 @@ public static class ZaloSessionResolver
                WeekdayRegex.IsMatch(normalized);
     }
 
+    /// <summary>
+    /// Returns true only when an unaddressed turn is structurally just a session selector.
+    /// Explicitly addressed turns may contain full natural sentences; a no-mention pending
+    /// continuation is intentionally narrower so ordinary chat such as "CN đi nhậu không?"
+    /// cannot wake a stale @Npc 9/@Npc 10 selector merely because it mentions a weekday.
+    ///
+    /// The method reuses the canonical date/weekday/clock regexes above instead of creating
+    /// another interpretation grammar. Bare "mai" is intentionally excluded here because it
+    /// is also a common member name; "ngày mai" remains an unambiguous standalone selector.
+    /// </summary>
+    public static bool LooksLikeStandaloneSelector(string value)
+    {
+        var normalized = ZaloTextNormalizer.Normalize(value)
+            .Trim(' ', '.', '!', '?', ',', ';', ':');
+        if (normalized.Length == 0 || normalized.Length > 64 || BareTomorrowRegex.IsMatch(normalized))
+            return false;
+        if (!LooksLikeSelector(normalized))
+            return false;
+
+        var remainder = CalendarDateRegex.Replace(normalized, " ");
+        remainder = SessionTimeRegex.Replace(remainder, " ");
+        remainder = RelativeDateRegex.Replace(remainder, " ");
+        remainder = WeekModifierRegex.Replace(remainder, " ");
+        remainder = WeekdayRegex.Replace(remainder, " ");
+
+        // "chọn CN" is still an explicit selector. Other prose is left intact and
+        // therefore rejected rather than maintaining an open-ended filler-word list.
+        remainder = Regex.Replace(
+            remainder,
+            @"(?<![a-z0-9])chon(?![a-z0-9])",
+            " ",
+            RegexOptions.CultureInvariant);
+        remainder = Regex.Replace(remainder, @"\s+", " ").Trim();
+        return remainder.Length == 0;
+    }
+
     private static bool MatchesCalendarDate(Match match, DateTimeOffset localSession, int currentYear)
     {
         if (!int.TryParse(match.Groups["day"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var day) ||
