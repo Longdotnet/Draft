@@ -27,6 +27,21 @@ Examples:
 - pending session choice + `xác nhận` -> shared layer says “pending confirm”, then the session-specific layer still refuses to choose a session without a selector;
 - low-confidence classifier output never steals pending ownership.
 
+## User-facing continuation guidance
+
+When a deterministic workflow has already sent a successful prompt and the backend can safely continue it without a fresh mention, the bot should teach that capability instead of forcing users to repeat `@Npc` mechanically.
+
+For the `@Npc 9` -> confirmation boundary used by `@Npc 10` recovery:
+
+- the authorized user starts with the exact grounded `@Npc 9 [session]` command;
+- if NPC returns the destructive-action warning, that same user may reply to the prompt with `xác nhận draft` to execute or `huỷ` to cancel;
+- the guidance must say that no fresh `@Npc` mention is required for that direct continuation;
+- this convenience never weakens provenance, sender/group scoping, authorization, stale-prompt fencing, or authoritative session binding;
+- if NPC reports a blocker instead of a confirmation prompt, the user fixes that grounded blocker first and runs `@Npc 9` again;
+- `@Npc 10` remains read-only and should progressively teach only the next useful step rather than dumping every possible blocker command when readiness is unavailable.
+
+AI is not required for any of these transitions. AI may phrase the explanation, but deterministic pending state and backend facts decide whether a continuation is executable.
+
 ## What remains feature-specific
 
 The shared policy intentionally does **not** decide whether arbitrary text is a valid continuation.
