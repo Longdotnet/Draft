@@ -190,6 +190,14 @@ internal static class ZaloRosterChangeCoordinatorPolicy
         readiness.EffectiveSlotCount == readiness.Capacity &&
         readiness.ActivePassSlotRiskCount == 0;
 
+    internal static string BuildIncidentIdempotencyKey(
+        string lane,
+        string sessionId,
+        int from,
+        int to,
+        DateTimeOffset incidentAt) =>
+        $"{lane}:{sessionId}:{from}:{to}:{incidentAt.ToUnixTimeMilliseconds()}";
+
     internal static string BuildRecoveredReadyUpdate(
         ZaloDraftReadinessSnapshot readiness,
         int from,
