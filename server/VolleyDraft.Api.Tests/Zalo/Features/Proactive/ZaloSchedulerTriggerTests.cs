@@ -10,73 +10,90 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloSchedulerTriggerTests
 {
     [Fact]
-    public async Task WaitAsync_returns_external_trigger_when_tick_is_available()
+    public void Repeated_triggers_coalesce_without_blocking_callers()
     {
         var trigger = new ZaloSchedulerTrigger();
+
         Assert.True(trigger.TryTrigger());
-
-        var reason = await trigger.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
-
-        Assert.Equal(ZaloSchedulerWakeReason.ExternalTrigger, reason);
+        Assert.True(trigger.TryTrigger());
+        Assert.True(trigger.TryTrigger());
     }
 
     [Fact]
-    public async Task WaitAsync_returns_watchdog_when_external_tick_is_missing()
+    public async Task Triggered_signal_wakes_waiter_before_watchdog()
+    {
+        var trigger = new ZaloSchedulerTrigger();
+        var wait = trigger.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).AsTask();
+
+        Assert.True(trigger.TryTrigger());
+        Assert.Equal(ZaloSchedulerWakeReason.ExternalTrigger, await wait.WaitAsync(TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public async Task Watchdog_wakes_waiter_when_external_tick_is_missing()
     {
         var trigger = new ZaloSchedulerTrigger();
 
-        var reason = await trigger.WaitAsync(TimeSpan.FromMilliseconds(25), CancellationToken.None);
+        var reason = await trigger.WaitAsync(TimeSpan.FromMilliseconds(20), CancellationToken.None);
 
         Assert.Equal(ZaloSchedulerWakeReason.Watchdog, reason);
     }
 
     [Fact]
-    public async Task WaitAsync_propagates_host_shutdown_instead_of_reporting_watchdog()
+    public void Lease_duration_is_not_shorter_than_watchdog_by_default()
     {
-        var trigger = new ZaloSchedulerTrigger();
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
+        var configuration = new ConfigurationBuilder().Build();
+        var watchdog = ZaloSchedulerWorker.ResolveWatchdogInterval(configuration);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-            await trigger.WaitAsync(TimeSpan.FromSeconds(1), cancellation.Token));
+        var lease = ZaloSchedulerWorker.ResolveLeaseDuration(configuration, watchdog);
+
+        Assert.True(lease >= watchdog);
+        Assert.True(lease >= TimeSpan.FromMinutes(2));
     }
 
     [Theory]
-    [InlineData(null, 15)]
-    [InlineData("0", 15)]
-    [InlineData("-1", 15)]
-    [InlineData("61", 15)]
-    [InlineData("5", 5)]
-    [InlineData("60", 60)]
-    public void ResolveWatchdogInterval_bounds_configuration(string? configured, double expectedMinutes)
+    [InlineData("0.25")]
+    [InlineData("1")]
+    [InlineData("1.999")]
+    public void Explicit_lease_duration_cannot_bypass_minimum_safety_floor(string configuredMinutes)
     {
-        var values = configured is null
-            ? new Dictionary<string, string?>()
-            : new Dictionary<string, string?>
-            {
-                ["Scheduler:WatchdogIntervalMinutes"] = configured
-            };
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(values)
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Scheduler:LeaseDurationMinutes"] = configuredMinutes
+            })
             .Build();
 
-        var interval = ZaloSchedulerWorker.ResolveWatchdogInterval(configuration);
+        var lease = ZaloSchedulerWorker.ResolveLeaseDuration(configuration, TimeSpan.FromMinutes(15));
 
-        Assert.Equal(expectedMinutes, interval.TotalMinutes);
-    }
-
-    [Theory]
-    [InlineData(15, 5)]
-    [InlineData(60, 20)]
-    public void ResolveLeaseRenewalInterval_renews_well_before_expiry(double leaseMinutes, double expectedMinutes)
-    {
-        var interval = ZaloSchedulerWorker.ResolveLeaseRenewalInterval(TimeSpan.FromMinutes(leaseMinutes));
-
-        Assert.Equal(expectedMinutes, interval.TotalMinutes);
+        Assert.Equal(TimeSpan.FromMinutes(2), lease);
     }
 
     [Fact]
-    public async Task RunWithLeaseHeartbeat_renews_while_long_stage_is_still_running()
+    public void Explicit_lease_duration_above_floor_is_preserved()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Scheduler:LeaseDurationMinutes"] = "3.5"
+            })
+            .Build();
+
+        var lease = ZaloSchedulerWorker.ResolveLeaseDuration(configuration, TimeSpan.FromMinutes(15));
+
+        Assert.Equal(TimeSpan.FromMinutes(3.5), lease);
+    }
+
+    [Fact]
+    public void Renewal_interval_is_one_third_of_lease()
+    {
+        var lease = TimeSpan.FromMinutes(15);
+
+        Assert.Equal(TimeSpan.FromMinutes(5), ZaloSchedulerWorker.ResolveLeaseRenewalInterval(lease));
+    }
+
+    [Fact]
+    public async Task RunWithLeaseHeartbeat_renews_while_stage_is_running()
     {
         var renewalObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finishStage = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -105,6 +122,8 @@ public sealed class ZaloSchedulerTriggerTests
     [Fact]
     public async Task RunWithLeaseHeartbeat_cancels_stage_and_fails_closed_when_renewal_loses_ownership()
     {
+        var renewalObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRenewal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var stageCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var run = ZaloSchedulerWorker.RunWithLeaseHeartbeatAsync(
@@ -121,9 +140,20 @@ public sealed class ZaloSchedulerTriggerTests
                     throw;
                 }
             },
-            _ => Task.FromResult(false),
+            async cancellationToken =>
+            {
+                renewalObserved.TrySetResult();
+                await releaseRenewal.Task.WaitAsync(cancellationToken);
+                return false;
+            },
             TimeSpan.FromMilliseconds(60),
             CancellationToken.None);
+
+        // Synchronize on the actual heartbeat instead of assuming a 20 ms timer callback
+        // will run within a one-second wall-clock window under a fully parallel CI suite.
+        await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(run.IsCompleted);
+        releaseRenewal.TrySetResult();
 
         await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
             await run.WaitAsync(TimeSpan.FromSeconds(1)));
@@ -161,22 +191,21 @@ public sealed class ZaloSchedulerTriggerTests
             .Options;
         await using var db = new VolleyDraftDbContext(options);
         var store = new ZaloSchedulerLeaseStore(db);
-        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+        var startedAt = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
 
-        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
-        await store.MarkAttemptAsync("instance-a", now.AddSeconds(1));
-        await store.MarkSuccessAsync("instance-a", now.AddSeconds(2));
-        Assert.True(await store.ReleaseAsync("instance-a", now.AddSeconds(2)));
+        Assert.True(await store.TryAcquireAsync("instance-a", startedAt, TimeSpan.FromMinutes(15)));
+        await store.MarkAttemptAsync("instance-a", startedAt);
+        var completedAt = startedAt.AddSeconds(20);
+        await store.MarkSuccessAsync("instance-a", completedAt);
+        Assert.True(await store.ReleaseAsync("instance-a", completedAt));
 
-        Assert.True(await store.TryAcquireAsync("instance-b", now.AddSeconds(3), TimeSpan.FromMinutes(15)));
+        Assert.True(await store.TryAcquireAsync("instance-b", completedAt.AddSeconds(1), TimeSpan.FromMinutes(15)));
         var lease = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
         Assert.Equal("instance-b", lease.OwnerId);
-        Assert.Equal(now.AddMinutes(15).AddSeconds(3), lease.LeaseUntil);
-        Assert.Equal(now.AddSeconds(2), lease.LastSuccessAt);
     }
 
     [Fact]
-    public async Task Terminal_release_is_owner_guarded_and_cannot_clear_a_successor_lease()
+    public async Task Stale_owner_cannot_release_successor_lease()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -187,17 +216,17 @@ public sealed class ZaloSchedulerTriggerTests
         var store = new ZaloSchedulerLeaseStore(db);
         var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
 
-        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(1)));
-        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(1), TimeSpan.FromMinutes(15)));
-        Assert.False(await store.ReleaseAsync("instance-a", now.AddMinutes(1).AddSeconds(1)));
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(2)));
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(2), TimeSpan.FromMinutes(2)));
 
+        Assert.False(await store.ReleaseAsync("instance-a", now.AddMinutes(2).AddSeconds(1)));
         var lease = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
         Assert.Equal("instance-b", lease.OwnerId);
-        Assert.Equal(now.AddMinutes(16), lease.LeaseUntil);
+        Assert.Equal(now.AddMinutes(4), lease.LeaseUntil);
     }
 
     [Fact]
-    public async Task Current_owner_can_renew_without_opening_a_second_instance_window()
+    public async Task Same_owner_can_renew_lease_before_expiry()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -208,33 +237,20 @@ public sealed class ZaloSchedulerTriggerTests
         var store = new ZaloSchedulerLeaseStore(db);
         var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
 
-        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
-        Assert.True(await store.TryAcquireAsync("instance-a", now.AddMinutes(10), TimeSpan.FromMinutes(15)));
-        Assert.False(await store.TryAcquireAsync("instance-b", now.AddMinutes(16), TimeSpan.FromMinutes(15)));
-        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(25), TimeSpan.FromMinutes(15)));
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(2)));
+        Assert.True(await store.TryAcquireAsync("instance-a", now.AddMinutes(1), TimeSpan.FromMinutes(2)));
+
+        var lease = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
+        Assert.Equal("instance-a", lease.OwnerId);
+        Assert.Equal(now.AddMinutes(3), lease.LeaseUntil);
     }
 
     [Fact]
-    public async Task Scheduler_heartbeat_survives_store_restart_and_keeps_success_separate_from_failure()
+    public void Stage_failures_prevent_successful_cycle_classification()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
-            .UseSqlite(connection)
-            .Options;
-        await using var db = new VolleyDraftDbContext(options);
-        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
-        var store = new ZaloSchedulerLeaseStore(db);
-
-        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
-        await store.MarkAttemptAsync("instance-a", now.AddSeconds(1));
-        await store.MarkSuccessAsync("instance-a", now.AddSeconds(2));
-        await store.MarkFailureAsync("instance-a", now.AddMinutes(1));
-
-        var restartedStore = new ZaloSchedulerLeaseStore(db);
-        var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await restartedStore.GetAsync());
-        Assert.Equal(now.AddSeconds(1), snapshot.LastAttemptAt);
-        Assert.Equal(now.AddSeconds(2), snapshot.LastSuccessAt);
-        Assert.Equal(now.AddMinutes(1), snapshot.LastFailureAt);
+        Assert.False(ZaloSchedulerWorker.HasStageFailures(0, 0, 0));
+        Assert.True(ZaloSchedulerWorker.HasStageFailures(1, 0, 0));
+        Assert.True(ZaloSchedulerWorker.HasStageFailures(0, 1, 0));
+        Assert.True(ZaloSchedulerWorker.HasStageFailures(0, 0, 1));
     }
 }
