@@ -21,10 +21,10 @@ public static class ZaloProfileUpdateReadinessCopy
                 $" Hồ sơ đã đủ nhưng còn {Math.Max(1, readiness.ActivePassSlotRiskCount)} chỗ đang nhường/chờ nhận chưa xong. Người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ chỗ nhận muốn nhả dùng `huỷ nhận`. Xử lý xong rồi nói `draft đi`.",
 
             ZaloDraftReadinessState.RosterNotFull =>
-                $" Hồ sơ đã đủ nhưng hiện mới có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ để chia đội, còn thiếu {Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount)}. Gõ `@Npc 4` để xem số lượng hiện tại; chỉnh vote/danh sách thật rồi nói `draft đi`.",
+                BuildPartialRoster(readiness),
 
             ZaloDraftReadinessState.RosterOverCapacity =>
-                $" Hồ sơ đã đủ nhưng hiện có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ để chia đội, đang dư {Math.Max(0, readiness.EffectiveSlotCount - readiness.Capacity)}. Gõ `@Npc 4` để kiểm tra số lượng; chỉnh vote/danh sách thật rồi nói `draft đi`.",
+                $" Hồ sơ đã đủ nhưng hiện có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ để chia đội, đang dư {Math.Max(0, readiness.EffectiveSlotCount - readiness.Capacity)}. Gõ `@Npc 4` để kiểm tra danh sách thật và xử lý người/chỗ dư trước. Khi danh sách hợp lệ, NPC sẽ đọc lại trạng thái; đừng chạy `draft đi` khi vẫn còn dư chỗ.",
 
             ZaloDraftReadinessState.MissingProfiles =>
                 BuildMissingProfiles(readiness),
@@ -36,7 +36,7 @@ public static class ZaloProfileUpdateReadinessCopy
                 " Hồ sơ đã lưu, nhưng trận đã tới hoặc qua giờ bắt đầu. NPC sẽ không tự chia đội muộn; nhờ admin kiểm tra trạng thái trận trước khi làm tiếp.",
 
             ZaloDraftReadinessState.NoRoster =>
-                " Hồ sơ đã lưu nhưng danh sách hiện không có người chơi. Gõ `@Npc 4` để kiểm tra và cập nhật lại vote đúng trận trước khi chia đội.",
+                " Hồ sơ đã lưu nhưng danh sách hiện không có người chơi. Gõ `@Npc 4` để kiểm tra vote đúng trận. Nếu vẫn muốn gom người, trưởng/phó nói `kiếm thêm`; NPC không tự đoán rằng trận bị huỷ hay tự chia từ danh sách rỗng.",
 
             ZaloDraftReadinessState.AlreadyDrafted =>
                 " Hồ sơ đã lưu. Trận này đã có kết quả chia đội; không chạy lại `draft đi` chỉ vì vừa sửa hồ sơ. Dùng `@Npc 10` để xem lại card/đội hình.",
@@ -47,6 +47,14 @@ public static class ZaloProfileUpdateReadinessCopy
             _ =>
                 " Hồ sơ đã lưu, nhưng trạng thái trận hiện chưa an toàn để chia đội. Dùng `@Npc 9` để NPC kiểm lại dữ liệu thật; NPC sẽ không tự đoán."
         };
+    }
+
+    private static string BuildPartialRoster(ZaloDraftReadinessSnapshot readiness)
+    {
+        var missing = Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount);
+        return $" Hồ sơ đã đủ nhưng hiện mới có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ để chia đội, còn thiếu {missing}. " +
+               $"Gõ `@Npc 4` để xem danh sách thật. Nếu trưởng/phó muốn vẫn chơi với số người hiện tại thì nói `vẫn đánh` (hoặc `chốt {readiness.EffectiveSlotCount}`); " +
+               "nếu muốn tiếp tục tuyển thì nói `kiếm thêm`. Chỉ sau khi NPC chốt đúng hướng và kiểm lại danh sách mới dùng `draft đi`.";
     }
 
     private static string BuildMissingProfiles(ZaloDraftReadinessSnapshot readiness)
