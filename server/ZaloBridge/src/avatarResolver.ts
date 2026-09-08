@@ -1,3 +1,4 @@
+import { isZaloRateLimitError } from "./bridgeErrors.js";
 import type { BridgeMember } from "./contracts.js";
 import { normalizeMemberId } from "./pollLogic.js";
 
@@ -112,6 +113,10 @@ export async function enrichMemberAvatars(
         }
       }
     } catch (error) {
+      // Optional avatar enrichment may degrade on ordinary provider failures, but a 429
+      // is a traffic-control signal. Propagate it so the shared provider governor opens
+      // account cooldown instead of treating the request as a successful read.
+      if (isZaloRateLimitError(error)) throw error;
       onFailure?.("getAvatarUrlProfile", error, { memberCount: ids.length });
     }
   }

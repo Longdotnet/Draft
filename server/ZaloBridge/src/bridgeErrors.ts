@@ -167,6 +167,11 @@ export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
   };
 }
 
+export function isZaloRateLimitError(error: unknown): boolean {
+  const descriptor = classifyBridgeError(error);
+  return descriptor.source === "upstream-zalo" && descriptor.status === 429;
+}
+
 export function bridgeErrorLogFields(error: unknown, descriptor: BridgeErrorDescriptor) {
   const retryAfterSeconds = upstreamRetryAfterSeconds(error);
   return {

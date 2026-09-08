@@ -7,7 +7,7 @@ type AccountRateState = {
   tail: Promise<void>;
 };
 
-type ZaloRateLimitGuardOptions = {
+export type ZaloRateLimitGuardOptions = {
   minGapMs?: number;
   defaultCooldownMs?: number;
   maxCooldownMs?: number;
@@ -19,12 +19,13 @@ const defaultSleep = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 /**
- * Account-scoped protection for outbound Zalo side effects.
+ * Scoped protection for Zalo provider traffic.
  *
- * This deliberately never retries an upstream failure. It serializes sends for one
- * connected account, keeps a small gap between provider calls regardless of outcome,
- * and opens a local cooldown after an upstream 429 so concurrent callers cannot keep
- * hammering Zalo.
+ * The caller owns the scope key. A connected account should route every relevant read
+ * and write through the same scope so a 429 from one capability can cool down the rest.
+ * The guard deliberately never retries an upstream failure. It serializes work for one
+ * scope, keeps a small gap between provider attempts regardless of outcome, and opens a
+ * local cooldown after an upstream 429 so concurrent callers cannot keep hammering Zalo.
  */
 export class ZaloRateLimitGuard {
   private readonly states = new Map<string, AccountRateState>();
@@ -42,8 +43,8 @@ export class ZaloRateLimitGuard {
     this.sleep = options.sleep ?? defaultSleep;
   }
 
-  async run<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
-    const key = accountId.trim();
+  async run<T>(scopeKey: string, operation: () => Promise<T>): Promise<T> {
+    const key = scopeKey.trim();
     if (!key) return operation();
 
     const state = this.stateFor(key);
@@ -91,7 +92,7 @@ export class ZaloRateLimitGuard {
       } finally {
         // The spacing invariant applies to provider attempts, not only successful sends.
         // Without this, a queued request can immediately follow a 5xx/auth/network failure
-        // and amplify an upstream incident even though work is serialized per account.
+        // and amplify an upstream incident even though work is serialized per scope.
         state.nextAllowedAt = Math.max(state.nextAllowedAt, this.now() + this.minGapMs);
       }
     } finally {
@@ -99,8 +100,8 @@ export class ZaloRateLimitGuard {
     }
   }
 
-  private stateFor(accountId: string): AccountRateState {
-    const existing = this.states.get(accountId);
+  private stateFor(scopeKey: string): AccountRateState {
+    const existing = this.states.get(scopeKey);
     if (existing) return existing;
 
     const created: AccountRateState = {
@@ -109,7 +110,7 @@ export class ZaloRateLimitGuard {
       nextAllowedAt: 0,
       tail: Promise.resolve(),
     };
-    this.states.set(accountId, created);
+    this.states.set(scopeKey, created);
     return created;
   }
 }

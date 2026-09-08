@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 // The published 2.1.0 package points TypeScript at an invalid declaration entrypoint.
 // Keep all untyped interaction isolated in this adapter while runtime exports remain valid.
 import * as ZaloRuntime from "zca-js";
+import { isZaloRateLimitError } from "./bridgeErrors.js";
 import type {
   BridgeBoardPage,
   BridgeGroup,
@@ -201,6 +202,10 @@ function logZaloOperationFailure(
   error: unknown,
   context: Record<string, string | number | boolean | null> = {},
 ): void {
+  // A recoverable/fallback read is allowed to degrade on ordinary provider failures,
+  // but 429 is an explicit traffic-control signal. Let it escape immediately so the
+  // outer provider governor opens cooldown instead of issuing more fallback requests.
+  if (isZaloRateLimitError(error)) throw error;
   console.warn("[Zalo bridge] Zalo operation failed", {
     operation,
     ...context,
