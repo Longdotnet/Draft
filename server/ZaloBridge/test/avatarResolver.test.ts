@@ -90,6 +90,29 @@ test("enrichMemberAvatars keeps current avatar when large profile lookup fails",
   assert.deepEqual(failures, ["getAvatarUrlProfile"]);
 });
 
+test("enrichMemberAvatars propagates upstream 429 so account cooldown can open", async () => {
+  let failures = 0;
+  await assert.rejects(
+    enrichMemberAvatars(
+      {
+        async getAvatarUrlProfile() {
+          throw { response: { status: 429 } };
+        },
+      },
+      [member("101")],
+      () => {
+        failures += 1;
+      },
+    ),
+    (error: unknown) => {
+      const response = (error as { response?: { status?: number } })?.response;
+      assert.equal(response?.status, 429);
+      return true;
+    },
+  );
+  assert.equal(failures, 0, "rate-limit must escape optional avatar degradation");
+});
+
 test("enrichMemberAvatars does not wait on getFullAvatar even when that api never resolves", async () => {
   const never = new Promise<{ full_avatar?: string; bk_full_avatar?: string }>(() => undefined);
   const startedAt = Date.now();
