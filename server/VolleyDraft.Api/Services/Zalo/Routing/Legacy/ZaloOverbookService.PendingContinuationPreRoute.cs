@@ -26,7 +26,9 @@ public sealed partial class ZaloOverbookService
             return false;
 
         // A reply to another member is explicit human-to-human context. Never steal it
-        // merely because this sender also has a recent bot conversation.
+        // merely because this sender also has a recent bot conversation. A verified
+        // reply to the bot, on the other hand, is already explicit addressing and may
+        // use richer natural selector wording than a purely ambient no-mention turn.
         var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
         if (quote.HasQuote && !quote.RepliesToBot)
             return false;
@@ -56,7 +58,13 @@ public sealed partial class ZaloOverbookService
             return false;
 
         var continuation = await new ZaloAmbientLeasePendingContinuationPolicy(db)
-            .TryResolveAsync(connectionId, groupId, senderId, incoming.Content, cancellationToken);
+            .TryResolveAsync(
+                connectionId,
+                groupId,
+                senderId,
+                incoming.Content,
+                cancellationToken,
+                explicitlyAddressedByReply: quote.RepliesToBot);
         if (continuation is null)
             return false;
 
