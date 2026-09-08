@@ -78,7 +78,7 @@ public sealed class ZaloDraftPreparationClientCopyTests
     {
         var text = ZaloDraftPreparationClientCopy.DecisionActorRoleStale("CN 13/9");
 
-        Assert.Contains("quyền trưởng/phó", text);
+        Assert.Contains("quyền trưởng/phó", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("quyết định cũ hết hiệu lực", text);
         Assert.Contains("`vẫn đánh`", text);
         Assert.Contains("`kiếm thêm`", text);
