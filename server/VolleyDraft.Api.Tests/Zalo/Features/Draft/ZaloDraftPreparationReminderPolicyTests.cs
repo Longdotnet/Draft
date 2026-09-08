@@ -75,6 +75,23 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
     }
 
     [Fact]
+    public void KeepRecruiting_WhenRosterFills_PausesRecruitingButKeepsRecoveryIntentVisible()
+    {
+        var readiness = Snapshot(18, 18, 18, ZaloDraftReadinessState.Ready, "fp-18", canEscalate: true);
+        var decision = Decision(ZaloDraftPreparationDecisionKind.KeepRecruiting, null, null);
+
+        var message = Build(readiness, decision: decision, previous: 17);
+
+        Assert.NotNull(message);
+        Assert.Contains("18/18 chỗ", message!);
+        Assert.Contains("Tạm ngưng gọi thêm người", message);
+        Assert.Contains("nếu sau đó lại thiếu chỗ", message);
+        Assert.Contains("không bắt trưởng/phó chốt lại", message);
+        Assert.Contains("`draft đi`", message);
+        AssertBeginnerLanguage(message);
+    }
+
+    [Fact]
     public void PlayCurrentFifteen_StopsRecruitPressureAndOffersThreeByFiveDraft()
     {
         var readiness = Snapshot(15, 15, 18, ZaloDraftReadinessState.RosterNotFull, "fp-15");
