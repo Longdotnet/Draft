@@ -459,7 +459,7 @@ public sealed partial class ZaloOverbookService
         if (!decisionActorAuthorization.IsSuccess ||
             decisionActorAuthorization.Value?.CanOperateBot != true)
         {
-            await decisionStore.ClearAsync(session.Id, cancellationToken);
+            await decisionStore.TryClearAsync(session.Id, decision, cancellationToken);
             await SendDraftReplyAsync(
                 connectionId,
                 session.ZaloConnection!.AccountZaloId,
@@ -496,7 +496,8 @@ public sealed partial class ZaloOverbookService
         if (decision?.Kind != ZaloDraftPreparationDecisionKind.PlayCurrentRoster ||
             !decision.MatchesRoster(readiness))
         {
-            await decisionStore.ClearAsync(session.Id, cancellationToken);
+            if (decision is { Kind: ZaloDraftPreparationDecisionKind.PlayCurrentRoster })
+                await decisionStore.TryClearAsync(session.Id, decision, cancellationToken);
             await SendDraftReplyAsync(
                 connectionId,
                 session.ZaloConnection!.AccountZaloId,
@@ -515,7 +516,7 @@ public sealed partial class ZaloOverbookService
                                ZaloDraftReadinessState.AlreadyDrafted or
                                ZaloDraftReadinessState.MissingStartTime)
         {
-            await decisionStore.ClearAsync(session.Id, cancellationToken);
+            await decisionStore.TryClearAsync(session.Id, decision, cancellationToken);
             await SendDraftReplyAsync(
                 connectionId,
                 session.ZaloConnection!.AccountZaloId,

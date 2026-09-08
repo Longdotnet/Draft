@@ -60,7 +60,7 @@ public sealed class ZaloDraftPreparationDecisionStoreTests
     }
 
     [Fact]
-    public async Task LatestLeaderDecision_ReplacesPreviousAndCanBeCleared()
+    public async Task LatestLeaderDecision_ReplacesPreviousAndCanBeConditionallyCleared()
     {
         await using var fixture = await Fixture.CreateAsync();
         var store = new ZaloDraftPreparationDecisionStore(fixture.Db);
@@ -88,7 +88,7 @@ public sealed class ZaloDraftPreparationDecisionStoreTests
         Assert.Equal("deputy-1", current.ActorZaloUserId);
         Assert.Equal("m2", current.SourceMessageId);
 
-        await store.ClearAsync("session-1");
+        Assert.True(await store.TryClearAsync("session-1", current));
         Assert.Null(await store.GetAsync("session-1"));
     }
 
@@ -144,6 +144,14 @@ public sealed class ZaloDraftPreparationDecisionStoreTests
         Assert.NotNull(current);
         Assert.Equal(newer.SourceMessageId, current!.SourceMessageId);
         Assert.Equal(ZaloDraftPreparationDecisionKind.StopMatch, current.Kind);
+    }
+
+    [Fact]
+    public void Store_DoesNotExposeUnconditionalClearApi()
+    {
+        Assert.DoesNotContain(
+            typeof(ZaloDraftPreparationDecisionStore).GetMethods(),
+            method => string.Equals(method.Name, "ClearAsync", StringComparison.Ordinal));
     }
 
     private static ZaloDraftReadinessSnapshot Snapshot(string fingerprint, int slots) =>
