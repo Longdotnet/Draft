@@ -19,6 +19,7 @@ import type {
 import { ScopedOutboundIdempotency } from "./outboundIdempotency.js";
 import { isStickerReaction } from "./stickerLogic.js";
 import { sendGroupSticker } from "./stickerGateway.js";
+import { ZaloRateLimitGuard } from "./zaloRateLimitGuard.js";
 import {
   createQrLogin,
   getActiveListenerWebhookUrls,
@@ -47,6 +48,7 @@ const internalKey = configuredInternalKey || "development-zalo-bridge-key";
 const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
 const outboundMessageIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupMessage>>>();
 const outboundStickerIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupSticker>>>();
+const outboundRateLimitGuard = new ZaloRateLimitGuard();
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
@@ -194,7 +196,7 @@ app.post("/v1/group-messages", async (request, response) => {
   response.json(await outboundMessageIdempotency.run(
     { accountId, groupId, idempotencyKey },
     { message: outbound.message, mentions: outbound.mentions, imageUrl: outbound.imageUrl },
-    () => sendGroupMessage(outbound),
+    () => outboundRateLimitGuard.run(accountId, () => sendGroupMessage(outbound)),
   ));
 });
 
@@ -217,7 +219,7 @@ app.post("/v1/group-stickers", async (request, response) => {
   response.json(await outboundStickerIdempotency.run(
     { accountId, groupId, idempotencyKey },
     { reaction: outbound.reaction },
-    () => sendGroupSticker(outbound),
+    () => outboundRateLimitGuard.run(accountId, () => sendGroupSticker(outbound)),
   ));
 });
 
@@ -226,6 +228,9 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   response.setHeader("x-volley-bridge-error-source", descriptor.source);
   response.setHeader("x-volley-bridge-error-kind", descriptor.kind);
   response.setHeader("x-volley-bridge-retryable", String(descriptor.retryable));
+  if (error instanceof BridgeHttpError && error.retryAfterSeconds !== null) {
+    response.setHeader("Retry-After", String(Math.max(1, Math.ceil(error.retryAfterSeconds))));
+  }
   console.error("[Zalo bridge] request failed", {
     method: request.method,
     path: request.path,
