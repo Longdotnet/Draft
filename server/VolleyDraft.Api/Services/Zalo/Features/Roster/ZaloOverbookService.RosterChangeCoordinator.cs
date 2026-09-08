@@ -6,6 +6,7 @@ namespace VolleyDraft.Api.Services;
 public sealed partial class ZaloOverbookService
 {
     private const string RosterDropSoftOutcome = "keep_recruiting_roster_drop_soft";
+    private const string RosterRecoveredReadyOutcome = "keep_recruiting_roster_recovered_ready";
     private const string RosterDropSelectedIntentPrefix = "RosterDrop:";
 
     /// <summary>
@@ -41,6 +42,7 @@ public sealed partial class ZaloOverbookService
 
         var decisionStore = new ZaloDraftPreparationDecisionStore(db);
         var observationStore = new ZaloRecruitmentRosterObservationStore(db);
+        var reminderStore = new ZaloDraftPreparationReminderStore(db);
         var watched = new List<MatchSession>();
         foreach (var session in sessions)
         {
@@ -119,6 +121,60 @@ public sealed partial class ZaloOverbookService
                 readiness.Fingerprint,
                 now,
                 debounce);
+
+            // A confirmed shortage may have already produced an @all recruitment message
+            // or been intentionally handed to the pass-slot lane. When the authoritative
+            // state recovers all the way to clean draft readiness, close that user-visible
+            // incident immediately instead of leaving the group's last instruction stale.
+            // Do not persist the recovered state until delivery succeeds; a transient bridge
+            // failure then retries the closure next heavy cycle instead of losing it forever.
+            if (previous is not null &&
+                ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
+                    previous,
+                    transition,
+                    readiness))
+            {
+                if (sent >= settings.MaxSendsPerCycle)
+                    continue;
+
+                var from = transition.DropFrom ?? previous.StableEffectiveSlotCount;
+                var to = transition.DropTo ?? readiness.EffectiveSlotCount;
+                if (!await TrySendRosterRecoveredReadyAsync(
+                        session,
+                        readiness,
+                        from,
+                        to,
+                        now,
+                        cancellationToken))
+                    continue;
+
+                await observationStore.SaveAsync(transition.State, cancellationToken);
+                sent += 1;
+
+                // This closure already tells the group the next safe action (`draft đi`).
+                // Mark the current draft-prep bucket with the exact recovered fingerprint so
+                // the V2 lane later in the same worker cycle does not repeat the ready message.
+                var bucket = ZaloDraftPreparationReminderPolicy.GetDueBucket(
+                    session.StartTime!.Value,
+                    now,
+                    settings.StopNudgingMinutesBeforeStart);
+                if (bucket is not null)
+                {
+                    var observationFingerprint = ZaloDraftPreparationReminderObservation.BuildFingerprint(
+                        readiness,
+                        readiness.ActivePassSlotRiskCount);
+                    await reminderStore.MarkHandledAsync(
+                        session.Id,
+                        bucket.Key,
+                        readiness.EffectiveSlotCount,
+                        readiness.ActivePassSlotRiskCount,
+                        observationFingerprint,
+                        now,
+                        cancellationToken);
+                }
+                continue;
+            }
+
             await observationStore.SaveAsync(transition.State, cancellationToken);
 
             if (transition.Kind == ZaloRosterObservationTransitionKind.DropPending)
@@ -132,13 +188,15 @@ public sealed partial class ZaloOverbookService
             }
 
             var state = transition.State;
-            if (transition.Kind is ZaloRosterObservationTransitionKind.Increased or ZaloRosterObservationTransitionKind.DropBounced)
+            if (transition.Kind is ZaloRosterObservationTransitionKind.Increased or
+                                   ZaloRosterObservationTransitionKind.Recovered or
+                                   ZaloRosterObservationTransitionKind.DropBounced)
                 continue;
             if (!state.HasUnnotifiedDrop) continue;
 
-            var from = state.LastDropFromCount!.Value;
-            var to = state.LastDropToCount!.Value;
-            if (readiness.EffectiveSlotCount != to || to >= readiness.Capacity)
+            var fromDrop = state.LastDropFromCount!.Value;
+            var toDrop = state.LastDropToCount!.Value;
+            if (readiness.EffectiveSlotCount != toDrop || toDrop >= readiness.Capacity)
             {
                 await observationStore.SaveAsync(state with
                 {
@@ -148,7 +206,10 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
-            var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
+            // Readiness is the canonical coherent snapshot for pass-slot authority too.
+            // Re-querying the handoff ledger here could race the roster snapshot and cause
+            // one cycle to mix old slot counts with new pass/claim state.
+            var activeSlotRisks = readiness.ActivePassSlotRiskCount;
             if (activeSlotRisks > 0)
             {
                 // Explicit pass/open-slot has its own grounded interaction lane. Record
@@ -161,8 +222,8 @@ public sealed partial class ZaloOverbookService
                 logger.LogInformation(
                     "Roster drop notification suppressed because slot-risk lane owns incident Session={SessionId} From={From} To={To} Risks={Risks}",
                     session.Id,
-                    from,
-                    to,
+                    fromDrop,
+                    toDrop,
                     activeSlotRisks);
                 continue;
             }
@@ -174,8 +235,8 @@ public sealed partial class ZaloOverbookService
                 now - recentBroadcastWindow,
                 cancellationToken);
             var sentThisIncident = recentBroadcast
-                ? await TrySendRosterDropSoftUpdateAsync(session, readiness, from, to, now, cancellationToken)
-                : await TrySendRosterDropRecruitmentBroadcastAsync(session, readiness, from, to, now, cancellationToken);
+                ? await TrySendRosterDropSoftUpdateAsync(session, readiness, fromDrop, toDrop, now, cancellationToken)
+                : await TrySendRosterDropRecruitmentBroadcastAsync(session, readiness, fromDrop, toDrop, now, cancellationToken);
 
             if (!sentThisIncident) continue;
             sent += 1;
@@ -202,6 +263,27 @@ public sealed partial class ZaloOverbookService
             item.ReplyOutcome == ZaloKeepRecruitingBroadcastPolicy.ReplyOutcome &&
             item.SelectedIntent == intent &&
             item.SentAt >= cutoff,
+            cancellationToken);
+    }
+
+    private async Task<bool> TrySendRosterRecoveredReadyAsync(
+        MatchSession session,
+        ZaloDraftReadinessSnapshot readiness,
+        int from,
+        int to,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var body = ZaloRosterChangeCoordinatorPolicy.BuildRecoveredReadyUpdate(readiness, from, to);
+        var idempotencyKey = $"roster-recovered-ready:{session.Id}:{from}:{to}:{now.ToUnixTimeSeconds() / 120}";
+        return await SendRosterCoordinatorMessageAsync(
+            session,
+            body,
+            [],
+            idempotencyKey,
+            $"{RosterDropSelectedIntentPrefix}{session.Id}",
+            RosterRecoveredReadyOutcome,
+            now,
             cancellationToken);
     }
 
@@ -246,8 +328,8 @@ public sealed partial class ZaloOverbookService
             : recruitment;
         var fullBreak = ZaloRosterChangeCoordinatorPolicy.IsFullRosterBreak(from, to, readiness.Capacity);
         var reason = fullBreak
-            ? "Kèo vừa từ đủ người thành hụt slot"
-            : "Roster vừa tụt thêm";
+            ? "Kèo vừa từ đủ người thành hụt chỗ"
+            : "Danh sách vừa tụt thêm";
         var message = $"@all {reason}: {from}/{readiness.Capacity} → {to}/{readiness.Capacity} 😭 {tail}";
         var idempotencyKey = $"draft-keep-recruiting-drop:{session.Id}:{from}:{to}:{now.ToUnixTimeSeconds() / 120}";
         return await SendRosterCoordinatorMessageAsync(
