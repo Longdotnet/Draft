@@ -67,6 +67,11 @@ public sealed class ZaloDraftConversationPolicyTests
     [InlineData("đừng chốt team")]
     [InlineData("thôi khỏi draft")]
     [InlineData("thoi khoi chia team")]
+    [InlineData("không muốn draft đi")]
+    [InlineData("ko muon chay draft")]
+    [InlineData("không nên chia team đi")]
+    [InlineData("đừng có chốt team luôn")]
+    [InlineData("không được xác nhận draft")]
     public void Negated_draft_actions_never_become_destructive_confirmation(string message)
     {
         Assert.False(ZaloDraftConversationPolicy.IsStrongDraftConfirmation(message));
