@@ -42,6 +42,92 @@ public sealed class ZaloDraftEscalationStoreTests
     }
 
     [Fact]
+    public async Task Supersede_before_execution_wins_and_blocks_a_late_claim()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = await CreateDbAsync(connection);
+        var store = new ZaloDraftEscalationStore(db);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(20);
+        var created = await store.CreateOrReuseAsync(
+            "conn-1", "group-1", "session-1", "Member",
+            "requester", "Requester", "msg-request",
+            "fingerprint-1", ZaloDraftEscalationState.AwaitingRequesterConsent,
+            expiresAt);
+        await store.SetPrimaryApproverAsync(
+            created.Id, "leader-1", "prompt-1", DateTimeOffset.UtcNow, expiresAt);
+        var tagged = await store.LoadForSessionAsync("conn-1", "group-1", "session-1");
+
+        var superseded = await store.TrySupersedeBeforeExecutionAsync(
+            "conn-1", "group-1", "session-1");
+        var token = await store.TryClaimExecutionAsync(tagged!, "leader-1", "fingerprint-1");
+
+        Assert.True(superseded);
+        Assert.Null(token);
+        var final = await store.LoadForSessionAsync("conn-1", "group-1", "session-1");
+        Assert.Equal(ZaloDraftEscalationState.Superseded, final!.State);
+        Assert.Null(final.ExecutionToken);
+    }
+
+    [Fact]
+    public async Task Execution_claim_wins_before_supersede_and_keeps_its_fence_token()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = await CreateDbAsync(connection);
+        var store = new ZaloDraftEscalationStore(db);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(20);
+        var created = await store.CreateOrReuseAsync(
+            "conn-1", "group-1", "session-1", "Member",
+            "requester", "Requester", "msg-request",
+            "fingerprint-1", ZaloDraftEscalationState.AwaitingRequesterConsent,
+            expiresAt);
+        await store.SetPrimaryApproverAsync(
+            created.Id, "leader-1", "prompt-1", DateTimeOffset.UtcNow, expiresAt);
+        var tagged = await store.LoadForSessionAsync("conn-1", "group-1", "session-1");
+
+        var token = await store.TryClaimExecutionAsync(tagged!, "leader-1", "fingerprint-1");
+        var superseded = await store.TrySupersedeBeforeExecutionAsync(
+            "conn-1", "group-1", "session-1");
+
+        Assert.NotNull(token);
+        Assert.False(superseded);
+        var final = await store.LoadForSessionAsync("conn-1", "group-1", "session-1");
+        Assert.Equal(ZaloDraftEscalationState.Executing, final!.State);
+        Assert.Equal(token, final.ExecutionToken);
+    }
+
+    [Fact]
+    public async Task Supersede_is_scoped_to_connection_group_and_session()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = await CreateDbAsync(connection);
+        var store = new ZaloDraftEscalationStore(db);
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(20);
+        var first = await store.CreateOrReuseAsync(
+            "conn-1", "group-1", "session-1", "Member",
+            "requester-1", "Requester 1", "msg-1",
+            "fingerprint-1", ZaloDraftEscalationState.AwaitingRequesterConsent,
+            expiresAt);
+        var second = await store.CreateOrReuseAsync(
+            "conn-2", "group-1", "session-2", "Member",
+            "requester-2", "Requester 2", "msg-2",
+            "fingerprint-2", ZaloDraftEscalationState.AwaitingRequesterConsent,
+            expiresAt);
+        await store.SetPrimaryApproverAsync(
+            first.Id, "leader-1", "prompt-1", DateTimeOffset.UtcNow, expiresAt);
+        await store.SetPrimaryApproverAsync(
+            second.Id, "leader-2", "prompt-2", DateTimeOffset.UtcNow, expiresAt);
+
+        Assert.True(await store.TrySupersedeBeforeExecutionAsync(
+            "conn-1", "group-1", "session-1"));
+
+        var untouched = await store.LoadForSessionAsync("conn-2", "group-1", "session-2");
+        Assert.Equal(ZaloDraftEscalationState.ApproverTagged, untouched!.State);
+    }
+
+    [Fact]
     public async Task Escalation_state_survives_a_new_db_context()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
