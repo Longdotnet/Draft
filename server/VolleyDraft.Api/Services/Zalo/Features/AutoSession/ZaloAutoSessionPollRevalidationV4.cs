@@ -33,7 +33,10 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
             sourceSnapshot.Location,
             StringComparison.Ordinal);
         var approvedLocation = tracked.DefaultLocation?.Trim() ?? string.Empty;
-        var currentLocation = durableDraft.Location;
+        // CurrentSourceDraft represents source/policy authority, never organizer-owned values.
+        // Keeping that separation is what lets restart recovery recognize that an organizer
+        // correction still differs from the source baseline on the next revalidation.
+        var currentLocation = sourceSnapshot.Location;
         if (!organizerChangedLocation)
         {
             if (approvedLocation.Length == 0)
@@ -51,7 +54,7 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
         }
 
         var organizerChangedTeamSize = durableDraft.TeamSize != sourceSnapshot.TeamSize;
-        var currentTeamSize = durableDraft.TeamSize;
+        var currentTeamSize = sourceSnapshot.TeamSize;
         if (!organizerChangedTeamSize)
         {
             if (tracked.DefaultTeamSize < 2)
