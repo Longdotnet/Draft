@@ -389,7 +389,12 @@ public sealed partial class ZaloOverbookService
                     var completed = !missing.Gender && !missing.Role && !missing.Level;
                     var accepted = FormatSemanticProfileValues(gender, roleValue, level);
                     var reply = completed
-                        ? $"Ok {prompt.DisplayName} 😎 tui hiểu và ghi {string.Join(" · ", accepted)} rồi. Hồ sơ kèo {session.Name} xong."
+                        ? await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            accepted,
+                            alreadyComplete: false,
+                            cancellationToken)
                         : $"Ok {prompt.DisplayName}, tui hiểu và ghi {string.Join(" · ", accepted)} rồi 👌 Còn {BuildProfileMissingHint(missing.Gender, missing.Role, missing.Level)} Cứ nói tiếp bình thường nha.";
                     await SendProfileConversationReplyAsync(session, prompt, message.MessageId, reply, cancellationToken);
                     await MarkProfileInputHandledAsync(message.Id, "profile_semantic_updated", claim, cancellationToken);
