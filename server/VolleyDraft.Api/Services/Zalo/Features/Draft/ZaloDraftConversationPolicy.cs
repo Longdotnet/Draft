@@ -8,8 +8,15 @@ public static class ZaloDraftConversationPolicy
         @"(?<![a-z0-9])(?:doi\s*hinh|team|chia\s*(?:team|doi)|draft)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private static readonly Regex ReadinessQuestion = new(
-        @"\?|(?<![a-z0-9])(?:khi\s*nao|bao\s*gio|dau\s*roi|dau|co\s*chua|chua\s*co|xong\s*chua|chua\s*xong|duoc\s*chua|du\s*chua|ready\s*chua|on\s*chua|sao\s*chua|chua\s*(?:chia|draft)|sap\s*(?:danh|choi)|may\s*gio)(?![a-z0-9])",
+    // Standalone "đội"/"roster" is common client language for draft readiness, but it is also
+    // ordinary volleyball vocabulary ("đội nào?", "đội xanh"). It therefore only owns the turn
+    // when an explicit readiness cue is present; a bare question mark is intentionally insufficient.
+    private static readonly Regex StandaloneReadinessSubject = new(
+        @"(?<![a-z0-9])(?:doi|roster)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex ReadinessCue = new(
+        @"(?<![a-z0-9])(?:khi\s*nao|bao\s*gio|dau\s*roi|dau|co\s*chua|chua\s*co|xong\s*chua|chua\s*xong|duoc\s*chua|du\s*chua|ready\s*chua|on\s*chua|sao\s*chua|chua\s*(?:chia|draft)|sap\s*(?:danh|choi)|may\s*gio)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex StrongConfirmation = new(
@@ -35,9 +42,14 @@ public static class ZaloDraftConversationPolicy
     public static bool IsReadinessQuestion(string? content)
     {
         var normalized = Normalize(content);
-        return normalized.Length > 0 &&
-               ReadinessSubject.IsMatch(normalized) &&
-               ReadinessQuestion.IsMatch(normalized);
+        if (normalized.Length == 0)
+            return false;
+
+        var hasReadinessCue = ReadinessCue.IsMatch(normalized);
+        if (ReadinessSubject.IsMatch(normalized))
+            return hasReadinessCue || normalized.Contains('?');
+
+        return hasReadinessCue && StandaloneReadinessSubject.IsMatch(normalized);
     }
 
     public static bool IsStrongDraftConfirmation(string? content) =>
