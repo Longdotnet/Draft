@@ -62,13 +62,13 @@ internal static class ZaloDraftPreparationClientCopy
         string countLabel,
         int missingProfileCount,
         IEnumerable<string> missingProfileNames) =>
-        $"Kèo {sessionName} đã được trưởng/phó chốt vẫn chơi với {countLabel}, nhưng còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryActions}{MissingProfilePostRecoveryNextStep}";
+        $"Kèo {sessionName} đã được trưởng/phó chốt vẫn chơi với {countLabel}, nhưng còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryActions}";
 
     internal static string MissingProfileReminder(
         string sessionName,
         int missingProfileCount,
         IEnumerable<string> missingProfileNames) =>
-        $"{sessionName} còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryActions}{MissingProfilePostRecoveryNextStep}";
+        $"{sessionName} còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryActions}";
 
     internal static string MissingProfileBlocker(
         string sessionName,
