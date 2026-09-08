@@ -108,19 +108,20 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
     }
 
     [Fact]
-    public void Unknown_readiness_uses_progressive_recovery_instead_of_dumping_unrelated_blocker_commands()
+    public void Unknown_readiness_keeps_complete_no_ai_escape_hatch_and_teaches_no_mention_confirmation()
     {
         var message = ZaloTeamResultRecoveryPolicy.BuildNoResultMessage("CN 13/9");
 
-        Assert.Contains("Làm từng bước thôi", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("trả lời chính tin đó bằng `xác nhận draft`", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("`huỷ`", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("@Npc cập nhật Nick Tran: nam", message, StringComparison.Ordinal);
+        Assert.Contains("huỷ pass", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("huỷ nhận", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("huỷ pass", message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("huỷ nhận", message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("@Npc cập nhật Nick Tran", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
+        Assert.Contains("AI có tắt", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
