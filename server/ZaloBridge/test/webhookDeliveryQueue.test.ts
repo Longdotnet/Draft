@@ -158,3 +158,39 @@ test("duplicate delivery id coalesces while the original delivery is pending", a
   assert.equal(calls, 1);
   assert.equal(queue.snapshot().accepted, 1);
 });
+
+test("drain waits for webhook deliveries accepted before graceful shutdown", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const queue = new WebhookDeliveryQueue({
+    fetchImpl: async () => {
+      await blocked;
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  const delivery = queue.enqueue(request("acc-1", "shutdown-1"));
+  const drain = queue.drain(1_000);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assert.equal(queue.snapshot().pending, 1);
+
+  release();
+  assert.equal(await drain, true);
+  await delivery;
+  assert.equal(queue.snapshot().pending, 0);
+  assert.equal(queue.snapshot().delivered, 1);
+});
+
+test("drain is bounded when an accepted webhook cannot finish inside shutdown grace", async () => {
+  const never = new Promise<void>(() => undefined);
+  const queue = new WebhookDeliveryQueue({
+    fetchImpl: async () => {
+      await never;
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  void queue.enqueue(request("acc-1", "shutdown-timeout")).catch(() => undefined);
+  assert.equal(await queue.drain(20), false);
+  assert.equal(queue.snapshot().pending, 1);
+});

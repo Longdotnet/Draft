@@ -86,3 +86,7 @@ if (globalThis.fetch !== reliableFetch) {
 export function getWebhookDeliveryStats() {
   return webhookDeliveryQueue.snapshot();
 }
+
+export function drainWebhookDeliveries(maxWaitMs: number): Promise<boolean> {
+  return webhookDeliveryQueue.drain(maxWaitMs);
+}

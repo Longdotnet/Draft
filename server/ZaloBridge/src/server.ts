@@ -22,6 +22,10 @@ import { isStickerReaction } from "./stickerLogic.js";
 import { sendGroupSticker } from "./stickerGateway.js";
 import { zaloProviderTrafficGovernor } from "./zaloProviderTraffic.js";
 import {
+  drainWebhookDeliveries,
+  getWebhookDeliveryStats,
+} from "./webhookFetchReliability.js";
+import {
   createQrLogin,
   getActiveListenerWebhookUrls,
   getBoardPage,
@@ -50,6 +54,10 @@ const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
 const outboundMessageIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupMessage>>>();
 const outboundStickerIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupSticker>>>();
 const listenerLifecycle = new KeyedSerialExecutor();
+const configuredShutdownDrainMs = Number(process.env.ZALO_BRIDGE_SHUTDOWN_DRAIN_MS ?? 20_000);
+const shutdownDrainMs = Math.min(25_000, Math.max(1_000,
+  Number.isFinite(configuredShutdownDrainMs) ? configuredShutdownDrainMs : 20_000));
+const boardEventQuiesceMs = 1_750;
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
@@ -60,6 +68,7 @@ app.get("/health", (_request, response) => {
     mockMode: process.env.ZALO_BRIDGE_MOCK === "true",
     activeListenerCount: getListenerStatuses().length,
     providerTraffic: zaloProviderTrafficGovernor.getHealthSnapshot(),
+    webhookDelivery: getWebhookDeliveryStats(),
     apiKeepAlive: {
       ...apiKeepAliveConfiguration,
       ...getApiKeepAliveRuntimeStatus(),
@@ -347,10 +356,63 @@ const server = app.listen(port, "0.0.0.0", () => {
   console.log(`Zalo bridge listening on port ${port}`);
 });
 
-function shutdown() {
-  stopApiKeepAlive();
-  server.close();
+let shutdownPromise: Promise<void> | null = null;
+
+function closeHttpServer(): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+  });
 }
 
-process.once("SIGTERM", shutdown);
-process.once("SIGINT", shutdown);
+async function shutdown(signal: string): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    console.info("[Zalo bridge] graceful shutdown started", {
+      signal,
+      activeListenerCount: getListenerStatuses().length,
+      webhookDelivery: getWebhookDeliveryStats(),
+    });
+
+    // Reject new bridge work first, then wait for any in-flight listener lifecycle request
+    // to finish before stopping sockets. This prevents a concurrent listener PUT from
+    // resurrecting a socket after shutdown already decided to quiesce ingress.
+    stopApiKeepAlive();
+    await closeHttpServer();
+
+    const listeners = getListenerStatuses();
+    for (const listener of listeners) {
+      await listenerLifecycle.run(listener.accountId, async () => stopListener(listener.accountId));
+    }
+
+    // Board events use a short debounce. Give callbacks that were already accepted before
+    // listener.stop() enough time to enter the delivery queue before taking the drain
+    // snapshot; no provider request is made by this wait.
+    if (listeners.length > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, boardEventQuiesceMs));
+    }
+
+    const drained = await drainWebhookDeliveries(shutdownDrainMs);
+    console.info("[Zalo bridge] graceful shutdown completed", {
+      drained,
+      drainBudgetMs: shutdownDrainMs,
+      webhookDelivery: getWebhookDeliveryStats(),
+    });
+  })();
+  return shutdownPromise;
+}
+
+function handleShutdownSignal(signal: string): void {
+  void shutdown(signal).then(
+    () => process.exit(0),
+    (error) => {
+      console.error("[Zalo bridge] graceful shutdown failed", {
+        signal,
+        error: error instanceof Error ? error.message : "unknown shutdown failure",
+      });
+      process.exit(1);
+    },
+  );
+}
+
+process.once("SIGTERM", () => handleShutdownSignal("SIGTERM"));
+process.once("SIGINT", () => handleShutdownSignal("SIGINT"));
