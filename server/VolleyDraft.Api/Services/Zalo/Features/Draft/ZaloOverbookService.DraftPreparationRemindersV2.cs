@@ -59,18 +59,18 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         var capacity = readiness.Capacity;
         var name = readiness.SessionName;
         var teamCount = Math.Max(1, session.TeamCount);
-        var rawLabel = readiness.PresentPlayerCount == count
-            ? $"{count}/{capacity}"
-            : $"{readiness.PresentPlayerCount} người / {count} effective slot (mốc {capacity})";
+        var peopleLabel = readiness.PresentPlayerCount == count
+            ? $"{count}/{capacity} chỗ"
+            : $"{readiness.PresentPlayerCount} người, tính ra {count}/{capacity} chỗ để chia đội";
 
         if (activeSlotRiskCount > 0)
         {
             var risk = activeSlotRiskCount == 1
-                ? "1 suất đang nhường/chờ nhận"
-                : $"{activeSlotRiskCount} suất đang nhường/chờ nhận";
-            return $"Tui vừa kiểm tra {name}: {rawLabel}, còn {risk} chưa hoàn tất nên chưa chia team nha. " +
+                ? "1 chỗ đang nhường/chờ nhận"
+                : $"{activeSlotRiskCount} chỗ đang nhường/chờ nhận";
+            return $"Tui vừa kiểm tra {name}: {peopleLabel}, còn {risk} chưa xong nên chưa chia đội nha. " +
                    "Người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ lượt nhận muốn nhả dùng `huỷ nhận`. " +
-                   "Xử lý xong tui sẽ đọc lại trạng thái thật rồi mới cho đi tiếp.";
+                   "Xử lý xong tui sẽ đọc lại vote và danh sách thật rồi mới cho đi tiếp.";
         }
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
@@ -81,79 +81,79 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         {
             if (readiness.MissingProfileCount > 0)
             {
-                return $"Kèo {name} đã được trưởng/phó chốt vẫn chơi với {rawLabel}, nhưng còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt giúp tui rồi mới draft nha 😆";
+                return $"Kèo {name} đã được trưởng/phó chốt vẫn chơi với {peopleLabel}, nhưng còn {readiness.MissingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt giúp tui rồi mới chia đội nha 😆";
             }
 
             if (ZaloDraftPreparationDecisionPolicy.CanAutoDraftEvenly(count, teamCount))
             {
                 var perTeam = count / teamCount;
                 return urgent
-                    ? $"{name} vẫn giữ đúng roster đã chốt: {rawLabel} → {teamCount} team x{perTeam} ✅ Sát giờ rồi; nếu muốn chia team nói `draft đi`, tui sync poll lần cuối rồi chạy."
-                    : $"{name} vẫn đúng roster trưởng/phó đã chốt: {rawLabel} → {teamCount} team x{perTeam} 👌 Không dí kiếm thêm nữa; khi muốn chia nói `draft đi`.";
+                    ? $"{name} vẫn giữ đúng danh sách đã chốt: {peopleLabel} → {teamCount} đội x{perTeam} ✅ Sát giờ rồi; nếu muốn chia đội nói `draft đi`, tui đọc lại vote lần cuối rồi chạy."
+                    : $"{name} vẫn đúng danh sách trưởng/phó đã chốt: {peopleLabel} → {teamCount} đội x{perTeam} 👌 Không cần kiếm thêm nữa; khi muốn chia đội nói `draft đi`.";
             }
 
-            return $"{name} vẫn giữ quyết định chơi với {rawLabel} 👌 Nhưng {count} effective slot chưa chia đều được {teamCount} team. Kèo vẫn chạy theo quyết định trưởng/phó, còn bot chỉ auto-draft sau khi shared/rotation hoặc roster làm effective slot chia hết cho {teamCount}.";
+            return $"{name} vẫn giữ quyết định chơi với {peopleLabel} 👌 Nhưng {count} chỗ hiện tại chưa chia đều được {teamCount} đội. Kèo vẫn chơi theo quyết định trưởng/phó; nếu muốn bot tự chia đội thì cần xử lý các chỗ dùng chung/luân phiên hoặc để số chỗ chia hết cho {teamCount}.";
         }
 
         var stalePrefix = decisionWasStale
-            ? $"Roster {name} vừa đổi so với lúc chốt{(staleDecisionSlotCount is null ? string.Empty : $" {staleDecisionSlotCount} slot")}, nên quyết định roster cũ hết hiệu lực nha. "
+            ? $"Danh sách {name} vừa đổi so với lúc chốt{(staleDecisionSlotCount is null ? string.Empty : $" {staleDecisionSlotCount} chỗ")}, nên quyết định cũ không còn khớp nữa nha. "
             : string.Empty;
 
         if (readiness.State == ZaloDraftReadinessState.RosterOverCapacity)
         {
-            return $"{stalePrefix}Tui vừa sync {name}: đang {count}/{capacity}, dư {Math.Max(1, count - capacity)} slot 😭 Chưa chốt roster được; xử lý over-slot trước, poll sạch rồi tui quay lại hỏi/chốt tiếp.";
+            return $"{stalePrefix}Tui vừa đọc lại vote {name}: đang {count}/{capacity} chỗ, dư {Math.Max(1, count - capacity)} chỗ 😭 Chưa thể chốt danh sách; xử lý người/chỗ dư trước, xong tui sẽ đọc lại vote rồi báo bước tiếp theo.";
         }
 
         if (readiness.State == ZaloDraftReadinessState.Ready)
         {
             return urgent
-                ? $"{stalePrefix}Tui vừa sync {name}: đủ {count}/{capacity} ✅ team vẫn chưa chia. Sát giờ rồi, nói `draft đi` là tui check poll lần cuối rồi chạy."
-                : $"{stalePrefix}Tui vừa sync {name}: đủ {count}/{capacity} rồi nha ✅ Team chưa chia; nói `draft đi` là tui check poll lần cuối rồi chạy.";
+                ? $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ ✅ đội vẫn chưa chia. Sát giờ rồi, nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy."
+                : $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ rồi nha ✅ Đội chưa chia; nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy.";
         }
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting && count < capacity)
         {
-            var delta = BuildDelta(previousObservedSlotCount, count, capacity);
+            var change = BuildChange(previousObservedSlotCount, count, capacity);
             var missing = Math.Max(0, capacity - count);
             return urgent
-                ? $"{delta}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} slot. Tui canh poll tiếp nha 🚨 có thay đổi tui báo ngay."
-                : $"{delta}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} slot. Tui canh delta tiếp, không hỏi lại cùng một quyết định mỗi lượt 😆";
+                ? $"{change}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} chỗ. Tui tiếp tục theo dõi vote nha 🚨 có thay đổi tui báo ngay."
+                : $"{change}Trưởng/phó đã chốt tiếp tục kiếm thêm; hiện còn thiếu {missing} chỗ. Tui tiếp tục theo dõi thay đổi, không hỏi lại cùng một quyết định mỗi lượt 😆";
         }
 
         if (readiness.State == ZaloDraftReadinessState.NoRoster)
         {
-            return $"{stalePrefix}Tui vừa sync đúng poll {name}: đang 0/{capacity}. Trưởng/phó cho tui hướng xử lý kèo nha; nếu vẫn gom người thì nói `kiếm thêm`, tui sẽ canh poll tiếp.";
+            return $"{stalePrefix}Tui vừa đọc lại đúng vote của {name}: đang 0/{capacity} chỗ. Trưởng/phó cho tui hướng xử lý kèo nha; nếu vẫn gom người thì nói `kiếm thêm`, tui sẽ tiếp tục theo dõi vote.";
         }
 
         if (readiness.State != ZaloDraftReadinessState.RosterNotFull)
         {
             if (readiness.MissingProfileCount > 0)
-                return $"{name} còn {readiness.MissingProfileCount} hồ sơ thiếu dữ liệu: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt giúp tui trước khi chốt draft.";
+                return $"{name} còn {readiness.MissingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", readiness.MissingProfileNames.Take(6))}. Bổ sung nốt giúp tui trước khi chia đội.";
             return null;
         }
 
-        var deltaPrefix = stalePrefix + BuildDelta(previousObservedSlotCount, count, capacity);
+        var changePrefix = stalePrefix + BuildChange(previousObservedSlotCount, count, capacity);
         var even = ZaloDraftPreparationDecisionPolicy.CanAutoDraftEvenly(count, teamCount);
         if (even)
         {
             var perTeam = count / teamCount;
             return urgent
-                ? $"{deltaPrefix}{rawLabel} vẫn chia được {teamCount} team x{perTeam}. Giờ sát giờ rồi 🚨 trưởng/phó chốt giúp: `chốt {count}` / `{count} vẫn đánh`, hoặc `kiếm thêm`. Tui bám quyết định của ông, không tự phán theo số slot."
-                : $"{deltaPrefix}{rawLabel} vẫn chia được {teamCount} team x{perTeam} nha. Trưởng/phó chốt giúp `chốt {count}` / `{count} vẫn đánh`, hoặc nói `kiếm thêm`; tui bám đúng quyết định đó.";
+                ? $"{changePrefix}{peopleLabel} vẫn chia được {teamCount} đội x{perTeam}. Giờ sát giờ rồi 🚨 trưởng/phó chốt giúp: `chốt {count}` / `{count} vẫn đánh`, hoặc `kiếm thêm`. Tui làm theo quyết định đó, không tự đoán theo số người."
+                : $"{changePrefix}{peopleLabel} vẫn chia được {teamCount} đội x{perTeam} nha. Trưởng/phó chốt giúp `chốt {count}` / `{count} vẫn đánh`, hoặc nói `kiếm thêm`; tui làm đúng quyết định đó.";
         }
 
         return urgent
-            ? $"{deltaPrefix}{rawLabel}. Kèo vẫn có thể chơi nếu trưởng/phó muốn, nhưng {count} effective slot chưa chia đều {teamCount} team 🚨 Nếu giữ roster hiện tại nói `vẫn đánh`; nếu tiếp tục tuyển nói `kiếm thêm`. Muốn bot auto-draft thì cần shared/rotation hoặc roster về số chia hết cho {teamCount}."
-            : $"{deltaPrefix}{rawLabel}. Trưởng/phó có thể nói `vẫn đánh` hoặc `kiếm thêm`; riêng auto-draft thì {count} effective slot chưa chia đều {teamCount} team, cần shared/rotation hoặc roster đổi trước.";
+            ? $"{changePrefix}{peopleLabel}. Kèo vẫn có thể chơi nếu trưởng/phó muốn, nhưng {count} chỗ hiện tại chưa chia đều {teamCount} đội 🚨 Nếu giữ danh sách hiện tại nói `vẫn đánh`; nếu tiếp tục tuyển nói `kiếm thêm`. Muốn bot tự chia đội thì cần xử lý chỗ dùng chung/luân phiên hoặc để số chỗ chia hết cho {teamCount}."
+            : $"{changePrefix}{peopleLabel}. Trưởng/phó có thể nói `vẫn đánh` hoặc `kiếm thêm`; nếu muốn bot tự chia đội thì {count} chỗ hiện tại phải chia đều cho {teamCount} đội, nên cần xử lý chỗ dùng chung/luân phiên hoặc chờ danh sách đổi trước.";
     }
 
-    private static string BuildDelta(int? previous, int current, int capacity)
+    private static string BuildChange(int? previous, int current, int capacity)
     {
         if (previous is null || previous == current)
-            return $"Tui vừa sync: hiện {current}/{capacity}. ";
+            return $"Tui vừa đọc lại vote: hiện {current}/{capacity} chỗ. ";
         return previous > current
-            ? $"Tui vừa sync: roster tụt {previous}/{capacity} → {current}/{capacity} 😭 "
-            : $"Tui vừa sync: roster lên {previous}/{capacity} → {current}/{capacity} 😎 ";
+            ? $"Danh sách vừa giảm từ {previous}/{capacity} xuống {current}/{capacity} chỗ 😭 "
+            : $"Danh sách vừa tăng từ {previous}/{capacity} lên {current}/{capacity} chỗ 😎 ";
     }
 }
 

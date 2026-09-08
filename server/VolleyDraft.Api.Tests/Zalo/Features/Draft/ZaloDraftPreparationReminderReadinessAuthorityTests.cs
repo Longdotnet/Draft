@@ -16,8 +16,10 @@ public sealed class ZaloDraftPreparationReminderReadinessAuthorityTests
         var message = BuildProduction(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("1 suất đang nhường/chờ nhận", message!);
+        Assert.Contains("1 chỗ đang nhường/chờ nhận", message!);
         Assert.DoesNotContain("`draft đi`", message);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -28,11 +30,14 @@ public sealed class ZaloDraftPreparationReminderReadinessAuthorityTests
         var message = BuildProduction(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("2 suất đang nhường/chờ nhận", message!);
+        Assert.Contains("2 chỗ đang nhường/chờ nhận", message!);
         Assert.Contains("`huỷ pass`", message);
         Assert.Contains("`xong`", message);
         Assert.Contains("`huỷ nhận`", message);
-        Assert.Contains("trạng thái thật", message);
+        Assert.Contains("đọc lại vote và danh sách thật", message);
+        Assert.DoesNotContain("`draft đi`", message);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -43,8 +48,9 @@ public sealed class ZaloDraftPreparationReminderReadinessAuthorityTests
         var message = BuildProduction(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("18/18", message!);
+        Assert.Contains("18/18 chỗ", message!);
         Assert.Contains("`draft đi`", message);
+        Assert.Contains("kiểm tra vote lần cuối", message);
     }
 
     private static string? BuildProduction(ZaloDraftReadinessSnapshot readiness) =>

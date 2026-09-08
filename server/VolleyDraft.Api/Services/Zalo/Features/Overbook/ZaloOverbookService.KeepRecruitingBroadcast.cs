@@ -58,25 +58,25 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
         if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRiskCount <= 0)
             return null;
 
-        var roster = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
-            ? $"{readiness.EffectiveSlotCount}/{readiness.Capacity}"
-            : $"{readiness.PresentPlayerCount} người / {readiness.EffectiveSlotCount} effective slot (mốc {readiness.Capacity})";
+        var playerSummary = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
+            ? $"{readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ"
+            : $"{readiness.PresentPlayerCount} người, tính ra {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ để chia đội";
         var guestHint = guestSignupOpen
-            ? " Có kéo bạn ngoài group thì reply thẳng tin này `+1` hoặc `+2`; bạn đó không cần ở trong group Zalo."
+            ? " Có kéo bạn ngoài nhóm thì reply thẳng tin này `+1` hoặc `+2`; bạn đó không cần ở trong nhóm Zalo."
             : string.Empty;
 
         if (activeSlotRiskCount > 0 && readiness.EffectiveSlotCount >= readiness.Capacity)
         {
-            var riskLabel = activeSlotRiskCount == 1 ? "1 slot" : $"{activeSlotRiskCount} slot";
-            return $"@all Kèo {readiness.SessionName} poll đang {roster} nhưng có {riskLabel} báo pass/huỷ đang cần người thay 👋 Ai chưa vote hoặc giờ sắp xếp vào được thì vào poll chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; slot sạch lại bot tự ngưng réo.";
+            var riskLabel = activeSlotRiskCount == 1 ? "1 chỗ" : $"{activeSlotRiskCount} chỗ";
+            return $"@all Kèo {readiness.SessionName} đang {playerSummary} nhưng có {riskLabel} đang nhường/huỷ và cần người thay 👋 Ai chưa vote hoặc giờ sắp xếp vào được thì mở bình chọn và chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; khi không còn chỗ đang nhường/chờ nhận thì bot tự ngưng nhắc.";
         }
 
         var missing = Math.Max(1, readiness.Capacity - readiness.EffectiveSlotCount);
-        var slotLabel = missing == 1 ? "1 slot" : $"{missing} slot";
+        var missingLabel = missing == 1 ? "1 chỗ" : $"{missing} chỗ";
         var riskNote = activeSlotRiskCount > 0
-            ? $"; đồng thời còn {activeSlotRiskCount} slot pass/huỷ chưa xử lý xong"
+            ? $"; đồng thời còn {activeSlotRiskCount} chỗ đang nhường/huỷ chưa xử lý xong"
             : string.Empty;
-        return $"@all Kèo {readiness.SessionName} đang {roster}, còn thiếu {slotLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì vào poll chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người và slot sạch thì bot tự ngưng réo.";
+        return $"@all Kèo {readiness.SessionName} đang {playerSummary}, còn thiếu {missingLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì mở bình chọn và chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người và không còn chỗ đang nhường/chờ nhận thì bot tự ngưng nhắc.";
     }
 }
 
