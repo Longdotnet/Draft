@@ -82,7 +82,7 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
     }
 
     [Fact]
-    public void IncreaseClearsAnUnsentStaleDrop()
+    public void IncreaseClearsAnUnsentStaleDrop_WhenOriginalCountIsRestored()
     {
         var start = DateTimeOffset.UtcNow;
         var pending = ZaloRosterChangeCoordinatorPolicy.Observe(
@@ -94,8 +94,87 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
         var recovered = ZaloRosterChangeCoordinatorPolicy.Observe(
             confirmed.State, "s1", 18, 18, "fp18b", start.AddMinutes(4), TimeSpan.FromMinutes(2));
 
-        Assert.Equal(ZaloRosterObservationTransitionKind.Increased, recovered.Kind);
+        Assert.Equal(ZaloRosterObservationTransitionKind.Recovered, recovered.Kind);
         Assert.False(recovered.State.HasUnnotifiedDrop);
+    }
+
+    [Fact]
+    public void PartialRecovery_PreservesConfirmedIncidentUntilOriginalCountReturns()
+    {
+        var start = DateTimeOffset.UtcNow;
+        var first = ZaloRosterChangeCoordinatorPolicy.Observe(
+            Baseline(18, start), "s1", 16, 16, "fp16", start.AddMinutes(1), TimeSpan.FromMinutes(2));
+        var confirmed = ZaloRosterChangeCoordinatorPolicy.Observe(
+            first.State, "s1", 16, 16, "fp16", start.AddMinutes(3), TimeSpan.FromMinutes(2));
+        var notified = confirmed.State with { LastDropNotifiedAt = start.AddMinutes(3.1) };
+
+        var partial = ZaloRosterChangeCoordinatorPolicy.Observe(
+            notified, "s1", 17, 17, "fp17", start.AddMinutes(4), TimeSpan.FromMinutes(2));
+        var recovered = ZaloRosterChangeCoordinatorPolicy.Observe(
+            partial.State, "s1", 18, 18, "fp18", start.AddMinutes(5), TimeSpan.FromMinutes(2));
+
+        Assert.Equal(ZaloRosterObservationTransitionKind.Increased, partial.Kind);
+        Assert.Equal(18, partial.State.LastDropFromCount);
+        Assert.Equal(16, partial.State.LastDropToCount);
+        Assert.NotNull(partial.State.LastDropNotifiedAt);
+        Assert.Equal(ZaloRosterObservationTransitionKind.Recovered, recovered.Kind);
+        Assert.Equal(17, recovered.DropFrom);
+        Assert.Equal(18, recovered.DropTo);
+        Assert.Null(recovered.State.LastDropAt);
+        Assert.Null(recovered.State.LastDropNotifiedAt);
+    }
+
+    [Fact]
+    public void RecoveredReady_IsAnnouncedOnlyAfterAUserVisibleConfirmedIncident()
+    {
+        var start = DateTimeOffset.UtcNow;
+        var previous = Baseline(17, start) with
+        {
+            LastDropAt = start.AddMinutes(-2),
+            LastDropNotifiedAt = start.AddMinutes(-1),
+            LastDropFromCount = 18,
+            LastDropToCount = 17
+        };
+        var transition = ZaloRosterChangeCoordinatorPolicy.Observe(
+            previous, "s1", 18, 18, "fp18", start, TimeSpan.FromMinutes(2));
+        var ready = ReadySnapshot() with { ActivePassSlotRiskCount = 0 };
+
+        Assert.True(ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
+            previous,
+            transition,
+            ready));
+        Assert.False(ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
+            previous with { LastDropNotifiedAt = null },
+            transition,
+            ready));
+        Assert.False(ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
+            previous,
+            transition,
+            ready with
+            {
+                State = ZaloDraftReadinessState.UnresolvedPassSlots,
+                ActivePassSlotRiskCount = 1,
+                IsRosterReady = false,
+                CanEscalate = false
+            }));
+    }
+
+    [Fact]
+    public void RecoveredReadyMessage_ClosesRecruitmentAndTeachesTheNextDeterministicAction()
+    {
+        var message = ZaloRosterChangeCoordinatorPolicy.BuildRecoveredReadyUpdate(
+            ReadySnapshot(),
+            17,
+            18);
+
+        Assert.Contains("đủ lại 18/18", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Không còn chỗ đang nhường/chờ nhận", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ngưng gọi thêm", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("draft đi", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đọc lại vote lần cuối", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -139,4 +218,24 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
         null,
         null,
         now);
+
+    private static ZaloDraftReadinessSnapshot ReadySnapshot() => new(
+        SessionId: "s1",
+        SessionName: "CN 13/9",
+        AdminUserId: "admin",
+        ZaloConnectionId: "conn-1",
+        GroupId: "g1",
+        StartTime: DateTimeOffset.UtcNow.AddHours(4),
+        PresentPlayerCount: 18,
+        EffectiveSlotCount: 18,
+        Capacity: 18,
+        MissingProfileCount: 0,
+        MissingProfileNames: [],
+        HasTeams: false,
+        HasLinkedPoll: true,
+        Fingerprint: "fp18",
+        State: ZaloDraftReadinessState.Ready,
+        ReasonCode: "draft_ready",
+        IsRosterReady: true,
+        CanEscalate: true);
 }

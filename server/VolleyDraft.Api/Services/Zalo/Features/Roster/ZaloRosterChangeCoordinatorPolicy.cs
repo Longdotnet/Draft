@@ -5,6 +5,7 @@ internal enum ZaloRosterObservationTransitionKind
     Baseline,
     Unchanged,
     Increased,
+    Recovered,
     DropPending,
     DropConfirmed,
     DropBounced
@@ -48,24 +49,72 @@ internal static class ZaloRosterChangeCoordinatorPolicy
 
         if (effectiveSlots > previous.StableEffectiveSlotCount)
         {
-            var kind = previous.PendingDropStartedAt is null
-                ? ZaloRosterObservationTransitionKind.Increased
-                : ZaloRosterObservationTransitionKind.DropBounced;
-            return new(kind, previous with
+            if (previous.PendingDropStartedAt is not null)
             {
-                StableEffectiveSlotCount = effectiveSlots,
-                StablePresentPlayerCount = presentPlayers,
-                StableFingerprint = fingerprint,
-                PendingDropFromCount = null,
-                PendingDropToCount = null,
-                PendingDropStartedAt = null,
-                LastObservedAt = now,
-                LastDropAt = null,
-                LastDropNotifiedAt = null,
-                LastDropFromCount = null,
-                LastDropToCount = null,
-                UpdatedAt = now
-            });
+                return new(
+                    ZaloRosterObservationTransitionKind.DropBounced,
+                    previous with
+                    {
+                        StableEffectiveSlotCount = effectiveSlots,
+                        StablePresentPlayerCount = presentPlayers,
+                        StableFingerprint = fingerprint,
+                        PendingDropFromCount = null,
+                        PendingDropToCount = null,
+                        PendingDropStartedAt = null,
+                        LastObservedAt = now,
+                        LastDropAt = null,
+                        LastDropNotifiedAt = null,
+                        LastDropFromCount = null,
+                        LastDropToCount = null,
+                        UpdatedAt = now
+                    });
+            }
+
+            var recoveryTarget = previous.LastDropFromCount;
+            var recoveredConfirmedDrop = previous.LastDropAt is not null &&
+                                         recoveryTarget is not null &&
+                                         effectiveSlots >= recoveryTarget.Value;
+            if (recoveredConfirmedDrop)
+            {
+                return new(
+                    ZaloRosterObservationTransitionKind.Recovered,
+                    previous with
+                    {
+                        StableEffectiveSlotCount = effectiveSlots,
+                        StablePresentPlayerCount = presentPlayers,
+                        StableFingerprint = fingerprint,
+                        PendingDropFromCount = null,
+                        PendingDropToCount = null,
+                        PendingDropStartedAt = null,
+                        LastObservedAt = now,
+                        LastDropAt = null,
+                        LastDropNotifiedAt = null,
+                        LastDropFromCount = null,
+                        LastDropToCount = null,
+                        UpdatedAt = now
+                    },
+                    previous.StableEffectiveSlotCount,
+                    effectiveSlots);
+            }
+
+            // A confirmed 18→16 incident may recover in more than one step (16→17→18).
+            // Keep its provenance until the original stable count is restored so the product
+            // can close the user-visible recruitment incident exactly once at full recovery.
+            return new(
+                ZaloRosterObservationTransitionKind.Increased,
+                previous with
+                {
+                    StableEffectiveSlotCount = effectiveSlots,
+                    StablePresentPlayerCount = presentPlayers,
+                    StableFingerprint = fingerprint,
+                    PendingDropFromCount = null,
+                    PendingDropToCount = null,
+                    PendingDropStartedAt = null,
+                    LastObservedAt = now,
+                    UpdatedAt = now
+                },
+                previous.StableEffectiveSlotCount,
+                effectiveSlots);
         }
 
         if (effectiveSlots == previous.StableEffectiveSlotCount)
@@ -131,6 +180,24 @@ internal static class ZaloRosterChangeCoordinatorPolicy
     internal static bool IsFullRosterBreak(int from, int to, int capacity) =>
         from >= capacity && to < capacity;
 
+    internal static bool ShouldAnnounceRecoveredReady(
+        ZaloRecruitmentRosterObservation previous,
+        ZaloRosterObservationTransition transition,
+        ZaloDraftReadinessSnapshot readiness) =>
+        transition.Kind == ZaloRosterObservationTransitionKind.Recovered &&
+        previous.LastDropNotifiedAt is not null &&
+        readiness.State == ZaloDraftReadinessState.Ready &&
+        readiness.EffectiveSlotCount == readiness.Capacity &&
+        readiness.ActivePassSlotRiskCount == 0;
+
+    internal static string BuildRecoveredReadyUpdate(
+        ZaloDraftReadinessSnapshot readiness,
+        int from,
+        int to) =>
+        $"Kèo {readiness.SessionName} vừa đủ lại {to}/{readiness.Capacity} chỗ rồi ✅ " +
+        "Không còn chỗ đang nhường/chờ nhận. Tui ngưng gọi thêm người. " +
+        "Trưởng/phó muốn chia đội thì nói `draft đi`; tui sẽ đọc lại vote lần cuối trước khi chạy.";
+
     internal static string BuildSoftUpdate(
         ZaloDraftReadinessSnapshot readiness,
         int from,
@@ -138,9 +205,9 @@ internal static class ZaloRosterChangeCoordinatorPolicy
         int activeSlotRiskCount)
     {
         var risk = activeSlotRiskCount > 0
-            ? $" Đang có {activeSlotRiskCount} slot pass/huỷ được xử lý riêng nên tui không réo trùng người."
+            ? $" Đang có {activeSlotRiskCount} chỗ nhường/huỷ được xử lý riêng nên tui không réo trùng người."
             : string.Empty;
-        return $"Tui vừa sync {readiness.SessionName}: roster tụt {from}/{readiness.Capacity} → {to}/{readiness.Capacity}. Tin @all tuyển gần đây vẫn còn mới nên tui không @all lại để khỏi spam.{risk} Tui vẫn canh poll; ai vào được cứ vote/chốt trên poll nha.";
+        return $"Tui vừa đọc lại vote {readiness.SessionName}: danh sách tụt {from}/{readiness.Capacity} → {to}/{readiness.Capacity}. Tin @all tuyển gần đây vẫn còn mới nên tui không @all lại để khỏi spam.{risk} Tui vẫn canh bình chọn; ai vào được cứ vote/chốt trên đó nha.";
     }
 
     private static ZaloRecruitmentRosterObservation NewState(
