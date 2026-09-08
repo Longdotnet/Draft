@@ -281,7 +281,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
             PollId = proposal.PollId,
             PollStructureHash = proposal.PollStructureHash,
             Location = BuildInitialLocationEvidence(tracked, draft),
-            TeamSize = BuildInitialTeamSizeEvidence(tracked, draft)
+            TeamSize = BuildInitialTeamSizeEvidence(proposal, tracked, draft)
         };
 
         foreach (var item in draft.Items)
@@ -325,9 +325,38 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
     }
 
     private static ZaloAutoSessionProposalEvidenceValueV4 BuildInitialTeamSizeEvidence(
+        ZaloPollSessionProposalData proposal,
         ZaloTrackedGroupData tracked,
         ZaloAutoSessionConversationDraft draft)
     {
+        var capacity = ZaloAutoSessionCapacityPolicyV5.Resolve(proposal.PollQuestion);
+        if (capacity.HasExplicitCapacity)
+        {
+            if (!capacity.IsValid)
+            {
+                return new ZaloAutoSessionProposalEvidenceValueV4
+                {
+                    Source = "explicit_capacity_invalid",
+                    Detail = capacity.ErrorCode
+                };
+            }
+
+            if (draft.TeamSize == capacity.TeamSize)
+            {
+                return new ZaloAutoSessionProposalEvidenceValueV4
+                {
+                    Source = "poll_title_explicit_capacity",
+                    Detail = $"capacity={capacity.Capacity.ToString(CultureInfo.InvariantCulture)}; teamCount={ZaloAutoSessionCapacityPolicyV5.SupportedTeamCount.ToString(CultureInfo.InvariantCulture)}"
+                };
+            }
+
+            return new ZaloAutoSessionProposalEvidenceValueV4
+            {
+                Source = "explicit_capacity_mismatch",
+                Detail = $"draft={draft.TeamSize.ToString(CultureInfo.InvariantCulture)}; capacityTeamSize={capacity.TeamSize.ToString(CultureInfo.InvariantCulture)}"
+            };
+        }
+
         if (draft.TeamSize == tracked.DefaultTeamSize)
         {
             return new ZaloAutoSessionProposalEvidenceValueV4
