@@ -1,0 +1,40 @@
+name: Autopilot profile readiness patch
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'autopilot/profile-natural-readiness-handoff' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply canonical readiness handoff
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('server/VolleyDraft.Api/Services/ZaloBotService.cs')
+          text = path.read_text(encoding='utf-8')
+          old = '''        var remaining = await draftService.GetIncompletePlayerProfilesAsync(session.AdminUserId, session.Id);\n        var remainingText = remaining.IsSuccess && remaining.Value is { Count: > 0 }\n            ? $" Còn hồ sơ chưa xác nhận: {string.Join(", ", remaining.Value.Take(10).Select(item => item.DisplayName))}."\n            : " Hồ sơ đã đủ điều kiện để draft.";'''
+          new = '''        var readiness = await new ZaloDraftReadinessService(db)\n            .BuildAsync(session.Id);\n        var remainingText = ZaloProfileUpdateReadinessCopy.Build(readiness);'''
+          if old not in text:
+              raise SystemExit('Expected legacy profile-readiness block was not found; refusing to guess.')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+      - name: Commit product patch and remove bootstrap workflow
+        shell: bash
+        run: |
+          rm .github/workflows/autopilot-profile-readiness-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/ZaloBotService.cs .github/workflows/autopilot-profile-readiness-patch.yml
+          git commit -m "fix(zalo): ground generic profile ack in draft readiness"
+          git push origin HEAD:${{ github.head_ref }}
