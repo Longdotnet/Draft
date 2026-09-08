@@ -70,6 +70,9 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
         return hasNonCaptainAssignments;
     }
 
+    internal static bool IsRosterReadyState(ZaloDraftReadinessState state) =>
+        state == ZaloDraftReadinessState.Ready;
+
     public async Task<ZaloDraftReadinessSnapshot?> BuildAsync(
         string sessionId,
         DateTimeOffset? now = null,
@@ -166,10 +169,6 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
 
         var state = ZaloDraftReadinessState.Ready;
         var reason = "draft_ready";
-        var rosterReady = effectiveSlots == capacity &&
-                          presentCount > 0 &&
-                          missingNames.Count == 0 &&
-                          activePassSlotRiskCount == 0;
         var canEscalate = false;
 
         if (session.Status == SessionStatus.Finished && hasTeams)
@@ -245,6 +244,12 @@ public sealed class ZaloDraftReadinessService(VolleyDraftDbContext db)
         {
             canEscalate = true;
         }
+
+        // Keep the compatibility boolean aligned with the canonical state machine.
+        // Callers such as the recruitment world model must never see "ready=true"
+        // beside SessionStarted/MissingStartTime/InvalidStatus and infer permission
+        // from a stale capacity-only signal.
+        var rosterReady = IsRosterReadyState(state);
 
         return new ZaloDraftReadinessSnapshot(
             session.Id,
