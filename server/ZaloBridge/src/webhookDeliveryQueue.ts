@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { KeyedSerialExecutor } from "./keyedSerialExecutor.js";
 
 export type WebhookDeliveryKind = "message" | "poll";
@@ -41,6 +42,13 @@ export type WebhookDeliveryStats = {
   permanentFailures: number;
   expired: number;
   overflowRejected: number;
+  coalescedDuplicates: number;
+  idempotencyConflicts: number;
+};
+
+type InFlightDelivery = {
+  signature: string;
+  result: Promise<void>;
 };
 
 const defaultSleep = (milliseconds: number) =>
@@ -64,10 +72,31 @@ function retryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
+function deliverySignature(request: WebhookDeliveryRequest): string {
+  // The webhook key is deliberately excluded. It is transport authentication, not part
+  // of the event identity, and may rotate while the same accepted event is still being
+  // delivered. Account/kind/url/body are bound so a reused delivery ID cannot silently
+  // acknowledge a materially different side effect.
+  return createHash("sha256")
+    .update(JSON.stringify({
+      accountId: request.accountId.trim(),
+      kind: request.kind,
+      url: request.url,
+      body: request.body,
+    }))
+    .digest("hex");
+}
+
 /**
  * Buffers inbound Zalo listener events while the VolleyDraft API is temporarily
  * unavailable. Deliveries are serialized per account + endpoint so conversation order
  * is preserved without allowing one sleeping API target to block another account.
+ *
+ * Duplicate delivery IDs are true single-flight operations: an equivalent duplicate
+ * receives the exact same promise/outcome as the original attempt. A conflicting reuse
+ * fails closed instead of reporting local success for a different event. This matters
+ * because the global fetch reliability shim returns success to the listener only after
+ * this promise resolves.
  *
  * This queue never calls Zalo. Planned bridge shutdowns can drain accepted deliveries
  * before the process exits. A hard process/container loss can still lose memory-only
@@ -88,7 +117,7 @@ export class WebhookDeliveryQueue {
   private readonly requestTimeoutMs: number;
   private readonly onLog: (event: Record<string, unknown>) => void;
   private readonly pendingByAccount = new Map<string, number>();
-  private readonly inFlightIds = new Set<string>();
+  private readonly inFlightById = new Map<string, InFlightDelivery>();
   private readonly activeDeliveries = new Set<Promise<void>>();
   private readonly stats: WebhookDeliveryStats = {
     pending: 0,
@@ -98,6 +127,8 @@ export class WebhookDeliveryQueue {
     permanentFailures: 0,
     expired: 0,
     overflowRejected: 0,
+    coalescedDuplicates: 0,
+    idempotencyConflicts: 0,
   };
 
   constructor(options: WebhookDeliveryQueueOptions = {}) {
@@ -121,7 +152,21 @@ export class WebhookDeliveryQueue {
       return Promise.reject(new Error("Webhook delivery requires accountId and deliveryId"));
     }
 
-    if (this.inFlightIds.has(deliveryId)) return Promise.resolve();
+    const signature = deliverySignature(request);
+    const existing = this.inFlightById.get(deliveryId);
+    if (existing) {
+      if (existing.signature !== signature) {
+        this.stats.idempotencyConflicts += 1;
+        this.onLog({
+          outcome: "idempotency_conflict",
+          accountId,
+          kind: request.kind,
+        });
+        return Promise.reject(new Error("Webhook delivery id conflicts with an in-flight payload"));
+      }
+      this.stats.coalescedDuplicates += 1;
+      return existing.result;
+    }
 
     const pending = this.pendingByAccount.get(accountId) ?? 0;
     if (pending >= this.maxPendingPerAccount) {
@@ -135,21 +180,22 @@ export class WebhookDeliveryQueue {
       return Promise.reject(new Error(`Webhook delivery backlog exceeded ${this.maxPendingPerAccount} events for account`));
     }
 
-    this.inFlightIds.add(deliveryId);
     this.pendingByAccount.set(accountId, pending + 1);
     this.stats.pending += 1;
     this.stats.accepted += 1;
-    const serialKey = `${accountId}:${request.url}`;
+    const serialKey = JSON.stringify([accountId, request.url]);
 
     const delivery = this.serial.run(serialKey, () => this.deliverWithRetry(request))
       .finally(() => {
-        this.inFlightIds.delete(deliveryId);
+        const current = this.inFlightById.get(deliveryId);
+        if (current?.result === delivery) this.inFlightById.delete(deliveryId);
         const remaining = Math.max(0, (this.pendingByAccount.get(accountId) ?? 1) - 1);
         if (remaining === 0) this.pendingByAccount.delete(accountId);
         else this.pendingByAccount.set(accountId, remaining);
         this.stats.pending = Math.max(0, this.stats.pending - 1);
       });
 
+    this.inFlightById.set(deliveryId, { signature, result: delivery });
     this.activeDeliveries.add(delivery);
     void delivery.then(
       () => this.activeDeliveries.delete(delivery),
