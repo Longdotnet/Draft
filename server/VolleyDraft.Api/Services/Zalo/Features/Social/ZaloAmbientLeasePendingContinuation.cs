@@ -15,13 +15,14 @@ public sealed record ZaloAmbientLeasePendingContinuation(
 /// prove an active same-sender conversation lease. This policy never performs a
 /// domain mutation itself.
 ///
-/// Preview confirmations use an explicit allowlist and strong confirmation grammar.
-/// Session-selection continuations are different: while AutoDraft/Redraft/TeamImage is
-/// waiting for a session, only a cancellation or a selector that resolves against the
-/// authoritative pending candidate sessions may promote the turn. This keeps short
-/// follow-ups such as "cn" or "13/9" usable without making ordinary ambient chat an
-/// implicit bot address. TeamImage is read-only, but it still uses the same grounded
-/// pending-session selector and provenance boundary as draft workflows.
+/// Preview confirmations use an explicit allowlist, strong confirmation grammar and
+/// successful-prompt provenance. Session-selection continuations are different: while
+/// AutoDraft/Redraft/TeamImage is waiting for a session, only a cancellation or a
+/// selector that resolves against the authoritative pending candidate sessions may
+/// promote the turn. This keeps short follow-ups such as "cn" or "13/9" usable without
+/// making ordinary group chat an implicit bot address. TeamImage is read-only, but it
+/// still uses the same grounded pending-session selector and provenance boundary as
+/// draft workflows.
 /// </summary>
 public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbContext db)
 {
@@ -69,7 +70,15 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
             Enum.TryParse<ZaloBotIntent>(state.PendingIntent, out var pendingIntent))
         {
             if (AllowedConfirmationPendingIntents.Contains(pendingIntent) &&
-                (isCancellation || isStrongConfirmation))
+                (isCancellation || isStrongConfirmation) &&
+                TryGetConfirmationPromptIntent(pendingIntent, out var promptIntent) &&
+                await IsLatestPendingPromptReplyAsync(
+                    state,
+                    promptIntent,
+                    connectionId,
+                    groupId,
+                    senderId,
+                    cancellationToken))
             {
                 return new ZaloAmbientLeasePendingContinuation(pendingIntent, isCancellation);
             }
@@ -147,19 +156,33 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
             IsCancellation: false);
     }
 
+    private static bool TryGetConfirmationPromptIntent(
+        ZaloBotIntent pendingIntent,
+        out ZaloBotIntent promptIntent)
+    {
+        promptIntent = pendingIntent switch
+        {
+            ZaloBotIntent.AutoDraftConfirm => ZaloBotIntent.AutoDraft,
+            ZaloBotIntent.RedraftConfirm => ZaloBotIntent.Redraft,
+            ZaloBotIntent.RebalanceTeamsConfirm => ZaloBotIntent.RebalanceTeams,
+            _ => ZaloBotIntent.Unknown
+        };
+        return promptIntent != ZaloBotIntent.Unknown;
+    }
+
     private async Task<bool> IsLatestPendingPromptReplyAsync(
         VolleyDraft.Api.Models.ZaloBotConversationState state,
-        ZaloBotIntent pendingIntent,
+        ZaloBotIntent expectedReplyIntent,
         string connectionId,
         string groupId,
         string senderId,
         CancellationToken cancellationToken)
     {
-        // A generic recent bot reply is not enough to resume an old session selector.
-        // The latest successful reply for this sender/group must be the prompt that
-        // created/refreshed this exact pending intent. Otherwise a newer unrelated
-        // conversation could accidentally hand a short "cn" or "huỷ" back to stale
-        // workflow state.
+        // A generic recent bot reply is not enough to resume an old selector or
+        // confirmation. The latest successful reply for this sender/group must be the
+        // prompt that created/refreshed this exact pending workflow. Otherwise a newer
+        // unrelated conversation could hand "cn", "huỷ" or "xác nhận" back to stale
+        // state and accidentally execute an old mutation.
         var repliedRows = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(item =>
@@ -180,13 +203,13 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
             .OrderByDescending(item => item.BotReplySentAt!.Value)
             .FirstOrDefault();
         if (latest is null ||
-            !string.Equals(latest.SelectedIntent, pendingIntent.ToString(), StringComparison.Ordinal))
+            !string.Equals(latest.SelectedIntent, expectedReplyIntent.ToString(), StringComparison.Ordinal))
             return false;
 
-        // Pending state is saved before the clarification is sent. Requiring the
-        // successful reply to be at or after that state update also prevents an older
-        // same-intent reply from reviving a newly-created pending selector whose
-        // clarification never reached Zalo.
+        // Pending state is saved before the clarification/confirmation prompt is sent.
+        // Requiring the successful reply at or after that state update also prevents an
+        // older same-intent reply from reviving newly-created pending state whose prompt
+        // never reached Zalo.
         return latest.BotReplySentAt!.Value >= state.UpdatedAt;
     }
 

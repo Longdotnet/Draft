@@ -10,11 +10,11 @@ namespace VolleyDraft.Api.Services;
 /// strangled into explicit feature modules. The endpoint must dispatch through this
 /// coordinator instead of knowing the ordering between Overbook and Bot lanes.
 ///
-/// Idempotency is owned here, before any feature/pre-routing lane can mutate state or
-/// emit a reply. The coordinator reuses ZaloGroupMessage as the durable delivery ledger
-/// so duplicate bridge deliveries remain suppressed across concurrent requests and
-/// process restarts. Once the Overbook/pre-routing lane handles a message, the generic
-/// Bot lane is never invoked.
+/// Idempotency is owned here before normal feature/pre-routing lanes can mutate state
+/// or emit a reply. A narrowly proven legacy pending continuation is the exception: it
+/// is handed to ZaloBotService before the ingress lease because that bot lane already
+/// owns the durable message/reply lease required to execute the same row safely. This
+/// avoids self-blocking the handoff while preserving duplicate suppression.
 ///
 /// Durable tracked-group ownership also applies to message capture. A configured group
 /// remains an ingress target even when it currently has no bot-enabled MatchSession, so
@@ -30,10 +30,21 @@ public sealed class ZaloInboundCoordinator(
     private const string PreRouteHandledOutcome = "pre_route_handled";
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(2);
 
-    public Task<ZaloInboundHandlingResult> HandleAsync(
+    public async Task<ZaloInboundHandlingResult> HandleAsync(
         ZaloIncomingMessageEvent incoming,
-        CancellationToken cancellationToken = default) =>
-        DispatchClaimedAsync(
+        CancellationToken cancellationToken = default)
+    {
+        // A trusted no-mention continuation must enter the legacy bot before the
+        // coordinator claims the shared ZaloGroupMessage row. ZaloBotService then uses
+        // its own durable processing lease and normal authorization/revalidation path.
+        if (await overbookService.TryHandleLegacyPendingContinuationPreRouteAsync(
+                incoming,
+                cancellationToken))
+        {
+            return new(true, "bot-pending-continuation");
+        }
+
+        return await DispatchClaimedAsync(
             incoming,
             TryClaimAsync,
             async (message, token) =>
@@ -45,6 +56,7 @@ public sealed class ZaloInboundCoordinator(
             CompletePreRouteAsync,
             ReleaseAsync,
             cancellationToken);
+    }
 
     internal static async Task<ZaloInboundHandlingResult> DispatchAsync(
         ZaloIncomingMessageEvent incoming,

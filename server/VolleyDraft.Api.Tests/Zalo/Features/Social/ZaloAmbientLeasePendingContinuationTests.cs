@@ -75,6 +75,31 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
     }
 
     [Fact]
+    public async Task Later_unrelated_bot_reply_prevents_stale_draft_confirmation()
+    {
+        await using var fixture = await Fixture.CreateAsync(ZaloBotIntent.AutoDraftConfirm.ToString());
+        await fixture.AddLaterReplyAsync(ZaloBotIntent.MissingSlots);
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "xác nhận draft");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
+    public async Task Draft_confirmation_requires_the_current_prompt_to_have_reached_user()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            ZaloBotIntent.AutoDraftConfirm.ToString(),
+            withDraftPromptReply: false);
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "xác nhận draft");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
     public async Task Draft_selection_requires_the_current_pending_prompt_to_have_reached_user()
     {
         await using var fixture = await Fixture.CreateAsync(
@@ -113,6 +138,18 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
             ZaloBotIntent.AutoDraft.ToString(),
             withDraftCandidates: true);
         await fixture.AddLaterReplyAsync(ZaloBotIntent.MissingSlots);
+
+        var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
+            .TryResolveAsync("conn-1", "g1", "user-long", "huỷ");
+
+        Assert.Null(promotion);
+    }
+
+    [Fact]
+    public async Task Later_unrelated_bot_reply_also_prevents_stale_confirmation_cancellation()
+    {
+        await using var fixture = await Fixture.CreateAsync(ZaloBotIntent.RedraftConfirm.ToString());
+        await fixture.AddLaterReplyAsync(ZaloBotIntent.TeamImage);
 
         var promotion = await new ZaloAmbientLeasePendingContinuationPolicy(fixture.Db)
             .TryResolveAsync("conn-1", "g1", "user-long", "huỷ");
@@ -329,7 +366,7 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
                 CreatedAt = pendingUpdatedAt,
                 UpdatedAt = pendingUpdatedAt
             });
-            if (withDraftCandidates && withDraftPromptReply)
+            if (withDraftPromptReply)
             {
                 db.ZaloGroupMessages.Add(new ZaloGroupMessage
                 {
@@ -345,7 +382,7 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
                     SentAt = pendingUpdatedAt.AddSeconds(-1),
                     ReceivedAt = pendingUpdatedAt.AddSeconds(-1),
                     BotReplySentAt = pendingUpdatedAt.AddSeconds(1),
-                    SelectedIntent = pendingIntent,
+                    SelectedIntent = PromptIntentForPending(pendingIntent).ToString(),
                     ReplyOutcome = "sent"
                 });
             }
@@ -354,6 +391,15 @@ public sealed class ZaloAmbientLeasePendingContinuationTests
             db.ChangeTracker.Clear();
             return new Fixture(connection, db, pendingUpdatedAt);
         }
+
+        private static ZaloBotIntent PromptIntentForPending(string pendingIntent) => pendingIntent switch
+        {
+            nameof(ZaloBotIntent.AutoDraftConfirm) => ZaloBotIntent.AutoDraft,
+            nameof(ZaloBotIntent.RedraftConfirm) => ZaloBotIntent.Redraft,
+            nameof(ZaloBotIntent.RebalanceTeamsConfirm) => ZaloBotIntent.RebalanceTeams,
+            _ when Enum.TryParse<ZaloBotIntent>(pendingIntent, out var intent) => intent,
+            _ => ZaloBotIntent.Unknown
+        };
 
         public Task AddLaterReplyAsync(ZaloBotIntent intent) =>
             AddReplyAsync(intent, DateTimeOffset.UtcNow, $"later-{intent}");
