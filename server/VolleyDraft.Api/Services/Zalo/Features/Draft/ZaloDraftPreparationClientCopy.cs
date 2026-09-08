@@ -5,9 +5,12 @@ internal static class ZaloDraftPreparationClientCopy
     private const string RelockCurrentListHint =
         "Nếu vẫn muốn chơi với danh sách hiện tại, nói `vẫn đánh` để tui đọc lại vote và chốt lại từ dữ liệu mới; nếu muốn tiếp tục kiếm cho đủ thì nói `kiếm thêm`.";
 
-    private const string MissingProfileRecoveryHint =
+    private const string MissingProfileRecoveryActions =
         "Người được NPC tag có thể trả lời ngay tin hỏi hồ sơ bằng `nam`, `thủ`, `mới chơi` hoặc `tui nam, đánh công, tầm trung bình`; không cần @Npc. " +
-        "Nếu cần cập nhật thay, admin/trưởng/phó hoặc người có quyền bot dùng `@Npc cập nhật @Tên: nam, công, trung bình` và phải tag đúng người. Xong thì thử `draft đi` lại.";
+        "Nếu cần cập nhật thay, admin/trưởng/phó hoặc người có quyền bot dùng `@Npc cập nhật @Tên: nam, công, trung bình` và phải tag đúng người.";
+
+    private const string MissingProfileRecoveryHint =
+        MissingProfileRecoveryActions + " Xong thì thử `draft đi` lại.";
 
     internal static string StopMatch(string changePrefix, string sessionName) =>
         $"{changePrefix}Ok, tui ghi nhận trưởng/phó chốt dừng kèo {sessionName}. Tui ngưng nhắc chia đội cho trận này nha. Tui chưa tự xoá trận, vote hay thao tác huỷ sân bên ngoài.";
@@ -50,6 +53,19 @@ internal static class ZaloDraftPreparationClientCopy
         int missingProfileCount,
         IEnumerable<string> missingProfileNames) =>
         $"{changePrefix}Ok, tui ghi nhận kèo vẫn chơi với {countLabel} 👌 Nhưng còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryHint}";
+
+    internal static string LockedListMissingProfileReminder(
+        string sessionName,
+        string countLabel,
+        int missingProfileCount,
+        IEnumerable<string> missingProfileNames) =>
+        $"Kèo {sessionName} đã được trưởng/phó chốt vẫn chơi với {countLabel}, nhưng còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryActions}";
+
+    internal static string MissingProfileReminder(
+        string sessionName,
+        int missingProfileCount,
+        IEnumerable<string> missingProfileNames) =>
+        $"{sessionName} còn {missingProfileCount} người thiếu thông tin để chia đội: {string.Join(", ", missingProfileNames.Take(6))}. {MissingProfileRecoveryActions}";
 
     internal static string MissingProfileBlocker(
         string sessionName,
