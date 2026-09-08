@@ -19,11 +19,11 @@ public sealed record ZaloAmbientLeasePendingContinuation(
 /// Preview confirmations use an explicit allowlist, strong confirmation grammar and
 /// successful-prompt provenance. Session-selection continuations are different: while
 /// AutoDraft/Redraft/TeamImage is waiting for a session, only a cancellation or a
-/// standalone selector that resolves against the authoritative pending candidate
-/// sessions may promote the turn. This keeps short follow-ups such as "cn" or "13/9"
-/// usable without making ordinary group chat an implicit bot address. TeamImage is
-/// read-only, but it still uses the same grounded pending-session selector and
-/// provenance boundary as draft workflows.
+/// selector that resolves against the authoritative pending candidate sessions may
+/// promote the turn. Unaddressed ambient text must be a standalone selector; a verified
+/// reply to the bot is already explicit addressing and may use the richer canonical
+/// selector grammar. TeamImage is read-only, but it still uses the same grounded
+/// pending-session selector and provenance boundary as draft workflows.
 /// </summary>
 public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbContext db)
 {
@@ -46,7 +46,8 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         string groupId,
         string senderId,
         string? content,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool explicitlyAddressedByReply = false)
     {
         connectionId = Clean(connectionId);
         groupId = Clean(groupId);
@@ -102,6 +103,7 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
                         connectionId,
                         groupId,
                         text,
+                        explicitlyAddressedByReply,
                         cancellationToken))
                 {
                     return new ZaloAmbientLeasePendingContinuation(pendingIntent, IsCancellation: false);
@@ -245,13 +247,13 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         string connectionId,
         string groupId,
         string content,
+        bool explicitlyAddressedByReply,
         CancellationToken cancellationToken)
     {
-        // Mentioned/reply-addressed turns may contain a full sentence because explicit
-        // addressing already establishes intent ownership. This no-mention lane is
-        // intentionally stricter: only a standalone selector-shaped follow-up may wake
-        // the bot. A sentence that merely mentions "CN" or "13/9" remains human chat.
-        if (!ZaloSessionResolver.LooksLikeStandaloneSelector(content))
+        // A verified reply to the bot is explicit addressing and can use the existing
+        // natural resolver. Pure ambient text has no such ownership signal, so only a
+        // standalone selector-shaped follow-up may wake the bot.
+        if (!explicitlyAddressedByReply && !ZaloSessionResolver.LooksLikeStandaloneSelector(content))
             return false;
 
         List<string> candidateIds;
