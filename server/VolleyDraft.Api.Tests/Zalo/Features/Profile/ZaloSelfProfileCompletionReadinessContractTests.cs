@@ -31,7 +31,11 @@ public sealed class ZaloSelfProfileCompletionReadinessContractTests
         Assert.DoesNotContain("xong, không cần làm gì thêm", deterministic, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("BuildSelfProfileCompletionReplyAsync", semantic, StringComparison.Ordinal);
+        Assert.Contains("profile_semantic_already_complete", semantic, StringComparison.Ordinal);
+        Assert.Contains("alreadyComplete: true", semantic, StringComparison.Ordinal);
+        Assert.Contains("alreadyComplete: false", semantic, StringComparison.Ordinal);
         Assert.DoesNotContain("Hồ sơ kèo {session.Name} xong.\"", semantic, StringComparison.Ordinal);
+        Assert.DoesNotContain("Hiện chỉ còn không còn gì thiếu", semantic, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
