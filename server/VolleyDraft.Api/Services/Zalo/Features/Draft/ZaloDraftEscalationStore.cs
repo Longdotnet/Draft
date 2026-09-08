@@ -250,6 +250,37 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1 ? token : null;
     }
 
+    public async Task<bool> TrySupersedeBeforeExecutionAsync(
+        string connectionId,
+        string groupId,
+        string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        connectionId = Clean(connectionId, 100);
+        groupId = Clean(groupId, 100);
+        sessionId = Clean(sessionId, 100);
+        if (connectionId.Length == 0 || groupId.Length == 0 || sessionId.Length == 0)
+            return false;
+
+        await EnsureSchemaAsync(cancellationToken);
+        var connection = db.Database.GetDbConnection();
+        await OpenIfNeededAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE "ZaloDraftEscalationRequests"
+            SET "State" = 'Superseded', "ExecutionToken" = NULL, "UpdatedAt" = @updatedAt
+            WHERE "ZaloConnectionId" = @connectionId
+              AND "GroupId" = @groupId
+              AND "SessionId" = @sessionId
+              AND "State" IN ('AwaitingRequesterConsent','ProactiveSoft','ApproverTagged');
+            """;
+        Add(command, "@updatedAt", DateTimeOffset.UtcNow);
+        Add(command, "@connectionId", connectionId);
+        Add(command, "@groupId", groupId);
+        Add(command, "@sessionId", sessionId);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public Task<int> SetStateAsync(
         string id,
         ZaloDraftEscalationState state,
