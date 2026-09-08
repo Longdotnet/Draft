@@ -21,25 +21,25 @@ public static class ZaloTeamResultRecoveryPolicy
 
         if (readiness?.HasTeams == true)
         {
-            return $"{name} đã có kết quả chia team trong backend nhưng NPC chưa đọc được card/đội hình đầy đủ. " +
+            return $"{name} đã có kết quả chia team trong hệ thống nhưng NPC chưa đọc được card/đội hình đầy đủ. " +
                    $"Thử lại `{imageCommand}`; nếu vẫn lặp lại, nhờ admin kiểm tra. " +
                    "Không chạy lại lệnh 9 chỉ để chữa card vì có thể làm thay đổi đội hình. " +
                    "Thông tin này lấy trực tiếp từ dữ liệu trận và không phụ thuộc AI.";
         }
 
         var header = $"{name} chưa có kết quả chia team chính thức nên hiện chưa có card 3 đội để gửi.\n" +
-                     "Lệnh 10 chỉ đọc kết quả đã có, không tự tạo đội hình.";
+                     "Lệnh 10 chỉ đọc kết quả đã có, không tự chia đội.";
 
         if (readiness is null)
         {
-            return header + " Bạn không cần biết các từ như roster, draft hay sync. Làm theo vòng này:\n" +
-                   $"1) Trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ kiểm dữ liệu backend thật và nói đúng blocker hiện tại.\n" +
-                   $"2) Nếu NPC đưa cảnh báo xác nhận, người vừa chạy lệnh chỉ cần trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại.\n" +
+            return header + " Bạn không cần biết các từ kỹ thuật của hệ thống. Làm theo vòng này:\n" +
+                   $"1) Trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ kiểm dữ liệu thật và nói đúng việc đang vướng.\n" +
+                   "2) Nếu NPC hiện cảnh báo trước khi chia đội, người vừa chạy lệnh chỉ cần trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại.\n" +
                    $"3) Nếu NPC báo thiếu/dư người: gõ `{missingCommand}` để xem số chỗ hiện tại, chỉnh vote/danh sách thật rồi gõ lại lệnh 9.\n" +
                    "4) Nếu NPC báo hồ sơ chưa đủ: cập nhật đúng người, ví dụ `@Npc cập nhật Nick Tran: nam` hoặc `@Npc cập nhật Nick Tran: nam, công, trung bình`, rồi gõ lại lệnh 9.\n" +
-                   "5) Nếu NPC báo còn suất đang nhường/chờ nhận: owner đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ claim muốn nhả dùng `huỷ nhận`. NPC chỉ chốt khi trạng thái thật khớp.\n" +
+                   "5) Nếu NPC báo còn suất đang nhường/chờ nhận: người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ chỗ nhận muốn nhả dùng `huỷ nhận`. NPC chỉ chốt khi trạng thái thật khớp.\n" +
                    $"6) Chỉ khi NPC báo chia đội đã xong mới gõ `{imageCommand}` để lấy card 3 đội.\n" +
-                   "Nếu bạn không có quyền chạy lệnh 9, gửi nguyên hướng dẫn này cho trưởng/phó nhóm. AI có tắt/hết quota thì các cú pháp trên vẫn đi qua handler deterministic.";
+                   "Nếu bạn không có quyền chạy lệnh 9, gửi nguyên hướng dẫn này cho trưởng/phó nhóm. AI có tắt/hết quota thì các cú pháp trên vẫn hoạt động bằng dữ liệu hệ thống.";
         }
 
         var next = BuildGroundedNextStep(
@@ -64,7 +64,7 @@ public static class ZaloTeamResultRecoveryPolicy
 
             ZaloDraftReadinessState.UnresolvedPassSlots =>
                 $"Hiện còn {Math.Max(1, readiness.ActivePassSlotRiskCount)} suất đang nhường/chờ nhận chưa hoàn tất. " +
-                "Người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ claim muốn nhả dùng `huỷ nhận`. " +
+                "Người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ chỗ nhận muốn nhả dùng `huỷ nhận`. " +
                 $"Xử lý xong rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
 
             ZaloDraftReadinessState.RosterNotFull =>
@@ -79,7 +79,7 @@ public static class ZaloTeamResultRecoveryPolicy
                 BuildMissingProfilesMessage(readiness, draftCommand, imageCommand),
 
             ZaloDraftReadinessState.NoRoster =>
-                $"Danh sách hiện chưa có người chơi nào. Gõ `{missingCommand}` để kiểm tra số chỗ, đồng bộ/chỉnh vote đúng trận rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
+                $"Danh sách hiện chưa có người chơi nào. Gõ `{missingCommand}` để kiểm tra số chỗ, cập nhật lại vote đúng trận rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
 
             ZaloDraftReadinessState.MissingStartTime =>
                 $"Danh sách đã đủ nhưng trận chưa được chốt giờ bắt đầu. Nhờ admin chốt giờ trận trong cấu hình, rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
@@ -88,7 +88,7 @@ public static class ZaloTeamResultRecoveryPolicy
                 "Trận đã tới hoặc qua giờ bắt đầu nhưng chưa có kết quả đội chính thức. Lệnh 10 sẽ không tự đoán hay tự chia đội muộn; nhờ admin kiểm tra trạng thái trận trước khi làm tiếp.",
 
             ZaloDraftReadinessState.AlreadyDrafted =>
-                $"Backend báo đã có kết quả đội nhưng card chưa đọc được đầy đủ. Thử lại `{imageCommand}`; nếu vẫn lỗi, nhờ admin kiểm tra và không tự draft lại.",
+                $"Hệ thống báo đã có kết quả đội nhưng card chưa đọc được đầy đủ. Thử lại `{imageCommand}`; nếu vẫn lỗi, nhờ admin kiểm tra và không tự chia lại đội.",
 
             ZaloDraftReadinessState.InvalidStatus =>
                 BuildInvalidStatusMessage(readiness, imageCommand),
@@ -105,7 +105,7 @@ public static class ZaloTeamResultRecoveryPolicy
     {
         var start = lowerCaseStart ? "nhờ" : "Nhờ";
         return $"{start} trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. " +
-               "Nếu NPC đưa cảnh báo xác nhận, người vừa chạy lệnh trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại. " +
+               "Nếu NPC hiện cảnh báo trước khi chia đội, người vừa chạy lệnh trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại. " +
                $"Khi NPC báo chia đội xong thì gõ `{imageCommand}`.";
     }
 
@@ -134,13 +134,13 @@ public static class ZaloTeamResultRecoveryPolicy
         return readiness.ReasonCode switch
         {
             "draft_blocked_draft_in_progress" =>
-                $"NPC đang trong quá trình chia đội nên lệnh 10 không gửi đội hình giữa chừng. Chờ thao tác hiện tại hoàn tất rồi gõ lại `{imageCommand}`.",
+                $"NPC đang chia đội nên lệnh 10 chưa gửi đội hình giữa chừng. Chờ thao tác hiện tại hoàn tất rồi gõ lại `{imageCommand}`.",
             "draft_blocked_finished_without_team_result" =>
-                "Trận đang được đánh dấu đã kết thúc nhưng backend không có kết quả đội đầy đủ. Lệnh 10 sẽ không bịa đội hình; nhờ admin kiểm tra trạng thái/dữ liệu trước khi chạy lại.",
+                "Trận đang được đánh dấu đã kết thúc nhưng hệ thống không có kết quả đội đầy đủ. Lệnh 10 sẽ không bịa đội hình; nhờ admin kiểm tra trạng thái/dữ liệu trước khi chạy lại.",
             "draft_blocked_existing_assignment" =>
-                "Backend đang có dữ liệu chia đội dở dang nhưng chưa phải kết quả chính thức. Lệnh 10 sẽ không công bố đội hình một phần; nhờ admin kiểm tra trước khi làm tiếp.",
+                "Hệ thống đang có dữ liệu chia đội dở dang nhưng chưa phải kết quả chính thức. Lệnh 10 sẽ không công bố đội hình một phần; nhờ admin kiểm tra trước khi làm tiếp.",
             "draft_blocked_fingerprint_unavailable" =>
-                "NPC chưa kiểm tra được trạng thái dữ liệu đủ an toàn để chia đội. Hãy thử lại sau; nếu vẫn lặp lại thì nhờ admin kiểm tra, không tự đoán đội hình.",
+                "NPC chưa kiểm tra được dữ liệu có đủ an toàn để chia đội hay chưa. Hãy thử lại sau; nếu vẫn lặp lại thì nhờ admin kiểm tra, không tự đoán đội hình.",
             _ =>
                 "Trạng thái trận hiện không cho phép coi đội hình là kết quả chính thức. Lệnh 10 sẽ không tự đoán hoặc tự sửa dữ liệu; nhờ admin kiểm tra trước khi làm tiếp."
         };
