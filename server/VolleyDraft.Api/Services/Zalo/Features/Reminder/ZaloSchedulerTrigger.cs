@@ -41,6 +41,13 @@ public sealed class ZaloSchedulerTrigger
         }
     }
 
+    internal async Task RequeueAfterAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(delay, TimeSpan.Zero);
+        await Task.Delay(delay, cancellationToken);
+        TryTrigger();
+    }
+
     internal void Drain()
     {
         while (channel.Reader.TryRead(out _))
@@ -205,6 +212,7 @@ public sealed class ZaloSchedulerWorker(
     ILogger<ZaloSchedulerWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan DefaultWatchdogInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan LeaseContentionRetryDelay = TimeSpan.FromSeconds(5);
     private readonly string instanceId = Guid.NewGuid().ToString("N");
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -214,19 +222,20 @@ public sealed class ZaloSchedulerWorker(
         // Durable reminders, pass-slot rescue and Auto Session lifecycle handoff should catch up
         // whenever the API process becomes available, even if the external scheduler missed the
         // wake-up that originally should have driven them.
-        await RunCycleAsync(watchdogInterval, stoppingToken);
+        await RunCycleAsync(watchdogInterval, retryOnLeaseContention: false, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             var wakeReason = await trigger.WaitAsync(watchdogInterval, stoppingToken);
-            if (wakeReason == ZaloSchedulerWakeReason.ExternalTrigger)
+            var externalTrigger = wakeReason == ZaloSchedulerWakeReason.ExternalTrigger;
+            if (externalTrigger)
                 trigger.Drain();
             else
                 logger.LogWarning(
                     "Zalo scheduler watchdog started a recovery cycle after {WatchdogMinutes} minutes without an external tick",
                     watchdogInterval.TotalMinutes);
 
-            await RunCycleAsync(watchdogInterval, stoppingToken);
+            await RunCycleAsync(watchdogInterval, retryOnLeaseContention: externalTrigger, stoppingToken);
         }
     }
 
@@ -288,7 +297,10 @@ public sealed class ZaloSchedulerWorker(
         return await operationTask;
     }
 
-    private async Task RunCycleAsync(TimeSpan leaseDuration, CancellationToken cancellationToken)
+    private async Task RunCycleAsync(
+        TimeSpan leaseDuration,
+        bool retryOnLeaseContention,
+        CancellationToken cancellationToken)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
@@ -297,6 +309,14 @@ public sealed class ZaloSchedulerWorker(
         if (!await lease.TryAcquireAsync(instanceId, acquiredAt, leaseDuration, cancellationToken))
         {
             logger.LogInformation("Skipped Zalo scheduler cycle because another API instance owns the durable scheduler lease");
+            if (retryOnLeaseContention)
+            {
+                logger.LogInformation(
+                    "Preserving external Zalo scheduler wake and retrying lease acquisition in {RetrySeconds} seconds",
+                    LeaseContentionRetryDelay.TotalSeconds);
+                await trigger.RequeueAfterAsync(LeaseContentionRetryDelay, cancellationToken);
+            }
+
             return;
         }
 
