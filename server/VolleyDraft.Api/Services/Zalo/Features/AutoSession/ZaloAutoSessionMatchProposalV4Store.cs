@@ -64,6 +64,7 @@ internal sealed class ZaloAutoSessionProposalEvidenceV4
 internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext db)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private bool ensured;
 
     public async Task EnsureAsync(CancellationToken cancellationToken = default)
@@ -279,16 +280,8 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         {
             PollId = proposal.PollId,
             PollStructureHash = proposal.PollStructureHash,
-            Location = new ZaloAutoSessionProposalEvidenceValueV4
-            {
-                Source = string.IsNullOrWhiteSpace(tracked.DefaultLocation) ? "missing" : "approved_group_default",
-                Detail = string.IsNullOrWhiteSpace(tracked.DefaultLocation) ? null : "ZaloTrackedGroups.DefaultLocation"
-            },
-            TeamSize = new ZaloAutoSessionProposalEvidenceValueV4
-            {
-                Source = "approved_group_default",
-                Detail = "ZaloTrackedGroups.DefaultTeamSize"
-            }
+            Location = BuildInitialLocationEvidence(tracked, draft),
+            TeamSize = BuildInitialTeamSizeEvidence(tracked, draft)
         };
 
         foreach (var item in draft.Items)
@@ -307,6 +300,45 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
         }
 
         return evidence;
+    }
+
+    private static ZaloAutoSessionProposalEvidenceValueV4 BuildInitialLocationEvidence(
+        ZaloTrackedGroupData tracked,
+        ZaloAutoSessionConversationDraft draft)
+    {
+        var draftLocation = draft.Location?.Trim() ?? string.Empty;
+        var currentApprovedLocation = tracked.DefaultLocation?.Trim() ?? string.Empty;
+        if (draftLocation.Length == 0)
+            return new ZaloAutoSessionProposalEvidenceValueV4 { Source = "missing" };
+        if (currentApprovedLocation.Length > 0 &&
+            string.Equals(draftLocation, currentApprovedLocation, StringComparison.Ordinal))
+        {
+            return new ZaloAutoSessionProposalEvidenceValueV4
+            {
+                Source = "approved_group_default",
+                Detail = "ZaloTrackedGroups.DefaultLocation"
+            };
+        }
+
+        return StaleDefaultEvidence(
+            $"draft={draftLocation}; current={currentApprovedLocation}");
+    }
+
+    private static ZaloAutoSessionProposalEvidenceValueV4 BuildInitialTeamSizeEvidence(
+        ZaloTrackedGroupData tracked,
+        ZaloAutoSessionConversationDraft draft)
+    {
+        if (draft.TeamSize == tracked.DefaultTeamSize)
+        {
+            return new ZaloAutoSessionProposalEvidenceValueV4
+            {
+                Source = "approved_group_default",
+                Detail = "ZaloTrackedGroups.DefaultTeamSize"
+            };
+        }
+
+        return StaleDefaultEvidence(
+            $"draft={draft.TeamSize.ToString(CultureInfo.InvariantCulture)}; current={tracked.DefaultTeamSize.ToString(CultureInfo.InvariantCulture)}");
     }
 
     private static ZaloAutoSessionProposalEvidenceValueV4 BuildInitialStartTimeEvidence(
@@ -332,12 +364,26 @@ internal sealed class ZaloAutoSessionMatchProposalV4Store(VolleyDraftDbContext d
             };
         }
 
-        return new ZaloAutoSessionProposalEvidenceValueV4
+        var local = item.StartTime.ToOffset(VietnamOffset);
+        var draftMinutes = local.Hour * 60 + local.Minute;
+        if (draftMinutes == tracked.DefaultStartMinutes)
         {
-            Source = "approved_group_default",
-            Detail = $"ZaloTrackedGroups.DefaultStartMinutes={tracked.DefaultStartMinutes.ToString(CultureInfo.InvariantCulture)}"
-        };
+            return new ZaloAutoSessionProposalEvidenceValueV4
+            {
+                Source = "approved_group_default",
+                Detail = $"ZaloTrackedGroups.DefaultStartMinutes={tracked.DefaultStartMinutes.ToString(CultureInfo.InvariantCulture)}"
+            };
+        }
+
+        return StaleDefaultEvidence(
+            $"draft={draftMinutes.ToString(CultureInfo.InvariantCulture)}; current={tracked.DefaultStartMinutes.ToString(CultureInfo.InvariantCulture)}");
     }
+
+    private static ZaloAutoSessionProposalEvidenceValueV4 StaleDefaultEvidence(string detail) => new()
+    {
+        Source = "stale_or_unapproved_default",
+        Detail = detail
+    };
 
     private static ZaloAutoSessionProposalEvidenceV4 EvolveEvidence(
         ZaloAutoSessionMatchProposalV4Revision latest,
