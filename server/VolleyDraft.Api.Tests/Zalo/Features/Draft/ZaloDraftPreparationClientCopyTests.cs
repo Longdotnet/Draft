@@ -60,7 +60,7 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("không cần @Npc", text);
         Assert.Contains("`@Npc cập nhật @Tên: nam, công, trung bình`", text);
         Assert.Contains("phải tag đúng người", text);
-        Assert.Contains("`draft đi`", text);
+        AssertSafePostProfileRecovery(text);
         AssertBeginnerSafe(text);
     }
 
@@ -77,7 +77,7 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("`nam`", text);
         Assert.Contains("`@Npc cập nhật @Tên: nam, công, trung bình`", text);
         Assert.Contains("admin/trưởng/phó", text);
-        Assert.Contains("`draft đi`", text);
+        AssertSafePostProfileRecovery(text);
         AssertBeginnerSafe(text);
     }
 
@@ -209,6 +209,20 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("chơi với 15 chỗ hiện tại", text);
         Assert.Contains("tiếp tục kiếm thêm", text);
         AssertBeginnerSafe(text);
+    }
+
+    private static void AssertSafePostProfileRecovery(string text)
+    {
+        Assert.Contains("Khi người cuối cùng cập nhật xong", text);
+        Assert.Contains("trưởng/phó", text);
+        Assert.Contains("`draft đi`", text);
+        Assert.Contains("đọc lại vote", text);
+        Assert.Contains("nhường/chờ nhận", text);
+        Assert.Contains("số người/chỗ", text);
+        Assert.Contains("giờ trận", text);
+        Assert.Contains("quyền", text);
+        Assert.Contains("Nếu còn vướng", text);
+        Assert.Contains("không tự chia", text);
     }
 
     private static void AssertBeginnerSafe(string text)

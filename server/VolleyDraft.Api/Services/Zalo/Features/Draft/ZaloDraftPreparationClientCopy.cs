@@ -9,8 +9,11 @@ internal static class ZaloDraftPreparationClientCopy
         "Người được NPC tag có thể trả lời ngay tin hỏi hồ sơ bằng `nam`, `thủ`, `mới chơi` hoặc `tui nam, đánh công, tầm trung bình`; không cần @Npc. " +
         "Nếu cần cập nhật thay, admin/trưởng/phó hoặc người có quyền bot dùng `@Npc cập nhật @Tên: nam, công, trung bình` và phải tag đúng người.";
 
+    private const string MissingProfilePostRecoveryNextStep =
+        " Khi người cuối cùng cập nhật xong, trưởng/phó nói `draft đi`; tui sẽ đọc lại vote, chỗ đang nhường/chờ nhận, số người/chỗ, giờ trận và quyền trước khi chia. Nếu còn vướng, tui sẽ chỉ đúng việc cần xử lý chứ không tự chia.";
+
     private const string MissingProfileRecoveryHint =
-        MissingProfileRecoveryActions + " Xong thì thử `draft đi` lại.";
+        MissingProfileRecoveryActions + MissingProfilePostRecoveryNextStep;
 
     internal static string StopMatch(string changePrefix, string sessionName) =>
         $"{changePrefix}Ok, tui ghi nhận trưởng/phó chốt dừng kèo {sessionName}. Tui ngưng nhắc chia đội cho trận này nha. Tui chưa tự xoá trận, vote hay thao tác huỷ sân bên ngoài.";
