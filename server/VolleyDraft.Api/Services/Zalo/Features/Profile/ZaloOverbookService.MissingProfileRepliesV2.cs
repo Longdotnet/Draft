@@ -59,37 +59,60 @@ internal static class ZaloNaturalProfileReplyParser
 
         var directAnswer = IsDirectProfileAnswer(text);
         var selfScoped = HasSelfSubject(text);
+
+        // Vietnamese "nam" is also the normalized form of "năm". Temporal phrases
+        // must never turn ordinary small talk into a gender mutation.
         var temporalMaleWord = HasAny(text, "nam nay", "nam sau", "nam truoc", "nam ngoai");
-        var male = (!temporalMaleWord && ContainsToken(text, "nam")) || HasAny(text, "con trai", "male", "boy");
+        var male = (!temporalMaleWord && ContainsToken(text, "nam")) ||
+                   HasAny(text, "con trai", "male", "boy");
         var female = ContainsToken(text, "nu") || HasAny(text, "con gai", "female", "girl");
         var genderConflict = male && female;
-        PlayerGender? gender = genderConflict ? null : female ? PlayerGender.Female : male ? PlayerGender.Male : null;
+        PlayerGender? gender = genderConflict
+            ? null
+            : female ? PlayerGender.Female
+            : male ? PlayerGender.Male
+            : null;
 
         var setter = HasAny(text, "chuyen 2", "chuyen hai", "setter");
         var fullStack = HasAny(text, "toan dien", "fullstack", "full stack", "all round", "allround");
         var bareDefense = ContainsToken(text, "thu") &&
-                          !HasAny(text, "thu mon", "thu 2", "thu 3", "thu 4", "thu 5", "thu 6", "thu 7", "thu hai", "thu ba", "thu tu", "thu nam", "thu sau", "thu bay") &&
+                          !HasAny(text, "thu mon", "thu 2", "thu 3", "thu 4", "thu 5", "thu 6", "thu 7",
+                              "thu hai", "thu ba", "thu tu", "thu nam", "thu sau", "thu bay") &&
                           (directAnswer || selfScoped || repliedToPrompt);
         var defense = HasAny(text, "phong thu", "danh thu", "choi thu", "libero") || bareDefense;
         var bareAttack = ContainsToken(text, "cong") &&
                          !HasAny(text, "cong ty", "cong viec", "cong nghe", "cong an", "cong nhan", "cong chua") &&
                          (directAnswer || selfScoped || repliedToPrompt);
-        var attack = HasAny(text, "tan cong", "danh cong", "choi cong", "chu cong", "phu cong", "doi chuyen", "attack") || bareAttack;
+        var attack = HasAny(text, "tan cong", "danh cong", "choi cong", "chu cong", "phu cong", "doi chuyen", "attack") ||
+                     bareAttack;
         var roleCount = CountTrue(setter, fullStack, defense, attack);
         var roleConflict = roleCount > 1;
-        PlayerRole? role = roleConflict ? null : setter ? PlayerRole.Setter : fullStack ? PlayerRole.FullStack : defense ? PlayerRole.Defense : attack ? PlayerRole.Attack : null;
+        PlayerRole? role = roleConflict
+            ? null
+            : setter ? PlayerRole.Setter
+            : fullStack ? PlayerRole.FullStack
+            : defense ? PlayerRole.Defense
+            : attack ? PlayerRole.Attack
+            : null;
 
         var average = HasAny(text, "trung binh", "tam trung", "average") || ContainsToken(text, "tb");
         var good = HasAny(text, "choi tot", "danh tot", "trinh do tot", "level tot", "good") ||
                    ((ContainsToken(text, "tot") || ContainsToken(text, "kha")) &&
                     !HasAny(text, "tot nghiep", "tot hon", "tot qua", "tot roi", "tot nhat", "kha ban", "kha vui", "kha met") &&
                     (directAnswer || repliedToPrompt));
-        var newbie = (HasAny(text, "moi choi", "newbie", "beginner", "trinh do moi", "level moi") && !HasAny(text, "moi choi lai")) ||
+        var newbie = (HasAny(text, "moi choi", "newbie", "beginner", "trinh do moi", "level moi") &&
+                      !HasAny(text, "moi choi lai")) ||
                      (missingLevel && ContainsToken(text, "moi") && directAnswer);
         var levelCount = CountTrue(average, good, newbie);
         var levelConflict = levelCount > 1;
-        PlayerLevel? level = levelConflict ? null : average ? PlayerLevel.Average : good ? PlayerLevel.Good : newbie ? PlayerLevel.New : null;
+        PlayerLevel? level = levelConflict
+            ? null
+            : average ? PlayerLevel.Average
+            : good ? PlayerLevel.Good
+            : newbie ? PlayerLevel.New
+            : null;
 
+        // A prompt is a field allow-list, not permission to rewrite known values.
         if (!missingGender) gender = null;
         if (!missingRole) role = null;
         if (!missingLevel) level = null;
@@ -97,59 +120,128 @@ internal static class ZaloNaturalProfileReplyParser
         var hasConflict = genderConflict || roleConflict || levelConflict;
         var rawRecognized = male || female || setter || fullStack || defense || attack || average || good || newbie;
         var compact = text.Length <= 180 && text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 30;
-        var unrelated = UnrelatedDomainSignals.Any(signal => raw.Contains(signal, StringComparison.Ordinal) || text.Contains(signal, StringComparison.Ordinal));
+        var unrelated = UnrelatedDomainSignals.Any(signal =>
+            raw.Contains(signal, StringComparison.Ordinal) || text.Contains(signal, StringComparison.Ordinal));
         var contextGrounded = directAnswer || selfScoped || repliedToPrompt;
         var looksLikeProfileAnswer = rawRecognized && compact && !unrelated && contextGrounded;
-        return new(gender, role, level, hasConflict, rawRecognized, looksLikeProfileAnswer, false, false);
+
+        return new(
+            gender,
+            role,
+            level,
+            hasConflict,
+            rawRecognized,
+            looksLikeProfileAnswer,
+            false,
+            false);
     }
 
     private static int CountTrue(params bool[] values) => values.Count(value => value);
-    private static bool HasAny(string text, params string[] values) => values.Any(value => text.Contains(value, StringComparison.Ordinal));
-    private static bool ContainsToken(string text, string token) => $" {text} ".Contains($" {token} ", StringComparison.Ordinal);
-    private static bool HasSelfSubject(string text) => new[] { "tui", "toi", "minh", "em", "tao", "to" }.Any(token => ContainsToken(text, token));
+
+    private static bool HasAny(string text, params string[] values) =>
+        values.Any(value => text.Contains(value, StringComparison.Ordinal));
+
+    private static bool ContainsToken(string text, string token)
+    {
+        var padded = $" {text} ";
+        return padded.Contains($" {token} ", StringComparison.Ordinal);
+    }
+
+    private static bool HasSelfSubject(string text) =>
+        new[] { "tui", "toi", "minh", "em", "tao", "to" }.Any(token => ContainsToken(text, token));
+
     private static bool IsDirectProfileAnswer(string text)
     {
         var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return tokens.Length is > 0 and <= 14 && tokens.All(token => DirectProfileTokens.Contains(token));
+        return tokens.Length is > 0 and <= 14 &&
+               tokens.All(token => DirectProfileTokens.Contains(token));
     }
 
     private static string NormalizeConversationalSeparators(string text)
     {
         if (text.Length == 0) return string.Empty;
-        var chars = text.Select(character => char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) ? character : ' ').ToArray();
-        return string.Join(' ', new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        var chars = text.Select(character =>
+                char.IsLetterOrDigit(character) || char.IsWhiteSpace(character)
+                    ? character
+                    : ' ')
+            .ToArray();
+        return string.Join(' ',
+            new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 }
 
-internal enum ZaloProfilePromptRoute { Accept, SkipThisPrompt, ClarifyOnce }
+internal enum ZaloProfilePromptRoute
+{
+    Accept,
+    SkipThisPrompt,
+    ClarifyOnce
+}
 
 internal static class ZaloProfilePromptRoutingPolicy
 {
-    internal static ZaloProfilePromptRoute Resolve(string currentPromptId, string oldestPromptId, string? repliedPromptId, IReadOnlySet<string> referencedPromptIds, int activePromptCount, bool looksLikeProfileAnswer, bool wantsToSkip)
+    internal static ZaloProfilePromptRoute Resolve(
+        string currentPromptId,
+        string oldestPromptId,
+        string? repliedPromptId,
+        IReadOnlySet<string> referencedPromptIds,
+        int activePromptCount,
+        bool looksLikeProfileAnswer,
+        bool wantsToSkip)
     {
         if (!string.IsNullOrWhiteSpace(repliedPromptId))
-            return string.Equals(repliedPromptId, currentPromptId, StringComparison.Ordinal) ? ZaloProfilePromptRoute.Accept : ZaloProfilePromptRoute.SkipThisPrompt;
-        if (activePromptCount <= 1) return ZaloProfilePromptRoute.Accept;
+            return string.Equals(repliedPromptId, currentPromptId, StringComparison.Ordinal)
+                ? ZaloProfilePromptRoute.Accept
+                : ZaloProfilePromptRoute.SkipThisPrompt;
+
+        if (activePromptCount <= 1)
+            return ZaloProfilePromptRoute.Accept;
+
         if (referencedPromptIds.Count == 1)
-            return referencedPromptIds.Contains(currentPromptId) ? ZaloProfilePromptRoute.Accept : ZaloProfilePromptRoute.SkipThisPrompt;
+            return referencedPromptIds.Contains(currentPromptId)
+                ? ZaloProfilePromptRoute.Accept
+                : ZaloProfilePromptRoute.SkipThisPrompt;
+
         if (referencedPromptIds.Count > 1)
-            return string.Equals(currentPromptId, oldestPromptId, StringComparison.Ordinal) && (looksLikeProfileAnswer || wantsToSkip) ? ZaloProfilePromptRoute.ClarifyOnce : ZaloProfilePromptRoute.SkipThisPrompt;
-        return string.Equals(currentPromptId, oldestPromptId, StringComparison.Ordinal) && (looksLikeProfileAnswer || wantsToSkip) ? ZaloProfilePromptRoute.ClarifyOnce : ZaloProfilePromptRoute.SkipThisPrompt;
+            return string.Equals(currentPromptId, oldestPromptId, StringComparison.Ordinal) &&
+                   (looksLikeProfileAnswer || wantsToSkip)
+                ? ZaloProfilePromptRoute.ClarifyOnce
+                : ZaloProfilePromptRoute.SkipThisPrompt;
+
+        // A bare "nam" or "để sau" is ambiguous when the same UID has multiple
+        // active match contexts. Only the oldest prompt owns the one clarification;
+        // no prompt is allowed to mutate from the ambiguous turn.
+        return string.Equals(currentPromptId, oldestPromptId, StringComparison.Ordinal) &&
+               (looksLikeProfileAnswer || wantsToSkip)
+            ? ZaloProfilePromptRoute.ClarifyOnce
+            : ZaloProfilePromptRoute.SkipThisPrompt;
     }
 }
 
 public sealed partial class ZaloOverbookService
 {
-    private async Task<int> ProcessMissingProfileRepliesDueV2Async(CancellationToken cancellationToken)
+    private async Task<int> ProcessMissingProfileRepliesDueV2Async(
+        CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
         var promptStore = new ZaloMissingProfilePromptStore(db);
         var prompts = await promptStore.GetActiveAsync(now, 100, cancellationToken);
         if (prompts.Count == 0) return 0;
 
-        var promptGroups = prompts.GroupBy(ProfileIdentityKey, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.OrderBy(item => item.PromptedAt).ThenBy(item => item.Id).ToList(), StringComparer.Ordinal);
-        var promptSessionIds = prompts.Select(prompt => prompt.SessionId).Distinct(StringComparer.Ordinal).ToList();
-        var sessionNameRows = await db.MatchSessions.AsNoTracking().Where(session => promptSessionIds.Contains(session.Id)).Select(session => new { session.Id, session.Name }).ToListAsync(cancellationToken);
+        var promptGroups = prompts
+            .GroupBy(ProfileIdentityKey, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(item => item.PromptedAt).ThenBy(item => item.Id).ToList(),
+                StringComparer.Ordinal);
+        var promptSessionIds = prompts
+            .Select(prompt => prompt.SessionId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var sessionNameRows = await db.MatchSessions
+            .AsNoTracking()
+            .Where(session => promptSessionIds.Contains(session.Id))
+            .Select(session => new { session.Id, session.Name })
+            .ToListAsync(cancellationToken);
         var sessionNames = sessionNameRows.ToDictionary(item => item.Id, item => item.Name, StringComparer.Ordinal);
         var graphStore = new ZaloMessageGraphStore(db);
         var handled = 0;
@@ -157,8 +249,18 @@ public sealed partial class ZaloOverbookService
         foreach (var initialPrompt in prompts)
         {
             var prompt = initialPrompt;
-            var session = await db.MatchSessions.AsNoTracking().Include(item => item.ZaloConnection).SingleOrDefaultAsync(item => item.Id == prompt.SessionId && item.ZaloConnectionId == prompt.ZaloConnectionId && item.ZaloGroupId == prompt.GroupId, cancellationToken);
-            if (session is null || session.ZaloConnection is null || !session.BotEnabled || session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
+            var session = await db.MatchSessions
+                .AsNoTracking()
+                .Include(item => item.ZaloConnection)
+                .SingleOrDefaultAsync(item =>
+                    item.Id == prompt.SessionId &&
+                    item.ZaloConnectionId == prompt.ZaloConnectionId &&
+                    item.ZaloGroupId == prompt.GroupId,
+                    cancellationToken);
+            if (session is null ||
+                session.ZaloConnection is null ||
+                !session.BotEnabled ||
+                session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
             {
                 await promptStore.CompleteAsync(prompt.Id, now, cancellationToken);
                 continue;
@@ -177,36 +279,111 @@ public sealed partial class ZaloOverbookService
                 await promptStore.CompleteAsync(prompt.Id, now, cancellationToken);
                 continue;
             }
-            if (currentMissing.Gender != prompt.MissingGender || currentMissing.Role != prompt.MissingRole || currentMissing.Level != prompt.MissingLevel)
+            if (currentMissing.Gender != prompt.MissingGender ||
+                currentMissing.Role != prompt.MissingRole ||
+                currentMissing.Level != prompt.MissingLevel)
             {
-                await promptStore.UpdateProgressAsync(prompt.Id, currentMissing.Gender, currentMissing.Role, currentMissing.Level, prompt.LastProcessedAt, false, cancellationToken);
-                prompt = prompt with { MissingGender = currentMissing.Gender, MissingRole = currentMissing.Role, MissingLevel = currentMissing.Level };
+                await promptStore.UpdateProgressAsync(
+                    prompt.Id,
+                    currentMissing.Gender,
+                    currentMissing.Role,
+                    currentMissing.Level,
+                    prompt.LastProcessedAt,
+                    false,
+                    cancellationToken);
+                prompt = prompt with
+                {
+                    MissingGender = currentMissing.Gender,
+                    MissingRole = currentMissing.Role,
+                    MissingLevel = currentMissing.Level
+                };
             }
 
-            var senderMessages = await db.ZaloGroupMessages.AsNoTracking()
-                .Where(message => message.ZaloConnectionId == prompt.ZaloConnectionId && message.GroupId == prompt.GroupId && !message.IsFromBot && message.SenderId == prompt.ZaloUserId)
-                .Select(message => new { message.Id, message.MessageId, message.Content, message.SentAt, message.ReceivedAt, message.BotReplySentAt, message.ReplyAttemptCount, message.ProcessingToken, message.ProcessingStartedAt })
+            var senderMessages = await db.ZaloGroupMessages
+                .AsNoTracking()
+                .Where(message =>
+                    message.ZaloConnectionId == prompt.ZaloConnectionId &&
+                    message.GroupId == prompt.GroupId &&
+                    !message.IsFromBot &&
+                    message.SenderId == prompt.ZaloUserId)
+                .Select(message => new
+                {
+                    message.Id,
+                    message.MessageId,
+                    message.Content,
+                    message.SentAt,
+                    message.ReceivedAt,
+                    message.BotReplySentAt,
+                    message.ReplyAttemptCount,
+                    message.ProcessingToken,
+                    message.ProcessingStartedAt
+                })
                 .ToListAsync(cancellationToken);
-            var candidates = senderMessages.Where(message => message.BotReplySentAt is null && message.SentAt > prompt.LastProcessedAt && message.SentAt >= prompt.PromptedAt && message.SentAt <= prompt.ExpiresAt).OrderBy(message => message.SentAt).ThenBy(message => message.ReceivedAt).Take(20).ToList();
+
+            var candidates = senderMessages
+                .Where(message =>
+                    message.BotReplySentAt is null &&
+                    message.SentAt > prompt.LastProcessedAt &&
+                    message.SentAt >= prompt.PromptedAt &&
+                    message.SentAt <= prompt.ExpiresAt)
+                .OrderBy(message => message.SentAt)
+                .ThenBy(message => message.ReceivedAt)
+                .Take(20)
+                .ToList();
             if (candidates.Count == 0) continue;
 
             var identityPrompts = promptGroups[ProfileIdentityKey(prompt)];
             var oldestPromptId = identityPrompts[0].Id;
             foreach (var message in candidates)
             {
-                var processedAt = message.SentAt > prompt.LastProcessedAt ? message.SentAt : prompt.LastProcessedAt.AddTicks(1);
-                var firstPass = ZaloNaturalProfileReplyParser.Parse(message.Content, prompt.MissingGender, prompt.MissingRole, prompt.MissingLevel);
+                var processedAt = message.SentAt > prompt.LastProcessedAt
+                    ? message.SentAt
+                    : prompt.LastProcessedAt.AddTicks(1);
+
+                var firstPass = ZaloNaturalProfileReplyParser.Parse(
+                    message.Content,
+                    prompt.MissingGender,
+                    prompt.MissingRole,
+                    prompt.MissingLevel);
                 ZaloMessageGraphRelation? relation = null;
                 if (firstPass.HasRecognizedValue || firstPass.WantsToSkip)
-                    relation = await graphStore.LoadRelationAsync(prompt.ZaloConnectionId, prompt.GroupId, message.MessageId, cancellationToken);
+                {
+                    relation = await graphStore.LoadRelationAsync(
+                        prompt.ZaloConnectionId,
+                        prompt.GroupId,
+                        message.MessageId,
+                        cancellationToken);
+                }
 
                 var repliedPromptId = relation?.ToMessageId is { Length: > 0 } quotedId
-                    ? identityPrompts.FirstOrDefault(item => !string.IsNullOrWhiteSpace(item.PromptMessageId) && string.Equals(item.PromptMessageId, quotedId, StringComparison.Ordinal))?.Id
+                    ? identityPrompts.FirstOrDefault(item =>
+                        !string.IsNullOrWhiteSpace(item.PromptMessageId) &&
+                        string.Equals(item.PromptMessageId, quotedId, StringComparison.Ordinal))?.Id
                     : null;
                 var repliedToThisPrompt = string.Equals(repliedPromptId, prompt.Id, StringComparison.Ordinal);
-                var parsed = repliedToThisPrompt ? ZaloNaturalProfileReplyParser.Parse(message.Content, prompt.MissingGender, prompt.MissingRole, prompt.MissingLevel, repliedToPrompt: true) : firstPass;
-                var referencedPromptIds = identityPrompts.Where(item => ReferencesProfileSession(message.Content, sessionNames.GetValueOrDefault(item.SessionId))).Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
-                var route = ZaloProfilePromptRoutingPolicy.Resolve(prompt.Id, oldestPromptId, repliedPromptId, referencedPromptIds, identityPrompts.Count, parsed.LooksLikeProfileAnswer, parsed.WantsToSkip);
+                var parsed = repliedToThisPrompt
+                    ? ZaloNaturalProfileReplyParser.Parse(
+                        message.Content,
+                        prompt.MissingGender,
+                        prompt.MissingRole,
+                        prompt.MissingLevel,
+                        repliedToPrompt: true)
+                    : firstPass;
+
+                var referencedPromptIds = identityPrompts
+                    .Where(item => ReferencesProfileSession(
+                        message.Content,
+                        sessionNames.GetValueOrDefault(item.SessionId)))
+                    .Select(item => item.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+                var route = ZaloProfilePromptRoutingPolicy.Resolve(
+                    prompt.Id,
+                    oldestPromptId,
+                    repliedPromptId,
+                    referencedPromptIds,
+                    identityPrompts.Count,
+                    parsed.LooksLikeProfileAnswer,
+                    parsed.WantsToSkip);
 
                 if (route == ZaloProfilePromptRoute.SkipThisPrompt)
                 {
@@ -217,17 +394,38 @@ public sealed partial class ZaloOverbookService
 
                 if (route == ZaloProfilePromptRoute.ClarifyOnce)
                 {
-                    var claimToken = await TryClaimProfileInputAsync(message.Id, message.ReplyAttemptCount, message.ProcessingToken, message.ProcessingStartedAt, cancellationToken);
+                    var claimToken = await TryClaimProfileInputAsync(
+                        message.Id,
+                        message.ReplyAttemptCount,
+                        message.ProcessingToken,
+                        message.ProcessingStartedAt,
+                        cancellationToken);
                     if (claimToken is not null)
                     {
                         try
                         {
-                            var choices = identityPrompts.Select(item => sessionNames.GetValueOrDefault(item.SessionId) ?? item.SessionId).Distinct(StringComparer.OrdinalIgnoreCase).Take(4);
-                            await SendProfileConversationReplyAsync(session, prompt, message.MessageId, $"Tui đang hỏi hồ sơ của ông cho hơn một kèo ({string.Join(", ", choices)}) 😅 Reply đúng tin nhắn kèo đó, hoặc ghi tên kèo như `T6: nam, công` giúp tui để khỏi cập nhật nhầm.", cancellationToken);
-                            await MarkProfileInputHandledAsync(message.Id, "profile_session_ambiguous", claimToken, cancellationToken);
+                            var choices = identityPrompts
+                                .Select(item => sessionNames.GetValueOrDefault(item.SessionId) ?? item.SessionId)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .Take(4);
+                            await SendProfileConversationReplyAsync(
+                                session,
+                                prompt,
+                                message.MessageId,
+                                $"Tui đang hỏi hồ sơ của ông cho hơn một kèo ({string.Join(", ", choices)}) 😅 Reply đúng tin nhắn kèo đó, hoặc ghi tên kèo như `T6: nam, công` giúp tui để khỏi cập nhật nhầm.",
+                                cancellationToken);
+                            await MarkProfileInputHandledAsync(
+                                message.Id,
+                                "profile_session_ambiguous",
+                                claimToken,
+                                cancellationToken);
                             handled += 1;
                         }
-                        catch { await ReleaseProfileInputClaimAsync(message.Id, claimToken, cancellationToken); throw; }
+                        catch
+                        {
+                            await ReleaseProfileInputClaimAsync(message.Id, claimToken, cancellationToken);
+                            throw;
+                        }
                     }
                     await AdvanceProfilePromptCursorAsync(promptStore, prompt, processedAt, cancellationToken);
                     prompt = prompt with { LastProcessedAt = processedAt };
@@ -236,18 +434,38 @@ public sealed partial class ZaloOverbookService
 
                 if (parsed.WantsToSkip)
                 {
-                    var claimToken = await TryClaimProfileInputAsync(message.Id, message.ReplyAttemptCount, message.ProcessingToken, message.ProcessingStartedAt, cancellationToken);
+                    var claimToken = await TryClaimProfileInputAsync(
+                        message.Id,
+                        message.ReplyAttemptCount,
+                        message.ProcessingToken,
+                        message.ProcessingStartedAt,
+                        cancellationToken);
                     if (claimToken is null) continue;
                     try
                     {
-                        var response = parsed.WantsToDismiss ? $"Ok {prompt.DisplayName}, tui bỏ qua lượt hỏi hồ sơ này nha 👌 Dữ liệu hiện tại giữ nguyên." : $"Ok {prompt.DisplayName}, để sau cũng được 👌 Tui dừng hỏi ở lượt này; gần chốt nếu vẫn thiếu tui mới nhắc lại nhẹ.";
-                        await SendProfileConversationReplyAsync(session, prompt, message.MessageId, response, cancellationToken);
-                        await MarkProfileInputHandledAsync(message.Id, parsed.WantsToDismiss ? "profile_dismissed" : "profile_deferred", claimToken, cancellationToken);
+                        var response = parsed.WantsToDismiss
+                            ? $"Ok {prompt.DisplayName}, tui bỏ qua lượt hỏi hồ sơ này nha 👌 Dữ liệu hiện tại giữ nguyên."
+                            : $"Ok {prompt.DisplayName}, để sau cũng được 👌 Tui dừng hỏi ở lượt này; gần chốt nếu vẫn thiếu tui mới nhắc lại nhẹ.";
+                        await SendProfileConversationReplyAsync(
+                            session,
+                            prompt,
+                            message.MessageId,
+                            response,
+                            cancellationToken);
+                        await MarkProfileInputHandledAsync(
+                            message.Id,
+                            parsed.WantsToDismiss ? "profile_dismissed" : "profile_deferred",
+                            claimToken,
+                            cancellationToken);
                         await promptStore.CompleteAsync(prompt.Id, processedAt, cancellationToken);
                         handled += 1;
                         break;
                     }
-                    catch { await ReleaseProfileInputClaimAsync(message.Id, claimToken, cancellationToken); throw; }
+                    catch
+                    {
+                        await ReleaseProfileInputClaimAsync(message.Id, claimToken, cancellationToken);
+                        throw;
+                    }
                 }
 
                 if (!parsed.LooksLikeProfileAnswer)
@@ -257,15 +475,27 @@ public sealed partial class ZaloOverbookService
                     continue;
                 }
 
-                var claim = await TryClaimProfileInputAsync(message.Id, message.ReplyAttemptCount, message.ProcessingToken, message.ProcessingStartedAt, cancellationToken);
+                var claim = await TryClaimProfileInputAsync(
+                    message.Id,
+                    message.ReplyAttemptCount,
+                    message.ProcessingToken,
+                    message.ProcessingStartedAt,
+                    cancellationToken);
                 if (claim is null) continue;
 
                 try
                 {
+                    // Close the race between the initial read and mutation. Another
+                    // safe flow may have updated this profile while this worker was
+                    // resolving quote/session context.
                     var freshPlayer = await LoadProfilePromptPlayerAsync(prompt, cancellationToken);
                     if (!PlayerStillMatchesPrompt(freshPlayer, prompt))
                     {
-                        await MarkProfileInputHandledAsync(message.Id, "profile_context_stale", claim, cancellationToken);
+                        await MarkProfileInputHandledAsync(
+                            message.Id,
+                            "profile_context_stale",
+                            claim,
+                            cancellationToken);
                         await promptStore.CompleteAsync(prompt.Id, processedAt, cancellationToken);
                         handled += 1;
                         break;
@@ -274,80 +504,222 @@ public sealed partial class ZaloOverbookService
                     var freshMissing = GetMissingProfileFlags(freshPlayer!);
                     if (!freshMissing.Gender && !freshMissing.Role && !freshMissing.Level)
                     {
-                        var alreadyCompleteResponse = await BuildSelfProfileCompletionReplyAsync(session, prompt, [], alreadyComplete: true, cancellationToken);
-                        await SendProfileConversationReplyAsync(session, prompt, message.MessageId, alreadyCompleteResponse, cancellationToken);
-                        await MarkProfileInputHandledAsync(message.Id, "profile_already_complete", claim, cancellationToken);
+                        var alreadyCompleteResponse = await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            [],
+                            alreadyComplete: true,
+                            cancellationToken);
+                        await SendProfileConversationReplyAsync(
+                            session,
+                            prompt,
+                            message.MessageId,
+                            alreadyCompleteResponse,
+                            cancellationToken);
+                        await MarkProfileInputHandledAsync(
+                            message.Id,
+                            "profile_already_complete",
+                            claim,
+                            cancellationToken);
                         await promptStore.CompleteAsync(prompt.Id, processedAt, cancellationToken);
                         handled += 1;
                         break;
                     }
 
-                    parsed = ZaloNaturalProfileReplyParser.Parse(message.Content, freshMissing.Gender, freshMissing.Role, freshMissing.Level, repliedToPrompt: repliedToThisPrompt);
+                    parsed = ZaloNaturalProfileReplyParser.Parse(
+                        message.Content,
+                        freshMissing.Gender,
+                        freshMissing.Role,
+                        freshMissing.Level,
+                        repliedToPrompt: repliedToThisPrompt);
                     var hasRequestedValue = parsed.Gender is not null || parsed.Role is not null || parsed.Level is not null;
                     if (parsed.HasConflict || !hasRequestedValue)
                     {
                         var hint = BuildProfileMissingHint(freshMissing.Gender, freshMissing.Role, freshMissing.Level);
-                        await SendProfileConversationReplyAsync(session, prompt, message.MessageId, parsed.HasConflict ? $"Tui thấy câu này có hơn một giá trị cùng loại nên chưa dám ghi 😅 {hint}" : $"Phần đó tui có rồi; hiện còn thiếu chỗ này thôi: {hint}", cancellationToken);
-                        await MarkProfileInputHandledAsync(message.Id, "profile_needs_clarification", claim, cancellationToken);
-                        await promptStore.UpdateProgressAsync(prompt.Id, freshMissing.Gender, freshMissing.Role, freshMissing.Level, processedAt, false, cancellationToken);
-                        prompt = prompt with { MissingGender = freshMissing.Gender, MissingRole = freshMissing.Role, MissingLevel = freshMissing.Level, LastProcessedAt = processedAt };
+                        await SendProfileConversationReplyAsync(
+                            session,
+                            prompt,
+                            message.MessageId,
+                            parsed.HasConflict
+                                ? $"Tui thấy câu này có hơn một giá trị cùng loại nên chưa dám ghi 😅 {hint}"
+                                : $"Phần đó tui có rồi; hiện còn thiếu chỗ này thôi: {hint}",
+                            cancellationToken);
+                        await MarkProfileInputHandledAsync(
+                            message.Id,
+                            "profile_needs_clarification",
+                            claim,
+                            cancellationToken);
+                        await promptStore.UpdateProgressAsync(
+                            prompt.Id,
+                            freshMissing.Gender,
+                            freshMissing.Role,
+                            freshMissing.Level,
+                            processedAt,
+                            false,
+                            cancellationToken);
+                        prompt = prompt with
+                        {
+                            MissingGender = freshMissing.Gender,
+                            MissingRole = freshMissing.Role,
+                            MissingLevel = freshMissing.Level,
+                            LastProcessedAt = processedAt
+                        };
                         handled += 1;
                         continue;
                     }
 
-                    var history = new ZaloBotActionHistoryService(db, NullLogger<ZaloBotActionHistoryService>.Instance);
+                    var history = new ZaloBotActionHistoryService(
+                        db,
+                        NullLogger<ZaloBotActionHistoryService>.Instance);
                     var before = await history.CaptureAsync(session.Id, cancellationToken);
-                    var updated = await new SessionDraftService(db).UpdatePlayerProfileFromBotAsync(session.AdminUserId, session.Id, freshPlayer!.DisplayName, parsed.Gender, parsed.Role, parsed.Level, prompt.ZaloUserId, prompt.SessionPlayerId);
+                    var updated = await new SessionDraftService(db).UpdatePlayerProfileFromBotAsync(
+                        session.AdminUserId,
+                        session.Id,
+                        freshPlayer!.DisplayName,
+                        parsed.Gender,
+                        parsed.Role,
+                        parsed.Level,
+                        prompt.ZaloUserId,
+                        prompt.SessionPlayerId);
                     if (!updated.IsSuccess || updated.Value is null)
                     {
-                        await SendProfileConversationReplyAsync(session, prompt, message.MessageId, "Tui hiểu ý rồi nhưng backend vừa chặn cập nhật để giữ an toàn dữ liệu. Ông không cần nhập lại; tui giữ nguyên hồ sơ hiện tại nha.", cancellationToken);
-                        await MarkProfileInputHandledAsync(message.Id, "profile_update_blocked", claim, cancellationToken);
-                        await promptStore.UpdateProgressAsync(prompt.Id, freshMissing.Gender, freshMissing.Role, freshMissing.Level, processedAt, false, cancellationToken);
+                        await SendProfileConversationReplyAsync(
+                            session,
+                            prompt,
+                            message.MessageId,
+                            "Tui hiểu ý rồi nhưng backend vừa chặn cập nhật để giữ an toàn dữ liệu. Ông không cần nhập lại; tui giữ nguyên hồ sơ hiện tại nha.",
+                            cancellationToken);
+                        await MarkProfileInputHandledAsync(
+                            message.Id,
+                            "profile_update_blocked",
+                            claim,
+                            cancellationToken);
+                        await promptStore.UpdateProgressAsync(
+                            prompt.Id,
+                            freshMissing.Gender,
+                            freshMissing.Role,
+                            freshMissing.Level,
+                            processedAt,
+                            false,
+                            cancellationToken);
                         prompt = prompt with { LastProcessedAt = processedAt };
                         handled += 1;
                         continue;
                     }
 
-                    await history.RecordAsync(session.Id, prompt.ZaloUserId, prompt.DisplayName, "UpdateOwnProfile", $"{prompt.DisplayName} tự bổ sung hồ sơ qua hội thoại Zalo", before, cancellationToken);
+                    await history.RecordAsync(
+                        session.Id,
+                        prompt.ZaloUserId,
+                        prompt.DisplayName,
+                        "UpdateOwnProfile",
+                        $"{prompt.DisplayName} tự bổ sung hồ sơ qua hội thoại Zalo",
+                        before,
+                        cancellationToken);
+
                     var refreshed = await LoadProfilePromptPlayerAsync(prompt, cancellationToken);
                     if (refreshed is null)
                     {
-                        await MarkProfileInputHandledAsync(message.Id, "profile_updated_context_removed", claim, cancellationToken);
+                        await MarkProfileInputHandledAsync(
+                            message.Id,
+                            "profile_updated_context_removed",
+                            claim,
+                            cancellationToken);
                         await promptStore.CompleteAsync(prompt.Id, processedAt, cancellationToken);
                         handled += 1;
                         break;
                     }
-
                     var missing = GetMissingProfileFlags(refreshed);
                     var completed = !missing.Gender && !missing.Role && !missing.Level;
+
                     var accepted = new List<string>();
                     if (parsed.Gender is not null) accepted.Add(parsed.Gender == PlayerGender.Female ? "nữ" : "nam");
-                    if (parsed.Role is not null) accepted.Add(parsed.Role switch { PlayerRole.Attack => "công", PlayerRole.Defense => "thủ", PlayerRole.Setter => "chuyền 2", PlayerRole.FullStack => "toàn diện", _ => "người mới" });
-                    if (parsed.Level is not null) accepted.Add(parsed.Level switch { PlayerLevel.Good => "tốt", PlayerLevel.Average => "trung bình", _ => "mới chơi" });
+                    if (parsed.Role is not null) accepted.Add(parsed.Role switch
+                    {
+                        PlayerRole.Attack => "công",
+                        PlayerRole.Defense => "thủ",
+                        PlayerRole.Setter => "chuyền 2",
+                        PlayerRole.FullStack => "toàn diện",
+                        _ => "người mới"
+                    });
+                    if (parsed.Level is not null) accepted.Add(parsed.Level switch
+                    {
+                        PlayerLevel.Good => "tốt",
+                        PlayerLevel.Average => "trung bình",
+                        _ => "mới chơi"
+                    });
 
                     var response = completed
-                        ? await BuildSelfProfileCompletionReplyAsync(session, prompt, accepted, alreadyComplete: false, cancellationToken)
+                        ? await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            accepted,
+                            alreadyComplete: false,
+                            cancellationToken)
                         : $"Ok {prompt.DisplayName}, tui ghi {string.Join(" · ", accepted)} rồi 👌 Còn {BuildProfileMissingHint(missing.Gender, missing.Role, missing.Level)} Cứ trả lời tiếp bình thường, không cần @bot.";
-                    await SendProfileConversationReplyAsync(session, prompt, message.MessageId, response, cancellationToken);
-                    await MarkProfileInputHandledAsync(message.Id, "profile_updated", claim, cancellationToken);
-                    await promptStore.UpdateProgressAsync(prompt.Id, missing.Gender, missing.Role, missing.Level, processedAt, completed, cancellationToken);
-                    prompt = prompt with { MissingGender = missing.Gender, MissingRole = missing.Role, MissingLevel = missing.Level, LastProcessedAt = processedAt, CompletedAt = completed ? DateTimeOffset.UtcNow : null };
+                    await SendProfileConversationReplyAsync(
+                        session,
+                        prompt,
+                        message.MessageId,
+                        response,
+                        cancellationToken);
+                    await MarkProfileInputHandledAsync(
+                        message.Id,
+                        "profile_updated",
+                        claim,
+                        cancellationToken);
+                    await promptStore.UpdateProgressAsync(
+                        prompt.Id,
+                        missing.Gender,
+                        missing.Role,
+                        missing.Level,
+                        processedAt,
+                        completed,
+                        cancellationToken);
+                    prompt = prompt with
+                    {
+                        MissingGender = missing.Gender,
+                        MissingRole = missing.Role,
+                        MissingLevel = missing.Level,
+                        LastProcessedAt = processedAt,
+                        CompletedAt = completed ? DateTimeOffset.UtcNow : null
+                    };
                     handled += 1;
                     if (completed) break;
                 }
-                catch { await ReleaseProfileInputClaimAsync(message.Id, claim, cancellationToken); throw; }
+                catch
+                {
+                    await ReleaseProfileInputClaimAsync(message.Id, claim, cancellationToken);
+                    throw;
+                }
             }
         }
+
         return handled;
     }
 
-    private async Task<SessionPlayer?> LoadProfilePromptPlayerAsync(ZaloMissingProfilePromptContext prompt, CancellationToken cancellationToken) =>
-        await db.SessionPlayers.AsNoTracking().Include(item => item.PlayerProfile).SingleOrDefaultAsync(item => item.Id == prompt.SessionPlayerId && item.SessionId == prompt.SessionId && item.IsPresent, cancellationToken);
+    private async Task<SessionPlayer?> LoadProfilePromptPlayerAsync(
+        ZaloMissingProfilePromptContext prompt,
+        CancellationToken cancellationToken) =>
+        await db.SessionPlayers
+            .AsNoTracking()
+            .Include(item => item.PlayerProfile)
+            .SingleOrDefaultAsync(item =>
+                item.Id == prompt.SessionPlayerId &&
+                item.SessionId == prompt.SessionId &&
+                item.IsPresent,
+                cancellationToken);
 
-    private static bool PlayerStillMatchesPrompt(SessionPlayer? player, ZaloMissingProfilePromptContext prompt) =>
-        player is not null && string.Equals(ZaloOverbookLogic.NormalizeId(player.PlayerProfile?.ZaloUserId), prompt.ZaloUserId, StringComparison.Ordinal);
+    private static bool PlayerStillMatchesPrompt(
+        SessionPlayer? player,
+        ZaloMissingProfilePromptContext prompt) =>
+        player is not null &&
+        string.Equals(
+            ZaloOverbookLogic.NormalizeId(player.PlayerProfile?.ZaloUserId),
+            prompt.ZaloUserId,
+            StringComparison.Ordinal);
 
-    private static string ProfileIdentityKey(ZaloMissingProfilePromptContext prompt) => $"{prompt.ZaloConnectionId}\u001f{prompt.GroupId}\u001f{prompt.ZaloUserId}";
+    private static string ProfileIdentityKey(ZaloMissingProfilePromptContext prompt) =>
+        $"{prompt.ZaloConnectionId}\u001f{prompt.GroupId}\u001f{prompt.ZaloUserId}";
 
     internal static bool ReferencesProfileSession(string? content, string? sessionName)
     {
@@ -355,8 +727,13 @@ public sealed partial class ZaloOverbookService
         var name = NormalizeProfileSessionReference(sessionName);
         if (text.Length == 0 || name.Length == 0) return false;
         if ($" {text} ".Contains($" {name} ", StringComparison.Ordinal)) return true;
+
         foreach (var day in new[] { "t2", "t3", "t4", "t5", "t6", "t7", "cn" })
-            if ($" {name} ".Contains($" {day} ", StringComparison.Ordinal) && $" {text} ".Contains($" {day} ", StringComparison.Ordinal)) return true;
+        {
+            if ($" {name} ".Contains($" {day} ", StringComparison.Ordinal) &&
+                $" {text} ".Contains($" {day} ", StringComparison.Ordinal))
+                return true;
+        }
         return false;
     }
 
@@ -364,39 +741,120 @@ public sealed partial class ZaloOverbookService
     {
         var normalized = ZaloBotIntelligence.Normalize(value ?? string.Empty);
         if (normalized.Length == 0) return string.Empty;
-        var chars = normalized.Select(character => char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) ? character : ' ').ToArray();
-        return string.Join(' ', new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        var chars = normalized.Select(character =>
+                char.IsLetterOrDigit(character) || char.IsWhiteSpace(character)
+                    ? character
+                    : ' ')
+            .ToArray();
+        return string.Join(' ',
+            new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
-    private async Task AdvanceProfilePromptCursorAsync(ZaloMissingProfilePromptStore promptStore, ZaloMissingProfilePromptContext prompt, DateTimeOffset processedAt, CancellationToken cancellationToken) =>
-        await promptStore.UpdateProgressAsync(prompt.Id, prompt.MissingGender, prompt.MissingRole, prompt.MissingLevel, processedAt, false, cancellationToken);
+    private async Task AdvanceProfilePromptCursorAsync(
+        ZaloMissingProfilePromptStore promptStore,
+        ZaloMissingProfilePromptContext prompt,
+        DateTimeOffset processedAt,
+        CancellationToken cancellationToken) =>
+        await promptStore.UpdateProgressAsync(
+            prompt.Id,
+            prompt.MissingGender,
+            prompt.MissingRole,
+            prompt.MissingLevel,
+            processedAt,
+            false,
+            cancellationToken);
 
-    private async Task<string?> TryClaimProfileInputAsync(string rowId, int previousAttemptCount, string? previousProcessingToken, DateTimeOffset? previousProcessingStartedAt, CancellationToken cancellationToken)
+    private async Task<string?> TryClaimProfileInputAsync(
+        string rowId,
+        int previousAttemptCount,
+        string? previousProcessingToken,
+        DateTimeOffset? previousProcessingStartedAt,
+        CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        if (!string.IsNullOrWhiteSpace(previousProcessingToken) && previousProcessingStartedAt is { } startedAt && startedAt >= now.AddMinutes(-2)) return null;
+        if (!string.IsNullOrWhiteSpace(previousProcessingToken) &&
+            previousProcessingStartedAt is { } startedAt &&
+            startedAt >= now.AddMinutes(-2))
+            return null;
+
         var token = $"profile:{Guid.NewGuid():n}";
-        var query = db.ZaloGroupMessages.Where(item => item.Id == rowId && item.BotReplySentAt == null && item.ReplyAttemptCount == previousAttemptCount);
-        query = string.IsNullOrWhiteSpace(previousProcessingToken) ? query.Where(item => item.ProcessingToken == null) : query.Where(item => item.ProcessingToken == previousProcessingToken);
-        var claimed = await query.ExecuteUpdateAsync(update => update.SetProperty(item => item.ProcessingToken, token).SetProperty(item => item.ProcessingStartedAt, now).SetProperty(item => item.ReplyAttemptCount, item => item.ReplyAttemptCount + 1).SetProperty(item => item.ReplyOutcome, "profile_processing"), cancellationToken);
+        var query = db.ZaloGroupMessages
+            .Where(item =>
+                item.Id == rowId &&
+                item.BotReplySentAt == null &&
+                item.ReplyAttemptCount == previousAttemptCount);
+        query = string.IsNullOrWhiteSpace(previousProcessingToken)
+            ? query.Where(item => item.ProcessingToken == null)
+            : query.Where(item => item.ProcessingToken == previousProcessingToken);
+
+        var claimed = await query.ExecuteUpdateAsync(update => update
+            .SetProperty(item => item.ProcessingToken, token)
+            .SetProperty(item => item.ProcessingStartedAt, now)
+            .SetProperty(item => item.ReplyAttemptCount, item => item.ReplyAttemptCount + 1)
+            .SetProperty(item => item.ReplyOutcome, "profile_processing"),
+            cancellationToken);
         return claimed == 1 ? token : null;
     }
 
-    private async Task ReleaseProfileInputClaimAsync(string rowId, string processingToken, CancellationToken cancellationToken) =>
-        await db.ZaloGroupMessages.Where(item => item.Id == rowId && item.BotReplySentAt == null && item.ProcessingToken == processingToken).ExecuteUpdateAsync(update => update.SetProperty(item => item.ProcessingToken, (string?)null).SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null).SetProperty(item => item.ReplyOutcome, "profile_retry"), cancellationToken);
+    private async Task ReleaseProfileInputClaimAsync(
+        string rowId,
+        string processingToken,
+        CancellationToken cancellationToken)
+    {
+        await db.ZaloGroupMessages
+            .Where(item =>
+                item.Id == rowId &&
+                item.BotReplySentAt == null &&
+                item.ProcessingToken == processingToken)
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(item => item.ProcessingToken, (string?)null)
+                .SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null)
+                .SetProperty(item => item.ReplyOutcome, "profile_retry"),
+                cancellationToken);
+    }
 
-    private async Task SendProfileConversationReplyAsync(MatchSession session, ZaloMissingProfilePromptContext prompt, string sourceMessageId, string text, CancellationToken cancellationToken)
+    private async Task SendProfileConversationReplyAsync(
+        MatchSession session,
+        ZaloMissingProfilePromptContext prompt,
+        string sourceMessageId,
+        string text,
+        CancellationToken cancellationToken)
     {
         if (session.ZaloConnection is null || string.IsNullOrWhiteSpace(session.ZaloGroupId)) return;
         var idempotencyKey = $"profile-conversation:{prompt.Id}:{sourceMessageId}";
-        var send = await bridge.SendGroupMessageAsync(session.ZaloConnection.AccountZaloId, session.ZaloGroupId, text, [], idempotencyKey: idempotencyKey);
-        if (!send.Sent) throw new InvalidOperationException("Zalo bridge did not confirm missing-profile conversation send.");
+        var send = await bridge.SendGroupMessageAsync(
+            session.ZaloConnection.AccountZaloId,
+            session.ZaloGroupId,
+            text,
+            [],
+            idempotencyKey: idempotencyKey);
+        if (!send.Sent)
+            throw new InvalidOperationException("Zalo bridge did not confirm missing-profile conversation send.");
         var providerMessageId = NormalizeProviderMessageId(send.MessageId);
-        if (providerMessageId is not null) await SaveBotMessageAsync(session, providerMessageId, text, DateTimeOffset.UtcNow, cancellationToken);
+        if (providerMessageId is not null)
+            await SaveBotMessageAsync(session, providerMessageId, text, DateTimeOffset.UtcNow, cancellationToken);
     }
 
-    private async Task MarkProfileInputHandledAsync(string rowId, string outcome, string processingToken, CancellationToken cancellationToken) =>
-        await db.ZaloGroupMessages.Where(item => item.Id == rowId && item.BotReplySentAt == null && item.ProcessingToken == processingToken).ExecuteUpdateAsync(update => update.SetProperty(item => item.BotReplySentAt, DateTimeOffset.UtcNow).SetProperty(item => item.SelectedIntent, "UpdateOwnProfile").SetProperty(item => item.AiCalled, false).SetProperty(item => item.ReplyOutcome, outcome).SetProperty(item => item.ProcessingToken, (string?)null).SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null), cancellationToken);
+    private async Task MarkProfileInputHandledAsync(
+        string rowId,
+        string outcome,
+        string processingToken,
+        CancellationToken cancellationToken)
+    {
+        await db.ZaloGroupMessages
+            .Where(item =>
+                item.Id == rowId &&
+                item.BotReplySentAt == null &&
+                item.ProcessingToken == processingToken)
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(item => item.BotReplySentAt, DateTimeOffset.UtcNow)
+                .SetProperty(item => item.SelectedIntent, "UpdateOwnProfile")
+                .SetProperty(item => item.AiCalled, false)
+                .SetProperty(item => item.ReplyOutcome, outcome)
+                .SetProperty(item => item.ProcessingToken, (string?)null)
+                .SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null),
+                cancellationToken);
+    }
 
     private static string BuildProfileMissingHint(bool missingGender, bool missingRole, bool missingLevel)
     {
@@ -404,6 +862,8 @@ public sealed partial class ZaloOverbookService
         if (missingGender) parts.Add("giới tính (`nam` hoặc `nữ`)");
         if (missingRole) parts.Add("vị trí (`công`, `thủ`, `chuyền 2`, `toàn diện`)");
         if (missingLevel) parts.Add("trình độ (`mới`, `trung bình`, `tốt`)");
-        return parts.Count == 0 ? "không còn gì thiếu." : string.Join("; ", parts) + ".";
+        return parts.Count == 0
+            ? "không còn gì thiếu."
+            : string.Join("; ", parts) + ".";
     }
 }
