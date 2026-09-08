@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts",
+    "start": "node --import ./dist/webhookFetchReliability.js dist/server.js",
+    "dev": "tsx watch --import ./src/webhookFetchReliability.ts src/server.ts",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
