@@ -6,6 +6,7 @@ internal enum ZaloAutoSessionPollChangeKindV4
     OptionRemoved,
     OptionIdentityChanged,
     ExplicitStartTimeChanged,
+    ApprovedStartTimeChanged,
     VoteCountChanged,
     ApprovedLocationChanged,
     ApprovedTeamSizeChanged
@@ -42,8 +43,10 @@ internal static class ZaloAutoSessionPollReconcilerV4
     public static ZaloAutoSessionPollReconciliationV4 Reconcile(
         ZaloAutoSessionConversationDraft sourceSnapshot,
         ZaloAutoSessionConversationDraft durableDraft,
-        ZaloAutoSessionConversationDraft currentSnapshot)
+        ZaloAutoSessionConversationDraft currentSnapshot,
+        IReadOnlySet<string>? approvedDefaultStartOptionIds = null)
     {
+        approvedDefaultStartOptionIds ??= EmptyOptionIds.Instance;
         var sourceById = sourceSnapshot.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
         var durableById = durableDraft.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
         var currentById = currentSnapshot.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
@@ -71,8 +74,6 @@ internal static class ZaloAutoSessionPollReconcilerV4
                     null,
                     DescribeIdentity(current),
                     true));
-                // A newly introduced poll choice was never approved by the organizer. Keep it
-                // visible for clarification, but never silently opt it into execution.
                 reconciled.Add(current with { Selected = false });
                 continue;
             }
@@ -95,14 +96,18 @@ internal static class ZaloAutoSessionPollReconcilerV4
                 : source;
 
             var sourceStartChanged = source.StartTime != current.StartTime;
+            var currentStartIsApprovedDefault = approvedDefaultStartOptionIds.Contains(current.OptionId);
+            var organizerChangedStart = durable.StartTime != source.StartTime;
             if (sourceStartChanged)
             {
                 changes.Add(new ZaloAutoSessionPollChangeV4(
-                    ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged,
+                    currentStartIsApprovedDefault
+                        ? ZaloAutoSessionPollChangeKindV4.ApprovedStartTimeChanged
+                        : ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged,
                     current.OptionId,
                     source.StartTime.ToString("O"),
                     current.StartTime.ToString("O"),
-                    true));
+                    !currentStartIsApprovedDefault));
             }
 
             if (source.VoteCount != current.VoteCount)
@@ -115,21 +120,24 @@ internal static class ZaloAutoSessionPollReconcilerV4
                     false));
             }
 
-            // Poll-owned identity and newly explicit source time come from current authority.
-            // Organizer-owned selection remains intact for surviving options. An organizer time
-            // correction survives only while the authoritative source time itself did not change.
+            // Explicit poll time is authoritative and invalidates an older organizer correction.
+            // An approved default refresh is policy drift instead: it may update an unmodified
+            // draft automatically, but it must never erase an organizer-owned time correction.
+            var reconciledStart = sourceStartChanged
+                ? currentStartIsApprovedDefault && organizerChangedStart
+                    ? durable.StartTime
+                    : current.StartTime
+                : durable.StartTime;
+
             reconciled.Add(new ZaloAutoSessionConversationDraftItem(
                 current.OptionId,
                 current.OptionContent,
                 current.DayKey,
-                sourceStartChanged ? current.StartTime : durable.StartTime,
+                reconciledStart,
                 current.VoteCount,
                 durable.Selected));
         }
 
-        // Group policy is authoritative only while the organizer has not explicitly overridden
-        // that field. This mirrors V4 provenance semantics without allowing a later admin default
-        // change to erase an organizer-owned correction.
         var organizerChangedLocation = !string.Equals(
             durableDraft.Location,
             sourceSnapshot.Location,
@@ -178,4 +186,19 @@ internal static class ZaloAutoSessionPollReconcilerV4
 
     private static string DescribeIdentity(ZaloAutoSessionConversationDraftItem item) =>
         $"{item.OptionContent}|{item.DayKey}";
+
+    private sealed class EmptyOptionIds : IReadOnlySet<string>
+    {
+        public static readonly EmptyOptionIds Instance = new();
+        public int Count => 0;
+        public bool Contains(string item) => false;
+        public IEnumerator<string> GetEnumerator() => Enumerable.Empty<string>().GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        public bool IsProperSubsetOf(IEnumerable<string> other) => false;
+        public bool IsProperSupersetOf(IEnumerable<string> other) => !other.Any();
+        public bool IsSubsetOf(IEnumerable<string> other) => true;
+        public bool IsSupersetOf(IEnumerable<string> other) => !other.Any();
+        public bool Overlaps(IEnumerable<string> other) => false;
+        public bool SetEquals(IEnumerable<string> other) => !other.Any();
+    }
 }
