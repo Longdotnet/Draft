@@ -37,7 +37,12 @@ jobs:
         run: |
           set -u
 
+          echo "failure_kind=unknown" >> "$GITHUB_OUTPUT"
+          echo "failure_detail=Scheduler wake/queue/verification failed without a more specific diagnosis." >> "$GITHUB_OUTPUT"
+
           if [ -z "$SCHEDULER_URL" ] || [ -z "$SCHEDULER_KEY" ]; then
+            echo "failure_kind=configuration_missing" >> "$GITHUB_OUTPUT"
+            echo "failure_detail=Actions variable SCHEDULER_URL or secret SCHEDULER_KEY is missing." >> "$GITHUB_OUTPUT"
             echo "Configure Actions variable SCHEDULER_URL and secret SCHEDULER_KEY first."
             exit 1
           fi
@@ -48,6 +53,11 @@ jobs:
           backend_health_url="${BACKEND_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health}"
           scheduler_health_url="${SCHEDULER_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health/scheduler}"
           bridge_health_url="${ZALO_BRIDGE_HEALTH_URL:-https://draft-zalo-bridge.onrender.com/health}"
+
+          is_render_suspended() {
+            local response_file="$1"
+            [ -s "$response_file" ] && grep -Eqi 'service suspended|suspended by its owner' "$response_file"
+          }
 
           wait_for_health() {
             local name="$1"
@@ -72,6 +82,10 @@ jobs:
               fi
 
               echo "$name wake attempt $attempt/4 returned HTTP $status."
+              if is_render_suspended "$response_file"; then
+                echo "::error::$name is suspended by its hosting owner; retries cannot wake a suspended Render service."
+                return 2
+              fi
               if [ -s "/tmp/${name}-health-error" ]; then
                 cat "/tmp/${name}-health-error"
               fi
@@ -101,6 +115,21 @@ jobs:
           backend_health_pid=$!
           wait "$bridge_health_pid" || true
           wait "$backend_health_pid" || true
+
+          suspended_services=()
+          if is_render_suspended /tmp/draft-api-health-response; then
+            suspended_services+=("draft-api")
+          fi
+          if is_render_suspended /tmp/zalo-bridge-health-response; then
+            suspended_services+=("zalo-bridge")
+          fi
+          if [ "${#suspended_services[@]}" -gt 0 ]; then
+            suspended_csv=$(IFS=,; echo "${suspended_services[*]}")
+            echo "failure_kind=render_service_suspended" >> "$GITHUB_OUTPUT"
+            echo "failure_detail=Render reports suspended service(s): ${suspended_csv}. Resume the service(s) in Render before scheduler verification can succeed." >> "$GITHUB_OUTPUT"
+            echo "::error::Render reports suspended service(s): ${suspended_csv}. This is an owner/deployment-state blocker, not a scheduler lease or application-cycle failure."
+            exit 1
+          fi
 
           baseline_attempt=""
           baseline_success=""
@@ -139,12 +168,21 @@ jobs:
               break
             fi
 
+            if is_render_suspended /tmp/scheduler-response; then
+              echo "failure_kind=render_service_suspended" >> "$GITHUB_OUTPUT"
+              echo "failure_detail=Render reports the scheduler API service is suspended. Resume draft-api in Render before scheduler verification can succeed." >> "$GITHUB_OUTPUT"
+              echo "::error::Scheduler API is suspended by its hosting owner; retrying cannot produce HTTP 202."
+              exit 1
+            fi
+
             echo "Scheduler attempt $attempt/4 failed: curl=$curl_exit HTTP=$status"
             cat /tmp/scheduler-response 2>/dev/null || true
             sleep 5
           done
 
           if [ "$queued" -ne 1 ]; then
+            echo "failure_kind=scheduler_queue_failed" >> "$GITHUB_OUTPUT"
+            echo "failure_detail=Scheduler endpoint did not return HTTP 202 after retries." >> "$GITHUB_OUTPUT"
             echo "Scheduler did not return HTTP 202 after 4 attempts."
             exit 1
           fi
@@ -182,6 +220,8 @@ jobs:
 
             if [ "$health_state" = "failed" ] && \
                { [ "$failure_advanced" -eq 1 ] || [ "$attempt_advanced" -eq 1 ]; }; then
+              echo "failure_kind=scheduler_cycle_failed" >> "$GITHUB_OUTPUT"
+              echo "failure_detail=Scheduler recorded a fresh failed or abandoned cycle after accepting the trigger." >> "$GITHUB_OUTPUT"
               echo "Scheduler recorded a fresh failed or abandoned cycle."
               cat /tmp/scheduler-health-current
               exit 1
@@ -190,6 +230,8 @@ jobs:
             sleep 5
           done
 
+          echo "failure_kind=scheduler_cycle_timeout" >> "$GITHUB_OUTPUT"
+          echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state within the verification window." >> "$GITHUB_OUTPUT"
           echo "Scheduler accepted the trigger but did not reach a fresh healthy terminal state within the verification window."
           cat /tmp/scheduler-health-current 2>/dev/null || true
           exit 1
@@ -198,15 +240,23 @@ jobs:
         if: failure() && steps.scheduler.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
+          FAILURE_KIND: ${{ steps.scheduler.outputs.failure_kind }}
+          FAILURE_DETAIL: ${{ steps.scheduler.outputs.failure_detail }}
         shell: bash
         run: |
           title="Scheduler reliability: cycle verification failed"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          failure_kind="${FAILURE_KIND:-unknown}"
+          failure_detail="${FAILURE_DETAIL:-Scheduler wake/queue/verification failed without a more specific diagnosis.}"
           body=$(cat <<EOF
           The production reminder scheduler wake/queue/verification workflow failed.
 
           Latest failed run: ${run_url}
           Detected at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          Failure kind: ${failure_kind}
+          Diagnosis: ${failure_detail}
+
+          If the failure kind is `render_service_suspended`, resume the named Render service(s) first. Application retries cannot wake a service that Render reports as suspended by its owner.
 
           This incident is deduplicated: repeated failures update this same open issue instead of creating notification spam. It will be closed automatically after a verified healthy scheduler cycle.
           EOF
