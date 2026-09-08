@@ -87,6 +87,87 @@ test("honors a longer upstream Retry-After and keeps account scopes isolated", a
   assert.equal(accountBCalls, 1);
 });
 
+test("does not shorten provider Retry-After to the local exponential cooldown cap", async () => {
+  let now = Date.parse("2026-09-08T05:00:00Z");
+  let providerCalls = 0;
+  const guard = new ZaloRateLimitGuard({
+    now: () => now,
+    minGapMs: 0,
+    defaultCooldownMs: 60_000,
+    maxCooldownMs: 15 * 60_000,
+  });
+
+  await assert.rejects(
+    guard.run("account-a", async () => {
+      providerCalls += 1;
+      throw {
+        response: {
+          status: 429,
+          headers: { "retry-after": "3600" },
+        },
+      };
+    }),
+  );
+
+  // The old implementation capped this provider-directed one-hour silence at the
+  // bridge's 15-minute local exponential limit and would touch Zalo again here.
+  now += 16 * 60_000;
+  await assert.rejects(
+    guard.run("account-a", async () => {
+      providerCalls += 1;
+      return "too-early";
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BridgeHttpError);
+      assert.equal(error.retryAfterSeconds, 44 * 60);
+      return true;
+    },
+  );
+  assert.equal(providerCalls, 1);
+
+  now += 44 * 60_000;
+  assert.equal(await guard.run("account-a", async () => {
+    providerCalls += 1;
+    return "ok";
+  }), "ok");
+  assert.equal(providerCalls, 2);
+});
+
+test("bounds malformed or extreme Retry-After independently from local backoff", async () => {
+  let now = Date.parse("2026-09-08T05:00:00Z");
+  const guard = new ZaloRateLimitGuard({
+    now: () => now,
+    minGapMs: 0,
+    defaultCooldownMs: 60_000,
+    maxCooldownMs: 15 * 60_000,
+    maxRetryAfterMs: 2 * 60 * 60_000,
+  });
+
+  await assert.rejects(
+    guard.run("account-a", async () => {
+      throw {
+        response: {
+          status: 429,
+          headers: { "retry-after": String(30 * 24 * 60 * 60) },
+        },
+      };
+    }),
+  );
+
+  now += 60 * 60_000;
+  await assert.rejects(
+    guard.run("account-a", async () => "too-early"),
+    (error: unknown) => {
+      assert.ok(error instanceof BridgeHttpError);
+      assert.equal(error.retryAfterSeconds, 60 * 60);
+      return true;
+    },
+  );
+
+  now += 60 * 60_000;
+  assert.equal(await guard.run("account-a", async () => "recovered"), "recovered");
+});
+
 test("serializes outbound work per account and enforces the configured minimum gap", async () => {
   let now = 10_000;
   const starts: number[] = [];
