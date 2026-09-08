@@ -61,6 +61,43 @@ public sealed class ZaloDraftPreparationClientCopyTests
     }
 
     [Fact]
+    public void Changed_player_list_teaches_how_to_relock_or_resume_recruiting()
+    {
+        var text = ZaloDraftPreparationClientCopy.PlayerListChanged("CN 13/9");
+
+        Assert.Contains("quyết định cũ hết hiệu lực", text);
+        Assert.Contains("`vẫn đánh`", text);
+        Assert.Contains("`kiếm thêm`", text);
+        Assert.Contains("đọc lại vote", text);
+        Assert.DoesNotContain("chốt lại danh sách hiện tại trước", text, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
+    public void Stale_decision_actor_role_tells_current_organizer_exact_recovery_turn()
+    {
+        var text = ZaloDraftPreparationClientCopy.DecisionActorRoleStale("CN 13/9");
+
+        Assert.Contains("quyền trưởng/phó", text);
+        Assert.Contains("quyết định cũ hết hiệu lực", text);
+        Assert.Contains("`vẫn đánh`", text);
+        Assert.Contains("`kiếm thêm`", text);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
+    public void Partial_non_even_state_teaches_relock_after_human_changes_the_list()
+    {
+        var text = ZaloDraftPreparationClientCopy.PartialNotEven(16, 3);
+
+        Assert.Contains("16 chỗ chưa chia đều được 3 đội", text);
+        Assert.Contains("chỗ chơi chung/luân phiên", text);
+        Assert.Contains("`vẫn đánh`", text);
+        Assert.Contains("đọc lại vote", text);
+        AssertBeginnerSafe(text);
+    }
+
+    [Fact]
     public void Shared_player_count_is_explained_in_client_language()
     {
         var text = ZaloDraftPreparationClientCopy.PlayerCountLabel(16, 15);
