@@ -246,7 +246,7 @@ jobs:
               exit 0
             fi
 
-            if [ "$health_state" = "failed" ] && [ "$failure_advanced" -eq 1 ] && \
+            if [ "$health_state" = "failed" ] && \
                { [ "$failure_is_fresh" -eq 1 ] || [ "$attempt_is_fresh" -eq 1 ]; }; then
               echo "failure_kind=scheduler_cycle_failed" >> "$GITHUB_OUTPUT"
               echo "failure_detail=Scheduler recorded a fresh failed or abandoned cycle after accepting the trigger." >> "$GITHUB_OUTPUT"
