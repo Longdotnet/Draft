@@ -9,7 +9,7 @@ public static class ZaloDraftConversationPolicy
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex ReadinessQuestion = new(
-        @"\?|(?<![a-z0-9])(?:khi\s*nao|bao\s*gio|dau\s*roi|dau|co\s*chua|chua\s*co|xong\s*chua|chua\s*xong|sao\s*chua|chua\s*(?:chia|draft)|sap\s*(?:danh|choi)|may\s*gio)(?![a-z0-9])",
+        @"\?|(?<![a-z0-9])(?:khi\s*nao|bao\s*gio|dau\s*roi|dau|co\s*chua|chua\s*co|xong\s*chua|chua\s*xong|duoc\s*chua|du\s*chua|ready\s*chua|on\s*chua|sao\s*chua|chua\s*(?:chia|draft)|sap\s*(?:danh|choi)|may\s*gio)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex StrongConfirmation = new(
