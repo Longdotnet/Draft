@@ -106,9 +106,12 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
 
         if (readiness.State == ZaloDraftReadinessState.Ready)
         {
+            var recruitmentMemory = decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting
+                ? " Tạm ngưng gọi thêm người vì kèo đã đủ; nếu sau đó lại thiếu chỗ, tui tiếp tục kiếm theo quyết định trước, không bắt trưởng/phó chốt lại."
+                : string.Empty;
             return urgent
-                ? $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ ✅ đội vẫn chưa chia. Sát giờ rồi, nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy."
-                : $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ rồi nha ✅ Đội chưa chia; nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy.";
+                ? $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ ✅ đội vẫn chưa chia.{recruitmentMemory} Sát giờ rồi, nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy."
+                : $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ rồi nha ✅ Đội chưa chia.{recruitmentMemory} Nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy.";
         }
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting && count < capacity)
@@ -265,17 +268,12 @@ public sealed partial class ZaloOverbookService
                 }
                 decision = null;
             }
-            else if (decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting &&
-                     readiness.EffectiveSlotCount >= readiness.Capacity &&
-                     activeSlotRisks == 0)
-            {
-                if (!await decisionStore.TryClearAsync(session.Id, decision, cancellationToken))
-                {
-                    // Never let a stale scheduler observation delete a newer organizer choice.
-                    continue;
-                }
-                decision = null;
-            }
+
+            // KeepRecruiting is a durable organizer direction, not a snapshot tied to the
+            // current count. When the roster becomes full, suppress recruiting traffic but
+            // keep the decision so a later pass/unvote can resume recruitment without making
+            // the organizer repeat the same choice. The group-wide recruitment lane and this
+            // leader-aware reminder lane must share that ownership contract.
 
             if (decision?.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
             {
