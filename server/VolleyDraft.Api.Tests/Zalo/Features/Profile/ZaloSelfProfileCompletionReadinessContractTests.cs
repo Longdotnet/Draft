@@ -29,6 +29,26 @@ public sealed class ZaloSelfProfileCompletionReadinessContractTests
         Assert.DoesNotContain("không cần làm gì thêm", handoff, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Immediate_targeted_profile_completion_uses_readiness_in_the_primary_ack()
+    {
+        var root = FindRepositoryRoot();
+        var routePath = Path.Combine(
+            root, "server", "VolleyDraft.Api", "Services", "Zalo", "Features", "Profile",
+            "ZaloOverbookService.MissingProfilePreRoute.cs");
+        var ackPath = Path.Combine(
+            root, "server", "VolleyDraft.Api", "Services", "Zalo", "Features", "Profile",
+            "ZaloOverbookService.ProfileCompletionAck.cs");
+        var route = File.ReadAllText(routePath);
+        var ack = File.ReadAllText(ackPath);
+
+        Assert.Contains("BuildSelfProfileCompletionReplyAsync", route, StringComparison.Ordinal);
+        Assert.DoesNotContain("xong, không cần làm gì thêm", route, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("new ZaloDraftReadinessService(db)", ack, StringComparison.Ordinal);
+        Assert.Contains("ZaloProfileUpdateReadinessCopy.Build(readiness)", ack, StringComparison.Ordinal);
+        Assert.Contains("Tui không ghi đè thêm", ack, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
