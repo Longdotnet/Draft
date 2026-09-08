@@ -9,15 +9,18 @@ type BridgeStickerResult = {
   messageId: string | null;
 };
 
+export type StickerLookupApi = {
+  getStickers(keyword: string): Promise<number[]>;
+  getStickersDetail(stickerIds: number | number[]): Promise<StickerDetail[]>;
+};
+
 type StickerDetail = {
   id: number;
   cateId: number;
   type: number;
 };
 
-type MinimalStickerApi = {
-  getStickers(keyword: string): Promise<number[]>;
-  getStickersDetail(stickerIds: number | number[]): Promise<StickerDetail[]>;
+type MinimalStickerApi = StickerLookupApi & {
   sendSticker(
     sticker: StickerDetail,
     threadId: string,
@@ -72,30 +75,21 @@ function isSendableSticker(value: StickerDetail | null | undefined): value is St
   );
 }
 
-async function findSticker(api: MinimalStickerApi, request: SendGroupStickerRequest): Promise<StickerDetail> {
-  let lastError: unknown;
+export async function findStickerForRequest(api: StickerLookupApi, request: SendGroupStickerRequest): Promise<StickerDetail> {
   for (const keyword of stickerKeywordsForReaction(request.reaction)) {
-    try {
-      const ids = await api.getStickers(keyword);
-      if (!Array.isArray(ids) || ids.length === 0) continue;
-      const seed = request.idempotencyKey || `${request.accountId}:${request.groupId}:${request.reaction}`;
-      const stickerId = ids[stableIndex(seed, ids.length)];
-      if (stickerId === undefined) continue;
-      const details = await api.getStickersDetail(stickerId);
-      const sticker = Array.isArray(details) ? details.find(isSendableSticker) : null;
-      if (sticker) return sticker;
-    } catch (error) {
-      lastError = error;
-      console.warn("[Zalo bridge] sticker lookup failed", {
-        accountId: request.accountId,
-        groupId: request.groupId,
-        reaction: request.reaction,
-        keyword,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    // Keyword fallback is only for a successful provider lookup that returns no usable
+    // sticker. A transport/provider exception is not evidence that another keyword will
+    // work; continuing after 429/auth/5xx multiplies traffic exactly when Zalo is asking
+    // the account to stop. Let the first provider failure escape to the account guard.
+    const ids = await api.getStickers(keyword);
+    if (!Array.isArray(ids) || ids.length === 0) continue;
+    const seed = request.idempotencyKey || `${request.accountId}:${request.groupId}:${request.reaction}`;
+    const stickerId = ids[stableIndex(seed, ids.length)];
+    if (stickerId === undefined) continue;
+    const details = await api.getStickersDetail(stickerId);
+    const sticker = Array.isArray(details) ? details.find(isSendableSticker) : null;
+    if (sticker) return sticker;
   }
-  if (lastError) throw lastError;
   throw new Error(`No native Zalo sticker found for reaction ${request.reaction}`);
 }
 
@@ -106,7 +100,7 @@ async function sendGroupStickerCore(request: SendGroupStickerRequest): Promise<B
   }
 
   const api = await getApi(request.credentials);
-  const sticker = await findSticker(api, request);
+  const sticker = await findStickerForRequest(api, request);
   const result = await api.sendSticker(sticker, request.groupId, ThreadType.Group);
   const messageId = result && typeof result === "object" && "msgId" in result
     ? String((result as { msgId?: number | string }).msgId ?? "").trim() || null

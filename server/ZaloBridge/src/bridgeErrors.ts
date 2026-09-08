@@ -17,6 +17,7 @@ export class BridgeHttpError extends Error {
     public readonly kind: string,
     public readonly retryable: boolean,
     public readonly publicMessage: string,
+    public readonly retryAfterSeconds: number | null = null,
   ) {
     super(publicMessage);
     this.name = "BridgeHttpError";
@@ -48,6 +49,54 @@ function upstreamCode(error: unknown): string | null {
     if (typeof candidate === "number" && Number.isFinite(candidate)) return String(candidate);
   }
   return null;
+}
+
+function readHeader(headers: unknown, name: string): string | null {
+  if (!headers) return null;
+  const normalizedName = name.toLowerCase();
+
+  if (typeof Headers !== "undefined" && headers instanceof Headers) {
+    return headers.get(name)?.trim() || null;
+  }
+
+  const object = readObject(headers);
+  if (!object) return null;
+  const getter = object.get;
+  if (typeof getter === "function") {
+    const value = getter.call(headers, name);
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+
+  for (const [key, value] of Object.entries(object)) {
+    if (key.toLowerCase() !== normalizedName) continue;
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (Array.isArray(value)) {
+      const first = value.find((item) => typeof item === "string" || typeof item === "number");
+      if (typeof first === "string" && first.trim()) return first.trim();
+      if (typeof first === "number" && Number.isFinite(first)) return String(first);
+    }
+  }
+  return null;
+}
+
+export function upstreamRetryAfterSeconds(error: unknown, nowUnixMs = Date.now()): number | null {
+  if (error instanceof BridgeHttpError && error.retryAfterSeconds !== null) {
+    return Math.max(1, Math.ceil(error.retryAfterSeconds));
+  }
+
+  const root = readObject(error);
+  const response = readObject(root?.response);
+  const raw = readHeader(response?.headers, "retry-after") ?? readHeader(root?.headers, "retry-after");
+  if (!raw) return null;
+
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1, Math.ceil(seconds));
+
+  const retryAt = Date.parse(raw);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.max(1, Math.ceil((retryAt - nowUnixMs) / 1_000));
 }
 
 export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
@@ -119,11 +168,13 @@ export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
 }
 
 export function bridgeErrorLogFields(error: unknown, descriptor: BridgeErrorDescriptor) {
+  const retryAfterSeconds = upstreamRetryAfterSeconds(error);
   return {
     source: descriptor.source,
     kind: descriptor.kind,
     status: descriptor.status,
     retryable: descriptor.retryable,
     upstreamCode: upstreamCode(error),
+    ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
   };
 }
