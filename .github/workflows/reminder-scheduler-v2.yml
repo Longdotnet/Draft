@@ -108,6 +108,15 @@ jobs:
               "$scheduler_health_url" 2>/tmp/scheduler-health-error || printf '000'
           }
 
+          parse_timestamp_epoch() {
+            local value="$1"
+            if [ -z "$value" ]; then
+              printf '0'
+              return 0
+            fi
+            date -u -d "$value" +%s 2>/dev/null || printf '0'
+          }
+
           # Wake both free Render services in parallel before queueing work.
           wait_for_health "zalo-bridge" "$bridge_health_url" &
           bridge_health_pid=$!
@@ -141,10 +150,12 @@ jobs:
             baseline_failure=$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
             echo "Scheduler baseline: HTTP $baseline_status attempt=${baseline_attempt:-none} success=${baseline_success:-none} failure=${baseline_failure:-none}"
           else
-            echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require a fresh healthy terminal state."
+            echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require timestamps at or after this run's queue request."
           fi
 
-          echo "Queueing scheduler cycle: $SCHEDULER_URL"
+          queue_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          queue_requested_epoch=$(parse_timestamp_epoch "$queue_requested_at")
+          echo "Queueing scheduler cycle at $queue_requested_at: $SCHEDULER_URL"
           queued=0
           for attempt in 1 2 3 4; do
             set +e
@@ -188,14 +199,18 @@ jobs:
           fi
 
           # HTTP 202 proves only that the trigger was accepted. Verify a fresh durable
-          # terminal success after the baseline observation. A newer attempt alone is not
-          # enough: it may have died after taking the lease and before recording success.
+          # terminal success after this run's queue request. Baseline comparison alone
+          # is insufficient when the baseline endpoint was temporarily unavailable,
+          # because an older terminal timestamp would otherwise look "advanced" from empty.
           for attempt in $(seq 1 24); do
             health_http=$(read_scheduler_health /tmp/scheduler-health-current)
             health_state=$(jq -r '.status // "unknown"' /tmp/scheduler-health-current 2>/dev/null || printf 'unknown')
             current_attempt=$(jq -r '.lastAttemptAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_success=$(jq -r '.lastSuccessAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_failure=$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
+            current_attempt_epoch=$(parse_timestamp_epoch "$current_attempt")
+            current_success_epoch=$(parse_timestamp_epoch "$current_success")
+            current_failure_epoch=$(parse_timestamp_epoch "$current_failure")
 
             terminal_advanced=0
             if [ -n "$current_success" ] && [ "$current_success" != "$baseline_success" ]; then
@@ -210,16 +225,29 @@ jobs:
               failure_advanced=1
             fi
 
-            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none}"
+            attempt_is_fresh=0
+            if [ "$current_attempt_epoch" -ge "$queue_requested_epoch" ] && [ "$current_attempt_epoch" -gt 0 ]; then
+              attempt_is_fresh=1
+            fi
+            success_is_fresh=0
+            if [ "$current_success_epoch" -ge "$queue_requested_epoch" ] && [ "$current_success_epoch" -gt 0 ]; then
+              success_is_fresh=1
+            fi
+            failure_is_fresh=0
+            if [ "$current_failure_epoch" -ge "$queue_requested_epoch" ] && [ "$current_failure_epoch" -gt 0 ]; then
+              failure_is_fresh=1
+            fi
+
+            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh"
 
             if [ "$health_http" = "200" ] && [ "$health_state" = "healthy" ] && \
-               [ "$terminal_advanced" -eq 1 ]; then
+               [ "$terminal_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ] && [ "$success_is_fresh" -eq 1 ]; then
               echo "Scheduler cycle reached a fresh durable healthy terminal state."
               exit 0
             fi
 
             if [ "$health_state" = "failed" ] && \
-               { [ "$failure_advanced" -eq 1 ] || [ "$attempt_advanced" -eq 1 ]; }; then
+               { [ "$failure_is_fresh" -eq 1 ] || [ "$attempt_is_fresh" -eq 1 ]; }; then
               echo "failure_kind=scheduler_cycle_failed" >> "$GITHUB_OUTPUT"
               echo "failure_detail=Scheduler recorded a fresh failed or abandoned cycle after accepting the trigger." >> "$GITHUB_OUTPUT"
               echo "Scheduler recorded a fresh failed or abandoned cycle."
