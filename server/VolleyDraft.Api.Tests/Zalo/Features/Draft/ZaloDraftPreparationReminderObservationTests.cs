@@ -15,15 +15,15 @@ public sealed class ZaloDraftPreparationReminderObservationTests
     }
 
     [Fact]
-    public void SameBucketRefresh_KeepsNormalObservationThrottle()
+    public void SameBucketRefresh_RechecksCleanStateOnNextHeavyCycle()
     {
         var readiness = Snapshot(15, 15, 0, "fp-15");
         var now = DateTimeOffset.UtcNow;
-        var recent = Previous(readiness, 0) with { UpdatedAt = now.AddMinutes(-4) };
-        var due = Previous(readiness, 0) with { UpdatedAt = now.AddMinutes(-5) };
+        var beforeNextHeavyCycle = Previous(readiness, 0) with { UpdatedAt = now.AddSeconds(-119) };
+        var nextHeavyCycle = Previous(readiness, 0) with { UpdatedAt = now.AddMinutes(-2) };
 
-        Assert.False(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(recent, now));
-        Assert.True(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(due, now));
+        Assert.False(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(beforeNextHeavyCycle, now));
+        Assert.True(ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(nextHeavyCycle, now));
     }
 
     [Fact]
