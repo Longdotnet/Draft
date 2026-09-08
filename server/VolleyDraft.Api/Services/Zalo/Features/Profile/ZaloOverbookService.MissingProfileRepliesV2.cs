@@ -504,11 +504,17 @@ public sealed partial class ZaloOverbookService
                     var freshMissing = GetMissingProfileFlags(freshPlayer!);
                     if (!freshMissing.Gender && !freshMissing.Role && !freshMissing.Level)
                     {
+                        var alreadyCompleteResponse = await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            [],
+                            alreadyComplete: true,
+                            cancellationToken);
                         await SendProfileConversationReplyAsync(
                             session,
                             prompt,
                             message.MessageId,
-                            $"Hồ sơ {prompt.DisplayName} vừa đủ dữ liệu rồi 👌 Tui không ghi đè thêm nha.",
+                            alreadyCompleteResponse,
                             cancellationToken);
                         await MarkProfileInputHandledAsync(
                             message.Id,
@@ -643,7 +649,12 @@ public sealed partial class ZaloOverbookService
                     });
 
                     var response = completed
-                        ? $"Ok {prompt.DisplayName} 😎 tui ghi {string.Join(" · ", accepted)} rồi. Hồ sơ kèo {session.Name} xong, không cần làm gì thêm."
+                        ? await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            accepted,
+                            alreadyComplete: false,
+                            cancellationToken)
                         : $"Ok {prompt.DisplayName}, tui ghi {string.Join(" · ", accepted)} rồi 👌 Còn {BuildProfileMissingHint(missing.Gender, missing.Role, missing.Level)} Cứ trả lời tiếp bình thường, không cần @bot.";
                     await SendProfileConversationReplyAsync(
                         session,

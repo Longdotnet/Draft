@@ -40,9 +40,6 @@ public sealed partial class ZaloOverbookService
             .ToListAsync(cancellationToken);
         if (sessions.Count == 0) return false;
 
-        // Avoid spending an AI call on ordinary members. Authorization is checked
-        // again by the deterministic lane after interpretation, so this is only a
-        // budget gate and never the final permission check.
         var authority = sessions
             .OrderBy(item => item.StartTime ?? DateTimeOffset.MaxValue)
             .First();
@@ -100,8 +97,6 @@ public sealed partial class ZaloOverbookService
                 cancellationToken);
         }
 
-        // Canonical text is routing metadata only. The existing deterministic lane
-        // owns all mutation and reloads canonical DB/poll state before writing.
         var canonical = plan.Intent switch
         {
             ZaloDraftSemanticIntent.StopMatch => $"hủy kèo {selected.Name}",
@@ -132,11 +127,6 @@ public sealed partial class ZaloOverbookService
             cancellationToken);
     }
 
-    /// <summary>
-    /// First-pass semantic collector for targeted profile conversations. Confident AI
-    /// interpretations are handled here; everything else is left untouched for the
-    /// hardened deterministic V2 parser, so rollout is additive and fail-closed.
-    /// </summary>
     private async Task<int> ProcessMissingProfileRepliesContextFirstAsync(
         CancellationToken cancellationToken)
     {
@@ -330,6 +320,22 @@ public sealed partial class ZaloOverbookService
                     }
 
                     var freshMissing = GetMissingProfileFlags(freshPlayer!);
+                    if (!freshMissing.Gender && !freshMissing.Role && !freshMissing.Level)
+                    {
+                        var alreadyCompleteReply = await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            [],
+                            alreadyComplete: true,
+                            cancellationToken);
+                        await SendProfileConversationReplyAsync(session, prompt, message.MessageId, alreadyCompleteReply, cancellationToken);
+                        await MarkProfileInputHandledAsync(message.Id, "profile_semantic_already_complete", claim, cancellationToken);
+                        await MarkProfileSemanticAuditAsync(message.Id, cancellationToken);
+                        await promptStore.CompleteAsync(prompt.Id, message.SentAt, cancellationToken);
+                        handled += 1;
+                        break;
+                    }
+
                     var gender = freshMissing.Gender ? semantic.Gender : null;
                     var roleValue = freshMissing.Role ? semantic.Role : null;
                     var level = freshMissing.Level ? semantic.Level : null;
@@ -389,7 +395,12 @@ public sealed partial class ZaloOverbookService
                     var completed = !missing.Gender && !missing.Role && !missing.Level;
                     var accepted = FormatSemanticProfileValues(gender, roleValue, level);
                     var reply = completed
-                        ? $"Ok {prompt.DisplayName} 😎 tui hiểu và ghi {string.Join(" · ", accepted)} rồi. Hồ sơ kèo {session.Name} xong."
+                        ? await BuildSelfProfileCompletionReplyAsync(
+                            session,
+                            prompt,
+                            accepted,
+                            alreadyComplete: false,
+                            cancellationToken)
                         : $"Ok {prompt.DisplayName}, tui hiểu và ghi {string.Join(" · ", accepted)} rồi 👌 Còn {BuildProfileMissingHint(missing.Gender, missing.Role, missing.Level)} Cứ nói tiếp bình thường nha.";
                     await SendProfileConversationReplyAsync(session, prompt, message.MessageId, reply, cancellationToken);
                     await MarkProfileInputHandledAsync(message.Id, "profile_semantic_updated", claim, cancellationToken);
