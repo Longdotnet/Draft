@@ -38,7 +38,8 @@ For the `@Npc 9` -> confirmation boundary used by `@Npc 10` recovery:
 - the guidance must say that no fresh `@Npc` mention is required for that direct continuation;
 - this convenience never weakens provenance, sender/group scoping, authorization, stale-prompt fencing, or authoritative session binding;
 - if NPC reports a blocker instead of a confirmation prompt, the user fixes that grounded blocker first and runs `@Npc 9` again;
-- `@Npc 10` remains read-only and should progressively teach only the next useful step rather than dumping every possible blocker command when readiness is unavailable.
+- when canonical readiness is available, `@Npc 10` should teach only the grounded blocker and next action;
+- when readiness itself is unavailable, `@Npc 10` must retain the complete deterministic escape hatch (`@Npc 4`, profile correction, pass/share recovery, `@Npc 9`, confirmation, then `@Npc 10`) because AI/no-context failure is exactly when the user needs commands that do not depend on inference.
 
 AI is not required for any of these transitions. AI may phrase the explanation, but deterministic pending state and backend facts decide whether a continuation is executable.
 
