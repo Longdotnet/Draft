@@ -28,7 +28,7 @@ public sealed class ZaloProfileUpdateReadinessCopyTests
     }
 
     [Fact]
-    public void Missing_people_does_not_claim_profile_completion_makes_match_ready()
+    public void Missing_people_teaches_leader_decision_before_draft()
     {
         var message = ZaloProfileUpdateReadinessCopy.Build(
             Snapshot(ZaloDraftReadinessState.RosterNotFull, effectiveSlots: 16, capacity: 18));
@@ -36,6 +36,34 @@ public sealed class ZaloProfileUpdateReadinessCopyTests
         Assert.Contains("16/18", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("còn thiếu 2", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 4", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vẫn đánh", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chốt 16", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("kiếm thêm", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chỉ sau", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("draft đi", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Over_capacity_does_not_invite_draft_before_roster_is_fixed()
+    {
+        var message = ZaloProfileUpdateReadinessCopy.Build(
+            Snapshot(ZaloDraftReadinessState.RosterOverCapacity, effectiveSlots: 20, capacity: 18));
+
+        Assert.Contains("20/18", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("dư 2", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@Npc 4", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đừng chạy `draft đi`", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void No_roster_teaches_recruitment_instead_of_dead_end()
+    {
+        var message = ZaloProfileUpdateReadinessCopy.Build(
+            Snapshot(ZaloDraftReadinessState.NoRoster, effectiveSlots: 0, capacity: 18));
+
+        Assert.Contains("@Npc 4", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("kiếm thêm", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("nói `draft đi`", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
