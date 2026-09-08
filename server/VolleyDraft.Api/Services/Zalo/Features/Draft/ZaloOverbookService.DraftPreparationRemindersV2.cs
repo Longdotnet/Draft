@@ -153,7 +153,7 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         }
 
         return urgent
-            ? $"{changePrefix}{peopleLabel}. Kèo vẫn có thể chơi nếu trưởng/phó muốn, nhưng {count} chỗ hiện tại chưa chia đều {teamCount} đội 🚨 Nếu giữ danh sách hiện tại nói `vẫn đánh`; nếu tiếp tục tuyển nói `kiếm thêm`. Muốn bot tự chia đội thì cần xử lý chỗ dùng chung/luân phiên hoặc để số chỗ chia hết cho {teamCount} đội."
+            ? $"{changePrefix}{peopleLabel}. Kèo vẫn có thể chơi nếu trưởng/phó muốn, nhưng {count} chỗ hiện tại chưa chia đều {teamCount} đội 🚨 Nếu giữ danh sách hiện tại nói `vẫn đánh`; nếu tiếp tục tuyển nói `kiếm thêm`. Muốn bot tự chia đội thì cần xử lý chỗ dùng chung/luân phiên hoặc để số chỗ chia hết cho {teamCount}."
             : $"{changePrefix}{peopleLabel}. Trưởng/phó có thể nói `vẫn đánh` hoặc `kiếm thêm`; nếu muốn bot tự chia đội thì {count} chỗ hiện tại phải chia đều cho {teamCount} đội, nên cần xử lý chỗ dùng chung/luân phiên hoặc chờ danh sách đổi trước.";
     }
 
@@ -336,11 +336,12 @@ public sealed partial class ZaloOverbookService
                  activeSlotRisks > 0 ||
                  !string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
             {
-                if (!await TrySupersedeDraftReminderRequestAsync(
-                        escalationStore,
-                        existingRequest,
-                        session,
-                        cancellationToken))
+                var superseded = await TrySupersedeDraftReminderRequestAsync(
+                    escalationStore,
+                    existingRequest,
+                    session,
+                    cancellationToken);
+                if (!superseded)
                 {
                     // Another instance may have claimed execution after this request was
                     // loaded. Preserve that newer execution fence and fail closed for this
