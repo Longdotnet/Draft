@@ -50,11 +50,12 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("3 team x5", message!);
+        Assert.Contains("3 đội x5", message!);
         Assert.Contains("chốt 15", message);
         Assert.Contains("kiếm thêm", message);
         Assert.DoesNotContain("huỷ sân", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("huỷ kèo", message, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -67,8 +68,10 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
 
         Assert.NotNull(message);
         Assert.Contains("đã chốt tiếp tục kiếm thêm", message!);
-        Assert.Contains("14/18 → 15/18", message);
+        Assert.Contains("từ 14/18", message);
+        Assert.Contains("lên 15/18", message);
         Assert.Contains("không hỏi lại cùng một quyết định", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -80,9 +83,11 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness, decision: decision);
 
         Assert.NotNull(message);
-        Assert.Contains("3 team x5", message!);
-        Assert.Contains("Không dí kiếm thêm nữa", message);
+        Assert.Contains("3 đội x5", message!);
+        Assert.Contains("Không cần kiếm thêm nữa", message);
         Assert.Contains("`draft đi`", message);
+        Assert.Contains("chia đội", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -100,13 +105,14 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness, decision: decision);
 
         Assert.NotNull(message);
-        Assert.Contains("2 hồ sơ thiếu dữ liệu", message!);
+        Assert.Contains("2 người thiếu thông tin để chia đội", message!);
         Assert.Contains("A, B", message);
         Assert.DoesNotContain("`draft đi`", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
-    public void PlayCurrentSixteen_IsRememberedButNotAdvertisedAsAutoDraftable()
+    public void PlayCurrentSixteen_IsRememberedButNotAdvertisedAsAutomaticallyDivisible()
     {
         var readiness = Snapshot(16, 16, 18, ZaloDraftReadinessState.RosterNotFull, "fp-16");
         var decision = Decision(ZaloDraftPreparationDecisionKind.PlayCurrentRoster, "fp-16", 16);
@@ -115,13 +121,14 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
 
         Assert.NotNull(message);
         Assert.Contains("vẫn giữ quyết định chơi", message!);
-        Assert.Contains("16 effective slot chưa chia đều", message);
-        Assert.Contains("shared/rotation", message);
+        Assert.Contains("16 chỗ hiện tại chưa chia đều", message);
+        Assert.Contains("chỗ dùng chung/luân phiên", message);
         Assert.DoesNotContain("cứu kèo", message, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
-    public void RawSixteenWithSharedSlotEffectiveFifteen_ShowsBothFactsAndCanDraftThreeByFive()
+    public void RawSixteenWithSharedSlotEffectiveFifteen_ShowsBothFactsInPlainLanguageAndCanDraftThreeByFive()
     {
         var readiness = Snapshot(16, 15, 18, ZaloDraftReadinessState.RosterNotFull, "fp-shared");
         var decision = Decision(ZaloDraftPreparationDecisionKind.PlayCurrentRoster, "fp-shared", 15);
@@ -129,12 +136,13 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness, decision: decision);
 
         Assert.NotNull(message);
-        Assert.Contains("16 người / 15 effective slot", message!);
-        Assert.Contains("3 team x5", message);
+        Assert.Contains("16 người, tính ra 15/18 chỗ để chia đội", message!);
+        Assert.Contains("3 đội x5", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
-    public void StalePlayCurrentDecision_IsExplicitlyInvalidated()
+    public void StalePlayCurrentDecision_IsExplicitlyInvalidatedWithoutInternalRosterTerms()
     {
         var readiness = Snapshot(16, 16, 18, ZaloDraftReadinessState.RosterNotFull, "fp-16");
 
@@ -146,8 +154,10 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
             previous: 15);
 
         Assert.NotNull(message);
-        Assert.Contains("quyết định roster cũ hết hiệu lực", message!);
-        Assert.Contains("15/18 → 16/18", message);
+        Assert.Contains("quyết định cũ không còn khớp", message!);
+        Assert.Contains("từ 15/18", message);
+        Assert.Contains("lên 16/18", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -167,10 +177,11 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("0/18", message!);
+        Assert.Contains("0/18 chỗ", message!);
         Assert.Contains("kiếm thêm", message);
         Assert.DoesNotContain("huỷ", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("cancel", message, StringComparison.OrdinalIgnoreCase);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
@@ -181,23 +192,55 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
         var message = Build(readiness, risks: 1);
 
         Assert.NotNull(message);
-        Assert.Contains("1 suất đang nhường/chờ nhận", message!);
+        Assert.Contains("1 chỗ đang nhường/chờ nhận", message!);
         Assert.Contains("`huỷ pass`", message);
         Assert.Contains("`xong`", message);
         Assert.Contains("`huỷ nhận`", message);
         Assert.DoesNotContain("`draft đi`", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Fact]
-    public void ReadyFullRoster_StillInvitesDraftConfirmation()
+    public void ReadyFullRoster_StillInvitesDraftConfirmationInBeginnerLanguage()
     {
         var readiness = Snapshot(18, 18, 18, ZaloDraftReadinessState.Ready, "fp-18", canEscalate: true);
 
         var message = Build(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("18/18", message!);
+        Assert.Contains("18/18 chỗ", message!);
+        Assert.Contains("đủ", message);
+        Assert.Contains("chia", message);
         Assert.Contains("`draft đi`", message);
+        AssertBeginnerLanguage(message);
+    }
+
+    [Fact]
+    public void OverCapacity_TellsPeopleWhatChangedAndWhatToDoWithoutOverSlotJargon()
+    {
+        var readiness = Snapshot(20, 20, 18, ZaloDraftReadinessState.RosterOverCapacity, "fp-20");
+
+        var message = Build(readiness);
+
+        Assert.NotNull(message);
+        Assert.Contains("20/18 chỗ", message!);
+        Assert.Contains("dư 2 chỗ", message);
+        Assert.Contains("xử lý người/chỗ dư trước", message);
+        AssertBeginnerLanguage(message);
+    }
+
+    [Fact]
+    public void UrgentUnevenRoster_GivesTwoPracticalChoicesWithoutAutomationJargon()
+    {
+        var readiness = Snapshot(16, 16, 18, ZaloDraftReadinessState.RosterNotFull, "fp-16");
+
+        var message = Build(readiness, urgent: true);
+
+        Assert.NotNull(message);
+        Assert.Contains("`vẫn đánh`", message!);
+        Assert.Contains("`kiếm thêm`", message);
+        Assert.Contains("chưa chia đều 3 đội", message);
+        AssertBeginnerLanguage(message);
     }
 
     [Theory]
@@ -243,6 +286,27 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
     public void AutoDraftDivisibility_MatchesDraftEngineRule(int slots, int teams, bool expected)
     {
         Assert.Equal(expected, ZaloDraftPreparationDecisionPolicy.CanAutoDraftEvenly(slots, teams));
+    }
+
+    private static void AssertBeginnerLanguage(string message)
+    {
+        var forbidden = new[]
+        {
+            "effective slot",
+            "roster",
+            "sync",
+            "delta",
+            "auto-draft",
+            "shared/rotation",
+            "over-slot",
+            "fingerprint",
+            "backend",
+            "poll",
+            " team"
+        };
+
+        foreach (var term in forbidden)
+            Assert.DoesNotContain(term, message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? Build(
