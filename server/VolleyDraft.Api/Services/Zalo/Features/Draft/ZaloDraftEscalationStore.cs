@@ -284,11 +284,17 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
     public Task<int> SetStateAsync(
         string id,
         ZaloDraftEscalationState state,
-        CancellationToken cancellationToken = default) =>
-        UpdateAsync(id,
+        CancellationToken cancellationToken = default)
+    {
+        var executionGuard = state is ZaloDraftEscalationState.Superseded or ZaloDraftEscalationState.Expired
+            ? " AND \"State\" <> 'Executing'"
+            : string.Empty;
+        return UpdateAsync(id,
             "\"State\" = @state, \"ExecutionToken\" = NULL, \"UpdatedAt\" = @updatedAt",
             [("@state", state.ToString()), ("@updatedAt", DateTimeOffset.UtcNow)],
-            cancellationToken);
+            cancellationToken,
+            executionGuard);
+    }
 
     public async Task<IReadOnlyList<ZaloDraftEscalationSnapshot>> LoadActiveAsync(
         CancellationToken cancellationToken = default)
@@ -308,9 +314,18 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         ZaloDraftEscalationSnapshot? row,
         CancellationToken cancellationToken)
     {
-        if (row is null || !ActiveStates.Contains(row.State) || row.ExpiresAt > DateTimeOffset.UtcNow) return row;
-        await SetStateAsync(row.Id, ZaloDraftEscalationState.Expired, cancellationToken);
-        return row with { State = ZaloDraftEscalationState.Expired, UpdatedAt = DateTimeOffset.UtcNow };
+        // Expiry governs whether execution may be claimed. Once the atomic claim wins,
+        // the mutation owns an execution token and must be allowed to settle instead of
+        // being relabelled Expired by a concurrent reader whose wall clock crossed TTL.
+        if (row is null ||
+            row.State == ZaloDraftEscalationState.Executing ||
+            !ActiveStates.Contains(row.State) ||
+            row.ExpiresAt > DateTimeOffset.UtcNow)
+            return row;
+        var updated = await SetStateAsync(row.Id, ZaloDraftEscalationState.Expired, cancellationToken);
+        return updated == 1
+            ? row with { State = ZaloDraftEscalationState.Expired, UpdatedAt = DateTimeOffset.UtcNow }
+            : await LoadOneAsync("\"Id\" = @id", [("@id", row.Id)], cancellationToken);
     }
 
     private async Task<ZaloDraftEscalationSnapshot?> LoadOneAsync(
@@ -332,13 +347,14 @@ public sealed class ZaloDraftEscalationStore(VolleyDraftDbContext db)
         string id,
         string assignments,
         IReadOnlyList<(string Name, object? Value)> parameters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string additionalWhere = "")
     {
         await EnsureSchemaAsync(cancellationToken);
         var connection = db.Database.GetDbConnection();
         await OpenIfNeededAsync(connection, cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = $"UPDATE \"ZaloDraftEscalationRequests\" SET {assignments} WHERE \"Id\" = @id;";
+        command.CommandText = $"UPDATE \"ZaloDraftEscalationRequests\" SET {assignments} WHERE \"Id\" = @id{additionalWhere};";
         Add(command, "@id", Clean(id, 100));
         foreach (var parameter in parameters) Add(command, parameter.Name, parameter.Value);
         return await command.ExecuteNonQueryAsync(cancellationToken);
