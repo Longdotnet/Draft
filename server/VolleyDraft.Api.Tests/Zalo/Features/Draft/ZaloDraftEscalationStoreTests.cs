@@ -98,6 +98,36 @@ public sealed class ZaloDraftEscalationStoreTests
     }
 
     [Fact]
+    public async Task Executing_request_does_not_expire_or_lose_its_token_after_ttl()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = await CreateDbAsync(connection);
+        var store = new ZaloDraftEscalationStore(db);
+        var expiresAt = DateTimeOffset.UtcNow.AddSeconds(2);
+        var created = await store.CreateOrReuseAsync(
+            "conn-1", "group-1", "session-1", "Member",
+            "requester", "Requester", "msg-request",
+            "fingerprint-1", ZaloDraftEscalationState.AwaitingRequesterConsent,
+            expiresAt);
+        await store.SetPrimaryApproverAsync(
+            created.Id, "leader-1", "prompt-1", DateTimeOffset.UtcNow, expiresAt);
+        var tagged = await store.LoadForSessionAsync("conn-1", "group-1", "session-1");
+        var token = await store.TryClaimExecutionAsync(tagged!, "leader-1", "fingerprint-1");
+        Assert.NotNull(token);
+
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE \"ZaloDraftEscalationRequests\" SET \"ExpiresAt\" = {0} WHERE \"Id\" = {1};",
+            DateTimeOffset.UtcNow.AddMinutes(-1), created.Id);
+
+        var reloaded = await store.LoadForSessionAsync("conn-1", "group-1", "session-1");
+
+        Assert.NotNull(reloaded);
+        Assert.Equal(ZaloDraftEscalationState.Executing, reloaded!.State);
+        Assert.Equal(token, reloaded.ExecutionToken);
+    }
+
+    [Fact]
     public async Task Supersede_is_scoped_to_connection_group_and_session()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
