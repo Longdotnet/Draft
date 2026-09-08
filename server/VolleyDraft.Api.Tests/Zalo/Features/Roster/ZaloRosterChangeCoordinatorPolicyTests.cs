@@ -178,6 +178,37 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
     }
 
     [Fact]
+    public void IncidentIdempotencyKey_IsStableForDelayedRetry()
+    {
+        var incidentAt = DateTimeOffset.Parse("2026-09-08T10:00:00Z");
+
+        var firstAttempt = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "draft-keep-recruiting-drop", "s1", 18, 17, incidentAt);
+        var retryAfterDeploy = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "draft-keep-recruiting-drop", "s1", 18, 17, incidentAt);
+
+        Assert.Equal(firstAttempt, retryAfterDeploy);
+        Assert.DoesNotContain("295", firstAttempt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IncidentIdempotencyKey_SeparatesDistinctIncidentsAndMessageLanes()
+    {
+        var firstIncident = DateTimeOffset.Parse("2026-09-08T10:00:00Z");
+        var nextIncident = firstIncident.AddMinutes(30);
+
+        var recruitment = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "draft-keep-recruiting-drop", "s1", 18, 17, firstIncident);
+        var recovery = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "roster-recovered-ready", "s1", 17, 18, firstIncident);
+        var laterRecruitment = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "draft-keep-recruiting-drop", "s1", 18, 17, nextIncident);
+
+        Assert.NotEqual(recruitment, recovery);
+        Assert.NotEqual(recruitment, laterRecruitment);
+    }
+
+    [Fact]
     public async Task ObservationStore_PersistsAndCanBeExplicitlyReset()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

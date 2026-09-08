@@ -139,11 +139,13 @@ public sealed partial class ZaloOverbookService
 
                 var from = transition.DropFrom ?? previous.StableEffectiveSlotCount;
                 var to = transition.DropTo ?? readiness.EffectiveSlotCount;
+                var recoveryIncidentAt = previous.LastDropAt!.Value;
                 if (!await TrySendRosterRecoveredReadyAsync(
                         session,
                         readiness,
                         from,
                         to,
+                        recoveryIncidentAt,
                         now,
                         cancellationToken))
                     continue;
@@ -230,13 +232,15 @@ public sealed partial class ZaloOverbookService
 
             if (sent >= settings.MaxSendsPerCycle) continue;
 
+            var incidentAt = state.LastDropAt!.Value;
             var recentBroadcast = await HasRecentKeepRecruitingBroadcastAsync(
                 session,
-                now - recentBroadcastWindow,
+                incidentAt,
+                recentBroadcastWindow,
                 cancellationToken);
             var sentThisIncident = recentBroadcast
-                ? await TrySendRosterDropSoftUpdateAsync(session, readiness, fromDrop, toDrop, now, cancellationToken)
-                : await TrySendRosterDropRecruitmentBroadcastAsync(session, readiness, fromDrop, toDrop, now, cancellationToken);
+                ? await TrySendRosterDropSoftUpdateAsync(session, readiness, fromDrop, toDrop, incidentAt, now, cancellationToken)
+                : await TrySendRosterDropRecruitmentBroadcastAsync(session, readiness, fromDrop, toDrop, incidentAt, now, cancellationToken);
 
             if (!sentThisIncident) continue;
             sent += 1;
@@ -252,17 +256,20 @@ public sealed partial class ZaloOverbookService
 
     private async Task<bool> HasRecentKeepRecruitingBroadcastAsync(
         MatchSession session,
-        DateTimeOffset cutoff,
+        DateTimeOffset incidentAt,
+        TimeSpan window,
         CancellationToken cancellationToken)
     {
         var intent = ZaloKeepRecruitingBroadcastPolicy.SelectedIntent(session.Id);
+        var cutoff = incidentAt - window;
         return await db.ZaloGroupMessages.AsNoTracking().AnyAsync(item =>
             item.ZaloConnectionId == session.ZaloConnectionId &&
             item.GroupId == session.ZaloGroupId &&
             item.IsFromBot &&
             item.ReplyOutcome == ZaloKeepRecruitingBroadcastPolicy.ReplyOutcome &&
             item.SelectedIntent == intent &&
-            item.SentAt >= cutoff,
+            item.SentAt >= cutoff &&
+            item.SentAt <= incidentAt,
             cancellationToken);
     }
 
@@ -271,11 +278,17 @@ public sealed partial class ZaloOverbookService
         ZaloDraftReadinessSnapshot readiness,
         int from,
         int to,
+        DateTimeOffset incidentAt,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         var body = ZaloRosterChangeCoordinatorPolicy.BuildRecoveredReadyUpdate(readiness, from, to);
-        var idempotencyKey = $"roster-recovered-ready:{session.Id}:{from}:{to}:{now.ToUnixTimeSeconds() / 120}";
+        var idempotencyKey = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "roster-recovered-ready",
+            session.Id,
+            from,
+            to,
+            incidentAt);
         return await SendRosterCoordinatorMessageAsync(
             session,
             body,
@@ -292,6 +305,7 @@ public sealed partial class ZaloOverbookService
         ZaloDraftReadinessSnapshot readiness,
         int from,
         int to,
+        DateTimeOffset incidentAt,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -300,7 +314,12 @@ public sealed partial class ZaloOverbookService
             string.IsNullOrWhiteSpace(session.ZaloGroupId))
             return false;
         var body = ZaloRosterChangeCoordinatorPolicy.BuildSoftUpdate(readiness, from, to, 0);
-        var idempotencyKey = $"roster-drop-soft:{session.Id}:{from}:{to}:{now.ToUnixTimeSeconds() / 120}";
+        var idempotencyKey = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "roster-drop-soft",
+            session.Id,
+            from,
+            to,
+            incidentAt);
         return await SendRosterCoordinatorMessageAsync(
             session,
             body,
@@ -317,6 +336,7 @@ public sealed partial class ZaloOverbookService
         ZaloDraftReadinessSnapshot readiness,
         int from,
         int to,
+        DateTimeOffset incidentAt,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -331,7 +351,12 @@ public sealed partial class ZaloOverbookService
             ? "Kèo vừa từ đủ người thành hụt chỗ"
             : "Danh sách vừa tụt thêm";
         var message = $"@all {reason}: {from}/{readiness.Capacity} → {to}/{readiness.Capacity} 😭 {tail}";
-        var idempotencyKey = $"draft-keep-recruiting-drop:{session.Id}:{from}:{to}:{now.ToUnixTimeSeconds() / 120}";
+        var idempotencyKey = ZaloRosterChangeCoordinatorPolicy.BuildIncidentIdempotencyKey(
+            "draft-keep-recruiting-drop",
+            session.Id,
+            from,
+            to,
+            incidentAt);
         return await SendRosterCoordinatorMessageAsync(
             session,
             message,
