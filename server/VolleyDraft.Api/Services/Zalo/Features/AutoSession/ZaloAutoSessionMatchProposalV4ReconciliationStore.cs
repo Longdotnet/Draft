@@ -8,6 +8,7 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Services.Zalo.Conversation;
 
 namespace VolleyDraft.Api.Services;
 
@@ -23,6 +24,7 @@ internal sealed record ZaloAutoSessionMatchProposalV4SourceState(
 internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDraftDbContext db)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private readonly ZaloAutoSessionMatchProposalV4Store revisions = new(db);
 
     public async Task<ZaloAutoSessionMatchProposalV4SourceState?> LoadSourceAsync(
@@ -67,6 +69,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
 
             var evidence = BuildEvidence(
                 latest,
+                currentPoll,
                 previousSource,
                 revalidation.CurrentSourceDraft,
                 revalidation.Reconciliation.Draft,
@@ -102,6 +105,7 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
 
     private static JsonObject BuildEvidence(
         ZaloAutoSessionMatchProposalV4Revision latest,
+        BridgePoll currentPoll,
         ZaloAutoSessionConversationDraft previousSource,
         ZaloAutoSessionConversationDraft currentSource,
         ZaloAutoSessionConversationDraft reconciled,
@@ -115,10 +119,10 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
         evidence["pollStructureHash"] = structureHash;
         evidence["sourceDraftJson"] = sourceDraftJson;
 
-        var oldIdentity = evidence["optionIdentity"] as JsonObject;
+        RefreshApprovedPolicyEvidence(evidence, previousSource, currentSource, reconciled);
+
         var oldStarts = evidence["startTimes"] as JsonObject;
         var oldSelections = evidence["selections"] as JsonObject;
-        var previousById = previousSource.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
         var reconciledById = reconciled.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
 
         var identities = new JsonObject();
@@ -128,14 +132,12 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
         {
             identities[current.OptionId] = Evidence("poll_option", current.OptionContent);
 
-            var sourceTimeUnchanged = previousById.TryGetValue(current.OptionId, out var previous) &&
-                                      previous.StartTime == current.StartTime;
-            if (sourceTimeUnchanged && oldStarts?[current.OptionId] is JsonNode oldStart)
+            var organizerTimePreserved = reconciledById.TryGetValue(current.OptionId, out var reconciledItem) &&
+                                         reconciledItem.StartTime != current.StartTime;
+            if (organizerTimePreserved && oldStarts?[current.OptionId] is JsonNode oldStart)
                 starts[current.OptionId] = oldStart.DeepClone();
             else
-                starts[current.OptionId] = Evidence(
-                    "deterministic_poll_candidate",
-                    current.StartTime.ToString("O", CultureInfo.InvariantCulture));
+                starts[current.OptionId] = BuildCurrentStartTimeEvidence(currentPoll, current);
 
             if (oldSelections?[current.OptionId] is JsonNode oldSelection)
                 selections[current.OptionId] = oldSelection.DeepClone();
@@ -156,6 +158,64 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
         evidence["startTimes"] = starts;
         evidence["selections"] = selections;
         return evidence;
+    }
+
+    private static void RefreshApprovedPolicyEvidence(
+        JsonObject evidence,
+        ZaloAutoSessionConversationDraft previousSource,
+        ZaloAutoSessionConversationDraft currentSource,
+        ZaloAutoSessionConversationDraft reconciled)
+    {
+        var locationPolicyChanged = !string.Equals(
+            previousSource.Location,
+            currentSource.Location,
+            StringComparison.Ordinal);
+        var organizerLocationPreserved = !string.Equals(
+            reconciled.Location,
+            currentSource.Location,
+            StringComparison.Ordinal);
+        if (locationPolicyChanged && !organizerLocationPreserved)
+        {
+            evidence["location"] = Evidence(
+                "approved_group_default",
+                $"ZaloTrackedGroups.DefaultLocation={currentSource.Location?.Trim() ?? string.Empty}");
+        }
+
+        var teamSizePolicyChanged = previousSource.TeamSize != currentSource.TeamSize;
+        var organizerTeamSizePreserved = reconciled.TeamSize != currentSource.TeamSize;
+        if (teamSizePolicyChanged && !organizerTeamSizePreserved)
+        {
+            evidence["teamSize"] = Evidence(
+                "approved_group_default",
+                $"ZaloTrackedGroups.DefaultTeamSize={currentSource.TeamSize.ToString(CultureInfo.InvariantCulture)}");
+        }
+    }
+
+    private static JsonObject BuildCurrentStartTimeEvidence(
+        BridgePoll currentPoll,
+        ZaloAutoSessionConversationDraftItem current)
+    {
+        var option = currentPoll.Options.FirstOrDefault(item =>
+            string.Equals(item.Id, current.OptionId, StringComparison.Ordinal));
+        if (option is not null && ZaloSessionResolver.ContainsExplicitSessionTime(option.Content ?? string.Empty))
+        {
+            return Evidence(
+                "poll_option_explicit_time",
+                current.StartTime.ToString("O", CultureInfo.InvariantCulture));
+        }
+
+        if (ZaloSessionResolver.ContainsExplicitSessionTime(currentPoll.Question ?? string.Empty))
+        {
+            return Evidence(
+                "poll_title_explicit_time",
+                current.StartTime.ToString("O", CultureInfo.InvariantCulture));
+        }
+
+        var local = current.StartTime.ToOffset(VietnamOffset);
+        var minutes = local.Hour * 60 + local.Minute;
+        return Evidence(
+            "approved_group_default",
+            $"ZaloTrackedGroups.DefaultStartMinutes={minutes.ToString(CultureInfo.InvariantCulture)}");
     }
 
     private static JsonObject Evidence(string source, string detail) => new()
