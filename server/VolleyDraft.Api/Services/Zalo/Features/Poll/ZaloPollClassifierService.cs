@@ -539,16 +539,39 @@ internal sealed class ZaloPollClassifierService
                 ? reasonNode.GetString() ?? "ai"
                 : "ai";
 
-            if (!isSignup && confidence >= 0.85)
-                return new(false, Math.Min(ruleScore, 1 - confidence), $"{ruleReason};ai_reject:{reason}", true);
-            var finalConfidence = isSignup ? Math.Max(ruleScore, confidence) : ruleScore;
-            return new(finalConfidence >= 0.72, finalConfidence, $"{ruleReason};ai:{reason}", true);
+            return ResolveWithAi(ruleScore, ruleReason, isSignup, confidence, reason);
         }
         catch (JsonException exception)
         {
             logger.LogDebug(exception, "Auto-session poll classifier returned malformed JSON; falling back to deterministic rules.");
             return new(ruleScore >= 0.72, ruleScore, ruleReason + ";ai_failed", false);
         }
+    }
+
+    internal static ZaloPollClassification ResolveWithAi(
+        double ruleScore,
+        string ruleReason,
+        bool aiIsSignup,
+        double aiConfidence,
+        string aiReason)
+    {
+        ruleScore = Math.Clamp(ruleScore, 0, 1);
+        aiConfidence = Math.Clamp(aiConfidence, 0, 1);
+        var deterministicQualified = ruleScore >= 0.72;
+
+        if (!aiIsSignup && aiConfidence >= 0.85)
+            return new(false, Math.Min(ruleScore, 1 - aiConfidence), $"{ruleReason};ai_reject:{aiReason}", true);
+
+        if (aiIsSignup && !deterministicQualified)
+        {
+            // AI may improve language understanding, but it cannot turn a weak deterministic
+            // candidate into an authoritative Auto Session trigger. This prevents a configured
+            // no-approval group from mutating backend state solely because model confidence is high.
+            return new(false, ruleScore, $"{ruleReason};ai_suggest:{aiReason};deterministic_authority_required", true);
+        }
+
+        var finalConfidence = aiIsSignup ? Math.Max(ruleScore, aiConfidence) : ruleScore;
+        return new(deterministicQualified, finalConfidence, $"{ruleReason};ai:{aiReason}", true);
     }
 
     private static double ScoreByRules(
