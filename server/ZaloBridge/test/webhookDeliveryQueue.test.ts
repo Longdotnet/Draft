@@ -39,6 +39,8 @@ test("transient webhook failures retry until API delivery succeeds", async () =>
     permanentFailures: 0,
     expired: 0,
     overflowRejected: 0,
+    coalescedDuplicates: 0,
+    idempotencyConflicts: 0,
   });
 });
 
@@ -139,7 +141,7 @@ test("pending webhook memory is bounded per account", async () => {
   await first;
 });
 
-test("duplicate delivery id coalesces while the original delivery is pending", async () => {
+test("duplicate delivery id shares the exact in-flight promise and provider outcome", async () => {
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });
   let calls = 0;
@@ -147,16 +149,70 @@ test("duplicate delivery id coalesces while the original delivery is pending", a
     fetchImpl: async () => {
       calls += 1;
       await blocked;
-      return new Response(null, { status: 204 });
+      return new Response("unauthorized", { status: 401 });
     },
   });
 
   const first = queue.enqueue(request("acc-1", "m-1"));
-  await queue.enqueue(request("acc-1", "m-1"));
+  const duplicate = queue.enqueue(request("acc-1", "m-1"));
+  assert.equal(duplicate, first, "duplicate callers must observe the original delivery outcome");
+  assert.equal(queue.snapshot().coalescedDuplicates, 1);
+
+  release();
+  await assert.rejects(first, /401/);
+  await assert.rejects(duplicate, /401/);
+  assert.equal(calls, 1);
+  assert.equal(queue.snapshot().accepted, 1);
+});
+
+test("same delivery id with different payload fails closed while original stays in flight", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  const logs: Array<Record<string, unknown>> = [];
+  const queue = new WebhookDeliveryQueue({
+    fetchImpl: async () => {
+      calls += 1;
+      await blocked;
+      return new Response(null, { status: 204 });
+    },
+    onLog: (event) => logs.push(event),
+  });
+
+  const first = queue.enqueue(request("acc-1", "m-1"));
+  const conflicting = {
+    ...request("acc-1", "m-1"),
+    body: { accountId: "acc-1", messageId: "m-1", content: "different event" },
+  };
+
+  await assert.rejects(queue.enqueue(conflicting), /conflicts with an in-flight payload/);
+  assert.equal(queue.snapshot().idempotencyConflicts, 1);
+  assert.equal(queue.snapshot().accepted, 1);
+  assert.equal(logs.some((entry) => entry.outcome === "idempotency_conflict"), true);
+
   release();
   await first;
   assert.equal(calls, 1);
-  assert.equal(queue.snapshot().accepted, 1);
+});
+
+test("webhook-key rotation does not create an idempotency conflict for the same event", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const queue = new WebhookDeliveryQueue({
+    fetchImpl: async () => {
+      await blocked;
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  const first = queue.enqueue(request("acc-1", "m-rotate"));
+  const rotated = queue.enqueue({ ...request("acc-1", "m-rotate"), webhookKey: "rotated-key" });
+  assert.equal(rotated, first);
+  assert.equal(queue.snapshot().idempotencyConflicts, 0);
+  assert.equal(queue.snapshot().coalescedDuplicates, 1);
+
+  release();
+  await first;
 });
 
 test("drain waits for webhook deliveries accepted before graceful shutdown", async () => {
