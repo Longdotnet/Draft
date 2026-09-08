@@ -152,6 +152,51 @@ public sealed class ZaloSchedulerTriggerTests
     }
 
     [Fact]
+    public async Task Terminal_release_allows_restarted_instance_to_run_without_waiting_for_old_lease_expiry()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloSchedulerLeaseStore(db);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
+        await store.MarkAttemptAsync("instance-a", now.AddSeconds(1));
+        await store.MarkSuccessAsync("instance-a", now.AddSeconds(2));
+        Assert.True(await store.ReleaseAsync("instance-a", now.AddSeconds(2)));
+
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddSeconds(3), TimeSpan.FromMinutes(15)));
+        var lease = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
+        Assert.Equal("instance-b", lease.OwnerId);
+        Assert.Equal(now.AddMinutes(15).AddSeconds(3), lease.LeaseUntil);
+        Assert.Equal(now.AddSeconds(2), lease.LastSuccessAt);
+    }
+
+    [Fact]
+    public async Task Terminal_release_is_owner_guarded_and_cannot_clear_a_successor_lease()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloSchedulerLeaseStore(db);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(1)));
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(1), TimeSpan.FromMinutes(15)));
+        Assert.False(await store.ReleaseAsync("instance-a", now.AddMinutes(1).AddSeconds(1)));
+
+        var lease = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
+        Assert.Equal("instance-b", lease.OwnerId);
+        Assert.Equal(now.AddMinutes(16), lease.LeaseUntil);
+    }
+
+    [Fact]
     public async Task Current_owner_can_renew_without_opening_a_second_instance_window()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
