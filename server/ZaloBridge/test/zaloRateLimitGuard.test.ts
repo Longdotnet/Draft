@@ -114,6 +114,34 @@ test("serializes outbound work per account and enforces the configured minimum g
   assert.deepEqual(sleeps, [750]);
 });
 
+test("paces queued provider work after a non-rate-limit failure", async () => {
+  let now = 20_000;
+  const starts: number[] = [];
+  const sleeps: number[] = [];
+  const guard = new ZaloRateLimitGuard({
+    now: () => now,
+    minGapMs: 750,
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+      now += milliseconds;
+    },
+  });
+
+  const first = guard.run("account-a", async () => {
+    starts.push(now);
+    throw { response: { status: 503 } };
+  });
+  const second = guard.run("account-a", async () => {
+    starts.push(now);
+    return "recovered";
+  });
+
+  await assert.rejects(first);
+  assert.equal(await second, "recovered");
+  assert.deepEqual(starts, [20_000, 20_750]);
+  assert.deepEqual(sleeps, [750]);
+});
+
 test("parses Retry-After seconds and HTTP-date without exposing provider bodies", () => {
   const now = Date.parse("2026-09-08T05:00:00Z");
   assert.equal(

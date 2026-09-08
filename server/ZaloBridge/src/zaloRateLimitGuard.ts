@@ -22,8 +22,9 @@ const defaultSleep = (milliseconds: number) =>
  * Account-scoped protection for outbound Zalo side effects.
  *
  * This deliberately never retries an upstream failure. It serializes sends for one
- * connected account, keeps a small gap between provider calls, and opens a local
- * cooldown after an upstream 429 so concurrent callers cannot keep hammering Zalo.
+ * connected account, keeps a small gap between provider calls regardless of outcome,
+ * and opens a local cooldown after an upstream 429 so concurrent callers cannot keep
+ * hammering Zalo.
  */
 export class ZaloRateLimitGuard {
   private readonly states = new Map<string, AccountRateState>();
@@ -75,7 +76,6 @@ export class ZaloRateLimitGuard {
       try {
         const result = await operation();
         state.consecutiveRateLimits = 0;
-        state.nextAllowedAt = this.now() + this.minGapMs;
         return result;
       } catch (error) {
         const descriptor = classifyBridgeError(error);
@@ -88,6 +88,11 @@ export class ZaloRateLimitGuard {
           state.nextAllowedAt = state.blockedUntil;
         }
         throw error;
+      } finally {
+        // The spacing invariant applies to provider attempts, not only successful sends.
+        // Without this, a queued request can immediately follow a 5xx/auth/network failure
+        // and amplify an upstream incident even though work is serialized per account.
+        state.nextAllowedAt = Math.max(state.nextAllowedAt, this.now() + this.minGapMs);
       }
     } finally {
       release();
