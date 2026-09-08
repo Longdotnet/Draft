@@ -18,11 +18,11 @@ public sealed record ZaloAmbientLeasePendingContinuation(
 /// Preview confirmations use an explicit allowlist, strong confirmation grammar and
 /// successful-prompt provenance. Session-selection continuations are different: while
 /// AutoDraft/Redraft/TeamImage is waiting for a session, only a cancellation or a
-/// selector that resolves against the authoritative pending candidate sessions may
-/// promote the turn. This keeps short follow-ups such as "cn" or "13/9" usable without
-/// making ordinary group chat an implicit bot address. TeamImage is read-only, but it
-/// still uses the same grounded pending-session selector and provenance boundary as
-/// draft workflows.
+/// standalone selector that resolves against the authoritative pending candidate
+/// sessions may promote the turn. This keeps short follow-ups such as "cn" or "13/9"
+/// usable without making ordinary group chat an implicit bot address. TeamImage is
+/// read-only, but it still uses the same grounded pending-session selector and
+/// provenance boundary as draft workflows.
 /// </summary>
 public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbContext db)
 {
@@ -54,7 +54,6 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
             return null;
 
         var text = content ?? string.Empty;
-        var isCancellation = ZaloBotIntelligence.IsCancel(text);
         var isStrongConfirmation = IsStrongConfirmation(text);
 
         // Keep DateTimeOffset comparison in memory for SQLite/PostgreSQL parity.
@@ -69,6 +68,8 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         if (state is not null && state.ExpiresAt > DateTimeOffset.UtcNow &&
             Enum.TryParse<ZaloBotIntent>(state.PendingIntent, out var pendingIntent))
         {
+            var isCancellation = IsNoMentionPendingCancellation(text);
+
             if (AllowedConfirmationPendingIntents.Contains(pendingIntent) &&
                 (isCancellation || isStrongConfirmation) &&
                 TryGetConfirmationPromptIntent(pendingIntent, out var promptIntent) &&
@@ -110,7 +111,7 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         // Cancellation of a V2 TeamPreference proposal remains a read-only advisor
         // operation. Only a strong affirmative phrase may be promoted toward the
         // existing TeamPreference confirmation handler.
-        if (isCancellation || !isStrongConfirmation) return null;
+        if (IsNoMentionPendingCancellation(text) || !isStrongConfirmation) return null;
 
         var proposal = await new ZaloConversationStateV2Store(db)
             .LoadActiveAsync(groupId, senderId, cancellationToken);
@@ -154,6 +155,31 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         return new ZaloAmbientLeasePendingContinuation(
             ZaloBotIntent.TeamPreferenceConfirm,
             IsCancellation: false);
+    }
+
+    /// <summary>
+    /// No-mention cancellation is deliberately narrower than the global natural-cancel
+    /// grammar. A bare control can safely belong to the pending workflow, but text such
+    /// as "huỷ reminder" or "huỷ pass" already carries another domain and must not be
+    /// promoted merely because an old draft/session prompt is still active.
+    /// </summary>
+    public static bool IsNoMentionPendingCancellation(string? content)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty)
+            .Trim(' ', '.', '!', '?', ',', ';', ':');
+
+        return normalized is
+            "huy" or
+            "cancel" or
+            "thoi" or
+            "bo qua" or
+            "khong can nua" or
+            "thoi khoi" or
+            "thoi khoi di" or
+            "khoi" or
+            "khoi di" or
+            "bo di" or
+            "khong lam nua";
     }
 
     private static bool TryGetConfirmationPromptIntent(
@@ -220,6 +246,13 @@ public sealed class ZaloAmbientLeasePendingContinuationPolicy(VolleyDraftDbConte
         string content,
         CancellationToken cancellationToken)
     {
+        // Mentioned/reply-addressed turns may contain a full sentence because explicit
+        // addressing already establishes intent ownership. This no-mention lane is
+        // intentionally stricter: only a standalone selector-shaped follow-up may wake
+        // the bot. A sentence that merely mentions "CN" or "13/9" remains human chat.
+        if (!ZaloSessionResolver.LooksLikeStandaloneSelector(content))
+            return false;
+
         List<string> candidateIds;
         try
         {
