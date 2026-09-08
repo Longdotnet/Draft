@@ -81,8 +81,8 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         {
             if (readiness.MissingProfileCount > 0)
             {
-                return ZaloDraftPreparationClientCopy.MissingProfiles(
-                    $"Kèo {name} đã được trưởng/phó chốt vẫn chơi với {peopleLabel}. ",
+                return ZaloDraftPreparationClientCopy.LockedListMissingProfileReminder(
+                    name,
                     peopleLabel,
                     readiness.MissingProfileCount,
                     readiness.MissingProfileNames);
@@ -135,7 +135,7 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         if (readiness.State != ZaloDraftReadinessState.RosterNotFull)
         {
             if (readiness.MissingProfileCount > 0)
-                return ZaloDraftPreparationClientCopy.MissingProfileBlocker(
+                return ZaloDraftPreparationClientCopy.MissingProfileReminder(
                     name,
                     readiness.MissingProfileCount,
                     readiness.MissingProfileNames);
