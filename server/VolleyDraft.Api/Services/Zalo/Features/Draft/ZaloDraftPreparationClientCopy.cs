@@ -2,6 +2,9 @@ namespace VolleyDraft.Api.Services;
 
 internal static class ZaloDraftPreparationClientCopy
 {
+    private const string RelockCurrentListHint =
+        "Nếu vẫn muốn chơi với danh sách hiện tại, nói `vẫn đánh` để tui đọc lại vote và chốt lại từ dữ liệu mới; nếu muốn tiếp tục kiếm cho đủ thì nói `kiếm thêm`.";
+
     internal static string StopMatch(string changePrefix, string sessionName) =>
         $"{changePrefix}Ok, tui ghi nhận trưởng/phó chốt dừng kèo {sessionName}. Tui ngưng nhắc chia đội cho trận này nha. Tui chưa tự xoá trận, vote hay thao tác huỷ sân bên ngoài.";
 
@@ -56,19 +59,19 @@ internal static class ZaloDraftPreparationClientCopy
         $"{changePrefix}Ok, tui ghi nhận kèo vẫn chơi với {countLabel} 👌 Nhưng {effectiveSlotCount} chỗ chưa chia đều được {teamCount} đội. Nếu muốn NPC tự chia, xử lý các chỗ chơi chung/luân phiên hoặc đổi số người về số chia hết cho {teamCount}; tui không tự bỏ hay thêm người.";
 
     internal static string DecisionActorRoleStale(string sessionName) =>
-        $"Quyền trưởng/phó của người đã chốt danh sách {sessionName} không còn xác minh được, nên quyết định cũ hết hiệu lực. Tui chưa chia đội nha; nhờ người đang có quyền chốt lại danh sách giúp tui.";
+        $"Quyền trưởng/phó của người đã chốt danh sách {sessionName} không còn xác minh được, nên quyết định cũ hết hiệu lực. Tui chưa chia đội nha. Nhờ trưởng/phó hiện tại chọn lại hướng. {RelockCurrentListHint}";
 
     internal static string DraftVoteRefreshFailed(string sessionName) =>
         $"Tui chưa đọc lại được đúng vote {sessionName}, nên chưa chia đội trên dữ liệu có thể cũ nha. Tui chưa đổi gì; thử `draft đi` lại khi vote đọc được giúp tui.";
 
     internal static string PlayerListChanged(string sessionName) =>
-        $"Danh sách người chơi {sessionName} vừa đổi so với lúc trưởng/phó chốt, nên quyết định cũ hết hiệu lực nha 😭 Tui chưa chia đội. Chốt lại danh sách hiện tại trước giúp tui.";
+        $"Danh sách người chơi {sessionName} vừa đổi so với lúc trưởng/phó chốt, nên quyết định cũ hết hiệu lực nha 😭 Tui chưa chia đội. {RelockCurrentListHint}";
 
     internal static string PartialPassRisk(string sessionName, int riskCount) =>
-        $"{sessionName} đang có {riskCount} chỗ đang nhường/chờ nhận nên tui chưa chia đội nha. Xử lý người nhường/người nhận xong trước; khi đúng trường hợp có thể dùng `huỷ pass`, `xong` hoặc `huỷ nhận`.";
+        $"{sessionName} đang có {riskCount} chỗ đang nhường/chờ nhận nên tui chưa chia đội nha. Xử lý người nhường/người nhận xong trước; khi đúng trường hợp có thể dùng `huỷ pass`, `xong` hoặc `huỷ nhận`. Xử lý xong nói `vẫn đánh` để tui đọc lại vote và chốt lại đúng danh sách trước khi chia đội.";
 
     internal static string PartialNotEven(int effectiveSlotCount, int teamCount) =>
-        $"Kèo vẫn chơi thì ok, nhưng {effectiveSlotCount} chỗ chưa chia đều được {teamCount} đội nên NPC chưa thể tự chia. Xử lý các chỗ chơi chung/luân phiên hoặc đổi số người trước nha.";
+        $"Kèo vẫn chơi thì ok, nhưng {effectiveSlotCount} chỗ chưa chia đều được {teamCount} đội nên NPC chưa thể tự chia. Xử lý các chỗ chơi chung/luân phiên hoặc đổi số người trước nha. Sau khi danh sách đổi, nói `vẫn đánh` để tui đọc lại vote và chốt lại đúng danh sách mới.";
 
     internal static string BuildDecisionChangePrefix(
         ZaloDraftPreparationDecisionSnapshot? previous,
