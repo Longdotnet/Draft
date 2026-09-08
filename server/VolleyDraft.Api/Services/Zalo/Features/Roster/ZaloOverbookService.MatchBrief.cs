@@ -17,6 +17,7 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken)
     {
+        using var conversationStateScope = ZaloConversationStateScope.Push(connectionId);
         var settings = DraftAutopilotSettings.FromConfiguration(configuration);
         if (!settings.NaturalReadinessEnabled) return false;
 
