@@ -99,6 +99,7 @@ public sealed class ZaloDraftPreparationClientCopyTests
     [Fact]
     public void Decision_change_prefix_uses_human_language()
     {
+        var now = DateTimeOffset.UtcNow;
         var previous = new ZaloDraftPreparationDecisionSnapshot(
             "session-1",
             ZaloDraftPreparationDecisionKind.PlayCurrentRoster,
@@ -107,7 +108,8 @@ public sealed class ZaloDraftPreparationClientCopyTests
             "leader-1",
             "Long",
             "message-1",
-            DateTimeOffset.UtcNow);
+            now,
+            now);
 
         var text = ZaloDraftPreparationClientCopy.BuildDecisionChangePrefix(
             previous,
