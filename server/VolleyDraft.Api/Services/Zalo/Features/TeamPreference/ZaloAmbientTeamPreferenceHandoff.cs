@@ -66,10 +66,17 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
             .FirstOrDefault();
         if (string.IsNullOrWhiteSpace(connectionId)) return false;
 
+        using var conversationStateScope = ZaloConversationStateScope.Push(connectionId);
         var store = new ZaloConversationStateV2Store(db);
-        var state = await store.LoadActiveAsync(groupId, senderId, cancellationToken);
-        if (state is null || !string.Equals(state.Intent, ProposalIntent, StringComparison.Ordinal))
+        var proposal = await LoadProposalForScopeAsync(
+            store,
+            connectionId,
+            groupId,
+            senderId,
+            cancellationToken);
+        if (proposal.State is null)
             return false;
+        var state = proposal.State;
 
         var proposalSourceMessageId = Clean(state.LastMessageId, 160);
         if (proposalSourceMessageId.Length == 0) return false;
@@ -132,6 +139,12 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
                 !string.Equals(latest.MessageId, proposalSourceMessageId, StringComparison.Ordinal))
                 return false;
         }
+
+        // Do not mutate persistence just because a message looked like a confirmation.
+        // Legacy-to-scoped migration happens only after the exact prompt provenance has
+        // passed, preserving old pending state for unrelated or stale confirmations.
+        if (proposal.IsLegacy)
+            state = await MigrateLegacyProposalAsync(store, groupId, senderId, state, cancellationToken);
 
         var collected = ParseObject(state.CollectedArgumentsJson);
         if (collected is null) return false;
@@ -237,6 +250,75 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
             cancellationToken);
 
         return true;
+    }
+
+    private async Task<(ZaloConversationStateV2Snapshot? State, bool IsLegacy)> LoadProposalForScopeAsync(
+        ZaloConversationStateV2Store store,
+        string connectionId,
+        string groupId,
+        string senderId,
+        CancellationToken cancellationToken)
+    {
+        var scoped = await store.LoadActiveAsync(groupId, senderId, cancellationToken);
+        if (scoped is not null)
+            return string.Equals(scoped.Intent, ProposalIntent, StringComparison.Ordinal)
+                ? (scoped, false)
+                : (null, false);
+
+        ZaloConversationStateV2Snapshot? legacy;
+        using (ZaloConversationStateScope.Push(null))
+            legacy = await store.LoadActiveAsync(groupId, senderId, cancellationToken);
+        if (legacy is null || !string.Equals(legacy.Intent, ProposalIntent, StringComparison.Ordinal))
+            return (null, false);
+
+        // Legacy V2 rows predate connection scoping. Never dual-read them as trusted
+        // authority merely because group/sender identifiers match: those provider IDs
+        // may be reused on another Zalo login. A selected internal session ID is the
+        // migration proof because MatchSession IDs are application-owned and bind the
+        // proposal to one durable connection/group.
+        var collected = ParseObject(legacy.CollectedArgumentsJson);
+        if (collected is null) return (null, false);
+        var requesterId = GetString(collected, "requesterZaloUserId", 100);
+        var sessionId = GetString(collected, "sessionId", 100);
+        if (!string.Equals(requesterId, senderId, StringComparison.Ordinal) || sessionId.Length == 0)
+            return (null, false);
+
+        var belongsToCurrentScope = await db.MatchSessions
+            .AsNoTracking()
+            .AnyAsync(item =>
+                item.Id == sessionId &&
+                item.ZaloConnectionId == connectionId &&
+                item.ZaloGroupId == groupId,
+                cancellationToken);
+        return belongsToCurrentScope ? (legacy, true) : (null, false);
+    }
+
+    private static async Task<ZaloConversationStateV2Snapshot> MigrateLegacyProposalAsync(
+        ZaloConversationStateV2Store store,
+        string groupId,
+        string senderId,
+        ZaloConversationStateV2Snapshot legacy,
+        CancellationToken cancellationToken)
+    {
+        var migrated = await store.SaveActiveAsync(
+            groupId,
+            senderId,
+            legacy.Intent,
+            legacy.CollectedArgumentsJson,
+            legacy.MissingArgumentsJson,
+            legacy.CandidateEntitiesJson,
+            legacy.SourceMessageId,
+            legacy.LastMessageId,
+            legacy.ExpiresAt,
+            cancellationToken);
+
+        // Scoped copy first, legacy retirement second. A crash between the two leaves
+        // a duplicate legacy row, but future scoped reads still win and no user action
+        // is lost. Never retire the legacy row before the durable scoped copy exists.
+        using (ZaloConversationStateScope.Push(null))
+            await store.CompleteAsync(groupId, senderId, cancellationToken);
+
+        return migrated;
     }
 
     private static JsonObject? ParseObject(string json)
