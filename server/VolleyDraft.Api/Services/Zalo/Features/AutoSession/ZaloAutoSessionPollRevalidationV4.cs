@@ -1,3 +1,5 @@
+using VolleyDraft.Api.Services.Zalo.Conversation;
+
 namespace VolleyDraft.Api.Services;
 
 internal sealed record ZaloAutoSessionPollRevalidationV4(
@@ -33,9 +35,6 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
             sourceSnapshot.Location,
             StringComparison.Ordinal);
         var approvedLocation = tracked.DefaultLocation?.Trim() ?? string.Empty;
-        // CurrentSourceDraft represents source/policy authority, never organizer-owned values.
-        // Keeping that separation is what lets restart recovery recognize that an organizer
-        // correction still differs from the source baseline on the next revalidation.
         var currentLocation = sourceSnapshot.Location;
         if (!organizerChangedLocation)
         {
@@ -84,12 +83,20 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
             currentLocation,
             currentTeamSize);
 
-        // Parser/policy issues are authoritative ambiguity. We still return the safely parsed
-        // subset for diagnostics, but execution must fail closed regardless of material diff.
+        // A start time supplied by the current approved group default is policy authority, not
+        // a material poll edit. This distinction matters when an admin refreshes the default:
+        // unmodified drafts may follow it automatically, while organizer corrections survive.
+        var titleHasExplicitTime = ZaloSessionResolver.ContainsExplicitSessionTime(currentPoll.Question ?? string.Empty);
+        var approvedDefaultStartOptionIds = currentPoll.Options
+            .Where(option => !titleHasExplicitTime && !ZaloSessionResolver.ContainsExplicitSessionTime(option.Content ?? string.Empty))
+            .Select(option => option.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
         var reconciliation = ZaloAutoSessionPollReconcilerV4.Reconcile(
             sourceSnapshot,
             durableDraft,
-            currentSource);
+            currentSource,
+            approvedDefaultStartOptionIds);
 
         return new ZaloAutoSessionPollRevalidationV4(
             currentSource,
@@ -168,6 +175,7 @@ internal static class ZaloAutoSessionPollRevalidationWorkflowV4
         ZaloAutoSessionPollChangeKindV4.OptionRemoved => $"bỏ lựa chọn {change.Before}",
         ZaloAutoSessionPollChangeKindV4.OptionIdentityChanged => $"đổi lịch {change.Before} → {change.After}",
         ZaloAutoSessionPollChangeKindV4.ExplicitStartTimeChanged => $"đổi giờ của {change.OptionId}",
+        ZaloAutoSessionPollChangeKindV4.ApprovedStartTimeChanged => $"đổi giờ mặc định đã duyệt của {change.OptionId}",
         ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged => $"đổi sân mặc định {change.Before} → {change.After}",
         ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged => $"đổi số người/đội mặc định {change.Before} → {change.After}",
         _ => $"thay đổi {change.OptionId}"
