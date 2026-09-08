@@ -28,9 +28,9 @@ public static class ZaloDraftConversationPolicy
     // to contain a negation word (for example "đừng chờ nữa, draft đi" is still affirmative).
     private static readonly Regex NegatedStrongConfirmation = new(
         @"(?<![a-z0-9])(?:" +
-        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co)\s+)?(?:chay\s+|trien\s+|xac\s+nhan\s+)?draft|" +
-        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co)\s+)?chia\s*(?:team|doi)|" +
-        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co)\s+)?chot\s*team|" +
+        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co|muon|duoc|nen)\s+)?(?:chay\s+|trien\s+|xac\s+nhan\s+)?draft|" +
+        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co|muon|duoc|nen)\s+)?chia\s*(?:team|doi)|" +
+        @"(?:dung|khong|ko|k|khoi)\s+(?:(?:can|co|muon|duoc|nen)\s+)?chot\s*team|" +
         @"thoi\s+khoi\s+(?:draft|chia\s*(?:team|doi)|chot\s*team)" +
         @")(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
