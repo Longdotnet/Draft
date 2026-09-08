@@ -285,7 +285,7 @@ public sealed partial class ZaloOverbookService
         var remaining = GetMissingProfileFlags(refreshed);
         var completed = !remaining.Gender && !remaining.Role && !remaining.Level;
         var accepted = DescribeAcceptedProfileValues(parsed);
-        var reply = completed
+        var finalCompletionReply = completed
             ? await BuildSelfProfileCompletionReplyAsync(
                 session,
                 prompt,
@@ -297,7 +297,7 @@ public sealed partial class ZaloOverbookService
             session,
             prompt,
             incoming.MessageId,
-            reply,
+            finalCompletionReply,
             cancellationToken);
         await promptStore.UpdateProgressAsync(
             prompt.Id,
