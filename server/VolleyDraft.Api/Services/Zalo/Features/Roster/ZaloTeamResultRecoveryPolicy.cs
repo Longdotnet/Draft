@@ -32,11 +32,14 @@ public static class ZaloTeamResultRecoveryPolicy
 
         if (readiness is null)
         {
-            return header + " Bạn không cần biết các từ như roster, draft hay sync. Làm từng bước thôi:\n" +
-                   $"1) Nhờ trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ tự kiểm dữ liệu backend thật và nói blocker cụ thể nếu chưa thể chia.\n" +
+            return header + " Bạn không cần biết các từ như roster, draft hay sync. Làm theo vòng này:\n" +
+                   $"1) Trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ kiểm dữ liệu backend thật và nói đúng blocker hiện tại.\n" +
                    $"2) Nếu NPC đưa cảnh báo xác nhận, người vừa chạy lệnh chỉ cần trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại.\n" +
-                   $"3) Nếu NPC báo blocker, làm đúng bước nó vừa hướng dẫn rồi gõ lại `{draftCommand}`. Khi NPC báo chia đội xong, gõ `{imageCommand}` để lấy card.\n" +
-                   "AI có tắt/hết quota thì các bước trên vẫn đi qua handler deterministic và dữ liệu thật.";
+                   $"3) Nếu NPC báo thiếu/dư người: gõ `{missingCommand}` để xem số chỗ hiện tại, chỉnh vote/danh sách thật rồi gõ lại lệnh 9.\n" +
+                   "4) Nếu NPC báo hồ sơ chưa đủ: cập nhật đúng người, ví dụ `@Npc cập nhật Nick Tran: nam` hoặc `@Npc cập nhật Nick Tran: nam, công, trung bình`, rồi gõ lại lệnh 9.\n" +
+                   "5) Nếu NPC báo còn suất đang nhường/chờ nhận: owner đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ claim muốn nhả dùng `huỷ nhận`. NPC chỉ chốt khi trạng thái thật khớp.\n" +
+                   $"6) Chỉ khi NPC báo chia đội đã xong mới gõ `{imageCommand}` để lấy card 3 đội.\n" +
+                   "Nếu bạn không có quyền chạy lệnh 9, gửi nguyên hướng dẫn này cho trưởng/phó nhóm. AI có tắt/hết quota thì các cú pháp trên vẫn đi qua handler deterministic.";
         }
 
         var next = BuildGroundedNextStep(
