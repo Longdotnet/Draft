@@ -120,10 +120,8 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
 
         RefreshApprovedPolicyEvidence(evidence, previousSource, currentSource, reconciled);
 
-        var oldIdentity = evidence["optionIdentity"] as JsonObject;
         var oldStarts = evidence["startTimes"] as JsonObject;
         var oldSelections = evidence["selections"] as JsonObject;
-        var previousById = previousSource.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
         var reconciledById = reconciled.Items.ToDictionary(item => item.OptionId, StringComparer.Ordinal);
 
         var identities = new JsonObject();
@@ -133,18 +131,12 @@ internal sealed class ZaloAutoSessionMatchProposalV4ReconciliationStore(VolleyDr
         {
             identities[current.OptionId] = Evidence("poll_option", current.OptionContent);
 
-            var sourceTimeUnchanged = previousById.TryGetValue(current.OptionId, out var previous) &&
-                                      previous.StartTime == current.StartTime;
             var organizerTimePreserved = reconciledById.TryGetValue(current.OptionId, out var reconciledItem) &&
                                          reconciledItem.StartTime != current.StartTime;
-            if ((sourceTimeUnchanged || organizerTimePreserved) && oldStarts?[current.OptionId] is JsonNode oldStart)
-            {
+            if (organizerTimePreserved && oldStarts?[current.OptionId] is JsonNode oldStart)
                 starts[current.OptionId] = oldStart.DeepClone();
-            }
             else
-            {
                 starts[current.OptionId] = BuildCurrentStartTimeEvidence(currentPoll, current);
-            }
 
             if (oldSelections?[current.OptionId] is JsonNode oldSelection)
                 selections[current.OptionId] = oldSelection.DeepClone();
