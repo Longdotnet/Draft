@@ -8,8 +8,22 @@ public sealed partial class ZaloOverbookService
     public async Task<int> ProcessMissingProfileRepliesDueAsync(
         CancellationToken cancellationToken = default)
     {
+        var cycleStartedAt = DateTimeOffset.UtcNow;
+        var promptStore = new ZaloMissingProfilePromptStore(db);
+        var activeAtCycleStart = await promptStore.GetActiveAsync(cycleStartedAt, 100, cancellationToken);
+
         var semanticHandled = await ProcessMissingProfileRepliesContextFirstAsync(cancellationToken);
         var deterministicHandled = await ProcessMissingProfileRepliesDueV2Async(cancellationToken);
-        return semanticHandled + deterministicHandled;
+        var handled = semanticHandled + deterministicHandled;
+
+        if (handled > 0 && activeAtCycleStart.Count > 0)
+        {
+            await SendProfileCompletionReadinessFollowUpsAsync(
+                activeAtCycleStart,
+                cycleStartedAt,
+                cancellationToken);
+        }
+
+        return handled;
     }
 }
