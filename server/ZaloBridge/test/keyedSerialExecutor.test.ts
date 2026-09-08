@@ -6,10 +6,13 @@ test("serializes concurrent lifecycle work for the same account", async () => {
   const executor = new KeyedSerialExecutor();
   const events: string[] = [];
   let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
   const firstBlock = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
 
   const first = executor.run("account-a", async () => {
     events.push("first:start");
+    markFirstStarted();
     await firstBlock;
     events.push("first:end");
     return "first";
@@ -20,7 +23,7 @@ test("serializes concurrent lifecycle work for the same account", async () => {
     return "second";
   });
 
-  await Promise.resolve();
+  await firstStarted;
   assert.deepEqual(events, ["first:start"]);
   releaseFirst();
   assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
