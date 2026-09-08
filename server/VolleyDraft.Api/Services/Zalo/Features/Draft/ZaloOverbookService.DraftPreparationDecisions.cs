@@ -75,8 +75,15 @@ public sealed partial class ZaloOverbookService
         ZaloAmbientSettings ambientSettings,
         CancellationToken cancellationToken)
     {
+        // This lane is deterministic domain behavior. Ambient ShadowMode controls AI
+        // participation, not explicit leader authority. Keep the parameter so the same
+        // call site can be used from ambient/pre-routing without coupling semantics.
         _ = ambientSettings;
 
+        // A natural "draft đi" after a leader explicitly locked a partial roster is
+        // handled here before Social AI. It is never equivalent to the lock itself:
+        // linked poll, live role, roster/share fingerprint, slot risks, profiles and
+        // engine divisibility are all revalidated on this second turn.
         if (ZaloDraftConversationPolicy.IsStrongDraftConfirmation(incoming.Content) &&
             await TryHandlePartialRosterDraftCommandAsync(
                 connectionId,
@@ -113,7 +120,10 @@ public sealed partial class ZaloOverbookService
             session.Id,
             senderId);
         if (!role.IsSuccess || role.Value?.CanOperateBot != true)
+        {
+            // Leader decisions are authority-bearing state, not crowd sentiment.
             return false;
+        }
 
         var connection = session.ZaloConnection!;
         var actorName = string.IsNullOrWhiteSpace(incoming.SenderName)
@@ -170,6 +180,9 @@ public sealed partial class ZaloOverbookService
         if (readiness is null) return false;
         var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
+        // A new KeepRecruiting direction always supersedes any pending draft request,
+        // even when the roster is currently full and otherwise draft-ready. The latest
+        // organizer intent must win over a stale confirmation seeded by an earlier turn.
         if (ZaloDraftPreparationDecisionPolicy.ShouldSupersedeActiveDraftRequest(
                 command.Kind,
                 readiness.CanEscalate,
@@ -431,8 +444,14 @@ public sealed partial class ZaloOverbookService
             return true;
         }
         if (authorization.Value?.CanOperateBot != true)
+        {
+            // Do not consume ordinary members' chat merely because a leader decision exists.
             return false;
+        }
 
+        // The actor who authorized playing the partial roster must still hold a live
+        // organizer role too. Another leader cannot revive a stale authorization from
+        // someone whose role was removed.
         var decisionActorAuthorization = await integration.GetGroupRoleAuthorizationAsync(
             session.AdminUserId,
             session.Id,
@@ -591,6 +610,9 @@ public sealed partial class ZaloOverbookService
 
         try
         {
+            // Reuse the existing mutation router after all partial-roster gates pass.
+            // The seeded pending state fixes the exact session; the router retains its
+            // own authorization, poll sync, profile checks, action history and idempotency.
             await botService.HandleIncomingAsync(
                 PromoteToBot(incoming, "xác nhận draft"),
                 cancellationToken);
