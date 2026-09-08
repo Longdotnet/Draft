@@ -28,7 +28,16 @@ internal sealed record ZaloPollClassification(
     bool IsVolleyballSignupPoll,
     double Confidence,
     string Reason,
-    bool UsedAi);
+    bool UsedAi,
+    bool SemanticCandidate = false)
+{
+    // Compatibility: IsVolleyballSignupPoll remains the deterministic mutation-authority bit.
+    // SemanticCandidate only admits a grounded poll to human review; it never authorizes mutation.
+    public bool ShouldOfferManualReview => IsVolleyballSignupPoll || SemanticCandidate;
+
+    public bool CanAutoExecute(bool requireOrganizerApproval) =>
+        IsVolleyballSignupPoll && !requireOrganizerApproval;
+}
 
 internal static class ZaloPollScheduleParser
 {
@@ -567,7 +576,12 @@ internal sealed class ZaloPollClassifierService
             // AI may improve language understanding, but it cannot turn a weak deterministic
             // candidate into an authoritative Auto Session trigger. This prevents a configured
             // no-approval group from mutating backend state solely because model confidence is high.
-            return new(false, ruleScore, $"{ruleReason};ai_suggest:{aiReason};deterministic_authority_required", true);
+            return new(
+                false,
+                ruleScore,
+                $"{ruleReason};ai_suggest:{aiReason};deterministic_authority_required",
+                true,
+                SemanticCandidate: true);
         }
 
         var finalConfidence = aiIsSignup ? Math.Max(ruleScore, aiConfidence) : ruleScore;

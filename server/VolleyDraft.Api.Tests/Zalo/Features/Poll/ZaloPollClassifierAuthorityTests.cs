@@ -16,6 +16,9 @@ public sealed class ZaloPollClassifierAuthorityTests
             aiReason: "looks_like_volleyball");
 
         Assert.False(result.IsVolleyballSignupPoll);
+        Assert.True(result.SemanticCandidate);
+        Assert.True(result.ShouldOfferManualReview);
+        Assert.False(result.CanAutoExecute(requireOrganizerApproval: false));
         Assert.Equal(0.66, result.Confidence, 6);
         Assert.True(result.UsedAi);
         Assert.Contains("ai_suggest:looks_like_volleyball", result.Reason, StringComparison.Ordinal);
@@ -33,6 +36,9 @@ public sealed class ZaloPollClassifierAuthorityTests
             aiReason: "clear_signup_poll");
 
         Assert.True(result.IsVolleyballSignupPoll);
+        Assert.True(result.ShouldOfferManualReview);
+        Assert.True(result.CanAutoExecute(requireOrganizerApproval: false));
+        Assert.False(result.CanAutoExecute(requireOrganizerApproval: true));
         Assert.Equal(0.96, result.Confidence, 6);
         Assert.True(result.UsedAi);
         Assert.Contains("ai:clear_signup_poll", result.Reason, StringComparison.Ordinal);
@@ -49,6 +55,8 @@ public sealed class ZaloPollClassifierAuthorityTests
             aiReason: "travel_poll");
 
         Assert.False(result.IsVolleyballSignupPoll);
+        Assert.False(result.SemanticCandidate);
+        Assert.False(result.ShouldOfferManualReview);
         Assert.Equal(0.07, result.Confidence, 6);
         Assert.True(result.UsedAi);
         Assert.Contains("ai_reject:travel_poll", result.Reason, StringComparison.Ordinal);

@@ -36,6 +36,7 @@ Use this order:
 - Do not store conversation state only in memory.
 - Do not allow arbitrary members to activate group rules without approval.
 - Do not let the model invent session IDs, player status, times, locations or slot counts.
+- Do not conflate AI semantic candidacy with mutation authority. AI may nominate a grounded poll for organizer review, but only deterministic evidence or an explicit human/admin authorization path may permit Auto Session mutation.
 - Do not send duplicate replies for one Zalo message ID.
 - Do not discard quote/reply metadata at the Zalo transport boundary.
 - Do not require a fresh textual `@bot` mention when the user directly replies to a bot message; a verified quote owned by the bot is an explicit address.
