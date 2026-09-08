@@ -23,9 +23,6 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
             readiness.ActivePassSlotRiskCount,
             urgent);
 
-    // Compatibility overload for focused policy tests and older in-process callers.
-    // Production reminder execution uses the overload above so pass/share authority
-    // comes from the same readiness snapshot as roster/profile/draft state.
     internal static string? BuildMessage(
         MatchSession session,
         ZaloDraftReadinessSnapshot readiness,
@@ -104,9 +101,7 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
             : string.Empty;
 
         if (readiness.State == ZaloDraftReadinessState.RosterOverCapacity)
-        {
             return $"{stalePrefix}Tui vừa đọc lại vote {name}: đang {count}/{capacity} chỗ, dư {Math.Max(1, count - capacity)} chỗ 😭 Chưa thể chốt danh sách; xử lý người/chỗ dư trước, xong tui sẽ đọc lại vote rồi báo bước tiếp theo.";
-        }
 
         if (readiness.State == ZaloDraftReadinessState.Ready)
         {
@@ -128,9 +123,7 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
         }
 
         if (readiness.State == ZaloDraftReadinessState.NoRoster)
-        {
             return $"{stalePrefix}Tui vừa đọc lại đúng vote của {name}: đang 0/{capacity} chỗ. Trưởng/phó cho tui hướng xử lý kèo nha; nếu vẫn gom người thì nói `kiếm thêm`, tui sẽ tiếp tục theo dõi vote.";
-        }
 
         if (readiness.State != ZaloDraftReadinessState.RosterNotFull)
         {
@@ -197,9 +190,7 @@ public sealed partial class ZaloOverbookService
                     settings.StopNudgingMinutesBeforeStart)
             })
             .Where(item => item.Bucket is not null)
-            .GroupBy(
-                item => $"{item.Session.ZaloConnectionId}:{item.Session.ZaloGroupId}",
-                StringComparer.Ordinal)
+            .GroupBy(item => $"{item.Session.ZaloConnectionId}:{item.Session.ZaloGroupId}", StringComparer.Ordinal)
             .Select(group => group.OrderBy(item => item.Session.StartTime).First())
             .OrderBy(item => item.Session.StartTime)
             .Take(30)
@@ -222,9 +213,6 @@ public sealed partial class ZaloOverbookService
                 !ZaloDraftPreparationReminderObservation.ShouldRefreshSameBucket(previous, now))
                 continue;
 
-            // A time bucket is only a cadence boundary, not authority that the product
-            // state is unchanged. Re-check same-bucket state on a bounded cadence, then
-            // suppress only when roster/pass/profile/readiness state is materially identical.
             var sync = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
             if (!sync.Success)
             {
@@ -235,127 +223,94 @@ public sealed partial class ZaloOverbookService
                 continue;
             }
 
-            var readiness = await new ZaloDraftReadinessService(db)
-                .BuildAsync(session.Id, now, cancellationToken);
+            var readiness = await new ZaloDraftReadinessService(db).BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
 
-            // Readiness owns unresolved pass/share authority. Keep the entire reminder
-            // decision, anti-spam fingerprint and escalation gate on this one coherent
-            // snapshot instead of issuing a second ledger query that can race it.
             var activeSlotRisks = readiness.ActivePassSlotRiskCount;
-            var observationFingerprint = ZaloDraftPreparationReminderObservation.BuildFingerprint(
-                readiness,
-                activeSlotRisks);
+            var observationFingerprint = ZaloDraftPreparationReminderObservation.BuildFingerprint(readiness, activeSlotRisks);
 
             if (sameBucket && previous is not null &&
                 !ZaloDraftPreparationReminderObservation.HasMaterialChange(previous, readiness, activeSlotRisks))
             {
-                // Touch unchanged observations so the worker does not degrade into a
-                // provider poll every heavy cycle. Legacy rows are upgraded silently too.
-                await reminderStore.UpdateObservationFingerprintAsync(
-                    session.Id,
-                    observationFingerprint,
-                    cancellationToken);
+                await reminderStore.UpdateObservationFingerprintAsync(session.Id, observationFingerprint, cancellationToken);
                 continue;
             }
 
             var decision = await decisionStore.GetAsync(session.Id, cancellationToken);
             var decisionWasStale = false;
             int? staleDecisionSlotCount = null;
-            if (decision?.Kind == ZaloDraftPreparationDecisionKind.PlayCurrentRoster &&
-                !decision.MatchesRoster(readiness))
+            if (decision?.Kind == ZaloDraftPreparationDecisionKind.PlayCurrentRoster && !decision.MatchesRoster(readiness))
             {
                 decisionWasStale = true;
                 staleDecisionSlotCount = decision.EffectiveSlotCount;
                 if (!await decisionStore.TryClearAsync(session.Id, decision, cancellationToken))
-                {
-                    // A leader/deputy replaced the decision after this reminder read it.
-                    // Preserve the newer user action and let the next cycle recompute from it.
                     continue;
-                }
                 decision = null;
             }
 
-            // KeepRecruiting is a durable organizer direction, not a snapshot tied to the
-            // current count. When the roster becomes full, suppress recruiting traffic but
-            // keep the decision so a later pass/unvote can resume recruitment without making
-            // the organizer repeat the same choice. The group-wide recruitment lane and this
-            // leader-aware reminder lane must share that ownership contract.
-
             if (decision?.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
             {
-                await reminderStore.MarkHandledAsync(
-                    session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                await reminderStore.MarkHandledAsync(session.Id, bucket.Key, readiness.EffectiveSlotCount,
+                    activeSlotRisks, observationFingerprint, null, cancellationToken);
                 continue;
             }
 
             var existingRequest = await escalationStore.LoadForSessionAsync(
-                session.ZaloConnectionId!,
-                session.ZaloGroupId!,
-                session.Id,
-                cancellationToken);
+                session.ZaloConnectionId!, session.ZaloGroupId!, session.Id, cancellationToken);
 
             if (existingRequest is not null &&
                 existingRequest.State == ZaloDraftEscalationState.Completed &&
                 string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal))
             {
-                await reminderStore.MarkHandledAsync(
+                await reminderStore.MarkHandledAsync(session.Id, bucket.Key, readiness.EffectiveSlotCount,
+                    activeSlotRisks, observationFingerprint, null, cancellationToken);
+                continue;
+            }
+
+            if (existingRequest?.State == ZaloDraftEscalationState.Executing)
+            {
+                logger.LogDebug(
+                    "Draft preparation reminder suppressed by active execution fence Session={SessionId} Request={RequestId}",
                     session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                    existingRequest.Id);
                 continue;
             }
 
             if (existingRequest is not null &&
                 (existingRequest.State is ZaloDraftEscalationState.AwaitingRequesterConsent or
                                           ZaloDraftEscalationState.ProactiveSoft or
-                                          ZaloDraftEscalationState.ApproverTagged or
-                                          ZaloDraftEscalationState.Executing) &&
+                                          ZaloDraftEscalationState.ApproverTagged) &&
                 (!readiness.CanEscalate ||
                  activeSlotRisks > 0 ||
                  !string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
             {
-                await SupersedeDraftReminderRequestAsync(
+                var superseded = await TrySupersedeDraftReminderRequestAsync(
                     escalationStore,
                     existingRequest,
                     session,
                     cancellationToken);
+                if (!superseded)
+                {
+                    logger.LogDebug(
+                        "Draft preparation reminder supersede lost execution race Session={SessionId} Request={RequestId}",
+                        session.Id,
+                        existingRequest.Id);
+                    continue;
+                }
                 existingRequest = null;
             }
 
             var body = ZaloLeaderAwareDraftReminderPolicy.BuildMessage(
-                session,
-                readiness,
-                decision,
-                decisionWasStale,
-                staleDecisionSlotCount,
-                previous?.LastSlotCount,
-                bucket.Urgent);
+                session, readiness, decision, decisionWasStale, staleDecisionSlotCount,
+                previous?.LastSlotCount, bucket.Urgent);
             if (string.IsNullOrWhiteSpace(body))
             {
-                await reminderStore.MarkHandledAsync(
-                    session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                await reminderStore.MarkHandledAsync(session.Id, bucket.Key, readiness.EffectiveSlotCount,
+                    activeSlotRisks, observationFingerprint, null, cancellationToken);
                 continue;
             }
 
-            var lifecycle = await new MatchLifecycleCoordinator(db)
-                .GetAsync(session.AdminUserId, session.Id, cancellationToken);
+            var lifecycle = await new MatchLifecycleCoordinator(db).GetAsync(session.AdminUserId, session.Id, cancellationToken);
             if (lifecycle.IsSuccess && lifecycle.Value is not null)
                 body = ZaloMatchBriefFormatter.Append(body, lifecycle.Value);
 
@@ -370,31 +325,22 @@ public sealed partial class ZaloOverbookService
             }
 
             var savedPreferences = await tagStore.GetForGroupAsync(
-                session.ZaloConnectionId!,
-                session.ZaloGroupId!,
-                cancellationToken);
+                session.ZaloConnectionId!, session.ZaloGroupId!, cancellationToken);
             var preferenceById = savedPreferences
                 .GroupBy(item => item.ZaloUserId, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
             var eligible = resolved.Candidates
-                .Where(item =>
-                    preferenceById.TryGetValue(item.ZaloUserId, out var preference)
-                        ? preference.Enabled
-                        : item.IsCreator)
+                .Where(item => preferenceById.TryGetValue(item.ZaloUserId, out var preference)
+                    ? preference.Enabled
+                    : item.IsCreator)
                 .ToList();
 
             var desiredTags = bucket.Urgent || activeSlotRisks > 0 ? 2 : 1;
             desiredTags = Math.Min(desiredTags, settings.MaxApproverTags);
             if (eligible.Count == 0 || desiredTags <= 0)
             {
-                await reminderStore.MarkHandledAsync(
-                    session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                await reminderStore.MarkHandledAsync(session.Id, bucket.Key, readiness.EffectiveSlotCount,
+                    activeSlotRisks, observationFingerprint, null, cancellationToken);
                 continue;
             }
 
@@ -404,11 +350,7 @@ public sealed partial class ZaloOverbookService
 
             if (readiness.CanEscalate && activeSlotRisks == 0)
             {
-                approvalExpiry = GetRequestExpiry(
-                    readiness.StartTime,
-                    now,
-                    settings,
-                    settings.RequestTtlMinutes);
+                approvalExpiry = GetRequestExpiry(readiness.StartTime, now, settings, settings.RequestTtlMinutes);
                 approvalRequest = existingRequest;
                 if (approvalRequest is null ||
                     approvalRequest.State is ZaloDraftEscalationState.Expired or
@@ -416,17 +358,9 @@ public sealed partial class ZaloOverbookService
                                              ZaloDraftEscalationState.Cancelled)
                 {
                     approvalRequest = await escalationStore.CreateOrReuseAsync(
-                        session.ZaloConnectionId!,
-                        session.ZaloGroupId!,
-                        session.Id,
-                        "PreparationReminderV2",
-                        null,
-                        null,
-                        null,
-                        readiness.Fingerprint,
-                        ZaloDraftEscalationState.ProactiveSoft,
-                        approvalExpiry.Value,
-                        cancellationToken);
+                        session.ZaloConnectionId!, session.ZaloGroupId!, session.Id,
+                        "PreparationReminderV2", null, null, null, readiness.Fingerprint,
+                        ZaloDraftEscalationState.ProactiveSoft, approvalExpiry.Value, cancellationToken);
                 }
 
                 var reserved = new List<DraftApproverCandidate>();
@@ -434,12 +368,8 @@ public sealed partial class ZaloOverbookService
                 {
                     if (reserved.Count >= desiredTags) break;
                     if (!await SeedDraftConfirmationAsync(
-                            session.ZaloConnectionId!,
-                            session.ZaloGroupId!,
-                            approver.ZaloUserId,
-                            session.Id,
-                            approvalExpiry.Value,
-                            cancellationToken,
+                            session.ZaloConnectionId!, session.ZaloGroupId!, approver.ZaloUserId,
+                            session.Id, approvalExpiry.Value, cancellationToken,
                             refuseToOverwriteDifferentPending: true))
                         continue;
                     reserved.Add(approver);
@@ -453,22 +383,13 @@ public sealed partial class ZaloOverbookService
 
             if (recipients.Count == 0)
             {
-                await reminderStore.MarkHandledAsync(
-                    session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                await reminderStore.MarkHandledAsync(session.Id, bucket.Key, readiness.EffectiveSlotCount,
+                    activeSlotRisks, observationFingerprint, null, cancellationToken);
                 continue;
             }
 
             var ids = recipients.Select(item => item.ZaloUserId).ToList();
-            var names = recipients.ToDictionary(
-                item => item.ZaloUserId,
-                item => item.DisplayName,
-                StringComparer.Ordinal);
+            var names = recipients.ToDictionary(item => item.ZaloUserId, item => item.DisplayName, StringComparer.Ordinal);
             var outgoing = BuildMentionMessage(ids, names, body);
 
             try
@@ -483,32 +404,16 @@ public sealed partial class ZaloOverbookService
                 if (approvalRequest is not null && approvalExpiry is not null)
                 {
                     await escalationStore.SetPrimaryApproverAsync(
-                        approvalRequest.Id,
-                        recipients[0].ZaloUserId,
-                        providerId,
-                        now,
-                        approvalExpiry.Value,
-                        cancellationToken);
+                        approvalRequest.Id, recipients[0].ZaloUserId, providerId, now, approvalExpiry.Value, cancellationToken);
                     if (recipients.Count > 1)
                     {
                         await escalationStore.SetSecondaryApproverAsync(
-                            approvalRequest.Id,
-                            recipients[1].ZaloUserId,
-                            providerId,
-                            now,
-                            approvalExpiry.Value,
-                            cancellationToken);
+                            approvalRequest.Id, recipients[1].ZaloUserId, providerId, now, approvalExpiry.Value, cancellationToken);
                     }
                 }
 
-                await reminderStore.MarkHandledAsync(
-                    session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    now,
-                    cancellationToken);
+                await reminderStore.MarkHandledAsync(session.Id, bucket.Key, readiness.EffectiveSlotCount,
+                    activeSlotRisks, observationFingerprint, now, cancellationToken);
                 sent += 1;
             }
             catch
@@ -518,11 +423,8 @@ public sealed partial class ZaloOverbookService
                     foreach (var recipient in recipients)
                     {
                         await RemoveDraftPendingAsync(
-                            session.ZaloConnectionId!,
-                            session.ZaloGroupId!,
-                            recipient.ZaloUserId,
-                            session.Id,
-                            cancellationToken);
+                            session.ZaloConnectionId!, session.ZaloGroupId!, recipient.ZaloUserId,
+                            session.Id, cancellationToken);
                     }
                 }
                 throw;
