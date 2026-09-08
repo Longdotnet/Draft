@@ -136,10 +136,104 @@ public sealed class ZaloAutoSessionPollRevalidationV4Tests
         Assert.Equal(12, Assert.Single(second.Reconciliation.Draft.Items).VoteCount);
     }
 
-    private static ZaloTrackedGroupData Tracked() => new()
+    [Fact]
+    public void ApprovedLocationPolicyChange_AutoRefreshesWhenOrganizerDidNotOverride()
+    {
+        var source = Draft(Item("t6", "T6 11/9", "T6", 11, 17, 30, 8));
+        var tracked = Tracked(location: "Sân mới");
+        var poll = Poll("Vote sân UTE", Option("t6", "T6 11/9", 9));
+
+        var result = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, tracked, source, source, Now);
+
+        Assert.True(result.CanExecute);
+        Assert.Empty(result.Issues);
+        Assert.Equal("Sân mới", result.Reconciliation.Draft.Location);
+        var change = Assert.Single(result.Reconciliation.Changes, change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged);
+        Assert.False(change.RequiresConfirmation);
+    }
+
+    [Fact]
+    public void OrganizerLocationCorrection_WinsLaterApprovedDefaultChange()
+    {
+        var source = Draft(Item("t6", "T6 11/9", "T6", 11, 17, 30, 8));
+        var durable = source with { Location = "Sân organizer" };
+        var tracked = Tracked(location: "Sân admin mới");
+        var poll = Poll("Vote sân UTE", Option("t6", "T6 11/9", 9));
+
+        var result = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, tracked, source, durable, Now);
+
+        Assert.True(result.CanExecute);
+        Assert.Equal("Sân organizer", result.Reconciliation.Draft.Location);
+        Assert.DoesNotContain(result.Reconciliation.Changes, change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged);
+    }
+
+    [Fact]
+    public void MissingApprovedLocation_FailsClosedWithOnlyMissingDecision()
+    {
+        var source = Draft(Item("t6", "T6 11/9", "T6", 11, 17, 30, 8));
+        var poll = Poll("Vote sân UTE", Option("t6", "T6 11/9", 9));
+
+        var result = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, Tracked(location: null), source, source, Now);
+
+        Assert.False(result.CanExecute);
+        var issue = Assert.Single(result.Issues);
+        Assert.Equal("approved_location_missing", issue.Code);
+        var message = ZaloAutoSessionPollRevalidationWorkflowV4.BuildOrganizerMessage(result);
+        Assert.Contains("sân mặc định", message);
+        Assert.Contains("sân UTE", message);
+        Assert.Contains("Website vẫn chưa được tạo", message);
+    }
+
+    [Fact]
+    public void ApprovedTeamSizePolicyChange_AutoRefreshesUnlessOrganizerOverrode()
+    {
+        var source = Draft(Item("t6", "T6 11/9", "T6", 11, 17, 30, 8));
+        var poll = Poll("Vote sân UTE", Option("t6", "T6 11/9", 9));
+
+        var refreshed = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, Tracked(teamSize: 7), source, source, Now);
+        Assert.True(refreshed.CanExecute);
+        Assert.Equal(7, refreshed.Reconciliation.Draft.TeamSize);
+        Assert.Contains(refreshed.Reconciliation.Changes, change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged && !change.RequiresConfirmation);
+
+        var organizerDraft = source with { TeamSize = 8 };
+        var preserved = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, Tracked(teamSize: 7), source, organizerDraft, Now);
+        Assert.True(preserved.CanExecute);
+        Assert.Equal(8, preserved.Reconciliation.Draft.TeamSize);
+        Assert.DoesNotContain(preserved.Reconciliation.Changes, change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ApprovedTeamSizeChanged);
+    }
+
+    [Fact]
+    public void MissingApprovedTeamSize_FailsClosedUnlessOrganizerAlreadyCorrectedIt()
+    {
+        var source = Draft(Item("t6", "T6 11/9", "T6", 11, 17, 30, 8));
+        var poll = Poll("Vote sân UTE", Option("t6", "T6 11/9", 9));
+
+        var blocked = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, Tracked(teamSize: 0), source, source, Now);
+        Assert.False(blocked.CanExecute);
+        Assert.Contains(blocked.Issues, issue => issue.Code == "approved_team_size_missing");
+
+        var organizerDraft = source with { TeamSize = 7 };
+        var allowed = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll, Tracked(teamSize: 0), source, organizerDraft, Now);
+        Assert.True(allowed.CanExecute);
+        Assert.Equal(7, allowed.Reconciliation.Draft.TeamSize);
+    }
+
+    private static ZaloTrackedGroupData Tracked(string? location = "UTE", int teamSize = 6) => new()
     {
         DefaultStartMinutes = 17 * 60 + 30,
-        DefaultTeamSize = 6,
+        DefaultTeamSize = teamSize,
+        DefaultLocation = location,
         AssumePmForHourUnder12 = true
     };
 

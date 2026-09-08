@@ -58,6 +58,60 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
     }
 
     [Fact]
+    public async Task ApprovedLocationPolicyRefresh_PersistsNewSourceBaseline_AndDoesNotLoopAfterRestart()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+
+        ZaloAutoSessionMatchProposalV4WriteResult? saved;
+        var changedTracked = Tracked(location: "Sân B");
+        var poll = Poll();
+        await using (var db = new VolleyDraftDbContext(options))
+        {
+            var revisions = new ZaloAutoSessionMatchProposalV4Store(db);
+            var conversation = Conversation(SourceJson());
+            await revisions.InitializeFromPreviewAsync(Proposal(), Tracked(), conversation);
+
+            var source = Deserialize(SourceJson());
+            var first = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+                poll,
+                changedTracked,
+                source,
+                source,
+                Now);
+            Assert.True(first.CanExecute);
+            Assert.Equal("Sân B", first.Reconciliation.Draft.Location);
+            Assert.Contains(first.Reconciliation.Changes, change =>
+                change.Kind == ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged && !change.RequiresConfirmation);
+
+            conversation.Version = 1;
+            var store = new ZaloAutoSessionMatchProposalV4ReconciliationStore(db);
+            saved = await store.AppendReconciliationAsync(conversation, poll, source, first, "leader-1");
+            Assert.NotNull(saved);
+            Assert.True(saved!.Accepted);
+            Assert.Equal("Sân B", Deserialize(saved.Revision.DraftJson).Location);
+        }
+
+        await using var restartedDb = new VolleyDraftDbContext(options);
+        var restarted = new ZaloAutoSessionMatchProposalV4ReconciliationStore(restartedDb);
+        var sourceAfterRestart = await restarted.LoadSourceAsync("proposal-1", SourceJson());
+        Assert.NotNull(sourceAfterRestart);
+        Assert.Equal("Sân B", sourceAfterRestart!.Draft.Location);
+
+        var durableAfter = Deserialize(saved!.Revision.DraftJson);
+        var second = ZaloAutoSessionPollRevalidationWorkflowV4.Evaluate(
+            poll,
+            changedTracked,
+            sourceAfterRestart.Draft,
+            durableAfter,
+            Now.AddMinutes(5));
+        Assert.True(second.CanExecute);
+        Assert.DoesNotContain(second.Reconciliation.Changes, change =>
+            change.Kind == ZaloAutoSessionPollChangeKindV4.ApprovedLocationChanged);
+    }
+
+    [Fact]
     public async Task MaterialSourceTimeChange_BecomesNewBaseline_ThenSecondRevalidationDoesNotLoop()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -154,7 +208,7 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
         ProposalMessageId = "preview-1"
     };
 
-    private static ZaloTrackedGroupData Tracked() => new()
+    private static ZaloTrackedGroupData Tracked(string location = "Sân UTE", int teamSize = 6) => new()
     {
         Id = "tracked-1",
         AdminUserId = "admin-1",
@@ -162,8 +216,8 @@ public sealed class ZaloAutoSessionMatchProposalV4ReconciliationStoreTests
         GroupId = "group-1",
         GroupName = "UTE Volley",
         DefaultTeamCount = 3,
-        DefaultTeamSize = 6,
-        DefaultLocation = "Sân UTE"
+        DefaultTeamSize = teamSize,
+        DefaultLocation = location
     };
 
     private static ZaloAutoSessionConversationData Conversation(string draftJson) => new()
