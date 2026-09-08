@@ -11,6 +11,12 @@ public sealed class ZaloDraftConversationPolicyTests
     [InlineData("T6 có team chưa?")]
     [InlineData("sắp đánh rồi chưa chia team à")]
     [InlineData("chưa draft hả?")]
+    [InlineData("chia đội được chưa")]
+    [InlineData("chia doi duoc chua")]
+    [InlineData("team đủ chưa")]
+    [InlineData("TEAM DU CHUA")]
+    [InlineData("đội hình ổn chưa")]
+    [InlineData("draft ready chưa")]
     public void Natural_readiness_questions_are_detected(string message)
     {
         Assert.True(ZaloDraftConversationPolicy.IsReadinessQuestion(message));
@@ -20,6 +26,9 @@ public sealed class ZaloDraftConversationPolicyTests
     [InlineData("team B đánh căng đó")]
     [InlineData("draft này nhìn vui")]
     [InlineData("chia team B mạnh ghê")]
+    [InlineData("team này ổn áp")]
+    [InlineData("draft này đủ drama")]
+    [InlineData("chia đội đẹp rồi")]
     public void Ordinary_team_chat_is_not_treated_as_readiness_question(string message)
     {
         Assert.False(ZaloDraftConversationPolicy.IsReadinessQuestion(message));
