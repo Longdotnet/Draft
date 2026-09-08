@@ -42,7 +42,7 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
         Assert.Equal("approved_group_default", evidence.Location.Source);
         Assert.Equal("approved_group_default", evidence.TeamSize.Source);
         Assert.Equal("poll_option", evidence.OptionIdentity["t6"].Source);
-        Assert.Equal("deterministic_poll_candidate", evidence.StartTimes["t6"].Source);
+        Assert.Equal("poll_title_explicit_time", evidence.StartTimes["t6"].Source);
         Assert.Equal("poll_option_default_selected", evidence.Selections["cn"].Source);
     }
 
@@ -78,7 +78,7 @@ public sealed class ZaloAutoSessionMatchProposalV4StoreTests
         Assert.Equal("ModifyDraft", evidence.Location.Intent);
         Assert.Equal("organizer_correction", evidence.StartTimes["t6"].Source);
         Assert.Equal("leader-1", evidence.StartTimes["t6"].ActorZaloUserId);
-        Assert.Equal("deterministic_poll_candidate", evidence.StartTimes["cn"].Source);
+        Assert.Equal("poll_title_explicit_time", evidence.StartTimes["cn"].Source);
         Assert.Equal("approved_group_default", evidence.TeamSize.Source);
         Assert.Equal("poll_option", evidence.OptionIdentity["t6"].Source);
     }
