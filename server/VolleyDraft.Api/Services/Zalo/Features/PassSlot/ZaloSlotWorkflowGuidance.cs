@@ -19,11 +19,19 @@ internal sealed record ZaloSlotWorkflowGuidanceResult(
 internal static class ZaloSlotWorkflowGuidance
 {
     private static readonly Regex HelpSignalPattern = new(
-        @"(?<![a-z0-9])(?:(?:go|ghi|viet|nhap|noi|lam|xu\s+ly|dung|su\s+dung)\s+(?:sao|the\s+nao|nhu\s+nao)|(?:the\s+nao|nhu\s+nao|cu\s+phap|huong\s+dan|lenh\s+gi|dung\s+lenh\s+gi|cach))(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:(?:(?:go|ghi|viet|nhap|noi|lam|xu\s+ly|dung|su\s+dung)\s+(?:sao|the\s+nao|nhu\s+nao))|(?:the\s+nao|nhu\s+nao|kieu\s+gi|cu\s+phap|huong\s+dan|lenh\s+gi|dung\s+lenh\s+gi|cach|(?:phai\s+)?lam\s+gi|sao\s+(?:gio|day)))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PassDomainPattern = new(
-        @"(?<![a-z0-9])(?:pass|nhuong|tra|bo)\s+(?:slot|suat)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:pass|nhuong|tra|bo)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|" +
+        @"(?<![a-z0-9])(?:(?:tui|toi|minh|em|anh|chi|tao)\s+)?(?:nghi|khong\s+(?:choi|danh|di))\s+(?:tran|keo|bua|buoi)(?:\s+nay)?(?![a-z0-9])|" +
+        @"(?<![a-z0-9])(?:cho|de)\s+nguoi\s+khac\s+(?:danh|choi|vao)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex NegatedPassDomainPattern = new(
+        @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|nhuong|bo)\s+(?:slot|suat|cho)(?![a-z0-9])|" +
+        @"(?<![a-z0-9])(?:dung|khong|ko|k)\s+nghi\s+(?:tran|keo|bua|buoi)(?![a-z0-9])|" +
+        @"(?<![a-z0-9])(?:dung|khong|ko|k)\s+cho\s+nguoi\s+khac\s+(?:danh|choi|vao)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex ShareDomainPattern = new(
@@ -35,14 +43,14 @@ internal static class ZaloSlotWorkflowGuidance
         var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty).Trim();
         if (normalized.Length == 0 || !HelpSignalPattern.IsMatch(normalized)) return null;
 
-        var asksPass = PassDomainPattern.IsMatch(normalized);
         var asksShare = ShareDomainPattern.IsMatch(normalized);
+        var asksPass = !NegatedPassDomainPattern.IsMatch(normalized) && PassDomainPattern.IsMatch(normalized);
         if (!asksPass && !asksShare) return null;
 
         // "share slot" is a distinct VolleyDraft product concept. Prefer explaining
-        // that flow when the user explicitly names it so we do not teach pass-slot
-        // syntax for a request that really means alternating/shared participation.
-        return asksShare && !asksPass
+        // that flow whenever the user explicitly names it so a nearby generic pass
+        // phrase cannot accidentally teach the destructive give-away workflow.
+        return asksShare
             ? new ZaloSlotWorkflowGuidanceResult(ZaloBotIntent.ShareSlot, BuildShareSlotHelp())
             : new ZaloSlotWorkflowGuidanceResult(ZaloBotIntent.SlotTransfer, BuildPassSlotHelp());
     }
