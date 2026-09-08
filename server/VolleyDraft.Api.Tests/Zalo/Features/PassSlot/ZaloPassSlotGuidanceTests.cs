@@ -11,6 +11,9 @@ public sealed class ZaloPassSlotGuidanceTests
     [InlineData("@Npc pass slot gõ như nào?", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc hướng dẫn nhường suất đi", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc cú pháp pass slot là gì?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc tui nghỉ trận này thì làm sao?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc cho người khác đánh thì phải làm gì?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc nhường chỗ kiểu gì?", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc share slot dùng sao?", ZaloBotIntent.ShareSlot)]
     public void Explicit_help_questions_are_owned_deterministically(string content, ZaloBotIntent intent)
     {
@@ -25,7 +28,9 @@ public sealed class ZaloPassSlotGuidanceTests
     [InlineData("@Npc tui nhận slot T6")]
     [InlineData("@Npc ai đang pass slot?")]
     [InlineData("@Npc tui muốn share slot với @To An hôm nay")]
-    public void Real_actions_or_fact_queries_are_not_stolen_by_guidance(string content)
+    [InlineData("@Npc tui nghỉ trận này nha")]
+    [InlineData("@Npc đừng pass slot thì làm sao")]
+    public void Real_actions_fact_queries_or_negated_requests_are_not_stolen_by_guidance(string content)
     {
         Assert.Null(ZaloOverbookService.TryBuildAddressedSlotWorkflowGuidance(Explicit(content)));
     }
@@ -40,7 +45,7 @@ public sealed class ZaloPassSlotGuidanceTests
             "m1",
             "user-1",
             "Long",
-            "ai pass slot thì gõ sao ta",
+            "tui nghỉ trận này thì làm sao cho người khác đánh ta",
             [],
             false,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -58,7 +63,7 @@ public sealed class ZaloPassSlotGuidanceTests
             "m2",
             "user-1",
             "Long",
-            "pass slot gõ sao?",
+            "tui nghỉ trận này thì làm sao?",
             [],
             false,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -71,13 +76,16 @@ public sealed class ZaloPassSlotGuidanceTests
                 DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds(),
                 null));
 
-        Assert.NotNull(ZaloOverbookService.TryBuildAddressedSlotWorkflowGuidance(incoming));
+        var guidance = ZaloOverbookService.TryBuildAddressedSlotWorkflowGuidance(incoming);
+
+        Assert.NotNull(guidance);
+        Assert.Equal(ZaloBotIntent.SlotTransfer, guidance!.Intent);
     }
 
     [Fact]
     public void Pass_guidance_teaches_existing_deterministic_handoff_steps()
     {
-        var guidance = ZaloSlotWorkflowGuidance.TryBuild("ai pass slot thì gõ sao?");
+        var guidance = ZaloSlotWorkflowGuidance.TryBuild("tui nghỉ trận này thì làm sao cho người khác đánh?");
 
         Assert.NotNull(guidance);
         var text = guidance!.Text;
@@ -85,6 +93,8 @@ public sealed class ZaloPassSlotGuidanceTests
         Assert.Contains("tui nhận T6", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("xong", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("chốt", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("huỷ pass", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("huỷ nhận", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc @A pass slot cho @B", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("quyền", text, StringComparison.OrdinalIgnoreCase);
     }
