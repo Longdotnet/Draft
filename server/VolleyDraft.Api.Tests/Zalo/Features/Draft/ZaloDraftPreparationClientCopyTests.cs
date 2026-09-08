@@ -82,36 +82,6 @@ public sealed class ZaloDraftPreparationClientCopyTests
     }
 
     [Fact]
-    public void Proactive_missing_profile_reminder_does_not_imply_profiles_are_the_only_draft_gate()
-    {
-        var text = ZaloDraftPreparationClientCopy.MissingProfileReminder(
-            "CN 13/9",
-            1,
-            ["Hiệp"]);
-
-        Assert.Contains("Khi người cuối cùng cập nhật xong", text);
-        AssertSafePostProfileRecovery(text);
-        Assert.DoesNotContain("hồ sơ trận này đã đủ điều kiện để draft", text, StringComparison.OrdinalIgnoreCase);
-        AssertBeginnerSafe(text);
-    }
-
-    [Fact]
-    public void Locked_list_missing_profile_reminder_keeps_post_recovery_draft_fail_closed()
-    {
-        var text = ZaloDraftPreparationClientCopy.LockedListMissingProfileReminder(
-            "CN 13/9",
-            "15 chỗ",
-            1,
-            ["Hiệp"]);
-
-        Assert.Contains("đã được trưởng/phó chốt", text);
-        AssertSafePostProfileRecovery(text);
-        Assert.Contains("Nếu còn vướng", text);
-        Assert.Contains("không tự chia", text);
-        AssertBeginnerSafe(text);
-    }
-
-    [Fact]
     public void Locked_partial_roster_ack_points_directly_to_next_action()
     {
         var text = ZaloDraftPreparationClientCopy.Locked(
@@ -243,6 +213,7 @@ public sealed class ZaloDraftPreparationClientCopyTests
 
     private static void AssertSafePostProfileRecovery(string text)
     {
+        Assert.Contains("Khi người cuối cùng cập nhật xong", text);
         Assert.Contains("trưởng/phó", text);
         Assert.Contains("`draft đi`", text);
         Assert.Contains("đọc lại vote", text);
@@ -250,6 +221,8 @@ public sealed class ZaloDraftPreparationClientCopyTests
         Assert.Contains("số người/chỗ", text);
         Assert.Contains("giờ trận", text);
         Assert.Contains("quyền", text);
+        Assert.Contains("Nếu còn vướng", text);
+        Assert.Contains("không tự chia", text);
     }
 
     private static void AssertBeginnerSafe(string text)
