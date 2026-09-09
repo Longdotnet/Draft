@@ -107,10 +107,12 @@ function addTelemetry(target: OperationTelemetry, source: OperationTelemetry): v
 }
 
 /**
- * One provider-traffic scope represents one connected credential set. Read endpoints
+ * One provider-traffic scope represents one connected account lifecycle. Read endpoints
  * receive credentials while outbound text sends receive only accountId, so the bridge
- * binds accountId -> credential scope when listener setup is requested. This lets the
- * same cooldown/pacing state cover both directions without logging or exposing cookies.
+ * binds accountId -> credential scope when listener setup is requested. Once an account
+ * is bound, later credential refreshes/rotations are aliased back to that stable scope.
+ * This is safety-critical: changing cookies/IMEI/user-agent must not silently erase an
+ * account-wide cooldown or pacing queue after an upstream 429.
  *
  * Diagnostics are deliberately process-local and bounded to counters/timestamps. Raw
  * credentials and credential fingerprints are never returned. Public health exposes
@@ -120,6 +122,7 @@ function addTelemetry(target: OperationTelemetry, source: OperationTelemetry): v
 export class ZaloProviderTrafficGovernor {
   private readonly rateGuard: ZaloRateLimitGuard;
   private readonly credentialScopeByAccount = new Map<string, string>();
+  private readonly stableScopeByCredential = new Map<string, string>();
   private readonly inFlightReads = new Map<string, Promise<unknown>>();
   private readonly telemetryByScope = new Map<string, ScopeTelemetry>();
   private readonly now: () => number;
@@ -138,9 +141,17 @@ export class ZaloProviderTrafficGovernor {
 
   bindAccount(accountIdValue: string, credentials: ZaloCredentials): string {
     const accountId = accountIdValue.trim();
-    const scope = this.scopeForCredentials(credentials);
-    if (accountId) this.credentialScopeByAccount.set(accountId, scope);
-    return scope;
+    const rawCredentialScope = this.rawScopeForCredentials(credentials);
+    const existingAccountScope = accountId ? this.credentialScopeByAccount.get(accountId) : undefined;
+    const existingCredentialScope = this.stableScopeByCredential.get(rawCredentialScope);
+    const stableScope = existingAccountScope ?? existingCredentialScope ?? rawCredentialScope;
+
+    // Keep a connected account on one safety scope for its lifetime inside this bridge
+    // process. Credential refreshes are transport/auth changes, not permission to bypass
+    // an already-open provider cooldown or the per-account pacing queue.
+    this.stableScopeByCredential.set(rawCredentialScope, stableScope);
+    if (accountId) this.credentialScopeByAccount.set(accountId, stableScope);
+    return stableScope;
   }
 
   runWithCredentials<T>(
@@ -363,6 +374,11 @@ export class ZaloProviderTrafficGovernor {
   }
 
   private scopeForCredentials(credentials: ZaloCredentials): string {
+    const rawScope = this.rawScopeForCredentials(credentials);
+    return this.stableScopeByCredential.get(rawScope) ?? rawScope;
+  }
+
+  private rawScopeForCredentials(credentials: ZaloCredentials): string {
     // Never place raw credentials/cookies in a state key or log field.
     const digest = createHash("sha256")
       .update(JSON.stringify(credentials))
