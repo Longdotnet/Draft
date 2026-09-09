@@ -55,6 +55,7 @@ internal static class ZaloAutoSessionProposalFailurePersistence
         try
         {
             await using var command = connection.CreateCommand();
+            command.CommandText = sql;
             AddParameter(command, "@Id", proposal.Id);
             AddParameter(command, "@TrackedGroupId", proposal.TrackedGroupId);
             AddParameter(command, "@PollId", proposal.PollId);
