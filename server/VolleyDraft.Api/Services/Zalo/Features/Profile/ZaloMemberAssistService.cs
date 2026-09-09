@@ -27,14 +27,6 @@ public sealed record ZaloMemberAssistReply(
     string Text,
     string? SessionId = null);
 
-/// <summary>
-/// High-precision helper for ordinary group chatter where members are coordinating
-/// a slot without explicitly addressing the bot. Opening/claiming an offer writes
-/// only coordination state. A real post-draft slot transfer is delegated to the
-/// existing confirmed domain service and pre-draft registration remains poll-owned.
-/// Read-only pass-slot summaries are resolved from durable offer state before any
-/// mutation-shaped pass/claim flow is considered.
-/// </summary>
 public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
@@ -44,23 +36,18 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
     private static readonly Regex PassSlotPattern = new(
         @"(?<![a-z0-9])(?:pass|nhuong|tra|bo|huy|cancel|share)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)(?![a-z0-9])|(?<![a-z0-9])pass\s+(?:cai\s+)?(?:ve|keo)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     private static readonly Regex NaturalSelfWithdrawalPattern = new(
         @"(?<![a-z0-9])(?:(?:tui|toi|minh|em|anh|chi|tao)\s+)?(?:nghi|khong\s+(?:choi|danh|di))\s+(?:tran|keo|bua|buoi)(?![a-z0-9])|(?<![a-z0-9])cho\s+nguoi\s+khac\s+(?:danh|choi)(?![a-z0-9])|(?<![a-z0-9])ai\s+(?:muon\s+)?(?:lay|nhan|hot|giu)\s+(?:slot|suat)\s+cua\s+(?:tui|toi|minh|em)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     private static readonly Regex NegatedPassPattern = new(
         @"(?<![a-z0-9])(?:dung|huy|thoi|khong|ko|k|khoi)\s+(?:can\s+)?(?:pass|share|nhuong|bo\s+(?:slot|suat|cho))(?![a-z0-9])|(?<![a-z0-9])(?:khong|ko|k)\s+(?:pass|share|nhuong)\s+nua(?![a-z0-9])|(?<![a-z0-9])(?:dung|khong|ko|k)\s+nghi\s+(?:tran|keo|bua|buoi)(?![a-z0-9])|(?<![a-z0-9])(?:dung|khong|ko|k)\s+cho\s+nguoi\s+khac\s+(?:danh|choi)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     private static readonly Regex TargetedTransferPattern = new(
         @"(?<![a-z0-9])(?:pass|share|nhuong|tra|chuyen)\s+(?:slot|suat|cho|si\s+lot|xi\s+lot)\s+(?:voi|cho)\s+[a-z0-9]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     private static readonly Regex PossibleOpenSlotTurnPattern = new(
         @"(?<![a-z0-9])(?:pass|nhuong|slot|suat|keo|nhan|lay|hot|giu|chot|xong|done|huy|cancel)(?![a-z0-9])|(?<![a-z0-9])xac\s+nhan(?![a-z0-9])|(?<![a-z0-9])(?:de|cho)\s+(?:tui|toi|minh|em)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
     private static readonly Regex ExplicitDatePattern = new(
         @"(?<!\d)(?<day>\d{1,2})[/-](?<month>\d{1,2})(?:[/-](?<year>\d{2,4}))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -74,111 +61,54 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
                !TargetedTransferPattern.IsMatch(normalized);
     }
 
-    public async Task<ZaloMemberAssistReply?> TryBuildAsync(
-        string connectionId,
-        string groupId,
-        ZaloIncomingMessageEvent incoming,
-        CancellationToken cancellationToken = default)
+    public async Task<ZaloMemberAssistReply?> TryBuildAsync(string connectionId, string groupId, ZaloIncomingMessageEvent incoming, CancellationToken cancellationToken = default)
     {
         if (ZaloPassSlotHistoryFactService.LooksLikeQuery(incoming.Content))
         {
-            var summary = await new ZaloPassSlotHistoryFactService(db).TryBuildAsync(
-                connectionId,
-                groupId,
-                incoming,
-                cancellationToken: cancellationToken);
+            var summary = await new ZaloPassSlotHistoryFactService(db).TryBuildAsync(connectionId, groupId, incoming, cancellationToken: cancellationToken);
             if (summary is not null) return summary;
         }
-
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         if (PossibleOpenSlotTurnPattern.IsMatch(normalizedIncoming))
         {
-            var offerTurn = await new ZaloOpenSlotOfferService(db).TryHandleAsync(
-                connectionId,
-                groupId,
-                incoming,
-                cancellationToken);
+            var offerTurn = await new ZaloOpenSlotOfferService(db).TryHandleAsync(connectionId, groupId, incoming, cancellationToken);
             if (offerTurn.Handled && !string.IsNullOrWhiteSpace(offerTurn.Response))
-            {
-                return new ZaloMemberAssistReply(
-                    ZaloMemberAssistKind.OpenSlotClaim,
-                    offerTurn.Response!,
-                    offerTurn.SessionId);
-            }
+                return new ZaloMemberAssistReply(ZaloMemberAssistKind.OpenSlotClaim, offerTurn.Response!, offerTurn.SessionId);
         }
-
-        if (!IsPassSlotHelpOpportunity(incoming.Content)) return null;
-
-        // A broadcast mention such as @All is audience metadata, not evidence that
-        // another specific member owns the slot. Keep suppressing self-pass inference
-        // only when the message actually mentions a concrete human.
-        if (HasSpecificHumanMention(incoming)) return null;
-
+        if (!IsPassSlotHelpOpportunity(incoming.Content) || HasSpecificHumanMention(incoming)) return null;
         connectionId = CleanId(connectionId);
         groupId = CleanId(groupId);
         var senderId = CleanId(incoming.SenderId);
         var senderName = (incoming.SenderName ?? string.Empty).Trim();
         if (connectionId.Length == 0 || groupId.Length == 0 || senderId.Length == 0) return null;
-
         var now = DateTimeOffset.UtcNow;
-        var sessions = await db.MatchSessions
-            .AsNoTracking()
-            .Include(session => session.Players)
-                .ThenInclude(player => player.PlayerProfile)
-            .Where(session => session.ZaloConnectionId == connectionId &&
-                              session.ZaloGroupId == groupId &&
-                              session.BotEnabled &&
-                              (session.Status == SessionStatus.Setup ||
-                               session.Status == SessionStatus.CaptainSelection ||
-                               session.Status == SessionStatus.Finished) &&
-                              (session.StartTime == null || session.StartTime > now))
-            .ToListAsync(cancellationToken);
-
-        var owned = sessions
-            .Where(session => ResolveOwner(session, senderId, senderName) is not null)
-            .OrderBy(session => session.StartTime ?? DateTimeOffset.MaxValue)
-            .ToList();
+        var sessions = await db.MatchSessions.AsNoTracking().Include(session => session.Players).ThenInclude(player => player.PlayerProfile)
+            .Where(session => session.ZaloConnectionId == connectionId && session.ZaloGroupId == groupId && session.BotEnabled &&
+                              (session.Status == SessionStatus.Setup || session.Status == SessionStatus.CaptainSelection || session.Status == SessionStatus.Finished) &&
+                              (session.StartTime == null || session.StartTime > now)).ToListAsync(cancellationToken);
+        var owned = sessions.Where(session => ResolveOwner(session, senderId, senderName) is not null)
+            .OrderBy(session => session.StartTime ?? DateTimeOffset.MaxValue).ToList();
         if (owned.Count == 0)
-        {
-            var who = FriendlyName(incoming.SenderName);
-            return new ZaloMemberAssistReply(
-                ZaloMemberAssistKind.PassSlotHelp,
-                $"{who} đang pass slot đúng không 👀 Tui nhận ra ý rồi nhưng chưa match chắc được slot của bạn trong roster. Nói T6/CN, ngày hoặc tên kèo để tui dò đúng nha.");
-        }
-
+            return new ZaloMemberAssistReply(ZaloMemberAssistKind.PassSlotHelp,
+                $"{FriendlyName(incoming.SenderName)} đang pass slot đúng không 👀 Tui nhận ra ý rồi nhưng chưa match chắc được slot của bạn trong roster. Nói T6/CN, ngày hoặc tên kèo để tui dò đúng nha.");
         var explicitMatches = owned.Where(session => MatchesExplicitSession(incoming.Content, session)).ToList();
         if (explicitMatches.Count == 1)
             return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, explicitMatches[0], cancellationToken);
-        if (explicitMatches.Count > 1)
-            owned = explicitMatches;
-
+        if (explicitMatches.Count > 1) owned = explicitMatches;
         if (owned.Count == 1)
             return await BuildSingleAsync(connectionId, groupId, senderId, senderName, incoming.MessageId, owned[0], cancellationToken);
-
-        var choices = string.Join(" với ", owned.Take(4).Select(session => session.Name));
-        var friendly = FriendlyName(incoming.SenderName);
-        return new ZaloMemberAssistReply(
-            ZaloMemberAssistKind.PassSlotHelp,
-            $"Pass kèo nào á {friendly} 😆 Tui thấy bạn có slot {choices}; nói T6/CN hoặc tên kèo là tui phụ tiếp nha.");
+        return new ZaloMemberAssistReply(ZaloMemberAssistKind.PassSlotHelp,
+            $"Pass kèo nào á {FriendlyName(incoming.SenderName)} 😆 Tui thấy bạn có slot {string.Join(" với ", owned.Take(4).Select(session => session.Name))}; nói T6/CN hoặc tên kèo là tui phụ tiếp nha.");
     }
 
-    private async Task<ZaloMemberAssistReply?> BuildSingleAsync(
-        string connectionId,
-        string groupId,
-        string senderId,
-        string senderName,
-        string sourceMessageId,
-        MatchSession session,
-        CancellationToken cancellationToken)
+    private async Task<ZaloMemberAssistReply?> BuildSingleAsync(string connectionId, string groupId, string senderId, string senderName, string sourceMessageId, MatchSession session, CancellationToken cancellationToken)
     {
         var owner = ResolveOwner(session, senderId, senderName);
         if (owner is null) return null;
-
         var now = DateTimeOffset.UtcNow;
         var expiresAt = now.Add(OfferTtl);
         if (session.StartTime is { } start && start < expiresAt) expiresAt = start;
         if (expiresAt <= now) return null;
-
         DateTimeOffset? nextNudgeAt = now.Add(FirstNudgeDelay);
         if (session.StartTime is { } sessionStart)
         {
@@ -187,67 +117,27 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         }
         if (nextNudgeAt >= expiresAt) nextNudgeAt = null;
 
-        // The candidate above is intentionally AsNoTracking and can become stale while
-        // another instance starts the draft. Re-read authoritative lifecycle state at
-        // the last boundary before creating durable marketplace state. AI/text matching
-        // may choose the candidate, but only current backend state may authorize a write.
-        var currentLifecycle = await db.MatchSessions
-            .AsNoTracking()
-            .Where(item => item.Id == session.Id)
-            .Select(item => new { item.Status, item.BotEnabled, item.StartTime })
-            .SingleOrDefaultAsync(cancellationToken);
-        if (currentLifecycle is null ||
-            !currentLifecycle.BotEnabled ||
-            currentLifecycle.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection or SessionStatus.Finished) ||
-            (currentLifecycle.StartTime is { } authoritativeStart && authoritativeStart <= now))
+        var write = await new ZaloOpenSlotMarketplaceSafetyStore(db).TryOpenOrRefreshForActiveSessionAsync(
+            connectionId, groupId, senderId, owner.DisplayName, session.Id, session.Name, sourceMessageId, expiresAt, nextNudgeAt, cancellationToken);
+        if (write.Disposition != ZaloOpenSlotSessionWriteDisposition.Written || write.Opened is null)
         {
-            var memberName = FriendlyName(owner.DisplayName);
-            var reason = currentLifecycle?.Status == SessionStatus.Drafting
-                ? $"Draft {session.Name} vừa bắt đầu rồi"
-                : $"Trạng thái {session.Name} vừa đổi rồi";
-            return new ZaloMemberAssistReply(
-                ZaloMemberAssistKind.PassSlotHelp,
-                $"{memberName} ơi, {reason} nên tui không mở pass slot mới từ tin cũ để khỏi làm lệch roster nha.",
-                session.Id);
+            var status = await db.MatchSessions.AsNoTracking().Where(item => item.Id == session.Id).Select(item => item.Status).SingleOrDefaultAsync(cancellationToken);
+            var reason = status == SessionStatus.Drafting ? $"draft {session.Name} vừa bắt đầu" : "trận này vừa có thao tác cập nhật khác";
+            return new ZaloMemberAssistReply(ZaloMemberAssistKind.PassSlotHelp,
+                $"{FriendlyName(owner.DisplayName)} ơi, {reason} nên tui chưa mở pass slot từ tin này để khỏi lệch roster. Gửi lại yêu cầu sau khi trạng thái ổn định nha.", session.Id);
         }
 
-        var opened = await new ZaloOpenSlotMarketplaceSafetyStore(db).OpenOrRefreshAsync(
-            connectionId,
-            groupId,
-            senderId,
-            owner.DisplayName,
-            session.Id,
-            session.Name,
-            sourceMessageId,
-            expiresAt,
-            nextNudgeAt,
-            cancellationToken);
-
+        var opened = write.Opened;
         var who = FriendlyName(owner.DisplayName);
         if (opened.Disposition == ZaloOpenSlotOpenDisposition.ClaimPreserved)
-        {
-            var claimant = FriendlyName(opened.Offer.ClaimantDisplayName);
-            return new ZaloMemberAssistReply(
-                ZaloMemberAssistKind.PassSlotHelp,
-                $"Slot {who} ở {session.Name} đang được {claimant} giữ để chốt rồi nha 👌 Tui giữ nguyên reservation, không mở đè claim của người ta.",
-                session.Id);
-        }
+            return new ZaloMemberAssistReply(ZaloMemberAssistKind.PassSlotHelp,
+                $"Slot {who} ở {session.Name} đang được {FriendlyName(opened.Offer.ClaimantDisplayName)} giữ để chốt rồi nha 👌 Tui giữ nguyên reservation, không mở đè claim của người ta.", session.Id);
         if (opened.Disposition == ZaloOpenSlotOpenDisposition.ApplyingPreserved)
-        {
-            var claimant = FriendlyName(opened.Offer.ClaimantDisplayName);
-            return new ZaloMemberAssistReply(
-                ZaloMemberAssistKind.PassSlotHelp,
-                $"Slot {who} ở {session.Name} đang chốt cho {claimant} rồi ⏳ Tui không reset giữa lúc chuyển slot; chốt xong tui mới cập nhật trạng thái.",
-                session.Id);
-        }
-
-        var verb = opened.Disposition == ZaloOpenSlotOpenDisposition.Refreshed
-            ? "vẫn đang mở, tui vừa làm mới tin pass"
-            : "tui mở rồi";
-        return new ZaloMemberAssistReply(
-            ZaloMemberAssistKind.PassSlotHelp,
-            $"{who} pass slot {session.Name} nha 🥲 Slot {verb}; ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp. Nếu tin bị trôi tui sẽ nhắc lại có chừng mực.",
-            session.Id);
+            return new ZaloMemberAssistReply(ZaloMemberAssistKind.PassSlotHelp,
+                $"Slot {who} ở {session.Name} đang chốt cho {FriendlyName(opened.Offer.ClaimantDisplayName)} rồi ⏳ Tui không reset giữa lúc chuyển slot; chốt xong tui mới cập nhật trạng thái.", session.Id);
+        var verb = opened.Disposition == ZaloOpenSlotOpenDisposition.Refreshed ? "vẫn đang mở, tui vừa làm mới tin pass" : "tui mở rồi";
+        return new ZaloMemberAssistReply(ZaloMemberAssistKind.PassSlotHelp,
+            $"{who} pass slot {session.Name} nha 🥲 Slot {verb}; ai muốn hốt cứ nói ‘tui nhận’ là tui nối tiếp. Nếu tin bị trôi tui sẽ nhắc lại có chừng mực.", session.Id);
     }
 
     private static bool HasSpecificHumanMention(ZaloIncomingMessageEvent incoming)
@@ -256,35 +146,23 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         return incoming.Mentions.Any(mention =>
         {
             var mentionId = CleanId(mention.Uid);
-            return mentionId.Length > 0 &&
-                   !string.Equals(mentionId, botId, StringComparison.Ordinal) &&
-                   !IsBroadcastMention(mention, incoming.Content);
+            return mentionId.Length > 0 && !string.Equals(mentionId, botId, StringComparison.Ordinal) && !IsBroadcastMention(mention, incoming.Content);
         });
     }
 
     internal static bool IsBroadcastMention(ZaloBridgeMention mention, string? content)
     {
         var value = content ?? string.Empty;
-        if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos > value.Length - mention.Len)
-            return false;
-
+        if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos > value.Length - mention.Len) return false;
         var token = value.Substring(mention.Pos, mention.Len).Trim();
-        return string.Equals(token, "@All", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(token, "@Everyone", StringComparison.OrdinalIgnoreCase);
+        return string.Equals(token, "@All", StringComparison.OrdinalIgnoreCase) || string.Equals(token, "@Everyone", StringComparison.OrdinalIgnoreCase);
     }
 
     private static SessionPlayer? ResolveOwner(MatchSession session, string senderId, string senderName)
     {
-        var byUid = session.Players.FirstOrDefault(player =>
-            player.IsPresent && player.PlayerProfile != null && CleanId(player.PlayerProfile.ZaloUserId) == senderId);
+        var byUid = session.Players.FirstOrDefault(player => player.IsPresent && player.PlayerProfile != null && CleanId(player.PlayerProfile.ZaloUserId) == senderId);
         if (byUid is not null) return byUid;
-
-        var matches = session.Players
-            .Where(player => player.IsPresent &&
-                             CleanId(player.PlayerProfile?.ZaloUserId).Length == 0 &&
-                             SameName(player.DisplayName, senderName))
-            .Take(2)
-            .ToList();
+        var matches = session.Players.Where(player => player.IsPresent && CleanId(player.PlayerProfile?.ZaloUserId).Length == 0 && SameName(player.DisplayName, senderName)).Take(2).ToList();
         return matches.Count == 1 ? matches[0] : null;
     }
 
@@ -294,59 +172,39 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         var normalizedName = ZaloBotIntelligence.Normalize(session.Name);
         if (normalizedName.Length > 0 && ContainsPhrase(normalized, normalizedName)) return true;
         if (session.StartTime is null) return false;
-
         var local = session.StartTime.Value.ToOffset(VietnamOffset);
         foreach (Match match in ExplicitDatePattern.Matches(normalized))
         {
-            if (!int.TryParse(match.Groups["day"].Value, out var day) ||
-                !int.TryParse(match.Groups["month"].Value, out var month) ||
-                day != local.Day || month != local.Month)
-                continue;
+            if (!int.TryParse(match.Groups["day"].Value, out var day) || !int.TryParse(match.Groups["month"].Value, out var month) || day != local.Day || month != local.Month) continue;
             if (!match.Groups["year"].Success) return true;
             if (!int.TryParse(match.Groups["year"].Value, out var year)) continue;
             if (year < 100) year += 2000;
             if (year == local.Year) return true;
         }
-
         var dayTokens = local.DayOfWeek switch
         {
-            DayOfWeek.Monday => new[] { "t2", "thu 2", "thu hai" },
-            DayOfWeek.Tuesday => new[] { "t3", "thu 3", "thu ba" },
-            DayOfWeek.Wednesday => new[] { "t4", "thu 4", "thu tu" },
-            DayOfWeek.Thursday => new[] { "t5", "thu 5", "thu nam" },
-            DayOfWeek.Friday => new[] { "t6", "thu 6", "thu sau" },
-            DayOfWeek.Saturday => new[] { "t7", "thu 7", "thu bay" },
-            _ => new[] { "cn", "chu nhat" }
+            DayOfWeek.Monday => new[] { "t2", "thu 2", "thu hai" }, DayOfWeek.Tuesday => new[] { "t3", "thu 3", "thu ba" },
+            DayOfWeek.Wednesday => new[] { "t4", "thu 4", "thu tu" }, DayOfWeek.Thursday => new[] { "t5", "thu 5", "thu nam" },
+            DayOfWeek.Friday => new[] { "t6", "thu 6", "thu sau" }, DayOfWeek.Saturday => new[] { "t7", "thu 7", "thu bay" }, _ => new[] { "cn", "chu nhat" }
         };
         return dayTokens.Any(token => ContainsPhrase(normalized, token));
     }
 
-    private static bool ContainsPhrase(string value, string phrase) =>
-        Regex.IsMatch(value, $@"(?<![a-z0-9]){Regex.Escape(phrase)}(?![a-z0-9])", RegexOptions.CultureInvariant);
-
+    private static bool ContainsPhrase(string value, string phrase) => Regex.IsMatch(value, $@"(?<![a-z0-9]){Regex.Escape(phrase)}(?![a-z0-9])", RegexOptions.CultureInvariant);
     private static string FriendlyName(string? value)
     {
-        var parts = (value ?? string.Empty)
-            .Trim()
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = (value ?? string.Empty).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return parts.Length == 0 ? "bạn" : parts[^1];
     }
-
-    private static bool SameName(string? left, string? right) =>
-        NormalizeName(left) == NormalizeName(right) && NormalizeName(left).Length > 0;
-
+    private static bool SameName(string? left, string? right) => NormalizeName(left) == NormalizeName(right) && NormalizeName(left).Length > 0;
     private static string NormalizeName(string? value)
     {
         var decomposed = (value ?? string.Empty).Trim().ToLowerInvariant().Normalize(NormalizationForm.FormD);
         var builder = new StringBuilder(decomposed.Length);
         foreach (var ch in decomposed)
-        {
-            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
-                builder.Append(ch == 'đ' ? 'd' : ch);
-        }
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark) builder.Append(ch == 'đ' ? 'd' : ch);
         return Regex.Replace(builder.ToString().Normalize(NormalizationForm.FormC), @"\s+", " ").Trim();
     }
-
     private static string CleanId(string? value)
     {
         var text = (value ?? string.Empty).Trim();
