@@ -87,6 +87,78 @@ public sealed class StatefulFuzzingFoundationTests
     }
 
     [Fact]
+    public async Task Minimizer_delta_debugs_long_stateful_sequences_before_single_action_cleanup()
+    {
+        var actions = Enumerable.Repeat(new CounterAction(CounterActionKind.Noise), 32)
+            .Append(new CounterAction(CounterActionKind.Add, 6))
+            .Concat(Enumerable.Repeat(new CounterAction(CounterActionKind.Noise), 32))
+            .Append(new CounterAction(CounterActionKind.Add, 5))
+            .ToArray();
+        var scenario = new StatefulFuzzCase<CounterAction>("counter-ddmin", 20260909, actions);
+        var target = new CounterTarget();
+
+        var result = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+            scenario,
+            target,
+            "counter:max-value");
+        var replay = await StatefulFuzzRunner.RunAsync(result.Scenario, target);
+
+        Assert.Equal("counter:max-value", replay.FailureFingerprint);
+        Assert.Equal(66, result.OriginalActionCount);
+        Assert.Equal(2, result.MinimizedActionCount);
+        Assert.True(result.ReplayCount < result.OriginalActionCount);
+        Assert.Equal(
+            [
+                new CounterAction(CounterActionKind.Add, 6),
+                new CounterAction(CounterActionKind.Add, 5)
+            ],
+            result.Scenario.Actions);
+    }
+
+    [Fact]
+    public async Task Minimizer_can_shrink_action_payloads_without_domain_logic_in_the_core()
+    {
+        var scenario = new StatefulFuzzCase<CounterAction>(
+            "counter-payload-shrink",
+            77,
+            [new CounterAction(CounterActionKind.Noise), new CounterAction(CounterActionKind.Add, 100)]);
+        var target = new CounterTarget();
+
+        var result = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+            scenario,
+            target,
+            "counter:max-value",
+            action => action.Kind == CounterActionKind.Add
+                ? [action with { Amount = 1 }, action with { Amount = 11 }]
+                : []);
+        var replay = await StatefulFuzzRunner.RunAsync(result.Scenario, target);
+
+        Assert.Equal("counter:max-value", replay.FailureFingerprint);
+        Assert.Single(result.Scenario.Actions);
+        Assert.Equal(new CounterAction(CounterActionKind.Add, 11), result.Scenario.Actions[0]);
+    }
+
+    [Fact]
+    public async Task Minimizer_does_not_accept_a_different_failure_fingerprint()
+    {
+        var scenario = new StatefulFuzzCase<CounterAction>(
+            "counter-fingerprint",
+            88,
+            [new CounterAction(CounterActionKind.Throw), new CounterAction(CounterActionKind.Add, 11)]);
+        var target = new CounterTarget();
+        var original = await StatefulFuzzRunner.RunAsync(scenario, target);
+
+        Assert.StartsWith("exception:counter:", original.FailureFingerprint);
+        var result = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+            scenario,
+            target,
+            original.FailureFingerprint!);
+
+        Assert.Single(result.Scenario.Actions);
+        Assert.Equal(CounterActionKind.Throw, result.Scenario.Actions[0].Kind);
+    }
+
+    [Fact]
     public void Reproducer_round_trips_seed_actions_and_failure_identity()
     {
         var scenario = new StatefulFuzzCase<string>(
@@ -112,7 +184,8 @@ public sealed class StatefulFuzzingFoundationTests
     {
         Add,
         Reset,
-        Noise
+        Noise,
+        Throw
     }
 
     private sealed record CounterAction(CounterActionKind Kind, int Amount = 0);
@@ -139,6 +212,8 @@ public sealed class StatefulFuzzingFoundationTests
                     break;
                 case CounterActionKind.Noise:
                     break;
+                case CounterActionKind.Throw:
+                    throw new InvalidOperationException("synthetic target exception");
                 default:
                     throw new ArgumentOutOfRangeException(nameof(action));
             }
