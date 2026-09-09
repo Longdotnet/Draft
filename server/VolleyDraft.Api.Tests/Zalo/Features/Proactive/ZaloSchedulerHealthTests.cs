@@ -58,19 +58,21 @@ public sealed class ZaloSchedulerHealthTests
     }
 
     [Fact]
-    public void Evaluate_reports_newer_failure_instead_of_hiding_it_behind_old_success()
+    public void Evaluate_reports_newer_failure_with_durable_failure_kind()
     {
         var now = new DateTimeOffset(2026, 9, 8, 2, 0, 0, TimeSpan.Zero);
         var snapshot = Snapshot(
             leaseUntil: now.AddMinutes(-1),
             lastAttemptAt: now.AddMinutes(-6),
             lastSuccessAt: now.AddMinutes(-20),
-            lastFailureAt: now.AddMinutes(-5));
+            lastFailureAt: now.AddMinutes(-5),
+            lastFailureKind: ZaloSchedulerFailureKinds.ReminderFailed);
 
         var health = ZaloSchedulerHealth.Evaluate(snapshot, now, TimeSpan.FromMinutes(45));
 
         Assert.Equal(ZaloSchedulerHealthState.Failed, health.State);
         Assert.False(health.IsHealthy);
+        Assert.Equal(ZaloSchedulerFailureKinds.ReminderFailed, health.LastFailureKind);
     }
 
     [Fact]
@@ -139,6 +141,7 @@ public sealed class ZaloSchedulerHealthTests
         DateTimeOffset leaseUntil,
         DateTimeOffset? lastAttemptAt = null,
         DateTimeOffset? lastSuccessAt = null,
-        DateTimeOffset? lastFailureAt = null) =>
-        new("instance-a", leaseUntil, lastAttemptAt, lastSuccessAt, lastFailureAt);
+        DateTimeOffset? lastFailureAt = null,
+        string? lastFailureKind = null) =>
+        new("instance-a", leaseUntil, lastAttemptAt, lastSuccessAt, lastFailureAt, lastFailureKind);
 }
