@@ -72,4 +72,26 @@ public sealed class ZaloListenerWorkerCadenceTests
         Assert.False(ZaloListenerWorkerCadence.IsDue(now.AddMinutes(14).AddSeconds(59), next));
         Assert.True(ZaloListenerWorkerCadence.IsDue(now.AddMinutes(15), next));
     }
+
+    [Fact]
+    public void Cold_start_runs_listener_control_plane_immediately_but_defers_provider_safety_scan()
+    {
+        var now = DateTimeOffset.Parse("2026-09-10T00:00:00Z");
+        var listenerInterval = TimeSpan.FromMinutes(5);
+        var pollSafetyInterval = TimeSpan.FromMinutes(15);
+
+        var listenerNext = ZaloListenerWorkerCadence.InitialNext(
+            now,
+            listenerInterval,
+            runImmediately: true);
+        var pollSafetyNext = ZaloListenerWorkerCadence.InitialNext(
+            now,
+            pollSafetyInterval,
+            runImmediately: false);
+
+        Assert.True(ZaloListenerWorkerCadence.IsDue(now, listenerNext));
+        Assert.False(ZaloListenerWorkerCadence.IsDue(now, pollSafetyNext));
+        Assert.False(ZaloListenerWorkerCadence.IsDue(now.AddMinutes(14).AddSeconds(59), pollSafetyNext));
+        Assert.True(ZaloListenerWorkerCadence.IsDue(now.AddMinutes(15), pollSafetyNext));
+    }
 }
