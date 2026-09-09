@@ -377,7 +377,8 @@ internal sealed class ZaloAutoSessionStore(VolleyDraftDbContext db)
                 "ApprovedByZaloUserId" = excluded."ApprovedByZaloUserId",
                 "ApprovedAt" = excluded."ApprovedAt",
                 "LastError" = excluded."LastError",
-                "UpdatedAt" = excluded."UpdatedAt";
+                "UpdatedAt" = excluded."UpdatedAt"
+            WHERE "ZaloPollSessionProposals"."PollUpdatedAtUnixMs" <= excluded."PollUpdatedAtUnixMs";
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         AddParameter(command, "@Id", proposal.Id);
