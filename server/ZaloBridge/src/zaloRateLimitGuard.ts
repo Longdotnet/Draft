@@ -3,6 +3,7 @@ import { BridgeHttpError, classifyBridgeError, upstreamRetryAfterSeconds } from 
 type AccountRateState = {
   blockedUntil: number;
   consecutiveRateLimits: number;
+  consecutiveTransientFailures: number;
   nextAllowedAt: number;
   tail: Promise<void>;
 };
@@ -33,6 +34,8 @@ export type ZaloRateLimitGuardOptions = {
   defaultCooldownMs?: number;
   maxCooldownMs?: number;
   maxRetryAfterMs?: number;
+  transientBaseDelayMs?: number;
+  transientMaxDelayMs?: number;
   now?: () => number;
   sleep?: (milliseconds: number) => Promise<void>;
   onEvent?: (event: ZaloRateLimitEvent) => void;
@@ -49,6 +52,10 @@ const defaultSleep = (milliseconds: number) =>
  * The guard deliberately never retries an upstream failure. It serializes work for one
  * scope, keeps a small gap between provider attempts regardless of outcome, and opens a
  * local cooldown after an upstream 429 so concurrent callers cannot keep hammering Zalo.
+ * Retryable non-429 failures (5xx/408/network-style bridge failures) apply a bounded
+ * exponential pacing delay to the next provider attempt for that same scope. This keeps
+ * an upstream incident from degenerating into one provider call every 750ms while still
+ * preserving error taxonomy: only a real 429 creates a local 429 cooldown rejection.
  *
  * `maxCooldownMs` caps only bridge-generated exponential backoff. A real Retry-After is
  * provider authority and must not be shortened to that local cap; otherwise a one-hour
@@ -67,6 +74,8 @@ export class ZaloRateLimitGuard {
   private readonly defaultCooldownMs: number;
   private readonly maxCooldownMs: number;
   private readonly maxRetryAfterMs: number;
+  private readonly transientBaseDelayMs: number;
+  private readonly transientMaxDelayMs: number;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly onEvent?: (event: ZaloRateLimitEvent) => void;
@@ -78,6 +87,11 @@ export class ZaloRateLimitGuard {
     this.maxRetryAfterMs = Math.max(
       this.maxCooldownMs,
       options.maxRetryAfterMs ?? 7 * 24 * 60 * 60_000,
+    );
+    this.transientBaseDelayMs = Math.max(this.minGapMs, options.transientBaseDelayMs ?? 2_000);
+    this.transientMaxDelayMs = Math.max(
+      this.transientBaseDelayMs,
+      options.transientMaxDelayMs ?? 30_000,
     );
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
@@ -146,6 +160,7 @@ export class ZaloRateLimitGuard {
       try {
         const result = await operation();
         state.consecutiveRateLimits = 0;
+        state.consecutiveTransientFailures = 0;
         this.emit({
           type: "provider_success",
           scopeKey: key,
@@ -159,6 +174,7 @@ export class ZaloRateLimitGuard {
         let retryAfterSeconds: number | undefined;
         if (descriptor.source === "upstream-zalo" && descriptor.kind === "rate_limited") {
           state.consecutiveRateLimits += 1;
+          state.consecutiveTransientFailures = 0;
           const exponential = this.defaultCooldownMs * 2 ** Math.min(4, state.consecutiveRateLimits - 1);
           const localCooldownMs = Math.min(this.maxCooldownMs, exponential);
           const upstreamRetryAfter = upstreamRetryAfterSeconds(error, this.now());
@@ -170,6 +186,17 @@ export class ZaloRateLimitGuard {
           state.blockedUntil = this.now() + cooldownMs;
           state.nextAllowedAt = state.blockedUntil;
           retryAfterSeconds = Math.max(1, Math.ceil(cooldownMs / 1_000));
+        } else if (descriptor.retryable && descriptor.source !== "bridge-validation") {
+          state.consecutiveRateLimits = 0;
+          state.consecutiveTransientFailures += 1;
+          const transientDelayMs = Math.min(
+            this.transientMaxDelayMs,
+            this.transientBaseDelayMs * 2 ** Math.min(4, state.consecutiveTransientFailures - 1),
+          );
+          state.nextAllowedAt = Math.max(state.nextAllowedAt, this.now() + transientDelayMs);
+        } else {
+          state.consecutiveRateLimits = 0;
+          state.consecutiveTransientFailures = 0;
         }
         this.emit({
           type: "provider_failure",
@@ -186,8 +213,8 @@ export class ZaloRateLimitGuard {
         throw error;
       } finally {
         // The spacing invariant applies to provider attempts, not only successful sends.
-        // Without this, a queued request can immediately follow a 5xx/auth/network failure
-        // and amplify an upstream incident even though work is serialized per scope.
+        // Retryable non-429 failures may already have installed a larger transient delay;
+        // keep whichever safety window is longer.
         state.nextAllowedAt = Math.max(state.nextAllowedAt, this.now() + this.minGapMs);
       }
     } finally {
@@ -210,6 +237,7 @@ export class ZaloRateLimitGuard {
     const created: AccountRateState = {
       blockedUntil: 0,
       consecutiveRateLimits: 0,
+      consecutiveTransientFailures: 0,
       nextAllowedAt: 0,
       tail: Promise.resolve(),
     };
