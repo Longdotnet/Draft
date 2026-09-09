@@ -30,7 +30,7 @@ public sealed class ZaloReminderSessionTargetPolicyTests
     }
 
     [Fact]
-    public void Exact_date_and_time_can_choose_one_of_multiple_same_day_sessions()
+    public void Reminder_clock_does_not_choose_between_multiple_same_day_sessions()
     {
         ZaloSessionReference[] candidates =
         [
@@ -44,7 +44,9 @@ public sealed class ZaloReminderSessionTargetPolicyTests
             Now);
 
         Assert.NotNull(result);
-        Assert.Equal(["sun-late"], result);
+        Assert.Equal(2, result.Count);
+        Assert.Contains("sun-early", result);
+        Assert.Contains("sun-late", result);
     }
 
     [Theory]
