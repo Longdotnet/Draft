@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ZaloCredentials } from "../src/contracts.js";
-import { wrapProviderReadApi } from "../src/providerApiBoundary.js";
+import { wrapProviderReadApi, wrapProviderStickerApi } from "../src/providerApiBoundary.js";
 import { ZaloProviderTrafficGovernor } from "../src/zaloProviderTraffic.js";
 
 function credentials(seed: string): ZaloCredentials {
@@ -163,4 +163,51 @@ test("non-read API members are passed through without an inner governor", async 
   assert.equal(await api.sendMessage(), "sent");
   assert.equal(await api.getGroupInfo(), "groups");
   assert.deepEqual(operations, ["sdk.getGroupInfo"]);
+});
+
+test("sticker lookup fallback, detail lookup, and final send are separate paced attempts", async () => {
+  let now = 80_000;
+  const starts: Array<{ operation: string; at: number }> = [];
+  const sleeps: number[] = [];
+  const accountCredentials = credentials("sticker");
+  const governor = new ZaloProviderTrafficGovernor({
+    now: () => now,
+    minGapMs: 750,
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+      now += milliseconds;
+    },
+  });
+  governor.bindAccount("account-sticker", accountCredentials);
+
+  const rawApi = {
+    async getStickers(keyword: string) {
+      return keyword === "first" ? [] : [42];
+    },
+    async getStickersDetail() {
+      return [{ id: 42, cateId: 7, type: 1 }];
+    },
+    async sendSticker() {
+      return { msgId: "sent-42" };
+    },
+  };
+  const api = wrapProviderStickerApi(rawApi, (operation, action) =>
+    governor.runWithCredentials(accountCredentials, async () => {
+      starts.push({ operation, at: now });
+      return action();
+    }, operation));
+
+  assert.deepEqual(await api.getStickers("first"), []);
+  assert.deepEqual(await api.getStickers("second"), [42]);
+  assert.deepEqual(await api.getStickersDetail(), [{ id: 42, cateId: 7, type: 1 }]);
+  assert.deepEqual(await api.sendSticker(), { msgId: "sent-42" });
+
+  assert.deepEqual(starts, [
+    { operation: "sdk.getStickers", at: 80_000 },
+    { operation: "sdk.getStickers", at: 80_750 },
+    { operation: "sdk.getStickersDetail", at: 81_500 },
+    { operation: "sdk.sendSticker", at: 82_250 },
+  ]);
+  assert.deepEqual(sleeps, [750, 750, 750]);
+  assert.equal(governor.getDiagnostics().aggregate.providerAttempts, 4);
 });
