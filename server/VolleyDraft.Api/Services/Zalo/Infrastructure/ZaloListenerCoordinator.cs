@@ -273,6 +273,12 @@ internal static class ZaloListenerWorkerCadence
     internal static bool IsDue(DateTimeOffset now, DateTimeOffset nextAt) => now >= nextAt;
 
     internal static DateTimeOffset Next(DateTimeOffset now, TimeSpan interval) => now.Add(interval);
+
+    internal static DateTimeOffset InitialNext(
+        DateTimeOffset now,
+        TimeSpan interval,
+        bool runImmediately) =>
+        runImmediately ? DateTimeOffset.MinValue : Next(now, interval);
 }
 
 public sealed class ZaloListenerWorker(
@@ -305,8 +311,19 @@ public sealed class ZaloListenerWorker(
             minSeconds: 300,
             maxSeconds: 3600);
 
-        var nextListenerReconcileAt = DateTimeOffset.MinValue;
-        var nextPollSafetyReconcileAt = DateTimeOffset.MinValue;
+        var startupAt = DateTimeOffset.UtcNow;
+        var nextListenerReconcileAt = ZaloListenerWorkerCadence.InitialNext(
+            startupAt,
+            listenerReconcileInterval,
+            runImmediately: true);
+        // Render cold-start/deploy already performs an immediate listener establishment.
+        // A new listener generation queues bounded missed-event recovery, so launching a
+        // full poll-board scan in the same first tick only amplifies provider traffic at
+        // the noisiest lifecycle boundary. Keep the board listing as a later safety net.
+        var nextPollSafetyReconcileAt = ZaloListenerWorkerCadence.InitialNext(
+            startupAt,
+            pollSafetyReconcileInterval,
+            runImmediately: false);
 
         while (!stoppingToken.IsCancellationRequested)
         {
