@@ -42,8 +42,6 @@ internal sealed class ZaloAutoSessionActionExecutor(
     {
         EnsureCandidatesMatchPollSource(poll, selected);
 
-        var effectiveTeamSize = Math.Clamp(teamSizeOverride ?? tracked.DefaultTeamSize, 2, 30);
-        var effectiveLocation = locationOverride ?? tracked.DefaultLocation;
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
         var linked = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
 
@@ -55,6 +53,19 @@ internal sealed class ZaloAutoSessionActionExecutor(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         try
         {
+            // Re-read the durable group policy inside the same transaction that owns
+            // link/session mutation. The organizer may have disabled Auto Session after
+            // preview/confirmation but before this executor reached the write boundary.
+            // A stale tracked-group snapshot must never retain authority to create sessions.
+            var currentTracked = await store.GetTrackedGroupAsync(tracked.Id, cancellationToken);
+            EnsureExecutionPolicyCurrent(currentTracked);
+            tracked = currentTracked!;
+
+            // Approved defaults are also read from the current durable policy snapshot.
+            // Explicit organizer overrides still win, but stale defaults from preview do not.
+            var effectiveTeamSize = Math.Clamp(teamSizeOverride ?? tracked.DefaultTeamSize, 2, 30);
+            var effectiveLocation = locationOverride ?? tracked.DefaultLocation;
+
             foreach (var candidate in selected
                          .GroupBy(item => item.OptionId, StringComparer.Ordinal)
                          .Select(group => group.First()))
@@ -206,6 +217,14 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 [],
                 idempotencyKey: $"auto-session-v3-created:{proposal.Id}");
         });
+    }
+
+    internal static void EnsureExecutionPolicyCurrent(ZaloTrackedGroupData? currentTracked)
+    {
+        if (currentTracked is null)
+            throw new InvalidOperationException("auto_session_execution_policy_missing");
+        if (!currentTracked.AutoSessionEnabled)
+            throw new InvalidOperationException("auto_session_execution_policy_disabled");
     }
 
     internal static string BuildPostCreateStatusMessage(
