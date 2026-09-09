@@ -1,0 +1,160 @@
+using Xunit;
+
+namespace VolleyDraft.Api.Tests.Fuzzing;
+
+public sealed class StatefulFuzzingFoundationTests
+{
+    [Fact]
+    public void Stable_random_replays_the_same_sequence_for_the_same_seed()
+    {
+        var first = new StableFuzzRandom(20260909);
+        var second = new StableFuzzRandom(20260909);
+
+        var firstSequence = Enumerable.Range(0, 32).Select(_ => first.NextUInt32()).ToArray();
+        var secondSequence = Enumerable.Range(0, 32).Select(_ => second.NextUInt32()).ToArray();
+
+        Assert.Equal(firstSequence, secondSequence);
+    }
+
+    [Fact]
+    public void Sequence_mutation_is_replayable_without_mutating_the_seed_corpus()
+    {
+        string[] seed = ["join", "pass", "leave"];
+
+        var first = StatefulSequenceMutator.Mutate(
+            seed,
+            424242,
+            random => $"generated-{random.NextInt(100)}",
+            operationCount: 12);
+        var second = StatefulSequenceMutator.Mutate(
+            seed,
+            424242,
+            random => $"generated-{random.NextInt(100)}",
+            operationCount: 12);
+
+        Assert.Equal(first, second);
+        Assert.Equal(["join", "pass", "leave"], seed);
+    }
+
+    [Fact]
+    public async Task Runner_stops_at_the_first_grounded_invariant_violation()
+    {
+        var scenario = new StatefulFuzzCase<CounterAction>(
+            "counter-overflow",
+            17,
+            [new CounterAction(CounterActionKind.Add, 11), new CounterAction(CounterActionKind.Reset)]);
+
+        var result = await StatefulFuzzRunner.RunAsync(scenario, new CounterTarget());
+
+        Assert.True(result.Failed);
+        Assert.Equal("counter:max-value", result.FailureFingerprint);
+        Assert.Equal(0, result.FailureActionIndex);
+        Assert.Single(result.ExecutedActions);
+        Assert.Null(result.Exception);
+        Assert.Equal("max-value", result.Violation?.Id);
+    }
+
+    [Fact]
+    public async Task Minimizer_removes_irrelevant_actions_while_preserving_the_failure_fingerprint()
+    {
+        var target = new CounterTarget();
+        var scenario = new StatefulFuzzCase<CounterAction>(
+            "counter-minimize",
+            91,
+            [
+                new CounterAction(CounterActionKind.Noise),
+                new CounterAction(CounterActionKind.Add, 6),
+                new CounterAction(CounterActionKind.Noise),
+                new CounterAction(CounterActionKind.Add, 5),
+                new CounterAction(CounterActionKind.Noise)
+            ]);
+        var original = await StatefulFuzzRunner.RunAsync(scenario, target);
+        Assert.Equal("counter:max-value", original.FailureFingerprint);
+
+        var minimized = await StatefulFuzzMinimizer.MinimizeAsync(
+            scenario,
+            target,
+            original.FailureFingerprint!);
+        var replay = await StatefulFuzzRunner.RunAsync(minimized, target);
+
+        Assert.Equal("counter:max-value", replay.FailureFingerprint);
+        Assert.Equal(
+            [
+                new CounterAction(CounterActionKind.Add, 6),
+                new CounterAction(CounterActionKind.Add, 5)
+            ],
+            minimized.Actions);
+    }
+
+    [Fact]
+    public void Reproducer_round_trips_seed_actions_and_failure_identity()
+    {
+        var scenario = new StatefulFuzzCase<string>(
+            "pass-share-replay",
+            123456,
+            ["join:a", "pass:a:b", "leave:b", "replay:pass"]);
+
+        var json = StatefulFuzzReproducerSerializer.Serialize(scenario, "slot:duplicate-owner");
+        var replay = StatefulFuzzReproducerSerializer.Deserialize<string>(json);
+
+        Assert.Equal(scenario.Name, replay.Name);
+        Assert.Equal(scenario.Seed, replay.Seed);
+        Assert.Equal("slot:duplicate-owner", replay.FailureFingerprint);
+        Assert.Equal(scenario.Actions, replay.Actions);
+    }
+
+    private sealed class CounterState
+    {
+        public int Value { get; set; }
+    }
+
+    private enum CounterActionKind
+    {
+        Add,
+        Reset,
+        Noise
+    }
+
+    private sealed record CounterAction(CounterActionKind Kind, int Amount = 0);
+
+    private sealed class CounterTarget : IStatefulFuzzTarget<CounterState, CounterAction>
+    {
+        public string Name => "counter";
+
+        public CounterState CreateState(StatefulFuzzCase<CounterAction> scenario) => new();
+
+        public ValueTask ApplyAsync(
+            CounterState state,
+            CounterAction action,
+            int actionIndex,
+            CancellationToken cancellationToken)
+        {
+            switch (action.Kind)
+            {
+                case CounterActionKind.Add:
+                    state.Value += action.Amount;
+                    break;
+                case CounterActionKind.Reset:
+                    state.Value = 0;
+                    break;
+                case CounterActionKind.Noise:
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(action));
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public IEnumerable<StatefulInvariantViolation> EvaluateInvariants(CounterState state)
+        {
+            if (state.Value > 10)
+            {
+                yield return new StatefulInvariantViolation(
+                    "counter",
+                    "max-value",
+                    $"Counter must stay <= 10 but was {state.Value}.");
+            }
+        }
+    }
+}
