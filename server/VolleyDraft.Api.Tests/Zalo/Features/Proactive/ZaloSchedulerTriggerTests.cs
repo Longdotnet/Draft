@@ -92,20 +92,24 @@ public sealed class ZaloSchedulerTriggerTests
         Assert.True(ZaloSchedulerFailureCodes.IsValid(code));
     }
 
-    [Theory]
-    [InlineData(ZaloSchedulerStage.Listener, "exception:listener")]
-    [InlineData(ZaloSchedulerStage.Reminder, "exception:reminder")]
-    [InlineData(ZaloSchedulerStage.Rescue, "exception:rescue")]
-    [InlineData(ZaloSchedulerStage.Lifecycle, "exception:lifecycle")]
-    [InlineData(ZaloSchedulerStage.Finalize, "exception:finalize")]
-    public void Failure_codes_classify_exception_stage_without_exception_text(
-        ZaloSchedulerStage stage,
-        string expected)
+    [Fact]
+    public void Failure_codes_classify_exception_stage_without_exception_text()
     {
-        var code = ZaloSchedulerFailureCodes.ForException(stage);
+        var cases = new[]
+        {
+            (ZaloSchedulerStage.Listener, "exception:listener"),
+            (ZaloSchedulerStage.Reminder, "exception:reminder"),
+            (ZaloSchedulerStage.Rescue, "exception:rescue"),
+            (ZaloSchedulerStage.Lifecycle, "exception:lifecycle"),
+            (ZaloSchedulerStage.Finalize, "exception:finalize")
+        };
 
-        Assert.Equal(expected, code);
-        Assert.True(ZaloSchedulerFailureCodes.IsValid(code));
+        foreach (var (stage, expected) in cases)
+        {
+            var code = ZaloSchedulerFailureCodes.ForException(stage);
+            Assert.Equal(expected, code);
+            Assert.True(ZaloSchedulerFailureCodes.IsValid(code));
+        }
     }
 
     [Fact]
