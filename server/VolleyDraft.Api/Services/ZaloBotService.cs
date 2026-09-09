@@ -3644,7 +3644,17 @@ public sealed partial class ZaloBotService(
         }
         else if (hasExplicitSelector)
         {
-            targets = upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList();
+            var explicitCalendarTargetIds =
+                ZaloReminderSessionTargetPolicy.ResolveExplicitCalendarDateCandidateIds(
+                    originalReminderQuestion,
+                    upcoming.Select(session => new ZaloSessionReference(
+                        session.Id,
+                        session.Name,
+                        session.StartTime)).ToList(),
+                    now.ToOffset(VietnamOffset));
+            targets = explicitCalendarTargetIds is null
+                ? upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList()
+                : upcoming.Where(session => explicitCalendarTargetIds.Contains(session.Id)).ToList();
             if (targets.Count == 0)
             {
                 return new BotAnswer(
@@ -3653,7 +3663,8 @@ public sealed partial class ZaloBotService(
                     intent,
                     aiCalled);
             }
-            if (targets.Count > 1 && command.SessionReferences is null)
+            if (targets.Count > 1 &&
+                (explicitCalendarTargetIds is not null || command.SessionReferences is null))
             {
                 return new BotAnswer(
                     $"Có nhiều trận khớp: {string.Join(", ", targets.Take(5).Select(FormatSessionChoice))}. Hãy gửi lại cả lệnh kèm ngày cụ thể.",
