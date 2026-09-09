@@ -187,6 +187,30 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         }
         if (nextNudgeAt >= expiresAt) nextNudgeAt = null;
 
+        // The candidate above is intentionally AsNoTracking and can become stale while
+        // another instance starts the draft. Re-read authoritative lifecycle state at
+        // the last boundary before creating durable marketplace state. AI/text matching
+        // may choose the candidate, but only current backend state may authorize a write.
+        var currentLifecycle = await db.MatchSessions
+            .AsNoTracking()
+            .Where(item => item.Id == session.Id)
+            .Select(item => new { item.Status, item.BotEnabled, item.StartTime })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (currentLifecycle is null ||
+            !currentLifecycle.BotEnabled ||
+            currentLifecycle.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection or SessionStatus.Finished) ||
+            (currentLifecycle.StartTime is { } authoritativeStart && authoritativeStart <= now))
+        {
+            var who = FriendlyName(owner.DisplayName);
+            var reason = currentLifecycle?.Status == SessionStatus.Drafting
+                ? $"Draft {session.Name} vừa bắt đầu rồi"
+                : $"Trạng thái {session.Name} vừa đổi rồi";
+            return new ZaloMemberAssistReply(
+                ZaloMemberAssistKind.PassSlotHelp,
+                $"{who} ơi, {reason} nên tui không mở pass slot mới từ tin cũ để khỏi làm lệch roster nha.",
+                session.Id);
+        }
+
         var opened = await new ZaloOpenSlotMarketplaceSafetyStore(db).OpenOrRefreshAsync(
             connectionId,
             groupId,
