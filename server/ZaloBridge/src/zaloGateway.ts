@@ -3,6 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 // Keep all untyped interaction isolated in this adapter while runtime exports remain valid.
 import * as ZaloRuntime from "zca-js";
 import { isZaloRateLimitError } from "./bridgeErrors.js";
+import {
+  boardEventDebounceKey,
+  InboundMessageDeliveryGate,
+} from "./inboundEventReliability.js";
 import type {
   BridgeBoardPage,
   BridgeGroup,
@@ -145,6 +149,7 @@ type MinimalQrEvent = {
 
 const outgoingIdempotency = new Map<string, { expiresAt: number; result: Promise<BridgeSendResult> }>();
 const pendingBoardEvents = new Map<string, ReturnType<typeof setTimeout>>();
+const inboundMessageGate = new InboundMessageDeliveryGate();
 
 type MinimalZaloClient = {
   login(credentials: ZaloCredentials): Promise<MinimalZaloApi>;
@@ -180,7 +185,6 @@ export type QrLoginSession = {
 const qrSessions = new Map<string, QrLoginSession>();
 const apiCache = new Map<string, { api: MinimalZaloApi; lastUsed: number }>();
 const activeListeners = new Map<string, ActiveListener>();
-const processedMessageIds = new Map<string, number>();
 const mockMode = process.env.ZALO_BRIDGE_MOCK === "true";
 
 type ActiveListener = {
@@ -242,17 +246,6 @@ function normalizeMentions(value: MinimalMessage["data"]["mentions"]): BridgeMen
     .filter((mention) => mention.uid.length > 0 && mention.pos >= 0 && mention.len > 0);
 }
 
-function rememberMessage(accountId: string, messageId: string): boolean {
-  const now = Date.now();
-  for (const [key, seenAt] of processedMessageIds) {
-    if (now - seenAt > 24 * 60 * 60_000) processedMessageIds.delete(key);
-  }
-  const key = `${accountId}:${messageId}`;
-  if (processedMessageIds.has(key)) return false;
-  processedMessageIds.set(key, now);
-  return true;
-}
-
 async function postWebhook(
   listener: ActiveListener,
   event: IncomingGroupMessageEvent | PollBoardChangedEvent,
@@ -303,12 +296,14 @@ function handleBoardEvent(accountId: string, listener: ActiveListener, event: Mi
   const eventType: PollBoardChangedEvent["eventType"] = event.type;
   const groupId = normalizeId(event.threadId);
   if (!groupId || !listener.groupIds.has(groupId)) return;
-  const key = `${accountId}:${groupId}`;
+  const topic = event.data?.groupTopic;
+  const boardId = readTopicValue(topic, "topicId", "id", "pollId")
+    ?? readTopicValue(event.data?.extraData, "topicId", "id", "pollId");
+  const key = boardEventDebounceKey({ accountId, groupId, eventType, boardId });
   const pending = pendingBoardEvents.get(key);
   if (pending) clearTimeout(pending);
   pendingBoardEvents.set(key, setTimeout(() => {
     pendingBoardEvents.delete(key);
-    const topic = event.data?.groupTopic;
     const rawTimestamp = Number(event.data?.time ?? Date.now());
     const occurredAtUnixMs = Number.isFinite(rawTimestamp)
       ? rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
@@ -319,7 +314,7 @@ function handleBoardEvent(accountId: string, listener: ActiveListener, event: Mi
       eventType,
       actorId: normalizeMemberId(String(event.data?.sourceId ?? event.data?.creatorId ?? "")) || null,
       boardType: readTopicValue(topic, "type", "topicType", "boardType"),
-      boardId: readTopicValue(topic, "topicId", "id", "pollId") ?? readTopicValue(event.data?.extraData, "topicId", "id", "pollId"),
+      boardId,
       occurredAtUnixMs,
     }, pollWebhookUrl(listener.webhookUrl)).catch((error) =>
       console.error(`[Zalo listener ${accountId}] Failed to forward poll board event:`, error),
@@ -333,26 +328,33 @@ async function handleIncomingMessage(accountId: string, listener: ActiveListener
   if (!listener.groupIds.has(groupId)) return;
 
   const messageId = normalizeId(String(message.data.msgId || message.data.cliMsgId || ""));
-  if (!messageId || !rememberMessage(accountId, messageId)) return;
-  const mentions = normalizeMentions(message.data.mentions);
   const senderId = normalizeMemberId(String(message.data.uidFrom ?? ""));
-  if (!senderId || senderId === listener.botId) return;
+  if (!messageId || !senderId || senderId === listener.botId) return;
+  const reservation = inboundMessageGate.reserve(accountId, messageId);
+  if (!reservation) return;
 
+  const mentions = normalizeMentions(message.data.mentions);
   const rawTimestamp = Number(message.data.ts ?? Date.now());
   const sentAtUnixMs = rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp;
-  await postWebhook(listener, {
-    accountId,
-    botId: listener.botId,
-    groupId,
-    messageId,
-    senderId,
-    senderName: String(message.data.dName || `Zalo ${senderId}`),
-    content: message.data.content,
-    mentions,
-    mentionedBot: mentions.some((mention) => mention.uid === listener.botId),
-    sentAtUnixMs,
-    quote: normalizeMessageQuote(message.data.quote),
-  });
+  try {
+    await postWebhook(listener, {
+      accountId,
+      botId: listener.botId,
+      groupId,
+      messageId,
+      senderId,
+      senderName: String(message.data.dName || `Zalo ${senderId}`),
+      content: message.data.content,
+      mentions,
+      mentionedBot: mentions.some((mention) => mention.uid === listener.botId),
+      sentAtUnixMs,
+      quote: normalizeMessageQuote(message.data.quote),
+    });
+    inboundMessageGate.commit(reservation);
+  } catch (error) {
+    inboundMessageGate.release(reservation);
+    throw error;
+  }
 }
 
 export async function startListener(request: StartListenerRequest) {
