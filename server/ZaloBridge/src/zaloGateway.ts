@@ -13,6 +13,8 @@ import {
   cancelIntentionalManualClose,
   consumeIntentionalManualClose,
 } from "./listenerReplacement.js";
+import { wrapProviderReadApi } from "./providerApiBoundary.js";
+import { zaloProviderTrafficGovernor } from "./zaloProviderTraffic.js";
 import type {
   BridgeBoardPage,
   BridgeGroup,
@@ -214,8 +216,8 @@ function logZaloOperationFailure(
   context: Record<string, string | number | boolean | null> = {},
 ): void {
   // A recoverable/fallback read is allowed to degrade on ordinary provider failures,
-  // but 429 is an explicit traffic-control signal. Let it escape immediately so the
-  // outer provider governor opens cooldown instead of issuing more fallback requests.
+  // but 429 is an explicit traffic-control signal. Let it escape immediately because
+  // the concrete SDK-call boundary has already opened the shared account cooldown.
   if (isZaloRateLimitError(error)) throw error;
   console.warn("[Zalo bridge] Zalo operation failed", {
     operation,
@@ -228,18 +230,29 @@ function fingerprint(credentials: ZaloCredentials): string {
   return createHash("sha256").update(JSON.stringify(credentials)).digest("hex");
 }
 
-async function getApi(credentials: ZaloCredentials): Promise<MinimalZaloApi> {
+function governReadApi(credentials: ZaloCredentials, api: MinimalZaloApi): MinimalZaloApi {
+  return wrapProviderReadApi(api, (operation, action) =>
+    zaloProviderTrafficGovernor.runWithCredentials(credentials, action, operation));
+}
+
+async function getApi(credentials: ZaloCredentials, governLogin = true): Promise<MinimalZaloApi> {
   const key = fingerprint(credentials);
   const cached = apiCache.get(key);
   if (cached && Date.now() - cached.lastUsed < 10 * 60_000) {
     cached.lastUsed = Date.now();
-    return cached.api;
+    return governReadApi(credentials, cached.api);
   }
 
   const zalo = new Zalo({ logging: false, checkUpdate: false });
-  const api = await zalo.login(credentials);
+  const api = governLogin
+    ? await zaloProviderTrafficGovernor.runWithCredentials(
+        credentials,
+        () => zalo.login(credentials),
+        "sdk.login",
+      )
+    : await zalo.login(credentials);
   apiCache.set(key, { api, lastUsed: Date.now() });
-  return api;
+  return governReadApi(credentials, api);
 }
 
 function normalizeMentions(value: MinimalMessage["data"]["mentions"]): BridgeMention[] {
@@ -437,7 +450,9 @@ export async function startListener(request: StartListenerRequest) {
   try {
     listener = await activateListenerReplacement({
       prepare: async () => {
-        const api = await getApi(request.credentials);
+        // listener.start is already one account-governed lifecycle operation at the HTTP
+        // boundary, so do not nest the login call into the same serialized governor.
+        const api = await getApi(request.credentials, false);
         const candidate: ActiveListener = {
           api,
           credentialFingerprint,
@@ -587,7 +602,6 @@ async function runQrLogin(session: QrLoginSession) {
       session.avatarUrl = account.avatar || session.avatarUrl;
     } catch {
       // Login is still valid when optional profile enrichment fails.
-
     }
     session.status = "completed";
   } catch (error) {
@@ -596,7 +610,6 @@ async function runQrLogin(session: QrLoginSession) {
       session.status = "failed";
       session.error = publicError(error);
     }
-
   }
 }
 

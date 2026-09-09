@@ -128,7 +128,7 @@ function credentialsFrom(request: Request): ZaloCredentials {
 app.post("/v1/groups", async (request, response) => {
   const credentials = credentialsFrom(request);
   response.json({
-    groups: await zaloProviderTrafficGovernor.runReadWithCredentials(
+    groups: await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
       credentials,
       "groups",
       () => getGroups(credentials),
@@ -141,7 +141,7 @@ app.post("/v1/groups/:groupId/polls", async (request, response) => {
   const credentials = credentialsFrom(request);
   const groupId = request.params.groupId;
   response.json({
-    polls: await zaloProviderTrafficGovernor.runReadWithCredentials(
+    polls: await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
       credentials,
       `group:${groupId}:polls`,
       () => getPolls(credentials, groupId),
@@ -153,7 +153,7 @@ app.post("/v1/groups/:groupId/polls", async (request, response) => {
 app.post("/v1/groups/:groupId/members", async (request, response) => {
   const credentials = credentialsFrom(request);
   const groupId = request.params.groupId;
-  response.json(await zaloProviderTrafficGovernor.runReadWithCredentials(
+  response.json(await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
     credentials,
     `group:${groupId}:members`,
     () => getGroupMemberDirectory(credentials, groupId),
@@ -166,7 +166,7 @@ app.post("/v1/groups/:groupId/board-pages", async (request, response) => {
   const groupId = request.params.groupId;
   const page = Number(request.body?.page ?? 1);
   const pageSize = Number(request.body?.pageSize ?? 50);
-  response.json(await zaloProviderTrafficGovernor.runReadWithCredentials(
+  response.json(await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
     credentials,
     `group:${groupId}:board:${page}:${pageSize}`,
     () => getBoardPage(credentials, groupId, page, pageSize),
@@ -178,7 +178,7 @@ app.post("/v1/groups/:groupId/message-history", async (request, response) => {
   const credentials = credentialsFrom(request);
   const groupId = request.params.groupId;
   const count = Number(request.body?.count ?? 500);
-  response.json(await zaloProviderTrafficGovernor.runReadWithCredentials(
+  response.json(await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
     credentials,
     `group:${groupId}:history:${count}`,
     () => getGroupMessageHistory(credentials, groupId, count),
@@ -189,7 +189,7 @@ app.post("/v1/groups/:groupId/message-history", async (request, response) => {
 app.post("/v1/groups/:groupId/roles", async (request, response) => {
   const credentials = credentialsFrom(request);
   const groupId = request.params.groupId;
-  response.json(await zaloProviderTrafficGovernor.runReadWithCredentials(
+  response.json(await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
     credentials,
     `group:${groupId}:roles`,
     () => getGroupRoles(credentials, groupId),
@@ -200,7 +200,7 @@ app.post("/v1/groups/:groupId/roles", async (request, response) => {
 app.post("/v1/polls/:pollId", async (request, response) => {
   const credentials = credentialsFrom(request);
   const pollId = request.params.pollId;
-  response.json(await zaloProviderTrafficGovernor.runReadWithCredentials(
+  response.json(await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
     credentials,
     `poll:${pollId}`,
     () => getPoll(credentials, pollId),
@@ -217,7 +217,7 @@ app.post("/v1/group-members", async (request, response) => {
   }
   const normalizedMemberKey = [...new Set(memberIds)].sort().join(",");
   response.json({
-    members: await zaloProviderTrafficGovernor.runReadWithCredentials(
+    members: await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
       credentials,
       `members:${normalizedMemberKey}`,
       () => getMembers(credentials, memberIds),
@@ -311,11 +311,7 @@ app.post("/v1/group-stickers", async (request, response) => {
   response.json(await outboundStickerIdempotency.run(
     { accountId, groupId, idempotencyKey },
     { reaction: outbound.reaction },
-    () => zaloProviderTrafficGovernor.runWithCredentials(
-      credentials,
-      () => sendGroupSticker(outbound),
-      "sticker.send",
-    ),
+    () => sendGroupSticker(outbound),
   ));
 });
 

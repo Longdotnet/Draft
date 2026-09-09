@@ -163,10 +163,44 @@ export class ZaloProviderTrafficGovernor {
   }
 
   /**
-   * Coalesces only requests that are simultaneously in flight and are known to be the
-   * same authoritative provider read. Completed values are deliberately not cached:
-   * a later caller always reaches Zalo again, so mutation-adjacent validation can never
-   * be satisfied from stale process memory.
+   * Coalesces a logical authoritative read but deliberately does not acquire the provider
+   * pacing queue. The gateway now governs each concrete zca-js SDK request separately,
+   * so holding the same queue around the whole logical read would either double-count or
+   * deadlock when pagination/batch enrichment reaches the actual-call boundary.
+   */
+  coalesceReadWithCredentials<T>(
+    credentials: ZaloCredentials,
+    readKeyValue: string,
+    operation: () => Promise<T>,
+    operationName = "provider.read",
+  ): Promise<T> {
+    const scope = this.scopeForCredentials(credentials);
+    const readKey = readKeyValue.trim();
+    const normalizedOperation = operationName.trim() || "provider.read";
+    if (!readKey) return operation();
+
+    const inFlightKey = `${scope}:${readKey}`;
+    const existing = this.inFlightReads.get(inFlightKey);
+    if (existing) {
+      const telemetry = this.operationTelemetry(scope, normalizedOperation);
+      telemetry.coalescedReads += 1;
+      return existing as Promise<T>;
+    }
+
+    const result = Promise.resolve().then(operation);
+    this.inFlightReads.set(inFlightKey, result);
+    void result.finally(() => {
+      if (this.inFlightReads.get(inFlightKey) === result) {
+        this.inFlightReads.delete(inFlightKey);
+      }
+    }).catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * Legacy combined helper retained for callers/tests that intentionally model one
+   * logical read as exactly one provider call. Production multi-call read routes use
+   * coalesceReadWithCredentials plus the gateway's concrete SDK-call boundary instead.
    */
   runReadWithCredentials<T>(
     credentials: ZaloCredentials,
