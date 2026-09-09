@@ -126,7 +126,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
         }
         catch (Exception exception)
         {
-            await PersistFailureAfterRollbackAsync(transaction, store, proposal, exception, CancellationToken.None);
+            await PersistFailureAfterRollbackAsync(transaction, db, store, proposal, exception, CancellationToken.None);
             throw;
         }
 
@@ -239,6 +239,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
 
     internal static async Task PersistFailureAfterRollbackAsync(
         IDbContextTransaction transaction,
+        VolleyDraftDbContext db,
         ZaloAutoSessionStore store,
         ZaloPollSessionProposalData proposal,
         Exception exception,
@@ -248,7 +249,11 @@ internal sealed class ZaloAutoSessionActionExecutor(
         await transaction.DisposeAsync();
         proposal.Status = ZaloPollSessionProposalStatus.Failed;
         proposal.LastError = Truncate(exception.Message, 1000);
-        await store.UpsertProposalAsync(proposal, cancellationToken);
+        await ZaloAutoSessionProposalFailurePersistence.PersistUnlessCreatedAsync(
+            db,
+            store,
+            proposal,
+            cancellationToken);
     }
 
     internal static void EnsureCandidatesMatchPollSource(
