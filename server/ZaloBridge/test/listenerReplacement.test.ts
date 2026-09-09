@@ -5,6 +5,7 @@ import {
   beginIntentionalManualClose,
   cancelIntentionalManualClose,
   consumeIntentionalManualClose,
+  enforceBridgeOwnedListenerReconnect,
   prepareListenerReplacement,
 } from "../src/listenerReplacement.js";
 
@@ -110,6 +111,47 @@ test("rollback failure preserves both activation and rollback errors", async () 
       return true;
     },
   );
+});
+
+test("replacement boundary forces zca-js provider-managed retry off", async () => {
+  const observedOptions: Array<{ retryOnClose?: boolean } | undefined> = [];
+  const candidate = {
+    api: {
+      listener: {
+        start: (options?: { retryOnClose?: boolean }) => { observedOptions.push(options); },
+      },
+    },
+  };
+
+  await activateListenerReplacement({
+    prepare: async () => candidate,
+    activateCandidate: (prepared) => prepared.api.listener.start({ retryOnClose: true }),
+  });
+
+  assert.deepEqual(observedOptions, [{ retryOnClose: false }]);
+});
+
+test("reconnect ownership wrapper is idempotent across repeated preparation", () => {
+  const observedOptions: Array<{ retryOnClose?: boolean } | undefined> = [];
+  const candidate = {
+    api: {
+      listener: {
+        start: (options?: { retryOnClose?: boolean }) => { observedOptions.push(options); },
+      },
+    },
+  };
+
+  enforceBridgeOwnedListenerReconnect(candidate);
+  enforceBridgeOwnedListenerReconnect(candidate);
+  candidate.api.listener.start({ retryOnClose: true });
+
+  assert.deepEqual(observedOptions, [{ retryOnClose: false }]);
+});
+
+test("reconnect ownership wrapper ignores candidates without a live provider listener", () => {
+  assert.doesNotThrow(() => enforceBridgeOwnedListenerReconnect(null));
+  assert.doesNotThrow(() => enforceBridgeOwnedListenerReconnect({ api: null }));
+  assert.doesNotThrow(() => enforceBridgeOwnedListenerReconnect({ id: "mock-listener" }));
 });
 
 test("late manual close from intentional stop is consumed exactly once", () => {
