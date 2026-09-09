@@ -35,7 +35,7 @@ public static class ZaloTeamResultRecoveryPolicy
             return header + " Bạn không cần biết các từ kỹ thuật của hệ thống. Làm theo vòng này:\n" +
                    $"1) Trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ kiểm dữ liệu thật và nói đúng việc đang vướng.\n" +
                    "2) Nếu NPC hiện cảnh báo trước khi chia đội, người vừa chạy lệnh chỉ cần trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại.\n" +
-                   $"3) Nếu NPC báo thiếu/dư người: gõ `{missingCommand}` để xem số chỗ hiện tại, chỉnh vote/danh sách thật rồi gõ lại lệnh 9.\n" +
+                   $"3) Nếu NPC báo thiếu người: gõ `{missingCommand}` để xem số chỗ hiện tại. Trưởng/phó có thể nói `vẫn đánh` (hoặc `chốt N`, ví dụ `chốt 16`) để chơi với danh sách hiện tại, hoặc `kiếm thêm` để tiếp tục tuyển; chỉ chạy draft sau khi NPC đã chốt đúng hướng từ dữ liệu mới. Nếu NPC báo dư người, xử lý người/chỗ dư trước rồi kiểm lại.\n" +
                    "4) Nếu NPC báo hồ sơ chưa đủ: cập nhật đúng người, ví dụ `@Npc cập nhật Nick Tran: nam` hoặc `@Npc cập nhật Nick Tran: nam, công, trung bình`, rồi gõ lại lệnh 9.\n" +
                    "5) Nếu NPC báo còn suất đang nhường/chờ nhận: người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ chỗ nhận muốn nhả dùng `huỷ nhận`. NPC chỉ chốt khi trạng thái thật khớp.\n" +
                    $"6) Chỉ khi NPC báo chia đội đã xong mới gõ `{imageCommand}` để lấy card 3 đội.\n" +
@@ -68,18 +68,19 @@ public static class ZaloTeamResultRecoveryPolicy
                 $"Xử lý xong rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
 
             ZaloDraftReadinessState.RosterNotFull =>
-                $"Hiện mới có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ đủ điều kiện để chia, còn thiếu {Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount)} người/chỗ. " +
-                $"Gõ `{missingCommand}` để xem số lượng hiện tại, chỉnh vote/danh sách thật rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
+                BuildPartialRosterMessage(readiness, draftCommand, imageCommand, missingCommand),
 
             ZaloDraftReadinessState.RosterOverCapacity =>
                 $"Hiện có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ đủ điều kiện để chia, đang dư {Math.Max(0, readiness.EffectiveSlotCount - readiness.Capacity)} người/chỗ. " +
-                $"Gõ `{missingCommand}` để kiểm tra số lượng, chỉnh vote/danh sách thật rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
+                $"Gõ `{missingCommand}` để kiểm tra số lượng và xử lý người/chỗ dư trước. Khi danh sách hợp lệ, {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
 
             ZaloDraftReadinessState.MissingProfiles =>
                 BuildMissingProfilesMessage(readiness, draftCommand, imageCommand),
 
             ZaloDraftReadinessState.NoRoster =>
-                $"Danh sách hiện chưa có người chơi nào. Gõ `{missingCommand}` để kiểm tra số chỗ, cập nhật lại vote đúng trận rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
+                $"Danh sách hiện chưa có người chơi nào. Gõ `{missingCommand}` để kiểm tra vote đúng trận. " +
+                "Nếu vẫn muốn gom người, trưởng/phó nói `kiếm thêm`; NPC không tự đoán rằng trận bị huỷ hay tự chia từ danh sách rỗng. " +
+                $"Khi đã có danh sách thật, gõ lại `{draftCommand}` để NPC kiểm điều kiện trước khi chia; chỉ sau khi chia xong mới dùng `{imageCommand}`.",
 
             ZaloDraftReadinessState.MissingStartTime =>
                 $"Danh sách đã đủ nhưng trận chưa được chốt giờ bắt đầu. Nhờ admin chốt giờ trận trong cấu hình, rồi {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}",
@@ -96,6 +97,19 @@ public static class ZaloTeamResultRecoveryPolicy
             _ =>
                 $"NPC chưa xác định được trạng thái an toàn để xuất card. Nhờ admin kiểm tra dữ liệu trận; không tự đoán đội hình. Sau khi trạng thái ổn định, thử lại `{imageCommand}`."
         };
+    }
+
+    private static string BuildPartialRosterMessage(
+        ZaloDraftReadinessSnapshot readiness,
+        string draftCommand,
+        string imageCommand,
+        string missingCommand)
+    {
+        var missing = Math.Max(0, readiness.Capacity - readiness.EffectiveSlotCount);
+        return $"Hiện mới có {readiness.EffectiveSlotCount}/{readiness.Capacity} chỗ đủ điều kiện để chia, còn thiếu {missing} người/chỗ. " +
+               $"Gõ `{missingCommand}` để xem danh sách thật. Nếu trưởng/phó muốn vẫn chơi với số người hiện tại thì nói `vẫn đánh` (hoặc `chốt {readiness.EffectiveSlotCount}`); " +
+               "nếu muốn tiếp tục tuyển thì nói `kiếm thêm`. NPC sẽ đọc lại vote và chốt quyết định từ dữ liệu mới; " +
+               $"chỉ sau đó mới {BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true)}";
     }
 
     private static string BuildDraftExecutionGuide(
