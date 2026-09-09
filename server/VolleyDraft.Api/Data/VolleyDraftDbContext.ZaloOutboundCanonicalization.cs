@@ -55,24 +55,25 @@ public sealed partial class VolleyDraftDbContext
                      .Concat(trackedGroups)
                      .DistinctBy(group => group.Id, StringComparer.Ordinal))
         {
-            var removedLinks = group.Players
+            var groupLinks = group.Players.ToArray();
+            var removedLinks = groupLinks
                 .Where(link => transitionedPlayerIds.Contains(link.SessionPlayerId))
-                .ToList();
-            if (removedLinks.Count == 0) continue;
+                .ToArray();
+            if (removedLinks.Length == 0) continue;
 
-            var remaining = group.Players
+            var remaining = groupLinks
                 .Where(link => !transitionedPlayerIds.Contains(link.SessionPlayerId))
                 .OrderBy(link => link.RotationOrder)
-                .ToList();
-            if (remaining.Count < 2)
+                .ToArray();
+            if (remaining.Length < 2)
             {
-                TeamPreferenceGroupPlayers.RemoveRange(group.Players);
+                TeamPreferenceGroupPlayers.RemoveRange(groupLinks);
                 TeamPreferenceGroups.Remove(group);
                 continue;
             }
 
             TeamPreferenceGroupPlayers.RemoveRange(removedLinks);
-            for (var index = 0; index < remaining.Count; index += 1)
+            for (var index = 0; index < remaining.Length; index += 1)
                 remaining[index].RotationOrder = index + 1;
         }
     }
