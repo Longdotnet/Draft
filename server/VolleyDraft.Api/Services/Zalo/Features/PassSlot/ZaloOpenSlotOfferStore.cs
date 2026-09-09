@@ -110,7 +110,7 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
         var connection = db.Database.GetDbConnection();
         await OpenIfNeededAsync(connection, cancellationToken);
         var existing = await LoadOwnerSessionAnyAsync(
-            connection, groupId, ownerZaloUserId, sessionId, cancellationToken);
+            connection, connectionId, groupId, ownerZaloUserId, sessionId, cancellationToken);
 
         if (existing is null)
         {
@@ -632,13 +632,15 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
 
     private static async Task<ZaloOpenSlotOfferSnapshot?> LoadOwnerSessionAnyAsync(
         DbConnection connection,
+        string connectionId,
         string groupId,
         string ownerZaloUserId,
         string sessionId,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT {Projection} FROM \"ZaloOpenSlotOffers\" WHERE \"GroupId\" = @groupId AND \"OwnerZaloUserId\" = @ownerId AND \"SessionId\" = @sessionId LIMIT 1;";
+        command.CommandText = $"SELECT {Projection} FROM \"ZaloOpenSlotOffers\" WHERE \"ConnectionId\" = @connectionId AND \"GroupId\" = @groupId AND \"OwnerZaloUserId\" = @ownerId AND \"SessionId\" = @sessionId LIMIT 1;";
+        Add(command, "@connectionId", connectionId);
         Add(command, "@groupId", groupId);
         Add(command, "@ownerId", ownerZaloUserId);
         Add(command, "@sessionId", sessionId);
@@ -694,7 +696,7 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
                         "ReminderLeaseUntil" timestamp with time zone NULL,
                         "CreatedAt" timestamp with time zone NOT NULL,
                         "UpdatedAt" timestamp with time zone NOT NULL,
-                        CONSTRAINT "UX_ZaloOpenSlotOffers_OwnerSession" UNIQUE ("GroupId", "OwnerZaloUserId", "SessionId")
+                        CONSTRAINT "UX_ZaloOpenSlotOffers_ConnectionOwnerSession" UNIQUE ("ConnectionId", "GroupId", "OwnerZaloUserId", "SessionId")
                     );
                     """
                 : """
@@ -722,7 +724,7 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
                         "ReminderLeaseUntil" TEXT NULL,
                         "CreatedAt" TEXT NOT NULL,
                         "UpdatedAt" TEXT NOT NULL,
-                        CONSTRAINT "UX_ZaloOpenSlotOffers_OwnerSession" UNIQUE ("GroupId", "OwnerZaloUserId", "SessionId")
+                        CONSTRAINT "UX_ZaloOpenSlotOffers_ConnectionOwnerSession" UNIQUE ("ConnectionId", "GroupId", "OwnerZaloUserId", "SessionId")
                     );
                     """;
             await db.Database.ExecuteSqlRawAsync(createSql, cancellationToken);
@@ -738,6 +740,10 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
                     ALTER TABLE "ZaloOpenSlotOffers" ADD COLUMN IF NOT EXISTS "ClosedReason" TEXT NULL;
                     ALTER TABLE "ZaloOpenSlotOffers" ADD COLUMN IF NOT EXISTS "ReminderLeaseToken" TEXT NULL;
                     ALTER TABLE "ZaloOpenSlotOffers" ADD COLUMN IF NOT EXISTS "ReminderLeaseUntil" timestamp with time zone NULL;
+                    ALTER TABLE "ZaloOpenSlotOffers" DROP CONSTRAINT IF EXISTS "UX_ZaloOpenSlotOffers_OwnerSession";
+                    DROP INDEX IF EXISTS "UX_ZaloOpenSlotOffers_OwnerSession";
+                    CREATE UNIQUE INDEX IF NOT EXISTS "UX_ZaloOpenSlotOffers_ConnectionOwnerSession"
+                    ON "ZaloOpenSlotOffers" ("ConnectionId", "GroupId", "OwnerZaloUserId", "SessionId");
                     """, cancellationToken);
             }
             else
