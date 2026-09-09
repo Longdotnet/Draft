@@ -45,11 +45,30 @@ public sealed class ZaloPollClassifierAuthorityTests
     }
 
     [Fact]
-    public void High_confidence_ai_rejection_can_still_veto_deterministic_false_positive()
+    public void High_confidence_ai_rejection_cannot_revoke_deterministic_authority()
     {
         var result = ZaloPollClassifierService.ResolveWithAi(
             ruleScore: 0.88,
-            ruleReason: "has_schedule_option,weekday_pattern",
+            ruleReason: "has_schedule_option,volleyball_context,weekday_pattern",
+            aiIsSignup: false,
+            aiConfidence: 0.93,
+            aiReason: "travel_poll");
+
+        Assert.True(result.IsVolleyballSignupPoll);
+        Assert.True(result.ShouldOfferManualReview);
+        Assert.True(result.CanAutoExecute(requireOrganizerApproval: false));
+        Assert.False(result.CanAutoExecute(requireOrganizerApproval: true));
+        Assert.True(result.UsedAi);
+        Assert.Contains("ai_disagrees:travel_poll", result.Reason, StringComparison.Ordinal);
+        Assert.Contains("deterministic_authority_preserved", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void High_confidence_ai_rejection_can_reject_candidate_without_deterministic_authority()
+    {
+        var result = ZaloPollClassifierService.ResolveWithAi(
+            ruleScore: 0.66,
+            ruleReason: "has_schedule_option,multiple_schedule_options",
             aiIsSignup: false,
             aiConfidence: 0.93,
             aiReason: "travel_poll");
@@ -57,6 +76,7 @@ public sealed class ZaloPollClassifierAuthorityTests
         Assert.False(result.IsVolleyballSignupPoll);
         Assert.False(result.SemanticCandidate);
         Assert.False(result.ShouldOfferManualReview);
+        Assert.False(result.CanAutoExecute(requireOrganizerApproval: false));
         Assert.Equal(0.07, result.Confidence, 6);
         Assert.True(result.UsedAi);
         Assert.Contains("ai_reject:travel_poll", result.Reason, StringComparison.Ordinal);
