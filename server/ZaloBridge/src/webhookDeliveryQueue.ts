@@ -294,6 +294,24 @@ export class WebhookDeliveryQueue {
       const delayMs = Math.max(exponential + jitter, result.retryAfterMs ?? 0);
       const remainingAgeMs = Math.max(0, this.maxDeliveryAgeMs - ageMs);
       await this.sleep(Math.min(delayMs, remainingAgeMs));
+
+      // maxDeliveryAgeMs is a side-effect start deadline, not merely a delay cap. Once
+      // backoff reaches that boundary, do not issue one final stale API attempt before
+      // declaring the delivery expired. That keeps queued events ordered without letting
+      // an old event resurrect exactly at the retry budget boundary.
+      const ageAfterSleepMs = this.now() - startedAt;
+      if (ageAfterSleepMs >= this.maxDeliveryAgeMs) {
+        this.stats.expired += 1;
+        this.onLog({
+          outcome: "expired",
+          accountId: request.accountId,
+          kind: request.kind,
+          attempts: attempt,
+          status: result.status,
+          ageMs: ageAfterSleepMs,
+        });
+        throw new Error(`Webhook delivery remained unavailable for ${ageAfterSleepMs}ms`);
+      }
     }
   }
 
