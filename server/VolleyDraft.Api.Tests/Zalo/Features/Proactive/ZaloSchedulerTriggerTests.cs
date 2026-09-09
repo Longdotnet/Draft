@@ -75,6 +75,23 @@ public sealed class ZaloSchedulerTriggerTests
         Assert.Equal(expectedMinutes, interval.TotalMinutes);
     }
 
+    [Theory]
+    [InlineData(1, 0, 0, ZaloSchedulerFailureKinds.ReminderFailed)]
+    [InlineData(0, 1, 0, ZaloSchedulerFailureKinds.RescueFailed)]
+    [InlineData(0, 0, 1, ZaloSchedulerFailureKinds.LifecycleFailed)]
+    [InlineData(1, 1, 0, ZaloSchedulerFailureKinds.ReminderRescueFailed)]
+    [InlineData(1, 0, 1, ZaloSchedulerFailureKinds.ReminderLifecycleFailed)]
+    [InlineData(0, 1, 1, ZaloSchedulerFailureKinds.RescueLifecycleFailed)]
+    [InlineData(1, 1, 1, ZaloSchedulerFailureKinds.MultipleStagesFailed)]
+    public void ClassifyStageFailures_returns_bounded_deterministic_failure_kind(
+        int reminderFailed,
+        int rescueFailed,
+        int lifecycleFailed,
+        string expected)
+    {
+        Assert.Equal(expected, ZaloSchedulerWorker.ClassifyStageFailures(reminderFailed, rescueFailed, lifecycleFailed));
+    }
+
     [Fact]
     public async Task RunWithLeaseHeartbeat_renews_while_long_stage_is_still_running()
     {
@@ -132,8 +149,6 @@ public sealed class ZaloSchedulerTriggerTests
             TimeSpan.FromMilliseconds(60),
             CancellationToken.None);
 
-        // Synchronize on the heartbeat callback before forcing lease loss. This keeps
-        // the behavioral assertion exact without depending on CI timer scheduling.
         await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(run.IsCompleted);
         releaseRenewal.TrySetResult();
@@ -228,7 +243,7 @@ public sealed class ZaloSchedulerTriggerTests
     }
 
     [Fact]
-    public async Task Scheduler_heartbeat_survives_store_restart_and_keeps_success_separate_from_failure()
+    public async Task Scheduler_failure_diagnostics_survive_store_restart_and_are_owner_guarded()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -239,15 +254,18 @@ public sealed class ZaloSchedulerTriggerTests
         var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
         var store = new ZaloSchedulerLeaseStore(db);
 
-        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(1)));
         await store.MarkAttemptAsync("instance-a", now.AddSeconds(1));
         await store.MarkSuccessAsync("instance-a", now.AddSeconds(2));
-        await store.MarkFailureAsync("instance-a", now.AddMinutes(1));
+        await store.MarkFailureAsync("instance-a", now.AddSeconds(3), ZaloSchedulerFailureKinds.ReminderFailed);
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(1), TimeSpan.FromMinutes(15)));
+        await store.MarkFailureAsync("instance-a", now.AddMinutes(2), ZaloSchedulerFailureKinds.SchedulerException);
 
         var restartedStore = new ZaloSchedulerLeaseStore(db);
         var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await restartedStore.GetAsync());
         Assert.Equal(now.AddSeconds(1), snapshot.LastAttemptAt);
         Assert.Equal(now.AddSeconds(2), snapshot.LastSuccessAt);
-        Assert.Equal(now.AddMinutes(1), snapshot.LastFailureAt);
+        Assert.Equal(now.AddSeconds(3), snapshot.LastFailureAt);
+        Assert.Equal(ZaloSchedulerFailureKinds.ReminderFailed, snapshot.LastFailureKind);
     }
 }
