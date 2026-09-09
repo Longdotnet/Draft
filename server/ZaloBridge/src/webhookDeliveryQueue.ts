@@ -87,16 +87,24 @@ function deliverySignature(request: WebhookDeliveryRequest): string {
     .digest("hex");
 }
 
+function deliveryScopeKey(accountId: string, deliveryId: string): string {
+  // A provider/channel message ID is not globally unique across Zalo accounts. Keep
+  // account and delivery identity as separately framed fields so one account can never
+  // coalesce, conflict with, or release another account's in-flight delivery.
+  return JSON.stringify([accountId.trim(), deliveryId.trim()]);
+}
+
 /**
  * Buffers inbound Zalo listener events while the VolleyDraft API is temporarily
  * unavailable. Deliveries are serialized per account + endpoint so conversation order
  * is preserved without allowing one sleeping API target to block another account.
  *
- * Duplicate delivery IDs are true single-flight operations: an equivalent duplicate
- * receives the exact same promise/outcome as the original attempt. A conflicting reuse
- * fails closed instead of reporting local success for a different event. This matters
- * because the global fetch reliability shim returns success to the listener only after
- * this promise resolves.
+ * Duplicate delivery IDs are true single-flight operations within one account: an
+ * equivalent duplicate receives the exact same promise/outcome as the original attempt.
+ * The same channel delivery ID from another account is independent. A conflicting reuse
+ * inside one account fails closed instead of reporting local success for a different
+ * event. This matters because the global fetch reliability shim returns success to the
+ * listener only after this promise resolves.
  *
  * This queue never calls Zalo. Planned bridge shutdowns can drain accepted deliveries
  * before the process exits. A hard process/container loss can still lose memory-only
@@ -152,8 +160,9 @@ export class WebhookDeliveryQueue {
       return Promise.reject(new Error("Webhook delivery requires accountId and deliveryId"));
     }
 
+    const scopedDeliveryId = deliveryScopeKey(accountId, deliveryId);
     const signature = deliverySignature(request);
-    const existing = this.inFlightById.get(deliveryId);
+    const existing = this.inFlightById.get(scopedDeliveryId);
     if (existing) {
       if (existing.signature !== signature) {
         this.stats.idempotencyConflicts += 1;
@@ -162,7 +171,7 @@ export class WebhookDeliveryQueue {
           accountId,
           kind: request.kind,
         });
-        return Promise.reject(new Error("Webhook delivery id conflicts with an in-flight payload"));
+        return Promise.reject(new Error("Webhook delivery id conflicts with an in-flight payload for this account"));
       }
       this.stats.coalescedDuplicates += 1;
       return existing.result;
@@ -187,15 +196,15 @@ export class WebhookDeliveryQueue {
 
     const delivery = this.serial.run(serialKey, () => this.deliverWithRetry(request))
       .finally(() => {
-        const current = this.inFlightById.get(deliveryId);
-        if (current?.result === delivery) this.inFlightById.delete(deliveryId);
+        const current = this.inFlightById.get(scopedDeliveryId);
+        if (current?.result === delivery) this.inFlightById.delete(scopedDeliveryId);
         const remaining = Math.max(0, (this.pendingByAccount.get(accountId) ?? 1) - 1);
         if (remaining === 0) this.pendingByAccount.delete(accountId);
         else this.pendingByAccount.set(accountId, remaining);
         this.stats.pending = Math.max(0, this.stats.pending - 1);
       });
 
-    this.inFlightById.set(deliveryId, { signature, result: delivery });
+    this.inFlightById.set(scopedDeliveryId, { signature, result: delivery });
     this.activeDeliveries.add(delivery);
     void delivery.then(
       () => this.activeDeliveries.delete(delivery),
