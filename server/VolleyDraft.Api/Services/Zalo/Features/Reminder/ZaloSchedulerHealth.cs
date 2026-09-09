@@ -19,7 +19,8 @@ internal sealed record ZaloSchedulerHealthAssessment(
     DateTimeOffset? LeaseUntil,
     DateTimeOffset? LastAttemptAt,
     DateTimeOffset? LastSuccessAt,
-    DateTimeOffset? LastFailureAt);
+    DateTimeOffset? LastFailureAt,
+    string? LastFailureKind);
 
 internal static class ZaloSchedulerHealth
 {
@@ -48,6 +49,7 @@ internal static class ZaloSchedulerHealth
                 false,
                 now,
                 staleAfter,
+                null,
                 null,
                 null,
                 null,
@@ -96,7 +98,8 @@ internal static class ZaloSchedulerHealth
                 snapshot.LeaseUntil,
                 snapshot.LastAttemptAt,
                 snapshot.LastSuccessAt,
-                snapshot.LastFailureAt);
+                snapshot.LastFailureAt,
+                snapshot.LastFailureKind);
     }
 
     private static DateTimeOffset? Max(DateTimeOffset? left, DateTimeOffset? right)
@@ -135,7 +138,8 @@ public static class ZaloSchedulerHealthEndpoint
                         leaseUntil = assessment.LeaseUntil,
                         lastAttemptAt = assessment.LastAttemptAt,
                         lastSuccessAt = assessment.LastSuccessAt,
-                        lastFailureAt = assessment.LastFailureAt
+                        lastFailureAt = assessment.LastFailureAt,
+                        lastFailureKind = assessment.LastFailureKind
                     },
                     statusCode: assessment.IsHealthy
                         ? StatusCodes.Status200OK
