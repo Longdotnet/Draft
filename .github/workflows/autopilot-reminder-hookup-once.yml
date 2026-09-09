@@ -18,8 +18,8 @@ jobs:
           ref: autopilot/reminder-exact-date-target-safety
           fetch-depth: 0
       - name: Wire exact-date reminder targeting
-        shell: python
         run: |
+          python - <<'PY'
           from pathlib import Path
 
           path = Path("server/VolleyDraft.Api/Services/ZaloBotService.cs")
@@ -80,6 +80,7 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f"expected exactly one reminder target block, found {text.count(old)}")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
       - name: Commit production hookup
         run: |
           git config user.name github-actions[bot]
