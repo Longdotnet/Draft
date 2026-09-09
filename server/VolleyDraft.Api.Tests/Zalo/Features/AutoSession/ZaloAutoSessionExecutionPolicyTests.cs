@@ -18,6 +18,36 @@ public sealed class ZaloAutoSessionExecutionPolicyTests
     }
 
     [Fact]
+    public void EnsureExecutionPolicyCurrent_AllowsExplicitConfirmationWhenApprovalIsRequired()
+    {
+        var tracked = new ZaloTrackedGroupData
+        {
+            Id = "tracked-1",
+            AutoSessionEnabled = true,
+            RequireOrganizerApproval = true
+        };
+
+        ZaloAutoSessionActionExecutor.EnsureExecutionPolicyCurrent(
+            tracked,
+            requirePreAuthorizedPolicy: false);
+    }
+
+    [Fact]
+    public void EnsureExecutionPolicyCurrent_AllowsCurrentPreAuthorizedPolicy()
+    {
+        var tracked = new ZaloTrackedGroupData
+        {
+            Id = "tracked-1",
+            AutoSessionEnabled = true,
+            RequireOrganizerApproval = false
+        };
+
+        ZaloAutoSessionActionExecutor.EnsureExecutionPolicyCurrent(
+            tracked,
+            requirePreAuthorizedPolicy: true);
+    }
+
+    [Fact]
     public void EnsureExecutionPolicyCurrent_FailsClosedWhenTrackedGroupWasRemoved()
     {
         var exception = Assert.Throws<InvalidOperationException>(() =>
@@ -39,5 +69,23 @@ public sealed class ZaloAutoSessionExecutionPolicyTests
             ZaloAutoSessionActionExecutor.EnsureExecutionPolicyCurrent(tracked));
 
         Assert.Equal("auto_session_execution_policy_disabled", exception.Message);
+    }
+
+    [Fact]
+    public void EnsureExecutionPolicyCurrent_FailsClosedWhenPreAuthorizationWasRevoked()
+    {
+        var tracked = new ZaloTrackedGroupData
+        {
+            Id = "tracked-1",
+            AutoSessionEnabled = true,
+            RequireOrganizerApproval = true
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            ZaloAutoSessionActionExecutor.EnsureExecutionPolicyCurrent(
+                tracked,
+                requirePreAuthorizedPolicy: true));
+
+        Assert.Equal("auto_session_execution_policy_confirmation_required", exception.Message);
     }
 }
