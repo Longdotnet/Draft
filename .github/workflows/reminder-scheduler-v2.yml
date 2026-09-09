@@ -219,6 +219,8 @@ jobs:
               failure_advanced=1
             fi
 
+            # Baseline comparison alone is insufficient: a stale timestamp can differ from an
+            # unavailable baseline. Require every terminal result we certify to be from this queue request.
             attempt_is_fresh=0
             if [ "$current_attempt_epoch" -ge "$queue_requested_epoch" ] && [ "$current_attempt_epoch" -gt 0 ]; then
               attempt_is_fresh=1
