@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import * as ZaloRuntime from "zca-js";
 import type { SendGroupStickerRequest, ZaloCredentials } from "./contracts.js";
+import { wrapProviderStickerApi } from "./providerApiBoundary.js";
 import { stickerKeywordsForReaction } from "./stickerLogic.js";
+import { zaloProviderTrafficGovernor } from "./zaloProviderTraffic.js";
 
 type BridgeStickerResult = {
   sent: boolean;
@@ -46,18 +48,27 @@ function fingerprint(credentials: ZaloCredentials): string {
   return createHash("sha256").update(JSON.stringify(credentials)).digest("hex");
 }
 
+function governStickerApi(credentials: ZaloCredentials, api: MinimalStickerApi): MinimalStickerApi {
+  return wrapProviderStickerApi(api, (operation, action) =>
+    zaloProviderTrafficGovernor.runWithCredentials(credentials, action, operation));
+}
+
 async function getApi(credentials: ZaloCredentials): Promise<MinimalStickerApi> {
   const key = fingerprint(credentials);
   const cached = apiCache.get(key);
   if (cached && Date.now() - cached.lastUsed < 10 * 60_000) {
     cached.lastUsed = Date.now();
-    return cached.api;
+    return governStickerApi(credentials, cached.api);
   }
 
   const zalo = new Zalo({ logging: false, checkUpdate: false });
-  const api = await zalo.login(credentials);
+  const api = await zaloProviderTrafficGovernor.runWithCredentials(
+    credentials,
+    () => zalo.login(credentials),
+    "sdk.login",
+  );
   apiCache.set(key, { api, lastUsed: Date.now() });
-  return api;
+  return governStickerApi(credentials, api);
 }
 
 function stableIndex(seed: string, count: number): number {
@@ -101,6 +112,9 @@ async function sendGroupStickerCore(request: SendGroupStickerRequest): Promise<B
 
   const api = await getApi(request.credentials);
   const sticker = await findStickerForRequest(api, request);
+  // sendSticker itself is one governed attempt. It is never retried here; if Zalo
+  // accepted the side effect but the response was lost, caller idempotency still owns
+  // retry suppression rather than replaying the provider mutation inside this method.
   const result = await api.sendSticker(sticker, request.groupId, ThreadType.Group);
   const messageId = result && typeof result === "object" && "msgId" in result
     ? String((result as { msgId?: number | string }).msgId ?? "").trim() || null
