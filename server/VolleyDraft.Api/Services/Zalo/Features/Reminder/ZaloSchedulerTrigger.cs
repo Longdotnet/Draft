@@ -194,11 +194,17 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
 
         await EnsureAsync(cancellationToken);
         var failureAt = at.ToUniversalTime().ToString("O");
-        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+        var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastFailureAt" = {{failureAt}}
             WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
             """, cancellationToken);
+
+        // Failure diagnosis belongs to the same durable lease owner as LastFailureAt.
+        // A stale process that lost ownership must not overwrite the successor's diagnosis.
+        if (affected == 0)
+            return;
+
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "ZaloSchedulerFailureDiagnostics" ("Name", "FailureAt", "FailureCode")
             VALUES ({{LeaseName}}, {{failureAt}}, {{failureCode}})
