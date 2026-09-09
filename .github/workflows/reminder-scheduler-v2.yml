@@ -47,6 +47,9 @@ jobs:
             exit 1
           fi
 
+          # These variables are optional so the existing SCHEDULER_URL remains
+          # sufficient after deployment. Set them explicitly in Actions
+          # Variables when a service URL changes.
           backend_health_url="${BACKEND_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health}"
           scheduler_health_url="${SCHEDULER_HEALTH_URL:-${SCHEDULER_URL%/api/internal/scheduler/tick}/health/scheduler}"
           bridge_health_url="${ZALO_BRIDGE_HEALTH_URL:-https://draft-zalo-bridge.onrender.com/health}"
@@ -114,6 +117,7 @@ jobs:
             date -u -d "$value" +%s 2>/dev/null || printf '0'
           }
 
+          # Wake both free Render services in parallel before queueing work.
           wait_for_health "zalo-bridge" "$bridge_health_url" &
           bridge_health_pid=$!
           wait_for_health "draft-api" "$backend_health_url" &
@@ -194,6 +198,10 @@ jobs:
             exit 1
           fi
 
+          # HTTP 202 proves only that the trigger was accepted. Verify a fresh durable
+          # terminal success after this run's queue request. Baseline comparison alone
+          # is insufficient when the baseline endpoint was temporarily unavailable,
+          # because an older terminal timestamp would otherwise look "advanced" from empty.
           for attempt in $(seq 1 24); do
             health_http=$(read_scheduler_health /tmp/scheduler-health-current)
             health_state=$(jq -r '.status // "unknown"' /tmp/scheduler-health-current 2>/dev/null || printf 'unknown')
