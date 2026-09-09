@@ -12,28 +12,36 @@ export const GOVERNED_ZALO_READ_METHODS = new Set([
   "getFullAvatar",
 ]);
 
-type ProviderReadRunner = <T>(operation: string, action: () => Promise<T>) => Promise<T>;
+export const GOVERNED_ZALO_STICKER_METHODS = new Set([
+  "getStickers",
+  "getStickersDetail",
+  "sendSticker",
+]);
+
+type ProviderRunner = <T>(operation: string, action: () => Promise<T>) => Promise<T>;
 
 /**
- * Wrap the concrete zca-js API at the provider-call boundary rather than at an HTTP
- * route boundary. Pagination, batch enrichment, and fallback reads can fan one logical
- * bridge request out into many upstream calls; each of those calls must therefore be
- * independently paced/counted and be able to open the shared account cooldown.
+ * Wrap selected concrete zca-js methods at the provider-call boundary. Every selected
+ * invocation acquires the account traffic queue independently, so pagination, batch
+ * enrichment, semantic fallback, and the final sticker side effect cannot collapse into
+ * one misleading logical attempt.
  *
- * Non-read members (listener lifecycle, getOwnId, sendMessage, etc.) intentionally pass
- * through untouched because their current outer operations already own side-effect and
- * lifecycle serialization. This keeps the boundary incremental and avoids nested
- * governor deadlocks while moving the high-amplification read paths to actual-call
- * accounting.
+ * Callers deliberately choose the method set. Listener lifecycle and ordinary text send
+ * remain outside the read wrapper because their existing outer operation is already the
+ * exact side-effect/lifecycle boundary; nesting the same account queue would deadlock.
  */
-export function wrapProviderReadApi<T extends object>(api: T, run: ProviderReadRunner): T {
+export function wrapProviderMethods<T extends object>(
+  api: T,
+  methods: ReadonlySet<string>,
+  run: ProviderRunner,
+): T {
   const wrappers = new Map<PropertyKey, unknown>();
   return new Proxy(api, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
       if (
         typeof property !== "string" ||
-        !GOVERNED_ZALO_READ_METHODS.has(property) ||
+        !methods.has(property) ||
         typeof value !== "function"
       ) {
         return value;
@@ -50,4 +58,12 @@ export function wrapProviderReadApi<T extends object>(api: T, run: ProviderReadR
       return wrapped;
     },
   });
+}
+
+export function wrapProviderReadApi<T extends object>(api: T, run: ProviderRunner): T {
+  return wrapProviderMethods(api, GOVERNED_ZALO_READ_METHODS, run);
+}
+
+export function wrapProviderStickerApi<T extends object>(api: T, run: ProviderRunner): T {
+  return wrapProviderMethods(api, GOVERNED_ZALO_STICKER_METHODS, run);
 }
