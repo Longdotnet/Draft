@@ -41,6 +41,8 @@ internal sealed record ZaloAutoSessionPollReconciliationV4(
 /// </summary>
 internal static class ZaloAutoSessionPollReconcilerV4
 {
+    private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+
     public static ZaloAutoSessionPollReconciliationV4 Reconcile(
         ZaloAutoSessionConversationDraft sourceSnapshot,
         ZaloAutoSessionConversationDraft durableDraft,
@@ -127,9 +129,11 @@ internal static class ZaloAutoSessionPollReconcilerV4
             // Explicit poll time is authoritative and invalidates an older organizer correction.
             // An approved default refresh is policy drift instead: it may update an unmodified
             // draft automatically, but it must never erase an organizer-owned time correction.
+            // Preserve only the organizer-owned clock time. The calendar date remains poll-owned,
+            // so an identity/date edit must never carry a stale date forward with that correction.
             var reconciledStart = sourceStartChanged
                 ? currentStartIsApprovedDefault && organizerChangedStart
-                    ? durable.StartTime
+                    ? PreserveOrganizerClockOnCurrentDate(current.StartTime, durable.StartTime)
                     : current.StartTime
                 : durable.StartTime;
 
@@ -210,6 +214,17 @@ internal static class ZaloAutoSessionPollReconcilerV4
                 reconciledTeamSize),
             changes,
             requiresConfirmation);
+    }
+
+    private static DateTimeOffset PreserveOrganizerClockOnCurrentDate(
+        DateTimeOffset currentStart,
+        DateTimeOffset organizerStart)
+    {
+        var currentLocal = currentStart.ToOffset(VietnamOffset);
+        var organizerLocal = organizerStart.ToOffset(VietnamOffset);
+        return new DateTimeOffset(
+            currentLocal.Date.Add(organizerLocal.TimeOfDay),
+            VietnamOffset);
     }
 
     private static string DescribeIdentity(ZaloAutoSessionConversationDraftItem item) =>
