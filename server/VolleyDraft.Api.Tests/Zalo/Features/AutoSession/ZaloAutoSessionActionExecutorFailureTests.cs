@@ -40,6 +40,7 @@ public sealed class ZaloAutoSessionActionExecutorFailureTests
 
         await ZaloAutoSessionActionExecutor.PersistFailureAfterRollbackAsync(
             transaction,
+            db,
             store,
             proposal,
             new InvalidOperationException("session creation failed"));
@@ -49,6 +50,63 @@ public sealed class ZaloAutoSessionActionExecutorFailureTests
         Assert.NotNull(persisted);
         Assert.Equal(ZaloPollSessionProposalStatus.Failed, persisted!.Status);
         Assert.Equal("session creation failed", persisted.LastError);
+    }
+
+    [Fact]
+    public async Task PersistFailureAfterRollback_DoesNotDowngradeAlreadyCreatedProposal()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloAutoSessionStore(db);
+        await store.EnsureAsync();
+
+        var winner = new ZaloPollSessionProposalData
+        {
+            Id = "proposal-race",
+            TrackedGroupId = "tracked-race",
+            PollId = "poll-race",
+            PollQuestion = "Vote lịch",
+            PollCreatorId = "leader-1",
+            PollStructureHash = "hash-race",
+            CandidatesJson = "[]",
+            ClassifierReason = "test",
+            Status = ZaloPollSessionProposalStatus.Created,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        await store.UpsertProposalAsync(winner);
+
+        var loser = new ZaloPollSessionProposalData
+        {
+            Id = winner.Id,
+            TrackedGroupId = winner.TrackedGroupId,
+            PollId = winner.PollId,
+            PollQuestion = winner.PollQuestion,
+            PollCreatorId = winner.PollCreatorId,
+            PollStructureHash = winner.PollStructureHash,
+            CandidatesJson = winner.CandidatesJson,
+            ClassifierReason = winner.ClassifierReason,
+            Status = ZaloPollSessionProposalStatus.Approved,
+            CreatedAt = winner.CreatedAt,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var transaction = await db.Database.BeginTransactionAsync();
+
+        await ZaloAutoSessionActionExecutor.PersistFailureAfterRollbackAsync(
+            transaction,
+            db,
+            store,
+            loser,
+            new InvalidOperationException("losing execution collided"));
+
+        var persisted = await store.GetProposalAsync(winner.TrackedGroupId, winner.PollId);
+        Assert.NotNull(persisted);
+        Assert.Equal(ZaloPollSessionProposalStatus.Created, persisted!.Status);
+        Assert.Null(persisted.LastError);
     }
 
     [Fact]
