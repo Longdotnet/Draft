@@ -409,14 +409,11 @@ public sealed partial class ZaloOverbookService
             desiredTags = Math.Min(desiredTags, settings.MaxApproverTags);
             if (eligible.Count == 0 || desiredTags <= 0)
             {
-                await reminderStore.MarkHandledAsync(
+                logger.LogWarning(
+                    "Leader-aware draft reminder postponed because no eligible organizer can receive it Session={SessionId} EligibleCount={EligibleCount} DesiredTags={DesiredTags}",
                     session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                    eligible.Count,
+                    desiredTags);
                 continue;
             }
 
@@ -475,14 +472,10 @@ public sealed partial class ZaloOverbookService
 
             if (recipients.Count == 0)
             {
-                await reminderStore.MarkHandledAsync(
+                logger.LogWarning(
+                    "Leader-aware draft reminder postponed because no organizer conversation could be reserved Session={SessionId} EligibleCount={EligibleCount}",
                     session.Id,
-                    bucket.Key,
-                    readiness.EffectiveSlotCount,
-                    activeSlotRisks,
-                    observationFingerprint,
-                    null,
-                    cancellationToken);
+                    eligible.Count);
                 continue;
             }
 
