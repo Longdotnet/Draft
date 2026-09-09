@@ -16,6 +16,7 @@ import type {
   StartListenerRequest,
   ZaloCredentials,
 } from "./contracts.js";
+import { quiesceListenersAndDrain } from "./gracefulShutdown.js";
 import { KeyedSerialExecutor } from "./keyedSerialExecutor.js";
 import { ScopedOutboundIdempotency } from "./outboundIdempotency.js";
 import { isStickerReaction } from "./stickerLogic.js";
@@ -77,10 +78,6 @@ app.get("/health", (_request, response) => {
   });
 });
 
-// Mark every response that actually entered the bridge process. If the API receives
-// a 429/5xx without this marker, the response came from a proxy/host/front door before
-// Express reached this middleware. Keep a request id so production screenshots can be
-// correlated with bridge logs without exposing credentials or provider response bodies.
 app.use("/v1", (request, response, next) => {
   const requestId = request.header("x-request-id")?.trim() || randomUUID();
   response.setHeader("x-volley-bridge-response", "1");
@@ -97,8 +94,6 @@ app.use("/v1", (request, response, next) => {
 });
 
 app.get("/v1/provider-traffic", (_request, response) => {
-  // Internal-only diagnostics. This endpoint is intentionally read-only and never calls
-  // Zalo, so incident inspection cannot itself increase provider traffic.
   response.json(zaloProviderTrafficGovernor.getDiagnostics());
 });
 
@@ -240,9 +235,6 @@ app.put("/v1/listeners/:accountId", async (request, response) => {
   const accountId = request.params.accountId;
   const credentials = body.credentials;
   const result = await listenerLifecycle.run(accountId, async () => {
-    // Listener identity is account-scoped, while provider traffic is credential-scoped.
-    // Serialize the lifecycle first so concurrent refreshes with different credential
-    // generations cannot both observe "no current listener" and start duplicate sockets.
     zaloProviderTrafficGovernor.bindAccount(accountId, credentials);
     return zaloProviderTrafficGovernor.runWithCredentials(
       credentials,
@@ -260,9 +252,6 @@ app.put("/v1/listeners/:accountId", async (request, response) => {
 });
 
 app.delete("/v1/listeners/:accountId", async (request, response) => {
-  // Stop participates in the same account lifecycle queue. Without this, a cold-start
-  // Ensure call could finish after DELETE and resurrect a listener that the API already
-  // decided should be stopped.
   response.json(await listenerLifecycle.run(
     request.params.accountId,
     async () => stopListener(request.params.accountId),
@@ -364,6 +353,10 @@ function closeHttpServer(): Promise<void> {
   });
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown shutdown failure";
+}
+
 async function shutdown(signal: string): Promise<void> {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
@@ -373,30 +366,34 @@ async function shutdown(signal: string): Promise<void> {
       webhookDelivery: getWebhookDeliveryStats(),
     });
 
-    // Reject new bridge work first, then wait for any in-flight listener lifecycle request
-    // to finish before stopping sockets. This prevents a concurrent listener PUT from
-    // resurrecting a socket after shutdown already decided to quiesce ingress.
     stopApiKeepAlive();
     await closeHttpServer();
 
     const listeners = getListenerStatuses();
-    for (const listener of listeners) {
-      await listenerLifecycle.run(listener.accountId, async () => stopListener(listener.accountId));
-    }
-
-    // Board events use a short debounce. Give callbacks that were already accepted before
-    // listener.stop() enough time to enter the delivery queue before taking the drain
-    // snapshot; no provider request is made by this wait.
-    if (listeners.length > 0) {
-      await new Promise<void>((resolve) => setTimeout(resolve, boardEventQuiesceMs));
-    }
-
-    const drained = await drainWebhookDeliveries(shutdownDrainMs);
-    console.info("[Zalo bridge] graceful shutdown completed", {
-      drained,
+    const result = await quiesceListenersAndDrain({
+      listeners,
+      runListenerLifecycle: (accountId, action) => listenerLifecycle.run(accountId, action),
+      stopListener,
+      quiesce: () => new Promise<void>((resolve) => setTimeout(resolve, boardEventQuiesceMs)),
+      drainWebhookDeliveries,
       drainBudgetMs: shutdownDrainMs,
+    });
+
+    console.info("[Zalo bridge] graceful shutdown completed", {
+      drained: result.drained,
+      drainBudgetMs: shutdownDrainMs,
+      listenerStopFailures: result.listenerStopFailures.map((failure) => ({
+        accountId: failure.accountId,
+        error: errorMessage(failure.error),
+      })),
+      quiesceError: result.quiesceError ? errorMessage(result.quiesceError) : null,
+      drainError: result.drainError ? errorMessage(result.drainError) : null,
       webhookDelivery: getWebhookDeliveryStats(),
     });
+
+    if (result.listenerStopFailures.length > 0 || result.quiesceError || result.drainError) {
+      throw new Error("Graceful shutdown completed with cleanup failures after webhook drain attempt");
+    }
   })();
   return shutdownPromise;
 }
@@ -407,7 +404,7 @@ function handleShutdownSignal(signal: string): void {
     (error) => {
       console.error("[Zalo bridge] graceful shutdown failed", {
         signal,
-        error: error instanceof Error ? error.message : "unknown shutdown failure",
+        error: errorMessage(error),
       });
       process.exit(1);
     },
