@@ -219,12 +219,16 @@ internal sealed class ZaloAutoSessionActionExecutor(
         });
     }
 
-    internal static void EnsureExecutionPolicyCurrent(ZaloTrackedGroupData? currentTracked)
+    internal static void EnsureExecutionPolicyCurrent(
+        ZaloTrackedGroupData? currentTracked,
+        bool requirePreAuthorizedPolicy = false)
     {
         if (currentTracked is null)
             throw new InvalidOperationException("auto_session_execution_policy_missing");
         if (!currentTracked.AutoSessionEnabled)
             throw new InvalidOperationException("auto_session_execution_policy_disabled");
+        if (requirePreAuthorizedPolicy && currentTracked.RequireOrganizerApproval)
+            throw new InvalidOperationException("auto_session_execution_policy_confirmation_required");
     }
 
     internal static string BuildPostCreateStatusMessage(
