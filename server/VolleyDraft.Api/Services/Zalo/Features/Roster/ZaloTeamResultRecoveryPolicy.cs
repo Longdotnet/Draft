@@ -78,7 +78,7 @@ public static class ZaloTeamResultRecoveryPolicy
                 BuildMissingProfilesMessage(readiness, draftCommand, imageCommand),
 
             ZaloDraftReadinessState.NoRoster =>
-                $"Danh sách hiện chưa có người chơi nào. Gõ `{missingCommand}` để kiểm tra vote đúng trận. " +
+                $"Danh sách hiện chưa có người chơi nào. Gõ `{missingCommand}` để kiểm tra và cập nhật lại vote đúng trận nếu cần. " +
                 "Nếu vẫn muốn gom người, trưởng/phó nói `kiếm thêm`; NPC không tự đoán rằng trận bị huỷ hay tự chia từ danh sách rỗng. " +
                 $"Khi đã có danh sách thật, gõ lại `{draftCommand}` để NPC kiểm điều kiện trước khi chia; chỉ sau khi chia xong mới dùng `{imageCommand}`.",
 
