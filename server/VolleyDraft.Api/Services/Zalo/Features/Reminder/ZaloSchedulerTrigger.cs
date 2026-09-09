@@ -10,6 +10,48 @@ internal enum ZaloSchedulerWakeReason
     Watchdog
 }
 
+internal enum ZaloSchedulerStage
+{
+    Listener,
+    Reminder,
+    Rescue,
+    Lifecycle,
+    Finalize
+}
+
+internal static class ZaloSchedulerFailureCodes
+{
+    internal static string BuildDegraded(
+        int reminderFailedCount,
+        int rescueFailedCount,
+        int lifecycleFailedCount)
+    {
+        var stages = new List<string>(3);
+        if (reminderFailedCount > 0)
+            stages.Add("reminder");
+        if (rescueFailedCount > 0)
+            stages.Add("rescue");
+        if (lifecycleFailedCount > 0)
+            stages.Add("lifecycle");
+
+        return stages.Count == 0
+            ? "degraded:unknown"
+            : $"degraded:{string.Join('+', stages)}";
+    }
+
+    internal static string ForException(ZaloSchedulerStage stage) =>
+        $"exception:{stage.ToString().ToLowerInvariant()}";
+
+    internal static bool IsValid(string failureCode)
+    {
+        if (string.IsNullOrWhiteSpace(failureCode) || failureCode.Length > 96)
+            return false;
+
+        return failureCode.All(ch =>
+            char.IsAsciiLetterLower(ch) || ch is ':' or '+');
+    }
+}
+
 public sealed class ZaloSchedulerTrigger
 {
     private readonly Channel<byte> channel = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
@@ -61,7 +103,8 @@ internal sealed record ZaloSchedulerLeaseSnapshot(
     DateTimeOffset LeaseUntil,
     DateTimeOffset? LastAttemptAt,
     DateTimeOffset? LastSuccessAt,
-    DateTimeOffset? LastFailureAt);
+    DateTimeOffset? LastFailureAt,
+    string? LastFailureCode);
 
 internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
 {
@@ -78,6 +121,12 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
                 "LastAttemptAt" TEXT NULL,
                 "LastSuccessAt" TEXT NULL,
                 "LastFailureAt" TEXT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS "ZaloSchedulerFailureDiagnostics" (
+                "Name" TEXT PRIMARY KEY,
+                "FailureAt" TEXT NOT NULL,
+                "FailureCode" TEXT NOT NULL
             );
             """,
             cancellationToken);
@@ -137,13 +186,25 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
     internal async Task MarkFailureAsync(
         string ownerId,
         DateTimeOffset at,
+        string failureCode,
         CancellationToken cancellationToken = default)
     {
+        if (!ZaloSchedulerFailureCodes.IsValid(failureCode))
+            throw new ArgumentException("Scheduler failure code must be a bounded deterministic code.", nameof(failureCode));
+
         await EnsureAsync(cancellationToken);
+        var failureAt = at.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
-            SET "LastFailureAt" = {{at.ToUniversalTime().ToString("O")}}
+            SET "LastFailureAt" = {{failureAt}}
             WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
+            """, cancellationToken);
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "ZaloSchedulerFailureDiagnostics" ("Name", "FailureAt", "FailureCode")
+            VALUES ({{LeaseName}}, {{failureAt}}, {{failureCode}})
+            ON CONFLICT ("Name") DO UPDATE SET
+                "FailureAt" = excluded."FailureAt",
+                "FailureCode" = excluded."FailureCode";
             """, cancellationToken);
     }
 
@@ -167,9 +228,15 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         await EnsureAsync(cancellationToken);
         var row = await db.Database.SqlQueryRaw<ZaloSchedulerLeaseRow>(
                 """
-                SELECT "OwnerId", "LeaseUntil", "LastAttemptAt", "LastSuccessAt", "LastFailureAt"
-                FROM "ZaloSchedulerLeases"
-                WHERE "Name" = 'zalo-scheduler'
+                SELECT lease."OwnerId", lease."LeaseUntil", lease."LastAttemptAt", lease."LastSuccessAt", lease."LastFailureAt",
+                       CASE
+                           WHEN diagnostic."FailureAt" = lease."LastFailureAt" THEN diagnostic."FailureCode"
+                           ELSE NULL
+                       END AS "LastFailureCode"
+                FROM "ZaloSchedulerLeases" AS lease
+                LEFT JOIN "ZaloSchedulerFailureDiagnostics" AS diagnostic
+                  ON diagnostic."Name" = lease."Name"
+                WHERE lease."Name" = 'zalo-scheduler'
                 """)
             .SingleOrDefaultAsync(cancellationToken);
 
@@ -181,7 +248,8 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
             DateTimeOffset.Parse(row.LeaseUntil),
             Parse(row.LastAttemptAt),
             Parse(row.LastSuccessAt),
-            Parse(row.LastFailureAt));
+            Parse(row.LastFailureAt),
+            row.LastFailureCode);
     }
 
     private static DateTimeOffset? Parse(string? value) =>
@@ -194,6 +262,7 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         public string? LastAttemptAt { get; init; }
         public string? LastSuccessAt { get; init; }
         public string? LastFailureAt { get; init; }
+        public string? LastFailureCode { get; init; }
     }
 }
 
@@ -349,6 +418,7 @@ public sealed class ZaloSchedulerWorker(
         }
 
         await lease.MarkAttemptAsync(instanceId, acquiredAt, cancellationToken);
+        var stage = ZaloSchedulerStage.Listener;
 
         try
         {
@@ -363,6 +433,7 @@ public sealed class ZaloSchedulerWorker(
                 leaseDuration,
                 cancellationToken);
 
+            stage = ZaloSchedulerStage.Reminder;
             var result = await RunWithLeaseHeartbeatAsync(
                 stageToken => scope.ServiceProvider.GetRequiredService<ZaloReminderService>()
                     .SendDueRemindersAsync(stageToken),
@@ -376,6 +447,7 @@ public sealed class ZaloSchedulerWorker(
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
+            stage = ZaloSchedulerStage.Rescue;
             var rescueService = new ZaloOpenSlotRescueService(
                 db,
                 scope.ServiceProvider.GetRequiredService<ZaloBridgeClient>(),
@@ -390,6 +462,7 @@ public sealed class ZaloSchedulerWorker(
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
+            stage = ZaloSchedulerStage.Lifecycle;
             // Match creation commits before V5 lifecycle handoff. A transient failure in that
             // post-commit window must survive request loss/restart and be retried from durable
             // Created proposal + link state rather than depending on the original webhook.
@@ -400,6 +473,7 @@ public sealed class ZaloSchedulerWorker(
                 leaseDuration,
                 cancellationToken);
 
+            stage = ZaloSchedulerStage.Finalize;
             // Do not record or announce success if ownership changed in the narrow window after the
             // last stage. A successor is then responsible for the next authoritative cycle.
             if (!await RenewLeaseAsync(cancellationToken))
@@ -415,9 +489,14 @@ public sealed class ZaloSchedulerWorker(
                 // A cycle that executed to completion but failed durable/user-facing work is not a
                 // successful recovery signal. Keep LastSuccessAt unchanged so /health/scheduler and
                 // the external verifier cannot certify a Zalo delivery/reconciliation outage as healthy.
-                await lease.MarkFailureAsync(instanceId, completedAt, cancellationToken);
+                var failureCode = ZaloSchedulerFailureCodes.BuildDegraded(
+                    result.FailedCount,
+                    rescue.FailedCount,
+                    handoff.FailedCount);
+                await lease.MarkFailureAsync(instanceId, completedAt, failureCode, cancellationToken);
                 logger.LogWarning(
-                    "Zalo scheduler cycle completed degraded ReminderFailed={ReminderFailed} RescueFailed={RescueFailed} LifecycleFailed={LifecycleFailed}",
+                    "Zalo scheduler cycle completed degraded FailureCode={FailureCode} ReminderFailed={ReminderFailed} RescueFailed={RescueFailed} LifecycleFailed={LifecycleFailed}",
+                    failureCode,
                     result.FailedCount,
                     rescue.FailedCount,
                     handoff.FailedCount);
@@ -449,9 +528,10 @@ public sealed class ZaloSchedulerWorker(
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             var failedAt = DateTimeOffset.UtcNow;
-            await lease.MarkFailureAsync(instanceId, failedAt, CancellationToken.None);
+            var failureCode = ZaloSchedulerFailureCodes.ForException(stage);
+            await lease.MarkFailureAsync(instanceId, failedAt, failureCode, CancellationToken.None);
             await lease.ReleaseAsync(instanceId, failedAt, CancellationToken.None);
-            logger.LogError(exception, "Triggered Zalo scheduler cycle failed");
+            logger.LogError(exception, "Triggered Zalo scheduler cycle failed FailureCode={FailureCode}", failureCode);
         }
 
         async Task<bool> RenewLeaseAsync(CancellationToken renewCancellationToken)
