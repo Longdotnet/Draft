@@ -19,11 +19,13 @@ internal sealed record ZaloSchedulerHealthAssessment(
     DateTimeOffset? LeaseUntil,
     DateTimeOffset? LastAttemptAt,
     DateTimeOffset? LastSuccessAt,
-    DateTimeOffset? LastFailureAt);
+    DateTimeOffset? LastFailureAt,
+    string? FailureCode);
 
 internal static class ZaloSchedulerHealth
 {
     private const double MaximumConfiguredStaleMinutes = 24 * 60;
+    internal const string AbandonedLeaseFailureCode = "abandoned:leaseexpired";
 
     internal static TimeSpan ResolveStaleAfter(IConfiguration configuration)
     {
@@ -51,6 +53,7 @@ internal static class ZaloSchedulerHealth
                 null,
                 null,
                 null,
+                null,
                 null);
         }
 
@@ -63,11 +66,11 @@ internal static class ZaloSchedulerHealth
             // distributed lease is still owned. Once that lease expires, the process
             // died or lost ownership before recording success/failure. Never fall back
             // to an older success and report this abandoned cycle as healthy.
+            var running = snapshot.LeaseUntil > now;
             return Create(
-                snapshot.LeaseUntil > now
-                    ? ZaloSchedulerHealthState.Running
-                    : ZaloSchedulerHealthState.Failed,
-                snapshot.LeaseUntil > now);
+                running ? ZaloSchedulerHealthState.Running : ZaloSchedulerHealthState.Failed,
+                running,
+                running ? null : AbandonedLeaseFailureCode);
         }
 
         if (snapshot.LastSuccessAt is null)
@@ -76,18 +79,22 @@ internal static class ZaloSchedulerHealth
                 snapshot.LastFailureAt is null
                     ? ZaloSchedulerHealthState.NeverSucceeded
                     : ZaloSchedulerHealthState.Failed,
-                false);
+                false,
+                snapshot.LastFailureAt is null ? null : snapshot.LastFailureCode);
         }
 
         if (snapshot.LastFailureAt > snapshot.LastSuccessAt)
-            return Create(ZaloSchedulerHealthState.Failed, false);
+            return Create(ZaloSchedulerHealthState.Failed, false, snapshot.LastFailureCode);
 
         if (now - snapshot.LastSuccessAt.Value > staleAfter)
-            return Create(ZaloSchedulerHealthState.Stale, false);
+            return Create(ZaloSchedulerHealthState.Stale, false, null);
 
-        return Create(ZaloSchedulerHealthState.Healthy, true);
+        return Create(ZaloSchedulerHealthState.Healthy, true, null);
 
-        ZaloSchedulerHealthAssessment Create(ZaloSchedulerHealthState state, bool isHealthy) =>
+        ZaloSchedulerHealthAssessment Create(
+            ZaloSchedulerHealthState state,
+            bool isHealthy,
+            string? failureCode) =>
             new(
                 state,
                 isHealthy,
@@ -96,7 +103,8 @@ internal static class ZaloSchedulerHealth
                 snapshot.LeaseUntil,
                 snapshot.LastAttemptAt,
                 snapshot.LastSuccessAt,
-                snapshot.LastFailureAt);
+                snapshot.LastFailureAt,
+                failureCode);
     }
 
     private static DateTimeOffset? Max(DateTimeOffset? left, DateTimeOffset? right)
@@ -135,7 +143,8 @@ public static class ZaloSchedulerHealthEndpoint
                         leaseUntil = assessment.LeaseUntil,
                         lastAttemptAt = assessment.LastAttemptAt,
                         lastSuccessAt = assessment.LastSuccessAt,
-                        lastFailureAt = assessment.LastFailureAt
+                        lastFailureAt = assessment.LastFailureAt,
+                        failureCode = assessment.FailureCode
                     },
                     statusCode: assessment.IsHealthy
                         ? StatusCodes.Status200OK

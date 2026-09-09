@@ -40,52 +40,61 @@ public sealed class ZaloSchedulerHealthTests
 
         Assert.Equal(ZaloSchedulerHealthState.NeverSucceeded, health.State);
         Assert.False(health.IsHealthy);
+        Assert.Null(health.FailureCode);
     }
 
     [Fact]
-    public void Evaluate_reports_recent_success_as_healthy()
+    public void Evaluate_reports_recent_success_as_healthy_without_leaking_an_old_failure_code()
     {
         var now = new DateTimeOffset(2026, 9, 8, 2, 0, 0, TimeSpan.Zero);
         var snapshot = Snapshot(
             leaseUntil: now.AddMinutes(10),
             lastAttemptAt: now.AddMinutes(-10),
-            lastSuccessAt: now.AddMinutes(-9));
+            lastSuccessAt: now.AddMinutes(-9),
+            lastFailureAt: now.AddMinutes(-20),
+            lastFailureCode: "degraded:reminder");
 
         var health = ZaloSchedulerHealth.Evaluate(snapshot, now, TimeSpan.FromMinutes(45));
 
         Assert.Equal(ZaloSchedulerHealthState.Healthy, health.State);
         Assert.True(health.IsHealthy);
+        Assert.Null(health.FailureCode);
     }
 
     [Fact]
-    public void Evaluate_reports_newer_failure_instead_of_hiding_it_behind_old_success()
+    public void Evaluate_reports_newer_failure_with_grounded_durable_code()
     {
         var now = new DateTimeOffset(2026, 9, 8, 2, 0, 0, TimeSpan.Zero);
         var snapshot = Snapshot(
             leaseUntil: now.AddMinutes(-1),
             lastAttemptAt: now.AddMinutes(-6),
             lastSuccessAt: now.AddMinutes(-20),
-            lastFailureAt: now.AddMinutes(-5));
+            lastFailureAt: now.AddMinutes(-5),
+            lastFailureCode: "degraded:rescue+lifecycle");
 
         var health = ZaloSchedulerHealth.Evaluate(snapshot, now, TimeSpan.FromMinutes(45));
 
         Assert.Equal(ZaloSchedulerHealthState.Failed, health.State);
         Assert.False(health.IsHealthy);
+        Assert.Equal("degraded:rescue+lifecycle", health.FailureCode);
     }
 
     [Fact]
-    public void Evaluate_reports_expired_unterminated_attempt_instead_of_falling_back_to_recent_success()
+    public void Evaluate_reports_expired_unterminated_attempt_as_abandoned_instead_of_reusing_old_failure_code()
     {
         var now = new DateTimeOffset(2026, 9, 8, 2, 0, 0, TimeSpan.Zero);
         var snapshot = Snapshot(
             leaseUntil: now.AddSeconds(-1),
             lastAttemptAt: now.AddMinutes(-1),
-            lastSuccessAt: now.AddMinutes(-10));
+            lastSuccessAt: now.AddMinutes(-10),
+            lastFailureAt: now.AddMinutes(-20),
+            lastFailureCode: "degraded:reminder");
 
         var health = ZaloSchedulerHealth.Evaluate(snapshot, now, TimeSpan.FromMinutes(45));
 
         Assert.Equal(ZaloSchedulerHealthState.Failed, health.State);
         Assert.False(health.IsHealthy);
+        Assert.Equal(ZaloSchedulerHealth.AbandonedLeaseFailureCode, health.FailureCode);
     }
 
     [Fact]
@@ -101,6 +110,7 @@ public sealed class ZaloSchedulerHealthTests
 
         Assert.Equal(ZaloSchedulerHealthState.Stale, health.State);
         Assert.False(health.IsHealthy);
+        Assert.Null(health.FailureCode);
     }
 
     [Fact]
@@ -111,12 +121,14 @@ public sealed class ZaloSchedulerHealthTests
             leaseUntil: now.AddMinutes(10),
             lastAttemptAt: now.AddMinutes(-1),
             lastSuccessAt: now.AddHours(-2),
-            lastFailureAt: now.AddMinutes(-20));
+            lastFailureAt: now.AddMinutes(-20),
+            lastFailureCode: "exception:reminder");
 
         var health = ZaloSchedulerHealth.Evaluate(snapshot, now, TimeSpan.FromMinutes(45));
 
         Assert.Equal(ZaloSchedulerHealthState.Running, health.State);
         Assert.True(health.IsHealthy);
+        Assert.Null(health.FailureCode);
     }
 
     [Fact]
@@ -133,12 +145,14 @@ public sealed class ZaloSchedulerHealthTests
 
         Assert.Equal(ZaloSchedulerHealthState.Failed, health.State);
         Assert.False(health.IsHealthy);
+        Assert.Equal(ZaloSchedulerHealth.AbandonedLeaseFailureCode, health.FailureCode);
     }
 
     private static ZaloSchedulerLeaseSnapshot Snapshot(
         DateTimeOffset leaseUntil,
         DateTimeOffset? lastAttemptAt = null,
         DateTimeOffset? lastSuccessAt = null,
-        DateTimeOffset? lastFailureAt = null) =>
-        new("instance-a", leaseUntil, lastAttemptAt, lastSuccessAt, lastFailureAt);
+        DateTimeOffset? lastFailureAt = null,
+        string? lastFailureCode = null) =>
+        new("instance-a", leaseUntil, lastAttemptAt, lastSuccessAt, lastFailureAt, lastFailureCode);
 }
