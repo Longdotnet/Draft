@@ -112,6 +112,14 @@ internal static class StatefulFuzzRunner
     }
 }
 
+internal sealed record StatefulFuzzMinimizationResult<TAction>(
+    StatefulFuzzCase<TAction> Scenario,
+    int ReplayCount,
+    int OriginalActionCount)
+{
+    public int MinimizedActionCount => Scenario.Actions.Count;
+}
+
 internal static class StatefulFuzzMinimizer
 {
     public static async ValueTask<StatefulFuzzCase<TAction>> MinimizeAsync<TState, TAction>(
@@ -120,35 +128,103 @@ internal static class StatefulFuzzMinimizer
         string failureFingerprint,
         CancellationToken cancellationToken = default)
     {
+        var result = await MinimizeWithReportAsync(
+            failingScenario,
+            target,
+            failureFingerprint,
+            shrinkAction: null,
+            cancellationToken);
+        return result.Scenario;
+    }
+
+    public static async ValueTask<StatefulFuzzMinimizationResult<TAction>> MinimizeWithReportAsync<TState, TAction>(
+        StatefulFuzzCase<TAction> failingScenario,
+        IStatefulFuzzTarget<TState, TAction> target,
+        string failureFingerprint,
+        Func<TAction, IEnumerable<TAction>>? shrinkAction = null,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(failureFingerprint);
         var actions = failingScenario.Actions.ToList();
+        var originalActionCount = actions.Count;
+        var replayCount = 0;
 
-        while (actions.Count > 0)
+        async ValueTask<bool> PreservesFailureAsync(IReadOnlyList<TAction> candidateActions)
         {
+            var candidate = failingScenario with { Actions = candidateActions.ToArray() };
+            var result = await StatefulFuzzRunner.RunAsync(candidate, target, cancellationToken);
+            replayCount += 1;
+            return string.Equals(
+                result.FailureFingerprint,
+                failureFingerprint,
+                StringComparison.Ordinal);
+        }
+
+        // Delta-debug contiguous chunks first. Stateful failures commonly contain long stretches
+        // of setup/noise, so removing blocks before individual actions substantially reduces replay cost.
+        var granularity = 2;
+        while (actions.Count >= 2)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunkSize = (actions.Count + granularity - 1) / granularity;
             var reduced = false;
-            for (var index = 0; index < actions.Count; index += 1)
+
+            for (var start = 0; start < actions.Count; start += chunkSize)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                var end = Math.Min(start + chunkSize, actions.Count);
                 var candidateActions = actions
-                    .Where((_, actionIndex) => actionIndex != index)
+                    .Take(start)
+                    .Concat(actions.Skip(end))
                     .ToArray();
-                var candidate = failingScenario with { Actions = candidateActions };
-                var result = await StatefulFuzzRunner.RunAsync(candidate, target, cancellationToken);
-                if (!string.Equals(
-                        result.FailureFingerprint,
-                        failureFingerprint,
-                        StringComparison.Ordinal))
+
+                if (!await PreservesFailureAsync(candidateActions))
                     continue;
 
                 actions = candidateActions.ToList();
+                granularity = Math.Max(2, granularity - 1);
                 reduced = true;
                 break;
             }
 
-            if (!reduced) break;
+            if (reduced)
+                continue;
+
+            if (granularity >= actions.Count)
+                break;
+
+            granularity = Math.Min(actions.Count, granularity * 2);
         }
 
-        return failingScenario with { Actions = actions.ToArray() };
+        // Once sequence shape is minimal, optionally shrink action payloads while preserving the
+        // exact fingerprint. Targets can reduce IDs, counts, timestamps or text without teaching
+        // the generic minimizer domain-specific semantics.
+        if (shrinkAction is not null)
+        {
+            for (var index = 0; index < actions.Count; index += 1)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var current = actions[index];
+
+                foreach (var variant in shrinkAction(current))
+                {
+                    if (EqualityComparer<TAction>.Default.Equals(current, variant))
+                        continue;
+
+                    var candidateActions = actions.ToArray();
+                    candidateActions[index] = variant;
+                    if (!await PreservesFailureAsync(candidateActions))
+                        continue;
+
+                    actions[index] = variant;
+                    current = variant;
+                }
+            }
+        }
+
+        return new StatefulFuzzMinimizationResult<TAction>(
+            failingScenario with { Actions = actions.ToArray() },
+            replayCount,
+            originalActionCount);
     }
 }
 
