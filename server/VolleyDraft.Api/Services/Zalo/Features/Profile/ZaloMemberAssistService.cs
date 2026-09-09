@@ -201,13 +201,13 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             currentLifecycle.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection or SessionStatus.Finished) ||
             (currentLifecycle.StartTime is { } authoritativeStart && authoritativeStart <= now))
         {
-            var who = FriendlyName(owner.DisplayName);
+            var memberName = FriendlyName(owner.DisplayName);
             var reason = currentLifecycle?.Status == SessionStatus.Drafting
                 ? $"Draft {session.Name} vừa bắt đầu rồi"
                 : $"Trạng thái {session.Name} vừa đổi rồi";
             return new ZaloMemberAssistReply(
                 ZaloMemberAssistKind.PassSlotHelp,
-                $"{who} ơi, {reason} nên tui không mở pass slot mới từ tin cũ để khỏi làm lệch roster nha.",
+                $"{memberName} ơi, {reason} nên tui không mở pass slot mới từ tin cũ để khỏi làm lệch roster nha.",
                 session.Id);
         }
 
