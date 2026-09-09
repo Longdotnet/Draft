@@ -17,7 +17,7 @@ export type GracefulShutdownResult = {
 type GracefulShutdownOptions = {
   listeners: readonly ShutdownListener[];
   runListenerLifecycle: (accountId: string, action: () => Promise<unknown>) => Promise<unknown>;
-  stopListener: (accountId: string) => Promise<unknown>;
+  stopListener: (accountId: string) => unknown | Promise<unknown>;
   quiesce: () => Promise<void>;
   drainWebhookDeliveries: (maxWaitMs: number) => Promise<boolean>;
   drainBudgetMs: number;
