@@ -7,6 +7,7 @@ import {
   boardEventDebounceKey,
   InboundMessageDeliveryGate,
 } from "./inboundEventReliability.js";
+import { prepareListenerReplacement } from "./listenerReplacement.js";
 import type {
   BridgeBoardPage,
   BridgeGroup,
@@ -370,7 +371,6 @@ export async function startListener(request: StartListenerRequest) {
     return { accountId, botId: current.botId, startedAt: current.startedAt, groupCount: groupIds.size };
   }
 
-  current?.api?.listener.stop();
   if (mockMode) {
     const startedAt = Date.now();
     activeListeners.set(accountId, {
@@ -387,7 +387,10 @@ export async function startListener(request: StartListenerRequest) {
 
   let api: MinimalZaloApi;
   try {
-    api = await getApi(request.credentials);
+    api = await prepareListenerReplacement(
+      () => getApi(request.credentials),
+      current?.api ? () => current.api?.listener.stop() : undefined,
+    );
   } catch (error) {
     apiCache.delete(credentialFingerprint);
     console.error(`[Zalo listener ${accountId}] Login failed while starting listener:`, error);
