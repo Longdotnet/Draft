@@ -158,7 +158,7 @@ public sealed class ZaloAutoSessionProposalFreshnessRaceFuzzTests
                     await ZaloAutoSessionProposalFailurePersistence.PersistUnlessCreatedAsync(
                         state.Db,
                         state.Store,
-                        OlderProposal(ZaloPollSessionProposalStatus.Failed) withLastError: null,
+                        OlderProposal(ZaloPollSessionProposalStatus.Failed),
                         cancellationToken);
                     break;
                 case ProposalActionKind.NoOp:
