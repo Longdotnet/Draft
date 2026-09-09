@@ -288,6 +288,33 @@ public sealed class ZaloSchedulerTriggerTests
     }
 
     [Fact]
+    public async Task Stale_owner_cannot_clobber_successor_failure_diagnosis_after_lease_handoff()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloSchedulerLeaseStore(db);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(1)));
+        await store.MarkFailureAsync("instance-a", now.AddSeconds(30), "degraded:reminder");
+
+        Assert.True(await store.TryAcquireAsync("instance-b", now.AddMinutes(1), TimeSpan.FromMinutes(15)));
+        var successorFailureAt = now.AddMinutes(1).AddSeconds(10);
+        await store.MarkFailureAsync("instance-b", successorFailureAt, "degraded:rescue");
+
+        await store.MarkFailureAsync("instance-a", now.AddMinutes(2), "degraded:lifecycle");
+
+        var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
+        Assert.Equal("instance-b", snapshot.OwnerId);
+        Assert.Equal(successorFailureAt, snapshot.LastFailureAt);
+        Assert.Equal("degraded:rescue", snapshot.LastFailureCode);
+    }
+
+    [Fact]
     public async Task MarkFailure_rejects_unbounded_or_free_form_diagnostic_text()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
