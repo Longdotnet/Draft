@@ -569,7 +569,22 @@ internal sealed class ZaloPollClassifierService
         var deterministicQualified = ruleScore >= 0.72;
 
         if (!aiIsSignup && aiConfidence >= 0.85)
-            return new(false, Math.Min(ruleScore, 1 - aiConfidence), $"{ruleReason};ai_reject:{aiReason}", true);
+        {
+            // A model rejection may lower semantic confidence, but it cannot revoke deterministic
+            // mutation authority. Otherwise merely enabling AI would make a rule-qualified poll
+            // disappear from Auto Session, violating the no-AI parity invariant.
+            return deterministicQualified
+                ? new(
+                    true,
+                    Math.Min(ruleScore, 1 - aiConfidence),
+                    $"{ruleReason};ai_disagrees:{aiReason};deterministic_authority_preserved",
+                    true)
+                : new(
+                    false,
+                    Math.Min(ruleScore, 1 - aiConfidence),
+                    $"{ruleReason};ai_reject:{aiReason}",
+                    true);
+        }
 
         if (aiIsSignup && !deterministicQualified)
         {
