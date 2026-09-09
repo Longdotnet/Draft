@@ -225,6 +225,7 @@ internal sealed class ZaloAutoSessionService(
                     proposal,
                     selected,
                     operators,
+                    requirePreAuthorizedPolicy: false,
                     cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -347,6 +348,7 @@ internal sealed class ZaloAutoSessionService(
                 proposal,
                 candidates,
                 organizerIds,
+                requirePreAuthorizedPolicy: true,
                 cancellationToken);
             return;
         }
@@ -392,6 +394,7 @@ internal sealed class ZaloAutoSessionService(
         ZaloPollSessionProposalData proposal,
         IReadOnlyList<ZaloAutoSessionCandidate> selected,
         IReadOnlyList<string> organizerIds,
+        bool requirePreAuthorizedPolicy,
         CancellationToken cancellationToken)
     {
         ZaloAutoSessionActionExecutor.EnsureCandidatesMatchPollSource(poll, selected);
@@ -400,6 +403,15 @@ internal sealed class ZaloAutoSessionService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         try
         {
+            // This compatibility path must enforce the same durable write-boundary policy
+            // as Conversation V3. In particular, auto execution loses authority immediately
+            // when an admin restores required organizer confirmation after classification.
+            var currentTracked = await store.GetTrackedGroupAsync(tracked.Id, cancellationToken);
+            ZaloAutoSessionActionExecutor.EnsureExecutionPolicyCurrent(
+                currentTracked,
+                requirePreAuthorizedPolicy);
+            tracked = currentTracked!;
+
             foreach (var candidate in selected
                          .GroupBy(item => item.OptionId, StringComparer.Ordinal)
                          .Select(group => group.First()))
