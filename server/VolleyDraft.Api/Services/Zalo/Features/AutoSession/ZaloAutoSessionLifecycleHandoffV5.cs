@@ -36,6 +36,17 @@ internal static class ZaloAutoSessionLifecycleHandoffPolicyV5
         $"lifecycle_not_ready:{lifecycle.Stage}:{lifecycle.ReasonCode}";
 }
 
+internal static class ZaloAutoSessionLifecycleReconciliationPolicyV5
+{
+    // Lifecycle handoff is durable post-commit recovery work. It must never monopolize
+    // the shared scheduler long enough to delay the next reminder/pass-slot cycle.
+    // A normal poll creates only a handful of sessions, while historical/repeated
+    // failures can accumulate a much larger backlog. Fairness is already persisted by
+    // LastAttemptAt, so a bounded batch rotates through that backlog across cycles.
+    internal const int MaxCandidatesPerCycle = 12;
+    internal static readonly TimeSpan CycleBudget = TimeSpan.FromSeconds(60);
+}
+
 internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContext db)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -125,7 +136,7 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
     }
 
     public async Task<IReadOnlyList<ZaloAutoSessionLifecycleHandoffCandidateV5>> GetMissingAsync(
-        int limit = 50,
+        int limit = ZaloAutoSessionLifecycleReconciliationPolicyV5.MaxCandidatesPerCycle,
         CancellationToken cancellationToken = default)
     {
         await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
@@ -280,39 +291,71 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
         ILogger logger,
         CancellationToken cancellationToken = default)
     {
-        var candidates = await GetMissingAsync(cancellationToken: cancellationToken);
+        using var budgetCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budgetCancellation.CancelAfter(ZaloAutoSessionLifecycleReconciliationPolicyV5.CycleBudget);
+        var budgetToken = budgetCancellation.Token;
+        IReadOnlyList<ZaloAutoSessionLifecycleHandoffCandidateV5> candidates = [];
         var handedOff = 0;
         var failed = 0;
 
-        foreach (var candidate in candidates)
+        try
         {
-            // Persist scheduling fairness before invoking the lifecycle coordinator. If this
-            // process dies mid-attempt, the candidate is delayed behind never/less-recently
-            // attempted sessions instead of monopolizing every future batch.
-            await MarkAttemptAsync(candidate.SessionId, DateTimeOffset.UtcNow, cancellationToken);
-            try
-            {
-                await HandOffAsync(
-                    candidate.ProposalId,
-                    candidate.AdminUserId,
-                    candidate.SessionId,
-                    cancellationToken);
-                handedOff++;
-            }
-            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                failed++;
-                logger.LogWarning(
-                    exception,
-                    "Auto Session V5 lifecycle reconciliation deferred Proposal={ProposalId} Session={SessionId}",
-                    candidate.ProposalId,
-                    candidate.SessionId);
-            }
-        }
+            candidates = await GetMissingAsync(cancellationToken: budgetToken);
 
-        // Backfill the proposal-level ownership terminal for sessions handed off before this
-        // aggregate existed, including clean restarts where no per-session retry is needed.
-        await ReconcileCompletedOwnershipsAsync(cancellationToken);
+            foreach (var candidate in candidates)
+            {
+                // Persist scheduling fairness before invoking the lifecycle coordinator. If this
+                // process dies mid-attempt, the candidate is delayed behind never/less-recently
+                // attempted sessions instead of monopolizing every future batch.
+                await MarkAttemptAsync(candidate.SessionId, DateTimeOffset.UtcNow, budgetToken);
+                try
+                {
+                    await HandOffAsync(
+                        candidate.ProposalId,
+                        candidate.AdminUserId,
+                        candidate.SessionId,
+                        budgetToken);
+                    handedOff++;
+                }
+                catch (OperationCanceledException) when (
+                    budgetCancellation.IsCancellationRequested &&
+                    !cancellationToken.IsCancellationRequested)
+                {
+                    failed++;
+                    logger.LogWarning(
+                        "Auto Session V5 lifecycle reconciliation exhausted its {BudgetSeconds}s scheduler budget after {HandedOff}/{CandidateCount} handoffs",
+                        ZaloAutoSessionLifecycleReconciliationPolicyV5.CycleBudget.TotalSeconds,
+                        handedOff,
+                        candidates.Count);
+                    return new ZaloAutoSessionLifecycleReconciliationResultV5(
+                        candidates.Count,
+                        handedOff,
+                        failed);
+                }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    failed++;
+                    logger.LogWarning(
+                        exception,
+                        "Auto Session V5 lifecycle reconciliation deferred Proposal={ProposalId} Session={SessionId}",
+                        candidate.ProposalId,
+                        candidate.SessionId);
+                }
+            }
+
+            // Backfill the proposal-level ownership terminal for sessions handed off before this
+            // aggregate existed, including clean restarts where no per-session retry is needed.
+            await ReconcileCompletedOwnershipsAsync(budgetToken);
+        }
+        catch (OperationCanceledException) when (
+            budgetCancellation.IsCancellationRequested &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            failed++;
+            logger.LogWarning(
+                "Auto Session V5 lifecycle reconciliation exhausted its {BudgetSeconds}s scheduler budget before completing the batch",
+                ZaloAutoSessionLifecycleReconciliationPolicyV5.CycleBudget.TotalSeconds);
+        }
 
         return new ZaloAutoSessionLifecycleReconciliationResultV5(candidates.Count, handedOff, failed);
     }
