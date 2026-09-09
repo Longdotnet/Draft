@@ -19,7 +19,7 @@ internal sealed record ZaloSlotWorkflowGuidanceResult(
 internal static class ZaloSlotWorkflowGuidance
 {
     private static readonly Regex HelpSignalPattern = new(
-        @"(?<![a-z0-9])(?:(?:(?:go|ghi|viet|nhap|noi|lam|xu\s+ly|dung|su\s+dung)\s+(?:sao|the\s+nao|nhu\s+nao))|(?:the\s+nao|nhu\s+nao|kieu\s+gi|cu\s+phap|huong\s+dan|lenh\s+gi|dung\s+lenh\s+gi|cach|(?:phai\s+)?lam\s+gi|sao\s+(?:gio|day)))(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:(?:(?:go|ghi|viet|nhap|noi|lam|xu\s+ly|dung|su\s+dung)\s+(?:sao|gi|the\s+nao|nhu\s+nao))|(?:the\s+nao|nhu\s+nao|kieu\s+gi|cu\s+phap|huong\s+dan|lenh\s+(?:gi|nao)|dung\s+lenh\s+(?:gi|nao)|cach|(?:phai\s+)?lam\s+gi|sao\s+(?:gio|day)))(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex PassDomainPattern = new(
@@ -56,12 +56,13 @@ internal static class ZaloSlotWorkflowGuidance
     }
 
     private static string BuildPassSlotHelp() =>
-        "Pass/nhường slot = người đang có suất nhường hẳn suất đó cho người khác. NPC luôn kiểm owner/session từ roster hoặc poll thật, không đoán theo tên chat.\n" +
-        "1) Dễ nhất, người đang có slot tự nói `pass slot T6` (hoặc `nhường suất CN`). NPC kiểm đúng người + đúng kèo rồi mở slot; bước này chưa tự sửa roster.\n" +
-        "2) Người muốn lấy nói `tui nhận T6`; nếu chỉ có đúng một slot đang mở thì `tui nhận` cũng được.\n" +
-        "3) Trước draft: owner bỏ vote, người nhận vote vào đúng kèo rồi nói `xong`; NPC chỉ chốt khi roster thật đã đổi. Sau draft: người đang giữ claim nói `chốt`; NPC revalidate rồi mới chuyển.\n" +
-        "4) Owner đổi ý trước khi hoàn tất có thể nói `huỷ pass`; người đang giữ claim muốn nhả thì nói `huỷ nhận`.\n" +
-        "5) Admin/operator chỉ nên làm hộ khi đã biết rõ cả người nhường lẫn người nhận. Cú pháp deterministic: `@Npc @A pass slot cho @B`. NPC vẫn kiểm quyền + UID + session + trạng thái; nếu có nhiều kèo thì sẽ hỏi lại thay vì đoán. Trước draft không dùng lệnh admin để lách poll.";
+        "Pass/nhường slot = người đang có suất nghỉ kèo này và nhường hẳn suất cho người khác. Không cần nhớ từ `slot`; bạn có thể hiểu đơn giản là nhường suất chơi. NPC luôn kiểm owner/session từ roster hoặc poll thật, không đoán theo tên chat.\n" +
+        "1) Nếu chính người đang có suất muốn nhường: nói `pass slot T6` hoặc `nhường suất CN`. NPC kiểm đúng người + đúng kèo rồi mở suất; bước này chưa tự sửa roster.\n" +
+        "2) Người muốn lấy nói `tui nhận T6`; nếu chỉ có đúng một suất đang mở thì `tui nhận` cũng được.\n" +
+        "3) Trước draft: người nhường bỏ vote, người nhận vote vào đúng kèo rồi nói `xong`; NPC chỉ xác nhận chủ mới khi roster thật đã đổi. Sau draft: người đang giữ claim nói `chốt`; NPC revalidate rồi mới chuyển.\n" +
+        "4) Người nhường đổi ý trước khi hoàn tất có thể nói `huỷ pass`; người đang giữ lượt nhận muốn nhả thì nói `huỷ nhận`.\n" +
+        "5) Nếu admin/operator làm hộ và đã biết rõ cả người nhường lẫn người nhận, dùng đúng cú pháp deterministic `@Npc @A pass slot cho @B`. NPC vẫn kiểm quyền + UID + session + trạng thái; nếu có nhiều kèo hoặc mention chưa rõ thì sẽ hỏi lại thay vì đoán. Trước draft không dùng lệnh admin để lách poll.\n" +
+        "6) Nếu admin chỉ đang hỏi 'ai pass thì gõ gì' mà chưa biết người nhận, đừng đoán người nhận: hướng người đang có suất dùng bước 1 trước, rồi người muốn lấy dùng bước 2. Khi hoàn tất, NPC sẽ xác nhận lại chủ suất từ dữ liệu thật.";
 
     private static string BuildShareSlotHelp() =>
         "Share slot khác pass slot nha: share là 2-3 người dùng chung một slot/luân phiên, không phải nhường hẳn suất cho người khác.\n" +

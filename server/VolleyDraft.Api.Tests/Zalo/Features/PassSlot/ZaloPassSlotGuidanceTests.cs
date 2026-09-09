@@ -8,6 +8,10 @@ public sealed class ZaloPassSlotGuidanceTests
 {
     [Theory]
     [InlineData("@Npc ai pass slot thì gõ sao?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc ai pass slot thì gõ gì?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc nhường suất thì viết gì?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc nghỉ trận này nhập gì?", ZaloBotIntent.SlotTransfer)]
+    [InlineData("@Npc pass slot lệnh nào?", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc pass slot gõ như nào?", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc hướng dẫn nhường suất đi", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc cú pháp pass slot là gì?", ZaloBotIntent.SlotTransfer)]
@@ -15,6 +19,7 @@ public sealed class ZaloPassSlotGuidanceTests
     [InlineData("@Npc cho người khác đánh thì phải làm gì?", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc nhường chỗ kiểu gì?", ZaloBotIntent.SlotTransfer)]
     [InlineData("@Npc share slot dùng sao?", ZaloBotIntent.ShareSlot)]
+    [InlineData("@Npc share slot gõ gì?", ZaloBotIntent.ShareSlot)]
     public void Explicit_help_questions_are_owned_deterministically(string content, ZaloBotIntent intent)
     {
         var guidance = ZaloOverbookService.TryBuildAddressedSlotWorkflowGuidance(Explicit(content));
@@ -89,14 +94,18 @@ public sealed class ZaloPassSlotGuidanceTests
 
         Assert.NotNull(guidance);
         var text = guidance!.Text;
+        Assert.Contains("nhường suất chơi", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pass slot T6", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("tui nhận T6", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("xong", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chủ mới", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("chốt", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("huỷ pass", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("huỷ nhận", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc @A pass slot cho @B", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("quyền", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chưa biết người nhận", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đừng đoán người nhận", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
