@@ -461,7 +461,7 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
             SET "ReminderLeaseToken" = @leaseToken, "ReminderLeaseUntil" = @leaseUntil
             WHERE "Id" = @id AND "Version" = @version
               AND "Status" = @status
-              AND ("ReminderLeaseUntil" IS NULL OR "ReminderLeaseUntil" < @now);
+              AND ("ReminderLeaseUntil" IS NULL OR "ReminderLeaseUntil" <= @now);
             """;
         Add(command, "@leaseToken", Clean(leaseToken, 100));
         Add(command, "@leaseUntil", now.Add(leaseDuration));
