@@ -311,11 +311,7 @@ app.post("/v1/group-stickers", async (request, response) => {
   response.json(await outboundStickerIdempotency.run(
     { accountId, groupId, idempotencyKey },
     { reaction: outbound.reaction },
-    () => zaloProviderTrafficGovernor.runWithCredentials(
-      credentials,
-      () => sendGroupSticker(outbound),
-      "sticker.send",
-    ),
+    () => sendGroupSticker(outbound),
   ));
 });
 
