@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
@@ -17,13 +18,26 @@ internal sealed record ZaloOpenSlotOpenResult(
     ZaloOpenSlotOfferSnapshot Offer,
     ZaloOpenSlotOpenDisposition Disposition);
 
+internal enum ZaloOpenSlotSessionWriteDisposition
+{
+    Written,
+    SessionUnavailable,
+    MutationBusy
+}
+
+internal sealed record ZaloOpenSlotSessionWriteResult(
+    ZaloOpenSlotOpenResult? Opened,
+    ZaloOpenSlotSessionWriteDisposition Disposition);
+
 /// <summary>
 /// Production-path safety around the durable open-slot store.
 ///
 /// The legacy store intentionally exposes low-level transitions for tests and repair
 /// flows. This helper adds the stronger marketplace invariants used by ambient chat:
 /// a repeated owner announcement must never erase somebody else's live reservation,
-/// and stale Applying rows may only be surfaced for canonical-state recovery.
+/// stale Applying rows may only be surfaced for canonical-state recovery, and opening
+/// new durable pass risk participates in the same MatchSession mutation lease used by
+/// draft transitions so those two product states cannot cross in flight.
 /// </summary>
 internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db)
 {
@@ -35,6 +49,91 @@ internal sealed class ZaloOpenSlotMarketplaceSafetyStore(VolleyDraftDbContext db
         """;
 
     private readonly ZaloOpenSlotOfferStore store = new(db);
+
+    public async Task<ZaloOpenSlotSessionWriteResult> TryOpenOrRefreshForActiveSessionAsync(
+        string connectionId,
+        string groupId,
+        string ownerZaloUserId,
+        string ownerDisplayName,
+        string sessionId,
+        string sessionName,
+        string? sourceMessageId,
+        DateTimeOffset expiresAt,
+        DateTimeOffset? nextNudgeAt,
+        CancellationToken cancellationToken = default)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var current = await db.MatchSessions
+            .AsNoTracking()
+            .Where(item => item.Id == sessionId)
+            .Select(item => new
+            {
+                item.Status,
+                item.BotEnabled,
+                item.StartTime,
+                item.BotActionLeaseToken,
+                item.BotActionLeaseUntil
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (current is null ||
+            !current.BotEnabled ||
+            current.Status is not (SessionStatus.Setup or SessionStatus.CaptainSelection or SessionStatus.Finished) ||
+            (current.StartTime is { } start && start <= now))
+        {
+            return new(null, ZaloOpenSlotSessionWriteDisposition.SessionUnavailable);
+        }
+
+        if (current.BotActionLeaseUntil is not null && current.BotActionLeaseUntil >= now)
+            return new(null, ZaloOpenSlotSessionWriteDisposition.MutationBusy);
+
+        // This CAS is the authority boundary. StartDraftRunAsync uses the same lease
+        // columns. If both paths observed the same old token, only one update can win.
+        // The winner owns the state transition; the loser must not create marketplace
+        // risk from its stale snapshot.
+        var claimed = await db.MatchSessions
+            .Where(item => item.Id == sessionId &&
+                           item.BotActionLeaseToken == current.BotActionLeaseToken &&
+                           item.BotEnabled &&
+                           (item.Status == SessionStatus.Setup ||
+                            item.Status == SessionStatus.CaptainSelection ||
+                            item.Status == SessionStatus.Finished) &&
+                           (item.StartTime == null || item.StartTime > now))
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(item => item.BotActionLeaseToken, leaseToken)
+                .SetProperty(item => item.BotActionLeaseName, "OpenPassSlot")
+                .SetProperty(item => item.BotActionLeaseUntil, now.AddMinutes(2)),
+                cancellationToken);
+        if (claimed == 0)
+            return new(null, ZaloOpenSlotSessionWriteDisposition.MutationBusy);
+
+        try
+        {
+            var opened = await OpenOrRefreshAsync(
+                connectionId,
+                groupId,
+                ownerZaloUserId,
+                ownerDisplayName,
+                sessionId,
+                sessionName,
+                sourceMessageId,
+                expiresAt,
+                nextNudgeAt,
+                cancellationToken);
+            return new(opened, ZaloOpenSlotSessionWriteDisposition.Written);
+        }
+        finally
+        {
+            await db.MatchSessions
+                .Where(item => item.Id == sessionId && item.BotActionLeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(item => item.BotActionLeaseToken, (string?)null)
+                    .SetProperty(item => item.BotActionLeaseName, (string?)null)
+                    .SetProperty(item => item.BotActionLeaseUntil, (DateTimeOffset?)null),
+                    cancellationToken);
+        }
+    }
 
     public async Task<ZaloOpenSlotOpenResult> OpenOrRefreshAsync(
         string connectionId,

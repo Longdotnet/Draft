@@ -187,7 +187,7 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
         }
         if (nextNudgeAt >= expiresAt) nextNudgeAt = null;
 
-        var opened = await new ZaloOpenSlotMarketplaceSafetyStore(db).OpenOrRefreshAsync(
+        var write = await new ZaloOpenSlotMarketplaceSafetyStore(db).TryOpenOrRefreshForActiveSessionAsync(
             connectionId,
             groupId,
             senderId,
@@ -199,6 +199,24 @@ public sealed class ZaloMemberAssistService(VolleyDraftDbContext db)
             nextNudgeAt,
             cancellationToken);
 
+        if (write.Disposition != ZaloOpenSlotSessionWriteDisposition.Written || write.Opened is null)
+        {
+            var latestStatus = await db.MatchSessions
+                .AsNoTracking()
+                .Where(item => item.Id == session.Id)
+                .Select(item => (SessionStatus?)item.Status)
+                .SingleOrDefaultAsync(cancellationToken);
+            var memberName = FriendlyName(owner.DisplayName);
+            var reason = latestStatus == SessionStatus.Drafting
+                ? $"Draft {session.Name} vừa bắt đầu rồi"
+                : $"Trạng thái {session.Name} đang được cập nhật";
+            return new ZaloMemberAssistReply(
+                ZaloMemberAssistKind.PassSlotHelp,
+                $"{memberName} ơi, {reason} nên tui chưa mở pass slot từ tin này để khỏi làm lệch roster. Gửi lại yêu cầu khi thao tác kia xong nha.",
+                session.Id);
+        }
+
+        var opened = write.Opened;
         var who = FriendlyName(owner.DisplayName);
         if (opened.Disposition == ZaloOpenSlotOpenDisposition.ClaimPreserved)
         {
