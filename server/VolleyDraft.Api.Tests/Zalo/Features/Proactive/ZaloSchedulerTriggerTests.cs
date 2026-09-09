@@ -149,6 +149,8 @@ public sealed class ZaloSchedulerTriggerTests
             TimeSpan.FromMilliseconds(60),
             CancellationToken.None);
 
+        // Synchronize on the heartbeat callback before forcing lease loss. This keeps
+        // the behavioral assertion exact without depending on CI timer scheduling.
         await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(run.IsCompleted);
         releaseRenewal.TrySetResult();
