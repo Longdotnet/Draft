@@ -429,24 +429,6 @@ public sealed partial class ZaloOverbookService
                     settings,
                     settings.RequestTtlMinutes);
                 approvalRequest = existingRequest;
-                if (approvalRequest is null ||
-                    approvalRequest.State is ZaloDraftEscalationState.Expired or
-                                             ZaloDraftEscalationState.Superseded or
-                                             ZaloDraftEscalationState.Cancelled)
-                {
-                    approvalRequest = await escalationStore.CreateOrReuseAsync(
-                        session.ZaloConnectionId!,
-                        session.ZaloGroupId!,
-                        session.Id,
-                        "PreparationReminderV2",
-                        null,
-                        null,
-                        null,
-                        readiness.Fingerprint,
-                        ZaloDraftEscalationState.ProactiveSoft,
-                        approvalExpiry.Value,
-                        cancellationToken);
-                }
 
                 var reserved = new List<DraftApproverCandidate>();
                 foreach (var approver in eligible)
@@ -488,6 +470,53 @@ public sealed partial class ZaloOverbookService
 
             try
             {
+                if (approvalExpiry is not null &&
+                    (approvalRequest is null ||
+                     approvalRequest.State is ZaloDraftEscalationState.Expired or
+                                              ZaloDraftEscalationState.Superseded or
+                                              ZaloDraftEscalationState.Cancelled))
+                {
+                    // A durable approval request means an organizer conversation actually
+                    // exists. Do not publish ProactiveSoft before any recipient can be
+                    // reserved; otherwise restart/adjacent draft lanes can observe a request
+                    // nobody received.
+                    approvalRequest = await escalationStore.CreateOrReuseAsync(
+                        session.ZaloConnectionId!,
+                        session.ZaloGroupId!,
+                        session.Id,
+                        "PreparationReminderV2",
+                        null,
+                        null,
+                        null,
+                        readiness.Fingerprint,
+                        ZaloDraftEscalationState.ProactiveSoft,
+                        approvalExpiry.Value,
+                        cancellationToken);
+                }
+
+                if (approvalRequest?.State == ZaloDraftEscalationState.Executing ||
+                    (approvalRequest is not null &&
+                     !string.Equals(approvalRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
+                {
+                    // CreateOrReuse is execution-fenced. A concurrent confirmation may win
+                    // after this cycle reserved conversations but before it persisted/reused
+                    // the request. Release our reservations and let execution own the lane.
+                    foreach (var recipient in recipients)
+                    {
+                        await RemoveDraftPendingAsync(
+                            session.ZaloConnectionId!,
+                            session.ZaloGroupId!,
+                            recipient.ZaloUserId,
+                            session.Id,
+                            cancellationToken);
+                    }
+                    logger.LogDebug(
+                        "Draft preparation reminder lost request ownership race Session={SessionId} Request={RequestId}",
+                        session.Id,
+                        approvalRequest?.Id);
+                    continue;
+                }
+
                 var providerId = await SendDraftProactiveAsync(
                     session,
                     outgoing.Message,
@@ -528,7 +557,10 @@ public sealed partial class ZaloOverbookService
             }
             catch
             {
-                if (approvalRequest is not null)
+                // Reservations are executable pending state even if request persistence or
+                // provider delivery fails. Always release them; the next scheduler cycle can
+                // retry from authoritative readiness instead of leaving a phantom confirm.
+                if (approvalExpiry is not null)
                 {
                     foreach (var recipient in recipients)
                     {

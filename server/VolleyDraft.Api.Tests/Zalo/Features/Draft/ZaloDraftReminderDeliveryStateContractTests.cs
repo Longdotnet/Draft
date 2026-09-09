@@ -33,6 +33,50 @@ public sealed class ZaloDraftReminderDeliveryStateContractTests
     }
 
     [Fact]
+    public void Reminder_lane_does_not_persist_new_approval_request_before_recipient_reservation_succeeds()
+    {
+        var source = ReadReminderSource();
+        var zeroRecipients = source.IndexOf("if (recipients.Count == 0)", StringComparison.Ordinal);
+        var createRequest = source.IndexOf("approvalRequest = await escalationStore.CreateOrReuseAsync(", StringComparison.Ordinal);
+
+        Assert.True(zeroRecipients >= 0, "reminder lane must explicitly handle failed organizer reservation");
+        Assert.True(createRequest > zeroRecipients,
+            "a new durable approval request must not exist until at least one organizer conversation is reserved");
+    }
+
+    [Fact]
+    public void Reminder_lane_cleans_reserved_conversations_if_request_persistence_or_send_fails()
+    {
+        var source = ReadReminderSource();
+        var tryStart = source.IndexOf("            try\n            {", source.IndexOf("if (recipients.Count == 0)", StringComparison.Ordinal), StringComparison.Ordinal);
+        var createRequest = source.IndexOf("approvalRequest = await escalationStore.CreateOrReuseAsync(", tryStart, StringComparison.Ordinal);
+        var catchStart = source.IndexOf("            catch\n            {", createRequest, StringComparison.Ordinal);
+        var catchEnd = source.IndexOf("                throw;", catchStart, StringComparison.Ordinal);
+        var catchBlock = source[catchStart..catchEnd];
+
+        Assert.True(tryStart >= 0 && createRequest > tryStart,
+            "request persistence must be covered by the same failure cleanup boundary as provider delivery");
+        Assert.Contains("RemoveDraftPendingAsync(", catchBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (approvalRequest is not null)", catchBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Reminder_lane_releases_reservations_when_execution_wins_after_reservation()
+    {
+        var source = ReadReminderSource();
+        var createRequest = source.IndexOf("approvalRequest = await escalationStore.CreateOrReuseAsync(", StringComparison.Ordinal);
+        var executionFence = source.IndexOf("approvalRequest?.State == ZaloDraftEscalationState.Executing", createRequest, StringComparison.Ordinal);
+        var providerSend = source.IndexOf("var providerId = await SendDraftProactiveAsync(", createRequest, StringComparison.Ordinal);
+        var fenceBlock = source[executionFence..providerSend];
+
+        Assert.True(createRequest >= 0, "reminder lane must persist/reuse an approval request after reservation");
+        Assert.True(executionFence > createRequest && providerSend > executionFence,
+            "execution ownership must be revalidated after request persistence and before provider send");
+        Assert.Contains("RemoveDraftPendingAsync(", fenceBlock, StringComparison.Ordinal);
+        Assert.Contains("continue;", fenceBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Reminder_lane_marks_delivery_only_after_provider_send_returns()
     {
         var source = ReadReminderSource();
