@@ -6,10 +6,11 @@ namespace VolleyDraft.Api.Services;
 
 /// <summary>
 /// Persists an execution failure without allowing a stale/losing execution to downgrade
-/// a proposal that another execution has already committed as Created.
+/// a proposal that another execution has already committed as Created or that belongs to a
+/// newer authoritative poll revision.
 ///
-/// The INSERT + guarded ON CONFLICT is intentionally one database statement so the invariant
-/// holds across API instances; a read-then-write check would reopen the same race.
+/// The INSERT + guarded ON CONFLICT is intentionally one database statement so the invariants
+/// hold across API instances; a read-then-write check would reopen the same races.
 /// </summary>
 internal static class ZaloAutoSessionProposalFailurePersistence
 {
@@ -44,7 +45,8 @@ internal static class ZaloAutoSessionProposalFailurePersistence
                 "ApprovedAt" = excluded."ApprovedAt",
                 "LastError" = excluded."LastError",
                 "UpdatedAt" = excluded."UpdatedAt"
-            WHERE "ZaloPollSessionProposals"."Status" <> 'Created';
+            WHERE "ZaloPollSessionProposals"."Status" <> 'Created'
+              AND "ZaloPollSessionProposals"."PollUpdatedAtUnixMs" <= excluded."PollUpdatedAtUnixMs";
             """;
 
         var connection = db.Database.GetDbConnection();
