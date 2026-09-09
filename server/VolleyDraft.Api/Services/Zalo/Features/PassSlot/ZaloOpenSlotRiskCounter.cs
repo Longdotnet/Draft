@@ -47,51 +47,54 @@ public sealed class ZaloOpenSlotRiskCounter(VolleyDraftDbContext db)
                 })
                 .SingleOrDefaultAsync(cancellationToken);
 
-            if (currentLease is null)
-                return 0;
-
-            try
+            // Some low-level ledger tests intentionally exercise the counter without
+            // seeding a MatchSession. Preserve that historical contract: absence of a
+            // session row means there is nothing to lock, not that durable offer risk is 0.
+            if (currentLease is not null)
             {
-                if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+                try
                 {
-                    // AutoRunDraftAsync already owns the authoritative session lease and
-                    // calls StartDraftAsync/ResetDraftAsync inside it. Do not self-block;
-                    // take a no-op write on the same row so the surrounding draft
-                    // transaction still serializes against ambient pass opening.
-                    if (!string.Equals(currentLease.BotActionLeaseName, "AutoDraft", StringComparison.Ordinal))
-                        return 1;
+                    if (currentLease.BotActionLeaseUntil is not null && currentLease.BotActionLeaseUntil >= now)
+                    {
+                        // AutoRunDraftAsync already owns the authoritative session lease and
+                        // calls StartDraftAsync/ResetDraftAsync inside it. Do not self-block;
+                        // take a no-op write on the same row so the surrounding draft
+                        // transaction still serializes against ambient pass opening.
+                        if (!string.Equals(currentLease.BotActionLeaseName, "AutoDraft", StringComparison.Ordinal))
+                            return 1;
 
-                    var locked = await db.MatchSessions
-                        .Where(session => session.Id == sessionId &&
-                                          session.BotActionLeaseToken == currentLease.BotActionLeaseToken &&
-                                          session.BotActionLeaseName == "AutoDraft")
-                        .ExecuteUpdateAsync(updates => updates
-                            .SetProperty(session => session.BotActionLeaseUntil, session => session.BotActionLeaseUntil),
-                            cancellationToken);
-                    if (locked == 0)
-                        return 1;
+                        var locked = await db.MatchSessions
+                            .Where(session => session.Id == sessionId &&
+                                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken &&
+                                              session.BotActionLeaseName == "AutoDraft")
+                            .ExecuteUpdateAsync(updates => updates
+                                .SetProperty(session => session.BotActionLeaseUntil, session => session.BotActionLeaseUntil),
+                                cancellationToken);
+                        if (locked == 0)
+                            return 1;
+                    }
+                    else
+                    {
+                        draftGateLeaseToken = Guid.NewGuid().ToString("n");
+                        var claimed = await db.MatchSessions
+                            .Where(session => session.Id == sessionId &&
+                                              session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
+                            .ExecuteUpdateAsync(updates => updates
+                                .SetProperty(session => session.BotActionLeaseToken, draftGateLeaseToken)
+                                .SetProperty(session => session.BotActionLeaseName, "DraftPassGate")
+                                .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(2)),
+                                cancellationToken);
+                        if (claimed == 0)
+                            return 1;
+                    }
                 }
-                else
+                catch (DbException)
                 {
-                    draftGateLeaseToken = Guid.NewGuid().ToString("n");
-                    var claimed = await db.MatchSessions
-                        .Where(session => session.Id == sessionId &&
-                                          session.BotActionLeaseToken == currentLease.BotActionLeaseToken)
-                        .ExecuteUpdateAsync(updates => updates
-                            .SetProperty(session => session.BotActionLeaseToken, draftGateLeaseToken)
-                            .SetProperty(session => session.BotActionLeaseName, "DraftPassGate")
-                            .SetProperty(session => session.BotActionLeaseUntil, now.AddMinutes(2)),
-                            cancellationToken);
-                    if (claimed == 0)
-                        return 1;
+                    // A concurrent writer can win after this transaction's earlier session
+                    // snapshot (notably SQLITE_BUSY_SNAPSHOT). Fail closed: the caller treats
+                    // a positive risk count as 409 and the surrounding transaction rolls back.
+                    return 1;
                 }
-            }
-            catch (DbException)
-            {
-                // A concurrent writer can win after this transaction's earlier session
-                // snapshot (notably SQLITE_BUSY_SNAPSHOT). Fail closed: the caller treats
-                // a positive risk count as 409 and the surrounding transaction rolls back.
-                return 1;
             }
         }
 
@@ -145,22 +148,13 @@ public sealed class ZaloOpenSlotRiskCounter(VolleyDraftDbContext db)
         {
             if (draftGateLeaseToken is not null)
             {
-                try
-                {
-                    await db.MatchSessions
-                        .Where(session => session.Id == sessionId && session.BotActionLeaseToken == draftGateLeaseToken)
-                        .ExecuteUpdateAsync(updates => updates
-                            .SetProperty(session => session.BotActionLeaseToken, (string?)null)
-                            .SetProperty(session => session.BotActionLeaseName, (string?)null)
-                            .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null),
-                            cancellationToken);
-                }
-                catch (DbException)
-                {
-                    // The enclosing transaction is the authority. If cleanup itself loses
-                    // the database lock, transaction disposal/rollback prevents a leaked
-                    // committed gate lease; do not convert the safety check into mutation.
-                }
+                await db.MatchSessions
+                    .Where(session => session.Id == sessionId && session.BotActionLeaseToken == draftGateLeaseToken)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(session => session.BotActionLeaseToken, (string?)null)
+                        .SetProperty(session => session.BotActionLeaseName, (string?)null)
+                        .SetProperty(session => session.BotActionLeaseUntil, (DateTimeOffset?)null),
+                        cancellationToken);
             }
         }
     }
