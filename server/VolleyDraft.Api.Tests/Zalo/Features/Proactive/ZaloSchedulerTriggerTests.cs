@@ -75,6 +75,39 @@ public sealed class ZaloSchedulerTriggerTests
         Assert.Equal(expectedMinutes, interval.TotalMinutes);
     }
 
+    [Theory]
+    [InlineData(1, 0, 0, "degraded:reminder")]
+    [InlineData(0, 2, 0, "degraded:rescue")]
+    [InlineData(0, 0, 3, "degraded:lifecycle")]
+    [InlineData(1, 2, 3, "degraded:reminder+rescue+lifecycle")]
+    public void Failure_codes_classify_degraded_stages_without_error_payloads(
+        int reminderFailed,
+        int rescueFailed,
+        int lifecycleFailed,
+        string expected)
+    {
+        var code = ZaloSchedulerFailureCodes.BuildDegraded(reminderFailed, rescueFailed, lifecycleFailed);
+
+        Assert.Equal(expected, code);
+        Assert.True(ZaloSchedulerFailureCodes.IsValid(code));
+    }
+
+    [Theory]
+    [InlineData(ZaloSchedulerStage.Listener, "exception:listener")]
+    [InlineData(ZaloSchedulerStage.Reminder, "exception:reminder")]
+    [InlineData(ZaloSchedulerStage.Rescue, "exception:rescue")]
+    [InlineData(ZaloSchedulerStage.Lifecycle, "exception:lifecycle")]
+    [InlineData(ZaloSchedulerStage.Finalize, "exception:finalize")]
+    public void Failure_codes_classify_exception_stage_without_exception_text(
+        ZaloSchedulerStage stage,
+        string expected)
+    {
+        var code = ZaloSchedulerFailureCodes.ForException(stage);
+
+        Assert.Equal(expected, code);
+        Assert.True(ZaloSchedulerFailureCodes.IsValid(code));
+    }
+
     [Fact]
     public async Task RunWithLeaseHeartbeat_renews_while_long_stage_is_still_running()
     {
@@ -132,8 +165,6 @@ public sealed class ZaloSchedulerTriggerTests
             TimeSpan.FromMilliseconds(60),
             CancellationToken.None);
 
-        // Synchronize on the heartbeat callback before forcing lease loss. This keeps
-        // the behavioral assertion exact without depending on CI timer scheduling.
         await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(run.IsCompleted);
         releaseRenewal.TrySetResult();
@@ -228,7 +259,7 @@ public sealed class ZaloSchedulerTriggerTests
     }
 
     [Fact]
-    public async Task Scheduler_heartbeat_survives_store_restart_and_keeps_success_separate_from_failure()
+    public async Task Scheduler_failure_diagnosis_survives_store_restart_and_stays_bound_to_exact_failure_timestamp()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -242,12 +273,30 @@ public sealed class ZaloSchedulerTriggerTests
         Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
         await store.MarkAttemptAsync("instance-a", now.AddSeconds(1));
         await store.MarkSuccessAsync("instance-a", now.AddSeconds(2));
-        await store.MarkFailureAsync("instance-a", now.AddMinutes(1));
+        await store.MarkFailureAsync("instance-a", now.AddMinutes(1), "degraded:reminder+rescue");
 
         var restartedStore = new ZaloSchedulerLeaseStore(db);
         var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await restartedStore.GetAsync());
         Assert.Equal(now.AddSeconds(1), snapshot.LastAttemptAt);
         Assert.Equal(now.AddSeconds(2), snapshot.LastSuccessAt);
         Assert.Equal(now.AddMinutes(1), snapshot.LastFailureAt);
+        Assert.Equal("degraded:reminder+rescue", snapshot.LastFailureCode);
+    }
+
+    [Fact]
+    public async Task MarkFailure_rejects_unbounded_or_free_form_diagnostic_text()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloSchedulerLeaseStore(db);
+        var now = new DateTimeOffset(2026, 9, 8, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.True(await store.TryAcquireAsync("instance-a", now, TimeSpan.FromMinutes(15)));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            store.MarkFailureAsync("instance-a", now.AddSeconds(1), "provider said API key=secret"));
     }
 }
