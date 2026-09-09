@@ -7,7 +7,12 @@ import {
   boardEventDebounceKey,
   InboundMessageDeliveryGate,
 } from "./inboundEventReliability.js";
-import { prepareListenerReplacement } from "./listenerReplacement.js";
+import {
+  activateListenerReplacement,
+  beginIntentionalManualClose,
+  cancelIntentionalManualClose,
+  consumeIntentionalManualClose,
+} from "./listenerReplacement.js";
 import type {
   BridgeBoardPage,
   BridgeGroup,
@@ -196,6 +201,7 @@ type ActiveListener = {
   webhookKey: string;
   botId: string;
   startedAt: number;
+  pendingManualCloseEvents: number;
 };
 
 function publicError(error: unknown): string {
@@ -358,6 +364,47 @@ async function handleIncomingMessage(accountId: string, listener: ActiveListener
   }
 }
 
+function attachListenerHandlers(accountId: string, listener: ActiveListener): void {
+  if (!listener.api) return;
+  listener.api.listener.on("message", (message) => {
+    void handleIncomingMessage(accountId, listener, message).catch((error) =>
+      console.error(`[Zalo listener ${accountId}] Failed to forward message:`, error),
+    );
+  });
+  listener.api.listener.on("group_event", (event) => handleBoardEvent(accountId, listener, event));
+  listener.api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
+  listener.api.listener.on("closed", (code, reason) => {
+    if (consumeIntentionalManualClose(listener, code)) {
+      console.info(`[Zalo listener ${accountId}] ignored intentional close (${code}): ${reason}`);
+      return;
+    }
+    if (activeListeners.get(accountId) === listener) activeListeners.delete(accountId);
+    console.warn(`[Zalo listener ${accountId}] closed (${code}): ${reason}`);
+  });
+}
+
+function stopForReplacement(listener: ActiveListener): void {
+  if (!listener.api) return;
+  beginIntentionalManualClose(listener);
+  try {
+    listener.api.listener.stop();
+  } catch (error) {
+    cancelIntentionalManualClose(listener);
+    throw error;
+  }
+}
+
+function activateListener(accountId: string, listener: ActiveListener): void {
+  if (!listener.api) return;
+  activeListeners.set(accountId, listener);
+  try {
+    listener.api.listener.start({ retryOnClose: true });
+  } catch (error) {
+    if (activeListeners.get(accountId) === listener) activeListeners.delete(accountId);
+    throw error;
+  }
+}
+
 export async function startListener(request: StartListenerRequest) {
   const accountId = normalizeMemberId(request.accountId);
   const groupIds = new Set(request.groupIds.map(normalizeId).filter(Boolean));
@@ -381,43 +428,39 @@ export async function startListener(request: StartListenerRequest) {
       webhookKey: request.webhookKey,
       botId: accountId,
       startedAt,
+      pendingManualCloseEvents: 0,
     });
     return { accountId, botId: accountId, startedAt, groupCount: groupIds.size };
   }
 
-  let api: MinimalZaloApi;
+  let listener: ActiveListener;
   try {
-    api = await prepareListenerReplacement(
-      () => getApi(request.credentials),
-      current?.api ? () => current.api?.listener.stop() : undefined,
-    );
+    listener = await activateListenerReplacement({
+      prepare: async () => {
+        const api = await getApi(request.credentials);
+        const candidate: ActiveListener = {
+          api,
+          credentialFingerprint,
+          groupIds,
+          webhookUrl: request.webhookUrl,
+          webhookKey: request.webhookKey,
+          botId: normalizeMemberId(api.getOwnId()),
+          startedAt: Date.now(),
+          pendingManualCloseEvents: 0,
+        };
+        attachListenerHandlers(accountId, candidate);
+        return candidate;
+      },
+      deactivateCurrent: current?.api ? () => stopForReplacement(current) : undefined,
+      activateCandidate: (candidate) => activateListener(accountId, candidate),
+      reactivateCurrent: current?.api ? () => activateListener(accountId, current) : undefined,
+    });
   } catch (error) {
     apiCache.delete(credentialFingerprint);
-    console.error(`[Zalo listener ${accountId}] Login failed while starting listener:`, error);
+    console.error(`[Zalo listener ${accountId}] Failed to replace listener safely:`, error);
     throw error;
   }
-  const listener: ActiveListener = {
-    api,
-    credentialFingerprint,
-    groupIds,
-    webhookUrl: request.webhookUrl,
-    webhookKey: request.webhookKey,
-    botId: normalizeMemberId(api.getOwnId()),
-    startedAt: Date.now(),
-  };
-  activeListeners.set(accountId, listener);
-  api.listener.on("message", (message) => {
-    void handleIncomingMessage(accountId, listener, message).catch((error) =>
-      console.error(`[Zalo listener ${accountId}] Failed to forward message:`, error),
-    );
-  });
-  api.listener.on("group_event", (event) => handleBoardEvent(accountId, listener, event));
-  api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
-  api.listener.on("closed", (code, reason) => {
-    if (activeListeners.get(accountId) === listener) activeListeners.delete(accountId);
-    console.warn(`[Zalo listener ${accountId}] closed (${code}): ${reason}`);
-  });
-  api.listener.start({ retryOnClose: true });
+
   return { accountId, botId: listener.botId, startedAt: listener.startedAt, groupCount: groupIds.size };
 }
 
