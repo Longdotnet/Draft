@@ -1,0 +1,90 @@
+name: Autopilot reminder hookup once
+
+on:
+  push:
+    branches:
+      - autopilot/reminder-exact-date-target-safety
+
+permissions:
+  contents: write
+
+jobs:
+  patch-reminder-handler:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: autopilot/reminder-exact-date-target-safety
+          fetch-depth: 0
+      - name: Wire exact-date reminder targeting
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("server/VolleyDraft.Api/Services/ZaloBotService.cs")
+          text = path.read_text(encoding="utf-8")
+          old = '''        else if (hasExplicitSelector)
+          {
+              targets = upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList();
+              if (targets.Count == 0)
+              {
+                  return new BotAnswer(
+                      $"Mình không tìm thấy trận đúng ngày/tên đó. Hãy gửi lại cả lệnh kèm một trong các trận: {string.Join(", ", upcoming.Take(5).Select(FormatSessionChoice))}.",
+                      null,
+                      intent,
+                      aiCalled);
+              }
+              if (targets.Count > 1 && command.SessionReferences is null)
+              {
+                  return new BotAnswer(
+                      $"Có nhiều trận khớp: {string.Join(", ", targets.Take(5).Select(FormatSessionChoice))}. Hãy gửi lại cả lệnh kèm ngày cụ thể.",
+                      null,
+                      intent,
+                      aiCalled);
+              }
+          }
+'''
+          new = '''        else if (hasExplicitSelector)
+          {
+              var explicitCalendarTargetIds =
+                  ZaloReminderSessionTargetPolicy.ResolveExplicitCalendarDateCandidateIds(
+                      originalReminderQuestion,
+                      upcoming.Select(session => new ZaloSessionReference(
+                          session.Id,
+                          session.Name,
+                          session.StartTime)).ToList(),
+                      now.ToOffset(VietnamOffset));
+              targets = explicitCalendarTargetIds is null
+                  ? upcoming.Where(session => QuestionMatchesSession(normalizedQuestion, session)).ToList()
+                  : upcoming.Where(session => explicitCalendarTargetIds.Contains(session.Id)).ToList();
+              if (targets.Count == 0)
+              {
+                  return new BotAnswer(
+                      $"Mình không tìm thấy trận đúng ngày/tên đó. Hãy gửi lại cả lệnh kèm một trong các trận: {string.Join(", ", upcoming.Take(5).Select(FormatSessionChoice))}.",
+                      null,
+                      intent,
+                      aiCalled);
+              }
+              if (targets.Count > 1 &&
+                  (explicitCalendarTargetIds is not null || command.SessionReferences is null))
+              {
+                  return new BotAnswer(
+                      $"Có nhiều trận khớp: {string.Join(", ", targets.Take(5).Select(FormatSessionChoice))}. Hãy gửi lại cả lệnh kèm ngày cụ thể.",
+                      null,
+                      intent,
+                      aiCalled);
+              }
+          }
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one reminder target block, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+      - name: Commit production hookup
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add server/VolleyDraft.Api/Services/ZaloBotService.cs
+          git diff --cached --check
+          git commit -m "fix(zalo): wire exact-date reminder targeting"
+          git push origin HEAD:autopilot/reminder-exact-date-target-safety
