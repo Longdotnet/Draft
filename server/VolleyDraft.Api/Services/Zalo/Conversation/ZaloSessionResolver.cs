@@ -299,11 +299,14 @@ public static class ZaloSessionResolver
         remainder = WeekModifierRegex.Replace(remainder, " ");
         remainder = WeekdayRegex.Replace(remainder, " ");
 
-        // "chọn CN" is still an explicit selector. Other prose is left intact and
-        // therefore rejected rather than maintaining an open-ended filler-word list.
+        // Short pending-workflow replies commonly include one harmless selector noun:
+        // "trận CN", "buổi 13/9", "kèo T6" or "chọn trận CN". The ambient caller
+        // still requires same-sender/group pending state plus successful prompt provenance
+        // before this grammar can wake NPC. Keep every other word in the remainder so
+        // ordinary group chat such as "trận CN đi nhậu không?" remains rejected.
         remainder = Regex.Replace(
             remainder,
-            @"(?<![a-z0-9])chon(?![a-z0-9])",
+            @"(?<![a-z0-9])(?:chon|tran|buoi|keo)(?![a-z0-9])",
             " ",
             RegexOptions.CultureInvariant);
         remainder = Regex.Replace(remainder, @"\s+", " ").Trim();
