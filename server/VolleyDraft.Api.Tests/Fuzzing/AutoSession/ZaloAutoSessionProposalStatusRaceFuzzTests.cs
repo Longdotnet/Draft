@@ -8,45 +8,35 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 
 public sealed class ZaloAutoSessionProposalStatusRaceFuzzTests
 {
-    private static readonly ProposalAction[] SeedActions =
+    private const string HistoricalFingerprint = "auto-session:created-proposal-is-terminal";
+    private static readonly ProposalAction[] MinimizedReproducer =
     [
         new(ProposalActionKind.WinnerCommitsCreated),
         new(ProposalActionKind.LoserPersistsFailure)
     ];
 
     [Fact]
-    public async Task Losing_execution_cannot_downgrade_a_created_proposal()
+    public async Task Minimized_late_failure_reproducer_preserves_created_truth()
     {
         var scenario = new StatefulFuzzCase<ProposalAction>(
-            "auto-session-created-vs-late-failure",
+            $"{HistoricalFingerprint}-minimized",
             20260909,
-            SeedActions);
+            MinimizedReproducer);
         await using var target = new ProposalStatusRaceTarget();
 
-        var first = await StatefulFuzzRunner.RunAsync(scenario, target);
-        var second = await StatefulFuzzRunner.RunAsync(scenario, target);
+        var result = await StatefulFuzzRunner.RunAsync(scenario, target);
 
-        Assert.True(first.Failed, "The historical race must remain reproducible until the store is terminal-state safe.");
-        Assert.Equal("auto-session:created-proposal-is-terminal", first.FailureFingerprint);
-        Assert.Equal(first.FailureFingerprint, second.FailureFingerprint);
-
-        var minimized = await StatefulFuzzMinimizer.MinimizeAsync(
-            scenario,
-            target,
-            first.FailureFingerprint!);
-
-        Assert.Equal(
-            [ProposalActionKind.WinnerCommitsCreated, ProposalActionKind.LoserPersistsFailure],
-            minimized.Actions.Select(action => action.Kind).ToArray());
+        Assert.False(result.Failed, Describe(result));
+        Assert.Equal(ZaloPollSessionProposalStatus.Created, target.LastState!.PersistedStatus);
     }
 
     [Fact]
-    public async Task Stateful_interleavings_preserve_created_as_terminal_truth()
+    public async Task Stateful_interleavings_preserve_created_against_stale_failure_cleanup()
     {
         for (var seed = 1; seed <= 128; seed += 1)
         {
             var actions = StatefulSequenceMutator.Mutate(
-                SeedActions,
+                MinimizedReproducer,
                 seed,
                 CreateAction,
                 operationCount: 6);
@@ -102,6 +92,7 @@ public sealed class ZaloAutoSessionProposalStatusRaceFuzzTests
         private readonly List<ProposalStatusRaceState> states = [];
 
         public string Name => "auto-session-proposal-status-race";
+        public ProposalStatusRaceState? LastState { get; private set; }
 
         public ProposalStatusRaceState CreateState(StatefulFuzzCase<ProposalAction> scenario)
         {
@@ -123,6 +114,7 @@ public sealed class ZaloAutoSessionProposalStatusRaceFuzzTests
                 PersistedStatus = persisted.Status
             };
             states.Add(state);
+            LastState = state;
             return state;
         }
 
@@ -148,8 +140,16 @@ public sealed class ZaloAutoSessionProposalStatusRaceFuzzTests
                 {
                     var failed = Proposal(ZaloPollSessionProposalStatus.Failed);
                     failed.LastError = "simulated_losing_execution";
-                    var persisted = await state.Store.UpsertProposalAsync(failed, cancellationToken);
-                    state.PersistedStatus = persisted.Status;
+                    await ZaloAutoSessionProposalFailurePersistence.PersistUnlessCreatedAsync(
+                        state.Db,
+                        state.Store,
+                        failed,
+                        cancellationToken);
+                    var persisted = await state.Store.GetProposalAsync(
+                        failed.TrackedGroupId,
+                        failed.PollId,
+                        cancellationToken);
+                    state.PersistedStatus = persisted?.Status ?? ZaloPollSessionProposalStatus.Failed;
                     break;
                 }
                 case ProposalActionKind.NoOp:
@@ -166,7 +166,7 @@ public sealed class ZaloAutoSessionProposalStatusRaceFuzzTests
                 yield return new StatefulInvariantViolation(
                     "auto-session",
                     "created-proposal-is-terminal",
-                    $"winner committed Created but durable status became {state.PersistedStatus}");
+                    $"winner committed Created but stale failure cleanup changed durable status to {state.PersistedStatus}");
             }
         }
 
