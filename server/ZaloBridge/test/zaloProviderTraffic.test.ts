@@ -212,3 +212,90 @@ test("read coalescing is isolated by credential scope and authoritative read key
   assert.deepEqual(await Promise.all([sameScope, differentKey, differentCredentials]), ["a-1", "a-2", "b-1"]);
   assert.equal(providerCalls, 3);
 });
+
+test("account cooldown survives credential refresh without touching Zalo", async () => {
+  let now = 10_000;
+  const oldCredentials = credentials("rotate-old");
+  const refreshedCredentials = credentials("rotate-new");
+  let refreshedProviderCalls = 0;
+  const governor = new ZaloProviderTrafficGovernor({
+    now: () => now,
+    minGapMs: 0,
+    defaultCooldownMs: 60_000,
+  });
+
+  const originalScope = governor.bindAccount("account-rotate", oldCredentials);
+  await assert.rejects(
+    governor.runWithCredentials(oldCredentials, async () => {
+      throw { response: { status: 429, headers: { "retry-after": "120" } } };
+    }),
+  );
+
+  const refreshedScope = governor.bindAccount("account-rotate", refreshedCredentials);
+  assert.equal(refreshedScope, originalScope, "credential rotation must keep one account-wide safety scope");
+
+  await assert.rejects(
+    governor.runWithCredentials(refreshedCredentials, async () => {
+      refreshedProviderCalls += 1;
+      return "must-not-touch-provider";
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BridgeHttpError);
+      assert.equal(error.kind, "rate_limit_cooldown");
+      return true;
+    },
+  );
+  await assert.rejects(
+    governor.runWithAccount("account-rotate", async () => {
+      refreshedProviderCalls += 1;
+      return "must-not-touch-provider";
+    }),
+  );
+  assert.equal(refreshedProviderCalls, 0);
+
+  const account = governor.getDiagnostics().accounts.find((entry) => entry.accountId === "account-rotate");
+  assert.equal(account?.coolingDown, true);
+  assert.equal(account?.providerAttempts, 1);
+  assert.equal(account?.localCooldownRejects, 2);
+
+  now += 120_000;
+  assert.equal(
+    await governor.runWithCredentials(refreshedCredentials, async () => {
+      refreshedProviderCalls += 1;
+      return "recovered";
+    }),
+    "recovered",
+  );
+  assert.equal(refreshedProviderCalls, 1);
+});
+
+test("credential refresh preserves the account pacing queue", async () => {
+  let now = 50_000;
+  const sleeps: number[] = [];
+  const starts: number[] = [];
+  const oldCredentials = credentials("pace-old");
+  const refreshedCredentials = credentials("pace-new");
+  const governor = new ZaloProviderTrafficGovernor({
+    now: () => now,
+    minGapMs: 750,
+    sleep: async (milliseconds) => {
+      sleeps.push(milliseconds);
+      now += milliseconds;
+    },
+  });
+
+  governor.bindAccount("account-pace", oldCredentials);
+  await governor.runWithCredentials(oldCredentials, async () => {
+    starts.push(now);
+    return "first";
+  });
+
+  governor.bindAccount("account-pace", refreshedCredentials);
+  await governor.runWithCredentials(refreshedCredentials, async () => {
+    starts.push(now);
+    return "second";
+  });
+
+  assert.deepEqual(starts, [50_000, 50_750]);
+  assert.deepEqual(sleeps, [750]);
+});
