@@ -22,14 +22,24 @@ public sealed class ZaloPollClassifierAiOptionalityFuzzTests
                     createAction: CreateAction,
                     operationCount: 12));
 
-            var target = new AiClassifierAuthorityTarget(ruleScore);
-            var result = await StatefulFuzzRunner.RunAsync(scenario, target);
+            var result = await StatefulFuzzRunner.RunAsync(scenario, CreateTarget(ruleScore));
+            if (!result.Failed)
+                continue;
+
+            await using var isolatedTarget = new StatefulFuzzIsolatedTarget<AiClassifierAuthorityState, AiClassifierAction>(
+                () => CreateTarget(ruleScore));
+            var promotion = await StatefulFuzzPromotion.PrepareAsync(
+                scenario,
+                isolatedTarget,
+                confirmationRuns: 3);
+
+            Assert.True(
+                promotion.IsPromotable,
+                $"{Describe(result, ruleScore)}; candidate failure was not stable enough for corpus promotion");
 
             Assert.False(
                 result.Failed,
-                $"Seed={seed}; RuleScore={ruleScore:F4}; Fingerprint={result.FailureFingerprint}; " +
-                $"FailureAction={result.FailureActionIndex}; " +
-                $"Exception={result.Exception}; Violation={result.Violation?.Message}");
+                $"{Describe(result, ruleScore)}; minimizedReproducer={promotion.SerializePermanentReproducer()}");
         }
     }
 
@@ -54,11 +64,19 @@ public sealed class ZaloPollClassifierAiOptionalityFuzzTests
 
         var result = await StatefulFuzzRunner.RunAsync(
             scenario,
-            new AiClassifierAuthorityTarget(ruleScore));
+            CreateTarget(ruleScore));
 
         Assert.False(result.Failed, result.Violation?.Message ?? result.Exception?.ToString());
         Assert.Equal(expectedAuthority, ruleScore >= 0.72);
     }
+
+    private static AiClassifierAuthorityTarget CreateTarget(double ruleScore) => new(ruleScore);
+
+    private static string Describe(StatefulFuzzRunResult<AiClassifierAction> result, double ruleScore) =>
+        $"seed={result.Scenario.Seed}; ruleScore={ruleScore:F4}; fingerprint={result.FailureFingerprint ?? "none"}; " +
+        $"failureIndex={result.FailureActionIndex?.ToString() ?? "none"}; " +
+        $"actions=[{string.Join(',', result.Scenario.Actions)}]; " +
+        $"violation={result.Violation?.Message ?? "none"}; exception={result.Exception?.Message ?? "none"}";
 
     private static readonly AiClassifierAction[] SeedActions =
     [
