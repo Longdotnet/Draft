@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 
 namespace VolleyDraft.Api.Tests.Fuzzing;
@@ -43,7 +44,45 @@ internal sealed record StatefulFuzzRunResult<TAction>(
     public bool Failed => Violation is not null || Exception is not null;
 
     public string? FailureFingerprint => Violation?.StableFingerprint ??
-        (Exception is null ? null : $"exception:{TargetName}:{Exception.GetType().FullName}");
+        (Exception is null ? null : StatefulFailureFingerprint.ForException(TargetName, Exception));
+}
+
+internal static class StatefulFailureFingerprint
+{
+    public static string ForException(string targetName, Exception exception)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetName);
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var exceptionType = exception.GetType().FullName ?? exception.GetType().Name;
+        var origin = DescribeOrigin(exception.TargetSite);
+        return string.IsNullOrWhiteSpace(origin)
+            ? $"exception:{targetName}:{exceptionType}"
+            : $"exception:{targetName}:{exceptionType}:{origin}";
+    }
+
+    private static string? DescribeOrigin(MethodBase? method)
+    {
+        var declaringType = method?.DeclaringType;
+        if (method is null || declaringType is null)
+            return null;
+
+        // Async exceptions commonly surface from compiler-generated <Method>d__N.MoveNext frames.
+        // Normalize those back to the source method so fingerprints do not depend on state-machine ordinals.
+        if (string.Equals(method.Name, "MoveNext", StringComparison.Ordinal) &&
+            declaringType.DeclaringType is { } parentType &&
+            declaringType.Name.StartsWith('<'))
+        {
+            var methodNameEnd = declaringType.Name.IndexOf('>');
+            if (methodNameEnd > 1)
+            {
+                var sourceMethodName = declaringType.Name[1..methodNameEnd];
+                return $"{parentType.FullName ?? parentType.Name}.{sourceMethodName}";
+            }
+        }
+
+        return $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
+    }
 }
 
 internal static class StatefulFuzzRunner
