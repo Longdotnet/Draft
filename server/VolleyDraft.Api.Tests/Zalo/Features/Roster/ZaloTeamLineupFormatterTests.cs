@@ -37,7 +37,11 @@ public sealed class ZaloTeamLineupFormatterTests
         Assert.Contains("@Npc 9 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 4 CN 13/9", result.Text, StringComparison.Ordinal);
         Assert.Contains("@Npc 10 CN 13/9", result.Text, StringComparison.Ordinal);
-        Assert.Contains("cập nhật Nick Tran: nam", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("người được NPC hỏi", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("`nam`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("`@Npc cập nhật @Tên: nam`", result.Text, StringComparison.Ordinal);
+        Assert.Contains("phải tag đúng người", result.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("cập nhật Nick Tran: nam", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("huỷ pass", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("xong", result.Text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("huỷ nhận", result.Text, StringComparison.OrdinalIgnoreCase);
