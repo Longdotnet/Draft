@@ -15,12 +15,10 @@ public sealed class ConcurrentManualDraftStartFuzzTests
     {
         for (var seed = 1; seed <= 32; seed += 1)
         {
-            var connectionString = $"Data Source=manual-draft-race-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Default Timeout=5";
+            var connectionString = CreateConnectionString("manual-draft-race");
             await using var anchor = new SqliteConnection(connectionString);
             await anchor.OpenAsync();
-            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
-                .UseSqlite(connectionString)
-                .Options;
+            var options = CreateOptions(connectionString);
 
             var seeded = await SeedReadySessionAsync(options, seed);
             await using var primary = new VolleyDraftDbContext(options);
@@ -33,21 +31,92 @@ public sealed class ConcurrentManualDraftStartFuzzTests
             start.SetResult();
             var outcomes = await Task.WhenAll(first, second);
 
-            Assert.All(outcomes, outcome => Assert.Null(outcome.Exception));
-            Assert.Equal(1, outcomes.Count(outcome => outcome.IsSuccess));
-            Assert.Equal(1, outcomes.Count(outcome => !outcome.IsSuccess));
-
-            await using var verifier = new VolleyDraftDbContext(options);
-            var durableSession = await verifier.MatchSessions.AsNoTracking()
-                .SingleAsync(item => item.Id == seeded.SessionId);
-            var rounds = await verifier.DraftRounds.AsNoTracking()
-                .Where(item => item.SessionId == seeded.SessionId)
-                .ToListAsync();
-
-            Assert.Equal(SessionStatus.Drafting, durableSession.Status);
-            Assert.Single(rounds);
+            AssertSingleWinnerWithoutExceptions(outcomes);
+            await AssertDurableSingleDraftAsync(options, seeded.SessionId);
         }
     }
+
+    [Fact]
+    public async Task Three_way_start_race_then_restart_retry_preserves_single_logical_mutation()
+    {
+        // Exercise more interleavings than the historical two-caller race and then retry
+        // through a fresh DbContext to model a client retry after an uncertain response or deploy.
+        // The authoritative invariant is one Ready -> Drafting transition and one draft round.
+        for (var seed = 1; seed <= 48; seed += 1)
+        {
+            var connectionString = CreateConnectionString("manual-draft-retry-race");
+            await using var anchor = new SqliteConnection(connectionString);
+            await anchor.OpenAsync();
+            var options = CreateOptions(connectionString);
+            var seeded = await SeedReadySessionAsync(options, 10_000 + seed);
+
+            await using var firstDb = new VolleyDraftDbContext(options);
+            await using var secondDb = new VolleyDraftDbContext(options);
+            await using var thirdDb = new VolleyDraftDbContext(options);
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var delays = new[]
+            {
+                seed % 5,
+                (seed * 3) % 5,
+                (seed * 7) % 5
+            };
+            var outcomes = await ReleaseTogetherAsync(
+                start,
+                RunStartAsync(firstDb, seeded.AdminId, seeded.SessionId, start.Task, delays[0]),
+                RunStartAsync(secondDb, seeded.AdminId, seeded.SessionId, start.Task, delays[1]),
+                RunStartAsync(thirdDb, seeded.AdminId, seeded.SessionId, start.Task, delays[2]));
+
+            AssertSingleWinnerWithoutExceptions(outcomes);
+            await AssertDurableSingleDraftAsync(options, seeded.SessionId);
+
+            // Fresh process-shaped retry: if the winning HTTP response was lost, retrying the
+            // command must not produce another logical mutation or another DraftRound.
+            await using var retryDb = new VolleyDraftDbContext(options);
+            var retry = await new SessionDraftService(retryDb)
+                .StartDraftAsync(seeded.AdminId, seeded.SessionId);
+            Assert.False(retry.IsSuccess);
+            await AssertDurableSingleDraftAsync(options, seeded.SessionId);
+        }
+    }
+
+    private static async Task<StartOutcome[]> ReleaseTogetherAsync(
+        TaskCompletionSource start,
+        params Task<StartOutcome>[] operations)
+    {
+        start.SetResult();
+        return await Task.WhenAll(operations);
+    }
+
+    private static void AssertSingleWinnerWithoutExceptions(IReadOnlyCollection<StartOutcome> outcomes)
+    {
+        Assert.All(outcomes, outcome => Assert.Null(outcome.Exception));
+        Assert.Equal(1, outcomes.Count(outcome => outcome.IsSuccess));
+        Assert.Equal(outcomes.Count - 1, outcomes.Count(outcome => !outcome.IsSuccess));
+    }
+
+    private static async Task AssertDurableSingleDraftAsync(
+        DbContextOptions<VolleyDraftDbContext> options,
+        string sessionId)
+    {
+        await using var verifier = new VolleyDraftDbContext(options);
+        var durableSession = await verifier.MatchSessions.AsNoTracking()
+            .SingleAsync(item => item.Id == sessionId);
+        var rounds = await verifier.DraftRounds.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .ToListAsync();
+
+        Assert.Equal(SessionStatus.Drafting, durableSession.Status);
+        Assert.Single(rounds);
+    }
+
+    private static string CreateConnectionString(string prefix) =>
+        $"Data Source={prefix}-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Default Timeout=5";
+
+    private static DbContextOptions<VolleyDraftDbContext> CreateOptions(string connectionString) =>
+        new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connectionString)
+            .Options;
 
     private static async Task<StartOutcome> RunStartAsync(
         VolleyDraftDbContext db,
