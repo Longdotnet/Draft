@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Models;
 
 namespace VolleyDraft.Api.Services;
 
@@ -48,6 +49,81 @@ public sealed partial class ZaloOverbookService
             .FirstOrDefault();
         if (string.IsNullOrWhiteSpace(connectionId))
             return false;
+
+        // A destructive confirmation expiring must revoke mutation authority immediately,
+        // but the exact provider reply may still be useful as bounded conversation context.
+        // Convert that old confirmation into a fresh deterministic command 9 turn. The
+        // current bot router then re-reads session/roster/pass/share state and can only issue
+        // a NEW confirmation; this incoming message can never execute the expired authority.
+        if (quote.RepliesToBot &&
+            !string.IsNullOrWhiteSpace(quote.MessageId) &&
+            ZaloAmbientLeasePendingContinuationPolicy.IsStrongConfirmation(incoming.Content))
+        {
+            var expiredPending = await db.ZaloBotConversationStates
+                .AsNoTracking()
+                .SingleOrDefaultAsync(item =>
+                    item.ZaloConnectionId == connectionId &&
+                    item.GroupId == groupId &&
+                    item.SenderZaloUserId == senderId,
+                    cancellationToken);
+
+            if (expiredPending is not null && expiredPending.ExpiresAt <= DateTimeOffset.UtcNow)
+            {
+                var quotedBotRelation = await new ZaloMessageGraphStore(db)
+                    .LoadRelationAsync(connectionId, groupId, quote.MessageId, cancellationToken);
+                ZaloGroupMessage? promptSource = null;
+                if (!string.IsNullOrWhiteSpace(quotedBotRelation?.ToMessageId))
+                {
+                    promptSource = await db.ZaloGroupMessages
+                        .AsNoTracking()
+                        .SingleOrDefaultAsync(item =>
+                            item.ZaloConnectionId == connectionId &&
+                            item.GroupId == groupId &&
+                            item.MessageId == quotedBotRelation.ToMessageId,
+                            cancellationToken);
+                }
+
+                var recoveredSessionId = ZaloExpiredDraftConfirmationRecoveryPolicy.ResolveSessionId(
+                    expiredPending,
+                    quote,
+                    quotedBotRelation,
+                    promptSource,
+                    DateTimeOffset.UtcNow);
+                if (!string.IsNullOrWhiteSpace(recoveredSessionId))
+                {
+                    var session = await db.MatchSessions
+                        .AsNoTracking()
+                        .Where(item =>
+                            item.Id == recoveredSessionId &&
+                            item.ZaloConnectionId == connectionId &&
+                            item.ZaloGroupId == groupId &&
+                            item.BotEnabled &&
+                            item.Status != SessionStatus.Cancelled)
+                        .Select(item => new { item.Id, item.Name })
+                        .SingleOrDefaultAsync(cancellationToken);
+                    if (session is not null)
+                    {
+                        var refresh = incoming with
+                        {
+                            Content = $"9 {session.Name}",
+                            MentionedBot = true,
+                            Mentions = [new ZaloBridgeMention(botId, 0, 0)]
+                        };
+
+                        logger.LogInformation(
+                            "Recovered expired draft confirmation as fresh deterministic readiness turn Group={GroupId} Sender={SenderId} Message={MessageId} Session={SessionId} QuotedBotMessage={QuotedBotMessage}",
+                            groupId,
+                            senderId,
+                            incoming.MessageId,
+                            session.Id,
+                            quote.MessageId);
+
+                        await botService.HandleIncomingAsync(refresh, cancellationToken);
+                        return true;
+                    }
+                }
+            }
+        }
 
         // A recent bot-conversation lease remains the ordinary no-mention addressing
         // signal. A direct quote/reply can outlive that lease only when the provider
