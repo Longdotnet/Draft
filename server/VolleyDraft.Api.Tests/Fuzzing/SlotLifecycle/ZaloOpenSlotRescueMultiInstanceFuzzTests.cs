@@ -24,7 +24,7 @@ public sealed class ZaloOpenSlotRescueMultiInstanceFuzzTests
             var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
                 .UseSqlite(connectionString)
                 .Options;
-            var now = new DateTimeOffset(2026, 9, 10, 2, 0, 0, TimeSpan.Zero).AddMinutes(seed * 5);
+            var now = DateTimeOffset.UtcNow.AddHours(1).AddMinutes(seed * 5);
 
             await SeedDueOfferAsync(options, now, seed);
 
