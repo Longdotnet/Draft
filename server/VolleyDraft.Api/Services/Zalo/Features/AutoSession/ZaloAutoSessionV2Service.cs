@@ -100,6 +100,14 @@ internal sealed class ZaloAutoSessionV2Service(
         var trackedGroups = await store.GetActiveTrackedGroupsAsync(cancellationToken);
         var maxPolls = Math.Clamp(configuration.GetValue("AutoSession:ReconcilePollLimit", 20), 3, 50);
         var maxAgeDays = Math.Clamp(configuration.GetValue("AutoSession:PollMaxAgeDays", 21), 3, 90);
+        var eventFreshness = TimeSpan.FromMinutes(Math.Clamp(
+            configuration.GetValue("AutoSession:ReconcileEventFreshnessMinutes", 20),
+            5,
+            180));
+        var maximumSafetySilence = TimeSpan.FromMinutes(Math.Clamp(
+            configuration.GetValue("AutoSession:ReconcileMaximumSafetySilenceMinutes", 60),
+            15,
+            1440));
         var oldestCreatedAt = DateTimeOffset.UtcNow.AddDays(-maxAgeDays).ToUnixTimeMilliseconds();
         var hasLiveGroup = false;
 
@@ -108,7 +116,24 @@ internal sealed class ZaloAutoSessionV2Service(
             var rollout = await v2Store.GetRolloutModeAsync(tracked.Id, cancellationToken);
             if (rollout == ZaloAutoSessionRolloutMode.Disabled) continue;
             if (rollout == ZaloAutoSessionRolloutMode.Live) hasLiveGroup = true;
-            if (!await v2Store.IsRetryDueAsync(tracked.Id, cancellationToken)) continue;
+
+            var health = await v2Store.GetHealthAsync(tracked.Id, cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+            if (health.NextRetryAt is not null && health.NextRetryAt > now) continue;
+            if (!ZaloAutoSessionReconcilePolicy.ShouldRunProviderSafetyScan(
+                    health,
+                    now,
+                    eventFreshness,
+                    maximumSafetySilence))
+            {
+                logger.LogDebug(
+                    "Auto-session provider safety scan deferred by healthy realtime activity Group={GroupId} LastPollEventAt={LastPollEventAt} LastReconcileAt={LastReconcileAt}",
+                    tracked.GroupId,
+                    health.LastPollEventAt,
+                    health.LastReconcileAt);
+                continue;
+            }
+
             await v2Store.RecordReconcileAsync(tracked.Id, cancellationToken);
 
             try
