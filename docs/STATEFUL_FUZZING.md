@@ -35,6 +35,7 @@ The shared test foundation under `server/VolleyDraft.Api.Tests/Fuzzing/Core` pro
 - a reproducibility gate that requires repeated executions to produce the same fingerprint;
 - sequence minimization that removes actions while preserving the same fingerprint on candidate replays;
 - a promotion pipeline that re-verifies the minimized scenario before allowing durable reproducer serialization;
+- isolated target replay support so DB connections, process-local caches and mutable target fields cannot contaminate confirmation/minimization runs;
 - JSON reproducer serialization for confirmed promotion-ready cases.
 
 The foundation intentionally has no dependency on a fuzzing framework package. Domain-specific targets can grow independently while keeping replay semantics stable.
@@ -55,6 +56,8 @@ candidate
 ```
 
 If the original candidate is flaky, minimization is not attempted. If the minimized result is flaky, stops failing, or converges on another fingerprint, it is not promotable and durable serialization is rejected. This keeps the permanent corpus from learning accidental timing noise or a different root failure.
+
+Promotion/reproducibility replays must also start from isolated target ownership when a target keeps mutable process state or owns disposable resources such as an EF/SQLite context. Reusing one target instance across confirmation and minimization can make the second run inherit state from the first even though the scenario itself starts from a clean logical seed. `StatefulFuzzIsolatedTarget<TState,TAction>` wraps a target factory and delegates every new scenario execution to a fresh target instance while retaining all instances for deterministic cleanup after the campaign. Cross-feature targets that own database-backed state should use this adapter when a candidate enters the promotion pipeline.
 
 ## Initial corpus
 
