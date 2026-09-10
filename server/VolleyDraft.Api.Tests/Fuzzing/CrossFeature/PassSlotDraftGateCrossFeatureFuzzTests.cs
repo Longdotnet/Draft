@@ -61,8 +61,23 @@ public sealed class PassSlotDraftGateCrossFeatureFuzzTests
                 actions);
 
             var result = await StatefulFuzzRunner.RunAsync(scenario, target);
+            if (!result.Failed)
+                continue;
 
-            Assert.False(result.Failed, Describe(result));
+            await using var isolatedTarget = new StatefulFuzzIsolatedTarget<PassSlotDraftGateState, PassSlotDraftGateAction>(
+                static () => new PassSlotDraftGateTarget());
+            var promotion = await StatefulFuzzPromotion.PrepareAsync(
+                scenario,
+                isolatedTarget,
+                confirmationRuns: 3);
+
+            Assert.True(
+                promotion.IsPromotable,
+                $"{Describe(result)}; candidate failure was not stable enough for corpus promotion");
+
+            Assert.False(
+                result.Failed,
+                $"{Describe(result)}; minimizedReproducer={promotion.SerializePermanentReproducer()}");
         }
     }
 
