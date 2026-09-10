@@ -11,15 +11,16 @@ seed corpus
   -> deterministic mutation
   -> execute real code behind test doubles at external boundaries
   -> evaluate invariants after state transitions
-  -> reproduce
+  -> reproduce same fingerprint
   -> deduplicate
   -> minimize
-  -> permanent regression
+  -> reproduce minimized scenario with the same fingerprint
+  -> permanent regression/corpus promotion
   -> systemic fix
   -> replay target and adjacent corpus
 ```
 
-A confirmed failure is never discarded after the production fix. Its minimized reproducer becomes permanent executable knowledge.
+A confirmed failure is never discarded after the production fix. Its minimized reproducer becomes permanent executable knowledge, but only after the minimized form independently proves that it still reproduces the same failure fingerprint.
 
 ## Foundation
 
@@ -30,11 +31,30 @@ The shared test foundation under `server/VolleyDraft.Api.Tests/Fuzzing/Core` pro
 - deterministic seed replay using a repository-owned xorshift32 PRNG rather than relying on `System.Random` implementation stability;
 - sequence mutation operators for insertion, deletion, duplication, replacement and reordering;
 - a runner that records the first grounded invariant violation or exception;
-- a stable failure fingerprint;
-- sequence minimization that removes actions while preserving the same fingerprint;
-- JSON reproducer serialization.
+- a stable failure fingerprint that includes normalized exception origin where available;
+- a reproducibility gate that requires repeated executions to produce the same fingerprint;
+- sequence minimization that removes actions while preserving the same fingerprint on candidate replays;
+- a promotion pipeline that re-verifies the minimized scenario before allowing durable reproducer serialization;
+- JSON reproducer serialization for confirmed promotion-ready cases.
 
 The foundation intentionally has no dependency on a fuzzing framework package. Domain-specific targets can grow independently while keeping replay semantics stable.
+
+### Promotion contract
+
+One successful minimizer replay is not enough to promote a reproducer. A target can contain timing, shared-state or other intermittent behavior that happens to preserve the expected fingerprint once while reduction is in progress.
+
+`StatefulFuzzPromotion.PrepareAsync` therefore owns the safe sequence:
+
+```text
+candidate
+  -> reproducibility verification
+  -> minimization preserving fingerprint
+  -> independent minimized-scenario reproducibility verification
+  -> require original fingerprint == minimized fingerprint
+  -> serialize/promote
+```
+
+If the original candidate is flaky, minimization is not attempted. If the minimized result is flaky, stops failing, or converges on another fingerprint, it is not promotable and durable serialization is rejected. This keeps the permanent corpus from learning accidental timing noise or a different root failure.
 
 ## Initial corpus
 
