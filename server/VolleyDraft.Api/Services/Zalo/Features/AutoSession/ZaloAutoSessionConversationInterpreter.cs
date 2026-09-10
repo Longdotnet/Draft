@@ -422,6 +422,8 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
         {
             using var parsed = JsonDocument.Parse(StripCodeFence(result.Content));
             var root = parsed.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return null;
 
             var intent = ParseIntent(ReadString(root, "intent"));
             var selectionMode = ParseSelectionMode(ReadString(root, "selectionMode"));
@@ -448,10 +450,12 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
             var location = ReadString(root, "location");
             int? teamSize = null;
             if (root.TryGetProperty("teamSize", out var teamSizeNode) &&
+                teamSizeNode.ValueKind == JsonValueKind.Number &&
                 teamSizeNode.TryGetInt32(out var parsedTeamSize) &&
                 parsedTeamSize is >= 2 and <= 30)
                 teamSize = parsedTeamSize;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) &&
+                             confidenceNode.ValueKind == JsonValueKind.Number &&
                              confidenceNode.TryGetDouble(out var value)
                 ? Math.Clamp(value, 0, 1)
                 : 0;

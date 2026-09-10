@@ -25,7 +25,7 @@ public sealed class ZaloOpenSlotRescueSendPersistRetryFuzzTests
             var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
                 .UseSqlite(connectionString)
                 .Options;
-            var now = new DateTimeOffset(2026, 9, 10, 3, 0, 0, TimeSpan.Zero).AddMinutes(seed * 7);
+            var now = DateTimeOffset.UtcNow.AddHours(1).AddMinutes(seed * 7);
 
             await SeedDueOfferAsync(options, now, seed);
             await InstallOneShotPersistenceFailureTriggerAsync(options);
