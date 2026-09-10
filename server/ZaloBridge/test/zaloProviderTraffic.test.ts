@@ -299,3 +299,104 @@ test("credential refresh preserves the account pacing queue", async () => {
   assert.deepEqual(starts, [50_000, 50_750]);
   assert.deepEqual(sleeps, [750]);
 });
+
+test("concurrent sdk.login calls for the same credentials share one provider attempt", async () => {
+  const accountCredentials = credentials("login-shared");
+  const governor = new ZaloProviderTrafficGovernor({ minGapMs: 0 });
+  let providerCalls = 0;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const providerApi = { session: "shared" };
+
+  const first = governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    markStarted();
+    await gate;
+    return providerApi;
+  }, "sdk.login");
+  const duplicate = governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    return { session: "duplicate" };
+  }, "sdk.login");
+
+  await started;
+  assert.equal(providerCalls, 1, "a concurrent cache miss must not queue a second login");
+  release();
+  const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+  assert.equal(firstResult, providerApi);
+  assert.equal(duplicateResult, providerApi);
+  assert.equal(providerCalls, 1);
+  assert.equal(governor.getDiagnostics().aggregate.providerAttempts, 1);
+});
+
+test("completed sdk.login is not retained as a hidden session cache", async () => {
+  const accountCredentials = credentials("login-sequential");
+  const governor = new ZaloProviderTrafficGovernor({ minGapMs: 0 });
+  let providerCalls = 0;
+
+  const first = await governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    return "session-1";
+  }, "sdk.login");
+  const second = await governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    return "session-2";
+  }, "sdk.login");
+
+  assert.equal(first, "session-1");
+  assert.equal(second, "session-2");
+  assert.equal(providerCalls, 2, "the gateways remain responsible for bounded API caching");
+});
+
+test("failed shared sdk.login is evicted so a later attempt can recover", async () => {
+  const accountCredentials = credentials("login-failure");
+  const governor = new ZaloProviderTrafficGovernor({ minGapMs: 0 });
+  let providerCalls = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+
+  const first = governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    await gate;
+    throw { response: { status: 503 } };
+  }, "sdk.login");
+  const duplicate = governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    return "must-not-run";
+  }, "sdk.login");
+
+  release();
+  await assert.rejects(first);
+  await assert.rejects(duplicate);
+  assert.equal(providerCalls, 1);
+
+  const recovered = await governor.runWithCredentials(accountCredentials, async () => {
+    providerCalls += 1;
+    return "recovered";
+  }, "sdk.login");
+  assert.equal(recovered, "recovered");
+  assert.equal(providerCalls, 2);
+});
+
+test("sdk.login single-flight remains isolated across credential scopes", async () => {
+  const credentialsA = credentials("login-a");
+  const credentialsB = credentials("login-b");
+  const governor = new ZaloProviderTrafficGovernor({ minGapMs: 0 });
+  let providerCalls = 0;
+
+  const [resultA, resultB] = await Promise.all([
+    governor.runWithCredentials(credentialsA, async () => {
+      providerCalls += 1;
+      return "session-a";
+    }, "sdk.login"),
+    governor.runWithCredentials(credentialsB, async () => {
+      providerCalls += 1;
+      return "session-b";
+    }, "sdk.login"),
+  ]);
+
+  assert.deepEqual([resultA, resultB], ["session-a", "session-b"]);
+  assert.equal(providerCalls, 2);
+});
