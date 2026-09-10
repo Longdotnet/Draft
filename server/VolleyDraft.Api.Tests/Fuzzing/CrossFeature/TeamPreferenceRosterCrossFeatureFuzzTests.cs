@@ -60,8 +60,23 @@ public sealed class TeamPreferenceRosterCrossFeatureFuzzTests
                 actions);
 
             var result = await StatefulFuzzRunner.RunAsync(scenario, target);
+            if (!result.Failed)
+                continue;
 
-            Assert.False(result.Failed, Describe(result));
+            await using var isolatedTarget = new StatefulFuzzIsolatedTarget<RosterState, RosterAction>(
+                static () => new TeamPreferenceRosterTarget());
+            var promotion = await StatefulFuzzPromotion.PrepareAsync(
+                scenario,
+                isolatedTarget,
+                confirmationRuns: 3);
+
+            Assert.True(
+                promotion.IsPromotable,
+                $"{Describe(result)}; candidate failure was not stable enough for corpus promotion");
+
+            Assert.False(
+                result.Failed,
+                $"{Describe(result)}; minimizedReproducer={promotion.SerializePermanentReproducer()}");
         }
     }
 
