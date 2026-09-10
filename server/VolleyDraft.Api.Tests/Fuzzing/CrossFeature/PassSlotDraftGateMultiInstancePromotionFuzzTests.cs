@@ -1,4 +1,8 @@
 using Xunit;
+using Action = VolleyDraft.Api.Tests.Fuzzing.PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceAction;
+using ActionKind = VolleyDraft.Api.Tests.Fuzzing.PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceActionKind;
+using State = VolleyDraft.Api.Tests.Fuzzing.PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceState;
+using Target = VolleyDraft.Api.Tests.Fuzzing.PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceDraftGateTarget;
 
 namespace VolleyDraft.Api.Tests.Fuzzing;
 
@@ -7,11 +11,6 @@ public sealed class PassSlotDraftGateMultiInstancePromotionFuzzTests
     [Fact]
     public async Task Multi_instance_interleaving_findings_are_reproduced_minimized_and_reverified_before_promotion()
     {
-        using Action = PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceAction;
-        using ActionKind = PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceActionKind;
-        using State = PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceState;
-        using Target = PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceDraftGateTarget;
-
         Action[] seedActions =
         [
             new(ActionKind.OpenOwned),
@@ -60,8 +59,7 @@ public sealed class PassSlotDraftGateMultiInstancePromotionFuzzTests
         }
     }
 
-    private static string Describe(
-        StatefulFuzzRunResult<PassSlotDraftGateMultiInstanceFuzzTests.MultiInstanceAction> result) =>
+    private static string Describe(StatefulFuzzRunResult<Action> result) =>
         $"seed={result.Scenario.Seed}; fingerprint={result.FailureFingerprint ?? "none"}; " +
         $"failureIndex={result.FailureActionIndex?.ToString() ?? "none"}; " +
         $"actions=[{string.Join(',', result.Scenario.Actions.Select(action => action.Kind))}]; " +
