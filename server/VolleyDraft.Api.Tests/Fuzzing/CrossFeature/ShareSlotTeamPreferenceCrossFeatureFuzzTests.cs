@@ -54,8 +54,23 @@ public sealed class ShareSlotTeamPreferenceCrossFeatureFuzzTests
                 actions);
 
             var result = await StatefulFuzzRunner.RunAsync(scenario, target);
+            if (!result.Failed)
+                continue;
 
-            Assert.False(result.Failed, Describe(result));
+            await using var isolatedTarget = new StatefulFuzzIsolatedTarget<SharePreferenceState, SharePreferenceAction>(
+                static () => new SharePreferenceTarget());
+            var promotion = await StatefulFuzzPromotion.PrepareAsync(
+                scenario,
+                isolatedTarget,
+                confirmationRuns: 3);
+
+            Assert.True(
+                promotion.IsPromotable,
+                $"{Describe(result)}; candidate failure was not stable enough for corpus promotion");
+
+            Assert.False(
+                result.Failed,
+                $"{Describe(result)}; minimizedReproducer={promotion.SerializePermanentReproducer()}");
         }
     }
 
