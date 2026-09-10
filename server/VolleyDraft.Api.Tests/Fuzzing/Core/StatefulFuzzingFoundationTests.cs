@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Xunit;
 
 namespace VolleyDraft.Api.Tests.Fuzzing;
@@ -159,6 +160,48 @@ public sealed class StatefulFuzzingFoundationTests
     }
 
     [Fact]
+    public async Task Runner_distinguishes_same_exception_type_from_different_failure_origins()
+    {
+        var target = new CounterTarget();
+        var primary = await StatefulFuzzRunner.RunAsync(
+            new StatefulFuzzCase<CounterAction>("primary-exception", 1, [new(CounterActionKind.Throw)]),
+            target);
+        var alternate = await StatefulFuzzRunner.RunAsync(
+            new StatefulFuzzCase<CounterAction>("alternate-exception", 2, [new(CounterActionKind.ThrowAlternate)]),
+            target);
+
+        Assert.IsType<InvalidOperationException>(primary.Exception);
+        Assert.IsType<InvalidOperationException>(alternate.Exception);
+        Assert.NotEqual(primary.FailureFingerprint, alternate.FailureFingerprint);
+        Assert.Contains(nameof(CounterTarget.ThrowPrimary), primary.FailureFingerprint, StringComparison.Ordinal);
+        Assert.Contains(nameof(CounterTarget.ThrowSecondary), alternate.FailureFingerprint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Minimizer_cannot_replace_the_original_exception_with_same_type_from_another_origin()
+    {
+        var target = new CounterTarget();
+        var scenario = new StatefulFuzzCase<CounterAction>(
+            "exception-origin-minimize",
+            20260910,
+            [
+                new CounterAction(CounterActionKind.ThrowAlternate),
+                new CounterAction(CounterActionKind.Throw)
+            ]);
+        var original = await StatefulFuzzRunner.RunAsync(scenario, target);
+
+        var minimized = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+            scenario,
+            target,
+            original.FailureFingerprint!);
+        var replay = await StatefulFuzzRunner.RunAsync(minimized.Scenario, target);
+
+        Assert.Single(minimized.Scenario.Actions);
+        Assert.Equal(CounterActionKind.ThrowAlternate, minimized.Scenario.Actions[0].Kind);
+        Assert.Equal(original.FailureFingerprint, replay.FailureFingerprint);
+    }
+
+    [Fact]
     public void Reproducer_round_trips_seed_actions_and_failure_identity()
     {
         var scenario = new StatefulFuzzCase<string>(
@@ -185,7 +228,8 @@ public sealed class StatefulFuzzingFoundationTests
         Add,
         Reset,
         Noise,
-        Throw
+        Throw,
+        ThrowAlternate
     }
 
     private sealed record CounterAction(CounterActionKind Kind, int Amount = 0);
@@ -213,13 +257,25 @@ public sealed class StatefulFuzzingFoundationTests
                 case CounterActionKind.Noise:
                     break;
                 case CounterActionKind.Throw:
-                    throw new InvalidOperationException("synthetic target exception");
+                    ThrowPrimary();
+                    break;
+                case CounterActionKind.ThrowAlternate:
+                    ThrowSecondary();
+                    break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(action));
             }
 
             return ValueTask.CompletedTask;
         }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static void ThrowPrimary() =>
+            throw new InvalidOperationException("synthetic target exception");
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static void ThrowSecondary() =>
+            throw new InvalidOperationException("synthetic alternate target exception");
 
         public IEnumerable<StatefulInvariantViolation> EvaluateInvariants(CounterState state)
         {
