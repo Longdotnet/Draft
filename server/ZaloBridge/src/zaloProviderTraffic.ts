@@ -124,6 +124,7 @@ export class ZaloProviderTrafficGovernor {
   private readonly credentialScopeByAccount = new Map<string, string>();
   private readonly stableScopeByCredential = new Map<string, string>();
   private readonly inFlightReads = new Map<string, Promise<unknown>>();
+  private readonly inFlightLogins = new Map<string, Promise<unknown>>();
   private readonly telemetryByScope = new Map<string, ScopeTelemetry>();
   private readonly now: () => number;
 
@@ -159,7 +160,32 @@ export class ZaloProviderTrafficGovernor {
     operation: () => Promise<T>,
     operationName = "provider.call",
   ): Promise<T> {
-    return this.rateGuard.run(this.scopeForCredentials(credentials), operation, operationName);
+    const scope = this.scopeForCredentials(credentials);
+    const normalizedOperation = operationName.trim() || "provider.call";
+
+    // Cold starts can make independent bridge features miss their local API caches at
+    // the same time (listener/read gateway, sticker gateway, scheduler-triggered work).
+    // Serializing those misses in the rate guard is not enough: every queued caller has
+    // already decided to login, so it would still execute another sdk.login later.
+    // Coalesce only the overlapping login initialization itself. Successful completion is
+    // not cached here; each gateway keeps its normal bounded API cache. Failures are also
+    // evicted immediately so a later attempt can recover after auth/network/provider state
+    // changes. All callers share the same governed provider attempt and its cooldown.
+    if (normalizedOperation === "sdk.login") {
+      const existing = this.inFlightLogins.get(scope);
+      if (existing) return existing as Promise<T>;
+
+      const result = this.rateGuard.run(scope, operation, normalizedOperation);
+      this.inFlightLogins.set(scope, result);
+      void result.finally(() => {
+        if (this.inFlightLogins.get(scope) === result) {
+          this.inFlightLogins.delete(scope);
+        }
+      }).catch(() => undefined);
+      return result;
+    }
+
+    return this.rateGuard.run(scope, operation, normalizedOperation);
   }
 
   /**
