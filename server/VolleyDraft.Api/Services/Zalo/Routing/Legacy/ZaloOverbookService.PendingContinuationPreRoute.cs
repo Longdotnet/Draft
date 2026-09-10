@@ -49,12 +49,33 @@ public sealed partial class ZaloOverbookService
         if (string.IsNullOrWhiteSpace(connectionId))
             return false;
 
-        // A pending row alone is not enough addressing authority. Require a recent
-        // successful reply to this same sender/group, then let the narrow policy prove
-        // that the current text really continues that pending workflow.
+        // A recent bot-conversation lease remains the ordinary no-mention addressing
+        // signal. A direct quote/reply can outlive that lease only when the provider
+        // message graph proves that the quoted bot reply came from this sender's still-
+        // active durable DraftReadinessSessionChoice task. This is context recovery,
+        // never mutation authority: the legacy router still revalidates all domain state.
+        var quoteAnchoredTask = false;
+        if (quote.RepliesToBot && !string.IsNullOrWhiteSpace(quote.MessageId))
+        {
+            var selectionState = await new ZaloConversationStateV2Store(db)
+                .LoadActiveAsync(groupId, senderId, cancellationToken);
+            if (selectionState is not null)
+            {
+                var quotedBotRelation = await new ZaloMessageGraphStore(db)
+                    .LoadRelationAsync(connectionId, groupId, quote.MessageId, cancellationToken);
+                quoteAnchoredTask = ZaloQuotedTaskRecoveryPolicy.IsExactDraftSessionChoiceAnchor(
+                    selectionState,
+                    quote,
+                    quotedBotRelation);
+            }
+        }
+
+        // A pending row alone is not enough addressing authority. Require either a
+        // recent successful reply lease or the exact provider-message task anchor above,
+        // then let the narrow policy prove that the text really continues the workflow.
         var hasLease = await new ZaloAmbientConversationLeaseResolver(db)
             .IsActiveAsync(connectionId, groupId, senderId, 180, cancellationToken);
-        if (!hasLease)
+        if (!hasLease && !quoteAnchoredTask)
             return false;
 
         var continuation = await new ZaloAmbientLeasePendingContinuationPolicy(db)
@@ -78,12 +99,13 @@ public sealed partial class ZaloOverbookService
         };
 
         logger.LogInformation(
-            "Continued trusted pending Zalo workflow without re-mention Group={GroupId} Sender={SenderId} Message={MessageId} PendingIntent={PendingIntent} Cancel={Cancel}",
+            "Continued trusted pending Zalo workflow without re-mention Group={GroupId} Sender={SenderId} Message={MessageId} PendingIntent={PendingIntent} Cancel={Cancel} QuoteAnchoredTask={QuoteAnchoredTask}",
             groupId,
             senderId,
             incoming.MessageId,
             continuation.PendingIntent,
-            continuation.IsCancellation);
+            continuation.IsCancellation,
+            quoteAnchoredTask);
 
         await botService.HandleIncomingAsync(promoted, cancellationToken);
         return true;
