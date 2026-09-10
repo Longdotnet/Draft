@@ -74,7 +74,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
     }
 
     [Fact]
-    public void Missing_profiles_names_the_grounded_players_and_teaches_existing_update_syntax()
+    public void Missing_profiles_teaches_self_reply_or_exact_mention_instead_of_bare_display_name_mutation()
     {
         var readiness = Snapshot(
             ZaloDraftReadinessState.MissingProfiles,
@@ -87,11 +87,36 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
 
         Assert.Contains("To An", message, StringComparison.Ordinal);
         Assert.Contains("Nick Tran", message, StringComparison.Ordinal);
-        Assert.Contains("@Npc cập nhật To An: nam", message, StringComparison.Ordinal);
+        Assert.Contains("trả lời chính tin NPC hỏi", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("`nam`", message, StringComparison.Ordinal);
+        Assert.Contains("không cần @Npc", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("`@Npc cập nhật @Tên: nam`", message, StringComparison.Ordinal);
+        Assert.Contains("phải tag đúng người", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không dùng display name trần", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@Npc cập nhật To An: nam", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Npc cập nhật Nick Tran: nam", message, StringComparison.Ordinal);
         Assert.Contains("@Npc 9 CN 13/9", message, StringComparison.Ordinal);
         Assert.Contains("xác nhận draft", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("sync", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Duplicate_missing_display_names_never_become_an_authoritative_update_target()
+    {
+        var readiness = Snapshot(
+            ZaloDraftReadinessState.MissingProfiles,
+            "draft_blocked_missing_profile",
+            effectiveSlots: 18,
+            capacity: 18,
+            missingNames: ["Minh", "Minh"]);
+
+        var message = ZaloTeamResultRecoveryPolicy.BuildNoResultMessage("CN 13/9", readiness);
+
+        Assert.Contains("Minh", message, StringComparison.Ordinal);
+        Assert.Contains("`@Npc cập nhật @Tên: nam`", message, StringComparison.Ordinal);
+        Assert.Contains("tag đúng người", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@Npc cập nhật Minh: nam", message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -121,7 +146,7 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
     }
 
     [Fact]
-    public void Unknown_readiness_keeps_complete_no_ai_escape_hatch_and_teaches_no_mention_confirmation()
+    public void Unknown_readiness_keeps_complete_no_ai_escape_hatch_and_identity_safe_profile_guidance()
     {
         var message = ZaloTeamResultRecoveryPolicy.BuildNoResultMessage("CN 13/9");
 
@@ -131,7 +156,11 @@ public sealed class ZaloTeamResultRecoveryPolicyTests
         Assert.Contains("`huỷ`", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("không cần @Npc lại", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 4 CN 13/9", message, StringComparison.Ordinal);
-        Assert.Contains("@Npc cập nhật Nick Tran: nam", message, StringComparison.Ordinal);
+        Assert.Contains("người được NPC hỏi", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("`nam`", message, StringComparison.Ordinal);
+        Assert.Contains("`@Npc cập nhật @Tên: nam`", message, StringComparison.Ordinal);
+        Assert.Contains("phải tag đúng người", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("@Npc cập nhật Nick Tran: nam", message, StringComparison.Ordinal);
         Assert.Contains("huỷ pass", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("huỷ nhận", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@Npc 10 CN 13/9", message, StringComparison.Ordinal);

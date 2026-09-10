@@ -36,7 +36,7 @@ public static class ZaloTeamResultRecoveryPolicy
                    $"1) Trưởng nhóm, phó nhóm hoặc người được admin cấp quyền gõ `{draftCommand}`. NPC sẽ kiểm dữ liệu thật và nói đúng việc đang vướng.\n" +
                    "2) Nếu NPC hiện cảnh báo trước khi chia đội, người vừa chạy lệnh chỉ cần trả lời chính tin đó bằng `xác nhận draft` để chạy hoặc `huỷ` để dừng; không cần @Npc lại.\n" +
                    $"3) Nếu NPC báo thiếu người: gõ `{missingCommand}` để xem số chỗ hiện tại. Trưởng/phó có thể nói `vẫn đánh` (hoặc `chốt N`, ví dụ `chốt 16`) để chơi với danh sách hiện tại, hoặc `kiếm thêm` để tiếp tục tuyển; chỉ chạy draft sau khi NPC đã chốt đúng hướng từ dữ liệu mới. Nếu NPC báo dư người, xử lý người/chỗ dư trước rồi kiểm lại.\n" +
-                   "4) Nếu NPC báo hồ sơ chưa đủ: cập nhật đúng người, ví dụ `@Npc cập nhật Nick Tran: nam` hoặc `@Npc cập nhật Nick Tran: nam, công, trung bình`, rồi gõ lại lệnh 9.\n" +
+                   "4) Nếu NPC báo hồ sơ chưa đủ: người được NPC hỏi có thể trả lời chính tin đó bằng `nam`, `thủ`, `mới chơi` hoặc câu ngắn tương tự; không cần @Npc. Nếu admin/trưởng/phó cập nhật thay thì phải tag đúng người, ví dụ `@Npc cập nhật @Tên: nam` hoặc `@Npc cập nhật @Tên: nam, công, trung bình`; không dùng display name trần để đoán người. Sau đó gõ lại lệnh 9.\n" +
                    "5) Nếu NPC báo còn suất đang nhường/chờ nhận: người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ chỗ nhận muốn nhả dùng `huỷ nhận`. NPC chỉ chốt khi trạng thái thật khớp.\n" +
                    $"6) Chỉ khi NPC báo chia đội đã xong mới gõ `{imageCommand}` để lấy card 3 đội.\n" +
                    "Nếu bạn không có quyền chạy lệnh 9, gửi nguyên hướng dẫn này cho trưởng/phó nhóm. AI có tắt/hết quota thì các cú pháp trên vẫn hoạt động bằng dữ liệu hệ thống.";
@@ -135,9 +135,9 @@ public static class ZaloTeamResultRecoveryPolicy
         var subject = names.Count > 0
             ? string.Join(", ", names)
             : $"{Math.Max(1, readiness.MissingProfileCount)} người";
-        var example = names.FirstOrDefault() ?? "Nick Tran";
         return $"Còn thiếu hồ sơ của: {subject}. " +
-               $"Cập nhật từng người, ví dụ `@Npc cập nhật {example}: nam` hoặc `@Npc cập nhật {example}: nam, công, trung bình`; sau đó " +
+               "Người đang thiếu hồ sơ có thể trả lời chính tin NPC hỏi bằng `nam`, `thủ`, `mới chơi` hoặc câu ngắn tương tự; không cần @Npc. " +
+               "Nếu admin/trưởng/phó cập nhật thay thì phải tag đúng người, ví dụ `@Npc cập nhật @Tên: nam` hoặc `@Npc cập nhật @Tên: nam, công, trung bình`; không dùng display name trần để đoán người. Sau đó " +
                BuildDraftExecutionGuide(draftCommand, imageCommand, lowerCaseStart: true);
     }
 
