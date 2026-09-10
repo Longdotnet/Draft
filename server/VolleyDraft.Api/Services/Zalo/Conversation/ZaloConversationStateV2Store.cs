@@ -105,12 +105,14 @@ public sealed class ZaloConversationStateV2Store(VolleyDraftDbContext db)
         lastMessageId = CleanOptional(lastMessageId, 160);
         if (groupId.Length == 0 || senderZaloUserId.Length == 0 || intent.Length == 0)
             throw new ArgumentException("Group, sender and intent are required for conversation state.");
-        if (expiresAt <= DateTimeOffset.UtcNow) throw new ArgumentOutOfRangeException(nameof(expiresAt));
+
+        var now = DateTimeOffset.UtcNow;
+        expiresAt = ZaloConversationLifetimePolicy.NormalizeExpiry(intent, expiresAt, now);
+        if (expiresAt <= now) throw new ArgumentOutOfRangeException(nameof(expiresAt));
 
         await EnsureSchemaAsync(cancellationToken);
         var connection = db.Database.GetDbConnection();
         await OpenIfNeededAsync(connection, cancellationToken);
-        var now = DateTimeOffset.UtcNow;
         var existing = await LoadAnyAsync(connection, groupId, senderZaloUserId, cancellationToken);
         var id = existing?.Id ?? Guid.NewGuid().ToString("n");
         var version = (existing?.StateVersion ?? 0) + 1;
