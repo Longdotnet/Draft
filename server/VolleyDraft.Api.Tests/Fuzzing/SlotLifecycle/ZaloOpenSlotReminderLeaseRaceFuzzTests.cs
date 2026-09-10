@@ -77,10 +77,10 @@ public sealed class ZaloOpenSlotReminderLeaseRaceFuzzTests
 
             start.SetResult();
             var results = await Task.WhenAll(first, second);
+            var winnerCount = results.Count(result => result);
 
-            Assert.Equal(
-                1,
-                results.Count(result => result),
+            Assert.True(
+                winnerCount == 1,
                 $"seed={seed}; fingerprint=slot-lifecycle:reminder-lease-concurrent-takeover; " +
                 $"results=[{string.Join(',', results)}]");
 
