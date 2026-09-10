@@ -35,8 +35,6 @@ public sealed class ZaloAutoSessionConversationAiAuthorityFuzzTests
     {
         for (var seed = 1; seed <= 128; seed += 1)
         {
-            var handler = new MutableAiHandler();
-            var interpreter = CreateInterpreter(handler);
             var scenario = new StatefulFuzzCase<ConversationAction>(
                 $"auto-session-conversation-ai-authority-{seed}",
                 seed,
@@ -46,16 +44,38 @@ public sealed class ZaloAutoSessionConversationAiAuthorityFuzzTests
                     createAction: CreateAction,
                     operationCount: 18));
 
-            var result = await StatefulFuzzRunner.RunAsync(
+            var result = await StatefulFuzzRunner.RunAsync(scenario, CreateTarget());
+            if (!result.Failed)
+                continue;
+
+            await using var isolatedTarget = new StatefulFuzzIsolatedTarget<ConversationAiAuthorityState, ConversationAction>(
+                static () => CreateTarget());
+            var promotion = await StatefulFuzzPromotion.PrepareAsync(
                 scenario,
-                new ConversationAiAuthorityTarget(interpreter, handler, BuildDraft()));
+                isolatedTarget,
+                confirmationRuns: 3);
+
+            Assert.True(
+                promotion.IsPromotable,
+                $"{Describe(result)}; candidate failure was not stable enough for corpus promotion");
 
             Assert.False(
                 result.Failed,
-                $"Seed={seed}; Fingerprint={result.FailureFingerprint}; action={result.FailureActionIndex}; " +
-                $"Exception={result.Exception}; violation={result.Violation?.Message}");
+                $"{Describe(result)}; minimizedReproducer={promotion.SerializePermanentReproducer()}");
         }
     }
+
+    private static ConversationAiAuthorityTarget CreateTarget()
+    {
+        var handler = new MutableAiHandler();
+        return new ConversationAiAuthorityTarget(CreateInterpreter(handler), handler, BuildDraft());
+    }
+
+    private static string Describe(StatefulFuzzRunResult<ConversationAction> result) =>
+        $"seed={result.Scenario.Seed}; fingerprint={result.FailureFingerprint ?? "none"}; " +
+        $"failureIndex={result.FailureActionIndex?.ToString() ?? "none"}; " +
+        $"actions=[{string.Join(',', result.Scenario.Actions)}]; " +
+        $"violation={result.Violation?.Message ?? "none"}; exception={result.Exception?.Message ?? "none"}";
 
     private static ConversationAction CreateAction(StableFuzzRandom random)
     {
