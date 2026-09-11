@@ -17,13 +17,18 @@ public sealed class ZaloAutoSessionConversationLifecycleTerminalV5Tests
             .UseSqlite(connection)
             .Options;
         await using var db = new VolleyDraftDbContext(options);
+        var proposalId = await SeedCreatedProposalAsync(db, "owned");
         var conversations = new ZaloAutoSessionConversationStore(db);
-        var conversation = await conversations.CreateIfMissingAsync(BuildCreated("proposal-owned"));
+        var conversation = await conversations.CreateIfMissingAsync(BuildCreated(proposalId));
 
         var lifecycle = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
         await lifecycle.EnsureAsync();
-        await db.Database.ExecuteSqlRawAsync(
-            "INSERT INTO \"ZaloAutoSessionLifecycleOwnerships\" (\"ProposalId\", \"State\", \"LinkedSessionCount\", \"HandedOffAt\") VALUES ('proposal-owned', 'HandedOff', 1, '2026-09-08T00:00:00.0000000+00:00');");
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "ZaloAutoSessionLifecycleOwnerships"
+                ("ProposalId", "State", "LinkedSessionCount", "HandedOffAt")
+            VALUES
+                ({{proposalId}}, 'HandedOff', 1, '2026-09-08T00:00:00.0000000+00:00');
+            """);
 
         var reloaded = await conversations.GetByIdAsync(conversation.Id);
 
@@ -41,13 +46,18 @@ public sealed class ZaloAutoSessionConversationLifecycleTerminalV5Tests
             .UseSqlite(connection)
             .Options;
         await using var db = new VolleyDraftDbContext(options);
+        var proposalId = await SeedCreatedProposalAsync(db, "compatibility");
         var conversations = new ZaloAutoSessionConversationStore(db);
-        var conversation = await conversations.CreateIfMissingAsync(BuildCreated("proposal-owned"));
+        var conversation = await conversations.CreateIfMissingAsync(BuildCreated(proposalId));
 
         var lifecycle = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
         await lifecycle.EnsureAsync();
-        await db.Database.ExecuteSqlRawAsync(
-            "INSERT INTO \"ZaloAutoSessionLifecycleOwnerships\" (\"ProposalId\", \"State\", \"LinkedSessionCount\", \"HandedOffAt\") VALUES ('proposal-owned', 'HandedOff', 1, '2026-09-08T00:00:00.0000000+00:00');");
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "ZaloAutoSessionLifecycleOwnerships"
+                ("ProposalId", "State", "LinkedSessionCount", "HandedOffAt")
+            VALUES
+                ({{proposalId}}, 'HandedOff', 1, '2026-09-08T00:00:00.0000000+00:00');
+            """);
 
         conversation.State = ZaloAutoSessionConversationState.Created;
         conversation.NextFollowUpAt = DateTimeOffset.UtcNow.AddMinutes(30);
@@ -70,13 +80,35 @@ public sealed class ZaloAutoSessionConversationLifecycleTerminalV5Tests
             .UseSqlite(connection)
             .Options;
         await using var db = new VolleyDraftDbContext(options);
+        var proposalId = await SeedCreatedProposalAsync(db, "pending");
         var conversations = new ZaloAutoSessionConversationStore(db);
-        var conversation = await conversations.CreateIfMissingAsync(BuildCreated("proposal-pending"));
+        var conversation = await conversations.CreateIfMissingAsync(BuildCreated(proposalId));
 
         var reloaded = await conversations.GetByIdAsync(conversation.Id);
 
         Assert.NotNull(reloaded);
         Assert.Equal(ZaloAutoSessionConversationState.Created, reloaded!.State);
+    }
+
+    private static async Task<string> SeedCreatedProposalAsync(VolleyDraftDbContext db, string suffix)
+    {
+        var tracked = await new ZaloAutoSessionSettingsStore(db).InsertIfMissingAsync(new ZaloTrackedGroupData
+        {
+            AdminUserId = "admin-a",
+            ZaloConnectionId = "connection-a",
+            GroupId = "group-a",
+            GroupName = "Bóng UTE"
+        });
+        var proposal = await new ZaloAutoSessionStore(db).UpsertProposalAsync(new ZaloPollSessionProposalData
+        {
+            TrackedGroupId = tracked.Id,
+            PollId = $"poll-{suffix}",
+            PollQuestion = $"Kèo {suffix}",
+            PollCreatorId = "captain",
+            PollStructureHash = $"hash-{suffix}",
+            Status = ZaloPollSessionProposalStatus.Created
+        });
+        return proposal.Id;
     }
 
     private static ZaloAutoSessionConversationData BuildCreated(string proposalId)

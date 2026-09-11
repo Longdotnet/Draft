@@ -257,29 +257,37 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
         await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
         await EnsureAsync(cancellationToken);
 
-        // Older builds could move one SessionId handoff between proposals while leaving both
-        // proposal aggregates terminal. Remove only Created-proposal aggregates whose current
-        // links no longer have matching proposal-scoped handoff evidence; the insert below then
-        // reconstructs any aggregate that is still fully grounded.
+        // HandedOff is authority only for the current durable Created proposal. Remove stale
+        // aggregates when the proposal disappeared/left Created, or when a Created proposal no
+        // longer has matching proposal-scoped handoff evidence. Per-session handoff history is
+        // intentionally preserved; the insert below reconstructs only still-grounded ownership.
         await using (var cleanup = await CreateCommandAsync(
             """
             DELETE FROM "ZaloAutoSessionLifecycleOwnerships"
             WHERE "State" = 'HandedOff'
-              AND EXISTS (
-                  SELECT 1
-                  FROM "ZaloPollSessionProposals" p
-                  WHERE p."Id" = "ZaloAutoSessionLifecycleOwnerships"."ProposalId"
-                    AND p."Status" = 'Created'
-                    AND EXISTS (
-                        SELECT 1
-                        FROM "ZaloAutoSessionLinks" missing
-                        LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
-                          ON h."SessionId" = missing."SessionId"
-                         AND h."ProposalId" = p."Id"
-                        WHERE missing."TrackedGroupId" = p."TrackedGroupId"
-                          AND missing."PollId" = p."PollId"
-                          AND h."SessionId" IS NULL
-                    )
+              AND (
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM "ZaloPollSessionProposals" current_proposal
+                      WHERE current_proposal."Id" = "ZaloAutoSessionLifecycleOwnerships"."ProposalId"
+                        AND current_proposal."Status" = 'Created'
+                  )
+                  OR EXISTS (
+                      SELECT 1
+                      FROM "ZaloPollSessionProposals" p
+                      WHERE p."Id" = "ZaloAutoSessionLifecycleOwnerships"."ProposalId"
+                        AND p."Status" = 'Created'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM "ZaloAutoSessionLinks" missing
+                            LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
+                              ON h."SessionId" = missing."SessionId"
+                             AND h."ProposalId" = p."Id"
+                            WHERE missing."TrackedGroupId" = p."TrackedGroupId"
+                              AND missing."PollId" = p."PollId"
+                              AND h."SessionId" IS NULL
+                        )
+                  )
               );
             """,
             cancellationToken))
@@ -323,9 +331,19 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
         string proposalId,
         CancellationToken cancellationToken = default)
     {
+        await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
         await EnsureAsync(cancellationToken);
         await using var command = await CreateCommandAsync(
-            "SELECT 1 FROM \"ZaloAutoSessionLifecycleOwnerships\" WHERE \"ProposalId\" = @ProposalId AND \"State\" = 'HandedOff' LIMIT 1;",
+            """
+            SELECT 1
+            FROM "ZaloAutoSessionLifecycleOwnerships" ownership
+            INNER JOIN "ZaloPollSessionProposals" proposal
+                ON proposal."Id" = ownership."ProposalId"
+            WHERE ownership."ProposalId" = @ProposalId
+              AND ownership."State" = 'HandedOff'
+              AND proposal."Status" = 'Created'
+            LIMIT 1;
+            """,
             cancellationToken);
         AddParameter(command, "@ProposalId", proposalId);
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
