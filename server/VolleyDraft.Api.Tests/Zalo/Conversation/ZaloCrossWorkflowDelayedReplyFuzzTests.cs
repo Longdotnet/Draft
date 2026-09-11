@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Services;
+using VolleyDraft.Api.Services.Zalo.Conversation;
 using Xunit;
 
 namespace VolleyDraft.Api.Tests.Zalo.Conversation;
