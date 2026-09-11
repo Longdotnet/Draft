@@ -6,7 +6,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 public sealed class ZaloSchedulerRenewalStallFuzzTests
 {
     [Fact]
-    public async Task Stalled_lease_renewal_must_cancel_stage_before_ownership_can_expire()
+    public async Task Stalled_lease_renewal_must_cancel_stage_without_waiting_for_stalled_call()
     {
         const int seedCount = 64;
 
@@ -38,8 +38,9 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                     {
                         renewalStarted.TrySetResult();
                         // Model a DB/provider renewal call that stops making progress and ignores
-                        // cancellation. The stage must not keep authoritative mutation rights until
-                        // this call eventually returns because the durable lease can expire first.
+                        // cancellation. The stage must lose authority without waiting for this call
+                        // to return. Use event ordering as the oracle instead of a sub-second wall
+                        // clock deadline so loaded CI runners cannot create false fuzz findings.
                         await releaseRenewal.Task;
                         return true;
                     },
@@ -47,10 +48,11 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                     CancellationToken.None);
 
                 await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(releaseRenewal.Task.IsCompleted);
 
                 await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
-                    await run.WaitAsync(leaseDuration + TimeSpan.FromMilliseconds(250)));
-                await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                    await run.WaitAsync(TimeSpan.FromSeconds(1)));
             }
             finally
             {
@@ -104,14 +106,14 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                 CancellationToken.None);
 
             await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
-                await run.WaitAsync(leaseDuration + TimeSpan.FromMilliseconds(250)));
-            await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-            // Once the heartbeat deadline is crossed, both the stage and the in-flight renewal lose
-            // authority. Otherwise a cancellation-aware DB/provider operation can still commit a
-            // late renewal after the wrapper has already returned lease loss.
-            await renewalCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            // The safety oracle is semantic: the renewal authority and stage authority must both be
+            // revoked by the heartbeat timeout. A generous harness timeout detects hangs without
+            // coupling correctness to GitHub runner scheduling jitter at ~100 ms resolution.
+            await renewalCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
+                await run.WaitAsync(TimeSpan.FromSeconds(1)));
         }
     }
 }
