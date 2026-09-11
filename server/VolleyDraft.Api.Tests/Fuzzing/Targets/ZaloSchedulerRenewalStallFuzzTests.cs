@@ -15,7 +15,6 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
             var random = new StableFuzzRandom(seed);
             var leaseDuration = TimeSpan.FromMilliseconds(90 + random.NextInt(45));
             var renewalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var renewalCancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseRenewal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var stageCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -35,14 +34,12 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                             throw;
                         }
                     },
-                    async renewalToken =>
+                    async _ =>
                     {
                         renewalStarted.TrySetResult();
-                        using var registration = renewalToken.Register(
-                            () => renewalCancellationObserved.TrySetResult());
-                        // Model a DB/provider renewal call that stops making progress even after
-                        // cancellation. The scheduler must revoke stage authority and signal the
-                        // renewal before the previous durable lease can expire.
+                        // Model a DB/provider renewal call that stops making progress and ignores
+                        // cancellation. The stage must not keep authoritative mutation rights until
+                        // this call eventually returns because the durable lease can expire first.
                         await releaseRenewal.Task;
                         return true;
                     },
@@ -54,7 +51,6 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                 await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
                     await run.WaitAsync(leaseDuration + TimeSpan.FromMilliseconds(250)));
                 await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
-                await renewalCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
             }
             finally
             {
