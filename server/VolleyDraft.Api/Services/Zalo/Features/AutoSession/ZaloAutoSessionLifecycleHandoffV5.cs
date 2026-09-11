@@ -109,20 +109,27 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
         await EnsureAsync(cancellationToken);
         var snapshotJson = JsonSerializer.Serialize(lifecycle.Value, JsonOptions);
         var handedOffAt = DateTimeOffset.UtcNow;
-        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+        var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "ZaloAutoSessionLifecycleHandoffs"
                 ("SessionId", "ProposalId", "Stage", "Owner", "NeedsWebsite", "ReasonCode", "SnapshotJson", "HandedOffAt")
             VALUES
                 ({{sessionId}}, {{proposalId}}, {{lifecycle.Value.Stage.ToString()}}, {{lifecycle.Value.Owner.ToString()}}, {{(lifecycle.Value.NeedsWebsite ? 1 : 0)}}, {{lifecycle.Value.ReasonCode}}, {{snapshotJson}}, {{handedOffAt.ToString("O")}})
             ON CONFLICT ("SessionId") DO UPDATE SET
-                "ProposalId" = excluded."ProposalId",
                 "Stage" = excluded."Stage",
                 "Owner" = excluded."Owner",
                 "NeedsWebsite" = excluded."NeedsWebsite",
                 "ReasonCode" = excluded."ReasonCode",
                 "SnapshotJson" = excluded."SnapshotJson",
-                "HandedOffAt" = excluded."HandedOffAt";
+                "HandedOffAt" = excluded."HandedOffAt"
+            WHERE "ZaloAutoSessionLifecycleHandoffs"."ProposalId" = excluded."ProposalId";
             """, cancellationToken);
+
+        // SessionId is the durable handoff identity. Never move an already-handed-off session
+        // to a different proposal: doing so makes proposal-level ownership oscillate across
+        // scheduler cycles and can leave multiple proposals falsely terminal at once.
+        if (affected == 0)
+            throw new InvalidOperationException(
+                $"auto_session_lifecycle_session_proposal_conflict:{sessionId}");
 
         await TryFinalizeProposalOwnershipAsync(proposalId, cancellationToken);
 
@@ -243,6 +250,37 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
     {
         await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
         await EnsureAsync(cancellationToken);
+
+        // Older builds could move one SessionId handoff between proposals while leaving both
+        // proposal aggregates terminal. Remove only Created-proposal aggregates whose current
+        // links no longer have matching proposal-scoped handoff evidence; the insert below then
+        // reconstructs any aggregate that is still fully grounded.
+        await using (var cleanup = await CreateCommandAsync(
+            """
+            DELETE FROM "ZaloAutoSessionLifecycleOwnerships"
+            WHERE "State" = 'HandedOff'
+              AND EXISTS (
+                  SELECT 1
+                  FROM "ZaloPollSessionProposals" p
+                  WHERE p."Id" = "ZaloAutoSessionLifecycleOwnerships"."ProposalId"
+                    AND p."Status" = 'Created'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM "ZaloAutoSessionLinks" missing
+                        LEFT JOIN "ZaloAutoSessionLifecycleHandoffs" h
+                          ON h."SessionId" = missing."SessionId"
+                         AND h."ProposalId" = p."Id"
+                        WHERE missing."TrackedGroupId" = p."TrackedGroupId"
+                          AND missing."PollId" = p."PollId"
+                          AND h."SessionId" IS NULL
+                    )
+              );
+            """,
+            cancellationToken))
+        {
+            await cleanup.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         var handedOffAt = DateTimeOffset.UtcNow.ToString("O");
         await using var command = await CreateCommandAsync(
             """
