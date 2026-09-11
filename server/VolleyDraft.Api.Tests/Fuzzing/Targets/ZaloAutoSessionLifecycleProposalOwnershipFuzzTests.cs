@@ -110,6 +110,27 @@ public sealed class ZaloAutoSessionLifecycleProposalOwnershipFuzzTests
                 var aTerminal = await lifecycle.HasHandedOffOwnershipAsync(proposalAId);
                 var bTerminal = await lifecycle.HasHandedOffOwnershipAsync(proposalBId);
                 Assert.NotEqual(aTerminal, bTerminal);
+
+                // Simulate the stale aggregate that older builds could leave behind after moving
+                // the same SessionId handoff from one proposal to another. Reconciliation must
+                // prune unsupported terminal ownership instead of trusting the aggregate forever.
+                var unsupportedProposalId = aTerminal ? proposalBId : proposalAId;
+                await restartDb.Database.ExecuteSqlInterpolatedAsync($$"""
+                    INSERT INTO "ZaloAutoSessionLifecycleOwnerships"
+                        ("ProposalId", "State", "LinkedSessionCount", "HandedOffAt")
+                    VALUES
+                        ({{unsupportedProposalId}}, 'HandedOff', 1, {{baseTime.ToString("O")}})
+                    ON CONFLICT ("ProposalId") DO UPDATE SET
+                        "State" = excluded."State",
+                        "LinkedSessionCount" = excluded."LinkedSessionCount",
+                        "HandedOffAt" = excluded."HandedOffAt";
+                    """);
+                Assert.True(await lifecycle.HasHandedOffOwnershipAsync(unsupportedProposalId));
+
+                await lifecycle.ReconcileCompletedOwnershipsAsync();
+                Assert.False(await lifecycle.HasHandedOffOwnershipAsync(unsupportedProposalId));
+                Assert.True(await lifecycle.HasHandedOffOwnershipAsync(
+                    aTerminal ? proposalAId : proposalBId));
             }
         }
     }
