@@ -168,9 +168,9 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
               AND h."SessionId" IS NULL
               AND NOT EXISTS (
                   SELECT 1
-                  FROM "ZaloAutoSessionLifecycleHandoffs" conflict
-                  WHERE conflict."SessionId" = l."SessionId"
-                    AND conflict."ProposalId" <> p."Id"
+                  FROM "ZaloAutoSessionLifecycleHandoffs" existing_handoff
+                  WHERE existing_handoff."SessionId" = l."SessionId"
+                    AND existing_handoff."ProposalId" <> p."Id"
               )
             GROUP BY p."Id", g."AdminUserId", l."SessionId", a."LastAttemptAt"
             ORDER BY
