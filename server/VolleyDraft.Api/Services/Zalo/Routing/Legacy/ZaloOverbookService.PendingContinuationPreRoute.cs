@@ -50,6 +50,12 @@ public sealed partial class ZaloOverbookService
         if (string.IsNullOrWhiteSpace(connectionId))
             return false;
 
+        // This pre-route executes before ZaloBotService enters its normal connection
+        // scope. ConversationState V2 is physically scoped by connection, so every V2
+        // lookup performed while proving continuation ownership must use the resolved
+        // provider connection instead of falling back to the legacy unscoped key.
+        using var conversationStateScope = ZaloConversationStateScope.Push(connectionId);
+
         // A destructive confirmation expiring must revoke mutation authority immediately,
         // but the exact provider reply may still be useful as bounded conversation context.
         // Convert that old confirmation into a fresh deterministic command 9 turn. The
@@ -133,17 +139,13 @@ public sealed partial class ZaloOverbookService
         var quoteAnchoredTask = false;
         if (quote.RepliesToBot && !string.IsNullOrWhiteSpace(quote.MessageId))
         {
-            var selectionState = await new ZaloConversationStateV2Store(db)
-                .LoadActiveAsync(groupId, senderId, cancellationToken);
-            if (selectionState is not null)
-            {
-                var quotedBotRelation = await new ZaloMessageGraphStore(db)
-                    .LoadRelationAsync(connectionId, groupId, quote.MessageId, cancellationToken);
-                quoteAnchoredTask = ZaloQuotedTaskRecoveryPolicy.IsExactDraftSessionChoiceAnchor(
-                    selectionState,
-                    quote,
-                    quotedBotRelation);
-            }
+            quoteAnchoredTask = await ZaloQuotedTaskRecoveryPolicy.IsExactDraftSessionChoiceAnchorAsync(
+                db,
+                connectionId,
+                groupId,
+                senderId,
+                quote,
+                cancellationToken);
         }
 
         // A pending row alone is not enough addressing authority. Require either a
