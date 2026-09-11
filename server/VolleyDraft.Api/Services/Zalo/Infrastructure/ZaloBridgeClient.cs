@@ -1,3 +1,4 @@
+using System.Data;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -191,13 +192,7 @@ public sealed class ZaloBridgeClient
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
-            var connectionId = await db.ZaloConnections
-                .AsNoTracking()
-                .Where(item => item.AccountZaloId == accountId &&
-                               item.MatchSessions.Any(session => session.ZaloGroupId == groupId))
-                .OrderByDescending(item => item.UpdatedAt)
-                .Select(item => item.Id)
-                .FirstOrDefaultAsync();
+            var connectionId = await ResolveOutboundConnectionIdAsync(db, accountId, groupId);
             if (string.IsNullOrWhiteSpace(connectionId)) return;
 
             await new ZaloMessageGraphStore(db).RememberOutboundAsync(
@@ -220,6 +215,66 @@ public sealed class ZaloBridgeClient
                 accountId,
                 groupId,
                 providerMessageId);
+        }
+    }
+
+    internal static async Task<string?> ResolveOutboundConnectionIdAsync(
+        VolleyDraftDbContext db,
+        string accountId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        accountId = (accountId ?? string.Empty).Trim();
+        groupId = (groupId ?? string.Empty).Trim();
+        if (accountId.Length == 0 || groupId.Length == 0) return null;
+
+        // Existing sessions remain a fast, strongly-grounded path, but a newly tracked
+        // group may receive bot replies before Auto Session creates its first MatchSession.
+        // Provider receipt recovery must already work in that state or a crash after send
+        // can leave no durable evidence and let a retry reclaim mutation/send authority.
+        var sessionConnectionId = await db.ZaloConnections
+            .AsNoTracking()
+            .Where(item => item.AccountZaloId == accountId &&
+                           item.MatchSessions.Any(session => session.ZaloGroupId == groupId))
+            .OrderByDescending(item => item.UpdatedAt)
+            .Select(item => item.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (!string.IsNullOrWhiteSpace(sessionConnectionId)) return sessionConnectionId;
+
+        var connection = db.Database.GetDbConnection();
+        var closeAfter = connection.State != ConnectionState.Open;
+        if (closeAfter) await connection.OpenAsync(cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT connection."Id"
+                FROM "ZaloConnections" AS connection
+                INNER JOIN "ZaloTrackedGroups" AS tracked
+                    ON tracked."ZaloConnectionId" = connection."Id"
+                WHERE connection."AccountZaloId" = @accountId
+                  AND tracked."GroupId" = @groupId
+                ORDER BY connection."UpdatedAt" DESC
+                LIMIT 1;
+                """;
+
+            var accountParameter = command.CreateParameter();
+            accountParameter.ParameterName = "@accountId";
+            accountParameter.Value = accountId;
+            command.Parameters.Add(accountParameter);
+
+            var groupParameter = command.CreateParameter();
+            groupParameter.ParameterName = "@groupId";
+            groupParameter.Value = groupId;
+            command.Parameters.Add(groupParameter);
+
+            var resolved = await command.ExecuteScalarAsync(cancellationToken);
+            return resolved is null or DBNull ? null : Convert.ToString(resolved)?.Trim();
+        }
+        finally
+        {
+            if (closeAfter && connection.State == ConnectionState.Open)
+                await connection.CloseAsync();
         }
     }
 
