@@ -61,8 +61,9 @@ public sealed class ZaloAutoSessionLifecycleProposalOwnershipFuzzTests
                     ? new[] { "poll-a", "poll-b" }
                     : new[] { "poll-b", "poll-a" };
                 var proposalIds = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var pollId in polls)
+                for (var index = 0; index < polls.Length; index++)
                 {
+                    var pollId = polls[index];
                     var proposal = await store.UpsertProposalAsync(new ZaloPollSessionProposalData
                     {
                         TrackedGroupId = tracked.Id,
@@ -79,7 +80,7 @@ public sealed class ZaloAutoSessionLifecycleProposalOwnershipFuzzTests
                         pollId,
                         "option-1",
                         "session-shared",
-                        baseTime.AddMinutes(pollId == "poll-a" ? 1 : 2)));
+                        baseTime.AddMinutes(index + 1)));
                 }
 
                 proposalAId = proposalIds["poll-a"];
