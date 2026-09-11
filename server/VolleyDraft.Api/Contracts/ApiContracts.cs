@@ -251,14 +251,37 @@ public sealed record ZaloIncomingMessageEvent
         Quote = quote;
 
         var incomingMentions = mentions?.ToList() ?? [];
-        var repliedToBot = !string.IsNullOrWhiteSpace(BotId) &&
-                           string.Equals(quote?.SenderId?.Trim(), BotId.Trim(), StringComparison.Ordinal);
+        var normalizedBotId = BotId.Trim();
+        if (normalizedBotId.Length > 0 && Content.Length > 0)
+        {
+            for (var index = 0; index < incomingMentions.Count; index++)
+            {
+                var mention = incomingMentions[index];
+                if (!string.Equals(mention.Uid?.Trim(), normalizedBotId, StringComparison.Ordinal)) continue;
+
+                var isReplyMarker = mention.Pos == -1 && mention.Len == 0;
+                var hasValidSpan = mention.Pos >= 0 &&
+                                   mention.Len > 0 &&
+                                   mention.Len <= Content.Length &&
+                                   mention.Pos <= Content.Length - mention.Len;
+                if (isReplyMarker || hasValidSpan) continue;
+
+                // Preserve raw Content for diagnostics, but make malformed transport-grounded
+                // bot mention metadata fail closed. ExtractQuestion will remove the entire
+                // sentence instead of falling back to a single-token regex that can turn
+                // "@B O T xác nhận" into the invented user sentence "O T xác nhận".
+                incomingMentions[index] = new ZaloBridgeMention(normalizedBotId, 0, Content.Length);
+            }
+        }
+
+        var repliedToBot = normalizedBotId.Length > 0 &&
+                           string.Equals(quote?.SenderId?.Trim(), normalizedBotId, StringComparison.Ordinal);
         if (repliedToBot && !incomingMentions.Any(mention =>
-                string.Equals(mention.Uid?.Trim(), BotId.Trim(), StringComparison.Ordinal)))
+                string.Equals(mention.Uid?.Trim(), normalizedBotId, StringComparison.Ordinal)))
         {
             // Metadata-only marker. Len=0 means ExtractQuestion will not remove
             // any character from a short follow-up such as "T6" or "xác nhận".
-            incomingMentions.Add(new ZaloBridgeMention(BotId.Trim(), -1, 0));
+            incomingMentions.Add(new ZaloBridgeMention(normalizedBotId, -1, 0));
         }
 
         Mentions = incomingMentions;
