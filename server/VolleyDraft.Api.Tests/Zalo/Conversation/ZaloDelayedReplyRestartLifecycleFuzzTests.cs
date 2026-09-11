@@ -163,7 +163,9 @@ public sealed class ZaloDelayedReplyRestartLifecycleFuzzTests
 
         // Move only the persisted context deadline past the boundary. LoadActiveAsync is
         // the production authority that atomically turns this row from Active to Expired.
-        var physicalGroupId = ZaloConversationStateScope.ScopeGroupId(groupId, connectionId);
+        string physicalGroupId;
+        using (ZaloConversationStateScope.Push(connectionId))
+            physicalGroupId = ZaloConversationStateScope.ScopeGroupId(groupId);
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloConversationStatesV2"
             SET "ExpiresAt" = {{DateTimeOffset.UtcNow.AddMinutes(-1)}}
