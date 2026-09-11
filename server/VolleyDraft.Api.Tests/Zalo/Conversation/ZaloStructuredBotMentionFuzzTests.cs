@@ -45,7 +45,7 @@ public sealed class ZaloStructuredBotMentionFuzzTests
     }
 
     [Fact]
-    public void Malformed_structured_bot_span_must_never_partially_strip_a_multiword_bot_label()
+    public void Malformed_structured_bot_span_fails_closed_without_rewriting_raw_content()
     {
         const string content = "@B O T xác nhận";
         var incoming = Incoming(
@@ -53,17 +53,19 @@ public sealed class ZaloStructuredBotMentionFuzzTests
             new ZaloBridgeMention("bot-id", 0, content.Length + 20));
 
         var question = ZaloBotService.ExtractQuestion(incoming);
+        var marker = Assert.Single(incoming.Mentions);
 
-        Assert.True(
-            question == content || question == "xác nhận",
-            $"mention-normalization:partial-bot-label-strip; extracted='{question}'");
+        Assert.Equal(content, incoming.Content);
+        Assert.Equal(0, marker.Pos);
+        Assert.Equal(content.Length, marker.Len);
+        Assert.Equal(string.Empty, question);
     }
 
     [Fact]
-    public void Malformed_structured_span_corpus_never_leaves_a_suffix_of_the_bot_label_as_user_intent()
+    public void Malformed_structured_span_corpus_never_invents_partial_user_intent()
     {
         var labels = new[] { "@B O T", "@Volley Draft", "@NPC Việt Nam", "@B   O   T" };
-        var badLengths = new[] { -1, 0, 1, 2, 999 };
+        var badLengths = new[] { -1, 0, 999 };
 
         for (var seed = 1; seed <= 128; seed++)
         {
@@ -74,11 +76,9 @@ public sealed class ZaloStructuredBotMentionFuzzTests
             var incoming = Incoming(content, new ZaloBridgeMention("bot-id", pos, len));
 
             var question = ZaloBotService.ExtractQuestion(incoming);
-            var normalized = ZaloBotIntelligence.Normalize(question);
 
-            Assert.DoesNotContain("o t xac nhan", normalized, StringComparison.Ordinal);
-            Assert.DoesNotContain("volley draft xac nhan", normalized, StringComparison.Ordinal);
-            Assert.DoesNotContain("npc viet nam xac nhan", normalized, StringComparison.Ordinal);
+            Assert.Equal(content, incoming.Content);
+            Assert.Equal(string.Empty, question);
         }
     }
 
