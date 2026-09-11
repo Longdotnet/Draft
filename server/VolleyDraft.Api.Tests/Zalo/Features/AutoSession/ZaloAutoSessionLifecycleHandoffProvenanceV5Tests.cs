@@ -9,7 +9,7 @@ namespace VolleyDraft.Api.Tests.Zalo.Features.AutoSession;
 public sealed class ZaloAutoSessionLifecycleHandoffProvenanceV5Tests
 {
     [Fact]
-    public async Task Snapshot_from_another_proposal_does_not_satisfy_missing_or_ownership_checks()
+    public async Task Snapshot_from_another_proposal_quarantines_retry_without_granting_ownership()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -57,10 +57,11 @@ public sealed class ZaloAutoSessionLifecycleHandoffProvenanceV5Tests
                 ({{"shared-session"}}, {{proposalA.Id}}, {{"Recruiting"}}, {{"ZaloBot"}}, {{0}}, {{"ready"}}, {{"{}"}}, {{DateTimeOffset.UtcNow.ToString("O")}});
             """);
 
+        // The foreign proposal-scoped snapshot is explicit durable evidence that this SessionId
+        // already belongs elsewhere. Proposal B must be quarantined from retry rather than poison
+        // every scheduler cycle, but it must never inherit proposal A's terminal ownership.
         var missing = await store.GetMissingAsync();
-        var candidate = Assert.Single(missing);
-        Assert.Equal(proposalB.Id, candidate.ProposalId);
-        Assert.Equal("shared-session", candidate.SessionId);
+        Assert.Empty(missing);
 
         Assert.False(await store.TryFinalizeProposalOwnershipAsync(proposalB.Id));
         Assert.False(await store.HasHandedOffOwnershipAsync(proposalB.Id));

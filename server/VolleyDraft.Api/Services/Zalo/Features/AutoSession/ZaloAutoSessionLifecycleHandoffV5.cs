@@ -166,6 +166,12 @@ internal sealed class ZaloAutoSessionLifecycleHandoffStoreV5(VolleyDraftDbContex
                 ON a."SessionId" = l."SessionId"
             WHERE p."Status" = 'Created'
               AND h."SessionId" IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "ZaloAutoSessionLifecycleHandoffs" existing_handoff
+                  WHERE existing_handoff."SessionId" = l."SessionId"
+                    AND existing_handoff."ProposalId" <> p."Id"
+              )
             GROUP BY p."Id", g."AdminUserId", l."SessionId", a."LastAttemptAt"
             ORDER BY
                 CASE WHEN a."LastAttemptAt" IS NULL THEN 0 ELSE 1 END ASC,
