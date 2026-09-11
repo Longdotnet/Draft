@@ -28,6 +28,7 @@ public sealed class ZaloInboundCoordinator(
     ILogger<ZaloInboundCoordinator> logger)
 {
     private const string PreRouteHandledOutcome = "pre_route_handled";
+    private const string ProviderReceiptRecoveredOutcome = "sent_recovered";
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(2);
 
     public async Task<ZaloInboundHandlingResult> HandleAsync(
@@ -166,6 +167,37 @@ public sealed class ZaloInboundCoordinator(
                 db.ChangeTracker.Clear();
                 storedMessage = await db.ZaloGroupMessages.SingleAsync(message =>
                     message.ZaloConnectionId == target.ConnectionId && message.MessageId == messageId, cancellationToken);
+            }
+        }
+
+        // The bridge records a provider outbound receipt in an independent DB scope as
+        // soon as Zalo accepts a reply. If the request then crashes/cancels before the
+        // bot can finalize ZaloGroupMessage, a restart-shaped retry must trust that
+        // durable provider evidence and stop before any routing/domain mutation runs
+        // again. This closes the send-success / final-persist-failed duplicate window.
+        if (storedMessage.BotReplySentAt is null)
+        {
+            var providerReceipt = await new ZaloOutboundReceiptStore(db)
+                .LoadLatestByParentAsync(target.ConnectionId, canonicalGroupId, messageId, cancellationToken);
+            if (providerReceipt is not null)
+            {
+                var recoveredAt = providerReceipt.CreatedAt == default
+                    ? DateTimeOffset.UtcNow
+                    : providerReceipt.CreatedAt;
+                await db.ZaloGroupMessages
+                    .Where(message => message.Id == storedMessage.Id && message.BotReplySentAt == null)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(message => message.BotReplySentAt, recoveredAt)
+                        .SetProperty(message => message.ProcessingStartedAt, (DateTimeOffset?)null)
+                        .SetProperty(message => message.ProcessingToken, (string?)null)
+                        .SetProperty(message => message.ReplyOutcome, ProviderReceiptRecoveredOutcome), cancellationToken);
+                logger.LogWarning(
+                    "Zalo ingress recovered completed provider reply Account={AccountId} Group={GroupId} Message={MessageId} ProviderMessageId={ProviderMessageId}",
+                    target.AccountId,
+                    canonicalGroupId,
+                    messageId,
+                    providerReceipt.ProviderMessageId);
+                return ZaloInboundClaim.Duplicate;
             }
         }
 
