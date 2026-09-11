@@ -49,6 +49,91 @@ public sealed class MemberPassDraftTransitionRaceFuzzTests
             Assert.Null(member.Exception);
             Assert.Null(draft.Exception);
 
+            await AssertAuthoritativeStateAsync(
+                options,
+                seeded,
+                seed,
+                memberDelay,
+                draftDelay,
+                member.ReplyKind,
+                draft);
+        }
+    }
+
+    [Fact]
+    public async Task Race_then_fresh_context_member_and_draft_retries_preserve_one_authoritative_outcome()
+    {
+        // Model a lost/uncertain client response followed by retries after a process restart.
+        // We deliberately retry both sides in alternating orders. Replaying a member pass must
+        // not create multiple authoritative open risks, and replaying draft start must not create
+        // another draft round or bypass an already-open pass-slot risk.
+        for (var seed = 1; seed <= 64; seed += 1)
+        {
+            var connectionString = $"Data Source=member-pass-draft-retry-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Default Timeout=5";
+            await using var anchor = new SqliteConnection(connectionString);
+            await anchor.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connectionString)
+                .Options;
+            var seeded = await SeedReadySessionAsync(options, 20_000 + seed);
+
+            await using (var bootstrap = new VolleyDraftDbContext(options))
+            {
+                _ = await new ZaloOpenSlotOfferStore(bootstrap)
+                    .ListClaimableAsync(seeded.ConnectionId, seeded.GroupId, "bootstrap");
+            }
+
+            await using var memberDb = new VolleyDraftDbContext(options);
+            await using var draftDb = new VolleyDraftDbContext(options);
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var memberDelay = seed % 5;
+            var draftDelay = (seed * 3) % 5;
+            var memberTask = RunMemberPassAsync(memberDb, seeded, start.Task, memberDelay, 20_000 + seed);
+            var draftTask = RunDraftAsync(draftDb, seeded, start.Task, draftDelay);
+
+            start.SetResult();
+            var firstMember = await memberTask;
+            var firstDraft = await draftTask;
+            Assert.Null(firstMember.Exception);
+            Assert.Null(firstDraft.Exception);
+
+            await using var retryMemberDb = new VolleyDraftDbContext(options);
+            await using var retryDraftDb = new VolleyDraftDbContext(options);
+            MemberOutcome retryMember;
+            DraftOutcome retryDraft;
+
+            if (seed % 2 == 0)
+            {
+                retryMember = await RunMemberPassAsync(
+                    retryMemberDb,
+                    seeded,
+                    Task.CompletedTask,
+                    delayMilliseconds: 0,
+                    seed: 30_000 + seed);
+                retryDraft = await RunDraftAsync(
+                    retryDraftDb,
+                    seeded,
+                    Task.CompletedTask,
+                    delayMilliseconds: 0);
+            }
+            else
+            {
+                retryDraft = await RunDraftAsync(
+                    retryDraftDb,
+                    seeded,
+                    Task.CompletedTask,
+                    delayMilliseconds: 0);
+                retryMember = await RunMemberPassAsync(
+                    retryMemberDb,
+                    seeded,
+                    Task.CompletedTask,
+                    delayMilliseconds: 0,
+                    seed: 30_000 + seed);
+            }
+
+            Assert.Null(retryMember.Exception);
+            Assert.Null(retryDraft.Exception);
+
             await using var verifier = new VolleyDraftDbContext(options);
             var session = await verifier.MatchSessions.AsNoTracking()
                 .SingleAsync(item => item.Id == seeded.SessionId);
@@ -57,26 +142,70 @@ public sealed class MemberPassDraftTransitionRaceFuzzTests
             var roundCount = await verifier.DraftRounds.AsNoTracking()
                 .CountAsync(item => item.SessionId == seeded.SessionId);
 
+            Assert.InRange(
+                activeRisk,
+                0,
+                1);
+            Assert.InRange(roundCount, 0, 1);
             Assert.False(
                 session.Status == SessionStatus.Drafting && activeRisk > 0,
-                $"seed={seed}; fingerprint=cross-feature:ambient-pass-opened-across-draft-transition; " +
-                $"memberDelay={memberDelay}; draftDelay={draftDelay}; memberReply={member.ReplyKind}; " +
-                $"draftStatus={draft.StatusCode}; activeRisk={activeRisk}; rounds={roundCount}");
+                $"seed={seed}; fingerprint=cross-feature:member-pass-draft-retry-authority; " +
+                $"initialMember={firstMember.ReplyKind}; initialDraft={firstDraft.StatusCode}; " +
+                $"retryMember={retryMember.ReplyKind}; retryDraft={retryDraft.StatusCode}; " +
+                $"activeRisk={activeRisk}; rounds={roundCount}; status={session.Status}");
 
-            if (activeRisk > 0)
+            if (session.Status == SessionStatus.Drafting)
             {
-                Assert.False(draft.IsSuccess);
-                Assert.Equal(StatusCodes.Status409Conflict, draft.StatusCode);
-                Assert.Equal(SessionStatus.CaptainSelection, session.Status);
-                Assert.Equal(0, roundCount);
-            }
-
-            if (draft.IsSuccess)
-            {
-                Assert.Equal(SessionStatus.Drafting, session.Status);
                 Assert.Equal(0, activeRisk);
                 Assert.Equal(1, roundCount);
+                Assert.False(retryDraft.IsSuccess);
             }
+            else if (activeRisk > 0)
+            {
+                Assert.Equal(SessionStatus.CaptainSelection, session.Status);
+                Assert.Equal(0, roundCount);
+                Assert.False(retryDraft.IsSuccess);
+                Assert.Equal(StatusCodes.Status409Conflict, retryDraft.StatusCode);
+            }
+        }
+    }
+
+    private static async Task AssertAuthoritativeStateAsync(
+        DbContextOptions<VolleyDraftDbContext> options,
+        SeededSession seeded,
+        int seed,
+        int memberDelay,
+        int draftDelay,
+        string? memberReplyKind,
+        DraftOutcome draft)
+    {
+        await using var verifier = new VolleyDraftDbContext(options);
+        var session = await verifier.MatchSessions.AsNoTracking()
+            .SingleAsync(item => item.Id == seeded.SessionId);
+        var activeRisk = await new ZaloOpenSlotRiskCounter(verifier)
+            .CountActiveForSessionAsync(seeded.ConnectionId, seeded.GroupId, seeded.SessionId);
+        var roundCount = await verifier.DraftRounds.AsNoTracking()
+            .CountAsync(item => item.SessionId == seeded.SessionId);
+
+        Assert.False(
+            session.Status == SessionStatus.Drafting && activeRisk > 0,
+            $"seed={seed}; fingerprint=cross-feature:ambient-pass-opened-across-draft-transition; " +
+            $"memberDelay={memberDelay}; draftDelay={draftDelay}; memberReply={memberReplyKind}; " +
+            $"draftStatus={draft.StatusCode}; activeRisk={activeRisk}; rounds={roundCount}");
+
+        if (activeRisk > 0)
+        {
+            Assert.False(draft.IsSuccess);
+            Assert.Equal(StatusCodes.Status409Conflict, draft.StatusCode);
+            Assert.Equal(SessionStatus.CaptainSelection, session.Status);
+            Assert.Equal(0, roundCount);
+        }
+
+        if (draft.IsSuccess)
+        {
+            Assert.Equal(SessionStatus.Drafting, session.Status);
+            Assert.Equal(0, activeRisk);
+            Assert.Equal(1, roundCount);
         }
     }
 
