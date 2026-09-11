@@ -68,6 +68,36 @@ public sealed class ZaloOutboundReceiptStore(VolleyDraftDbContext db)
         return new ZaloOutboundReceipt(id, zaloConnectionId, groupId, providerMessageId, parentMessageId, fingerprint, createdAt);
     }
 
+    public async Task<ZaloOutboundReceipt?> LoadLatestByParentAsync(
+        string zaloConnectionId,
+        string groupId,
+        string parentMessageId,
+        CancellationToken cancellationToken = default)
+    {
+        zaloConnectionId = Clean(zaloConnectionId, 100);
+        groupId = Clean(groupId, 100);
+        parentMessageId = Clean(parentMessageId, 160);
+        if (zaloConnectionId.Length == 0 || groupId.Length == 0 || parentMessageId.Length == 0)
+            return null;
+
+        await EnsureSchemaAsync(cancellationToken);
+        var connection = db.Database.GetDbConnection();
+        await OpenIfNeededAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT "Id", "ZaloConnectionId", "GroupId", "ProviderMessageId", "ParentMessageId", "ContentSha256", "CreatedAt"
+            FROM "ZaloOutboundReceipts"
+            WHERE "ZaloConnectionId" = @connectionId AND "GroupId" = @groupId AND "ParentMessageId" = @parentMessageId
+            ORDER BY "CreatedAt" DESC
+            LIMIT 1;
+            """;
+        Add(command, "@connectionId", zaloConnectionId);
+        Add(command, "@groupId", groupId);
+        Add(command, "@parentMessageId", parentMessageId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? Read(reader) : null;
+    }
+
     public async Task<IReadOnlyList<ZaloOutboundReceipt>> LoadRecentAsync(
         int limit = 500,
         CancellationToken cancellationToken = default)
