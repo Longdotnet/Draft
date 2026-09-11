@@ -104,9 +104,17 @@ public sealed class ZaloAutoSessionLifecycleProposalOwnershipFuzzTests
             await using (var restartDb = new VolleyDraftDbContext(options))
             {
                 var lifecycle = new ZaloAutoSessionLifecycleHandoffStoreV5(restartDb);
+
+                // The first cycle must surface the structural ownership conflict, but once one
+                // proposal owns the durable SessionId handoff the losing proposal must not poison
+                // every future scheduler cycle with the same deterministic conflict forever.
                 var remaining = await lifecycle.GetMissingAsync(limit: 10);
-                Assert.Single(remaining);
-                Assert.Equal("session-shared", remaining[0].SessionId);
+                Assert.Empty(remaining);
+
+                var retry = await lifecycle.ReconcileMissingAsync(NullLogger.Instance);
+                Assert.Equal(0, retry.CandidateCount);
+                Assert.Equal(0, retry.HandedOffCount);
+                Assert.Equal(0, retry.FailedCount);
 
                 var aTerminal = await lifecycle.HasHandedOffOwnershipAsync(proposalAId);
                 var bTerminal = await lifecycle.HasHandedOffOwnershipAsync(proposalBId);
