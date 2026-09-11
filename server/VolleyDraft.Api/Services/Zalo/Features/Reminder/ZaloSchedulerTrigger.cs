@@ -378,34 +378,46 @@ public sealed class ZaloSchedulerWorker(
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var operationTask = operation(operationCancellation.Token);
 
-        while (!operationTask.IsCompleted)
+        try
         {
-            await Task.WhenAny(operationTask, Task.Delay(renewalInterval, cancellationToken));
-            cancellationToken.ThrowIfCancellationRequested();
-            if (operationTask.IsCompleted)
-                break;
+            while (!operationTask.IsCompleted)
+            {
+                await Task.WhenAny(operationTask, Task.Delay(renewalInterval, cancellationToken));
+                cancellationToken.ThrowIfCancellationRequested();
+                if (operationTask.IsCompleted)
+                    break;
 
-            bool renewed;
-            try
-            {
-                renewed = await renewLease(cancellationToken);
-            }
-            catch
-            {
+                bool renewed;
+                try
+                {
+                    renewed = await renewLease(cancellationToken);
+                }
+                catch
+                {
+                    operationCancellation.Cancel();
+                    await ObserveAfterLeaseCancellationAsync(operationTask);
+                    throw;
+                }
+
+                if (renewed)
+                    continue;
+
                 operationCancellation.Cancel();
                 await ObserveAfterLeaseCancellationAsync(operationTask);
-                throw;
+                throw new ZaloSchedulerLeaseLostException();
             }
 
-            if (renewed)
-                continue;
-
+            return await operationTask;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A cycle/host cancellation owns the result, but the stage may still be unwinding
+            // provider/domain cleanup with scoped services. Drain it before returning so the
+            // owning scheduler scope cannot be disposed underneath active work.
             operationCancellation.Cancel();
             await ObserveAfterLeaseCancellationAsync(operationTask);
-            throw new ZaloSchedulerLeaseLostException();
+            throw;
         }
-
-        return await operationTask;
     }
 
     private async Task RunCycleAsync(
@@ -567,8 +579,8 @@ public sealed class ZaloSchedulerWorker(
         }
         catch
         {
-            // The lease-loss decision is authoritative here. The operation is awaited only to avoid
-            // leaving scoped services running in the background after their owning cycle exits.
+            // The lease-loss/cancellation decision is authoritative here. The operation is awaited
+            // only to avoid leaving scoped services running in the background after their owning cycle exits.
         }
     }
 }
