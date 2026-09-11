@@ -1,5 +1,8 @@
+using System.Net;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
@@ -10,7 +13,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
 {
     [Fact]
-    public async Task Tracked_group_without_match_session_still_resolves_provider_receipt_connection()
+    public async Task Tracked_group_without_match_session_still_persists_provider_receipt()
     {
         for (var seed = 1; seed <= 64; seed += 1)
         {
@@ -22,21 +25,33 @@ public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
                 .Options;
 
             await SeedTrackedOnlyGroupAsync(options, seed);
+            using var provider = new ServiceCollection()
+                .AddScoped(_ => new VolleyDraftDbContext(options))
+                .BuildServiceProvider();
+            var handler = new AcceptedSendHandler($"provider-{seed}");
+            var client = new ZaloBridgeClient(
+                new HttpClient(handler) { BaseAddress = new Uri("https://bridge.test/") },
+                provider.GetRequiredService<IServiceScopeFactory>());
 
-            await using var db = new VolleyDraftDbContext(options);
-            var resolved = await ZaloBridgeClient.ResolveOutboundConnectionIdAsync(
-                db,
+            await client.SendGroupMessageAsync(
                 "bot-account",
-                seed % 2 == 0 ? " g1 " : "g1");
+                "g1",
+                $"reply-{seed}",
+                [],
+                idempotencyKey: $"bot-account:parent-{seed}");
 
-            Assert.Equal(
-                "conn-target",
-                resolved);
+            await using var verifier = new VolleyDraftDbContext(options);
+            var receipt = await new ZaloOutboundReceiptStore(verifier)
+                .LoadLatestByParentAsync("conn-target", "g1", $"parent-{seed}");
+
+            Assert.True(
+                receipt is not null && receipt.ProviderMessageId == $"provider-{seed}",
+                $"seed={seed}; fingerprint=idempotency:tracked-group-provider-receipt-not-persisted");
         }
     }
 
     [Fact]
-    public async Task Tracked_group_resolution_is_scoped_by_group_when_same_account_has_newer_connection()
+    public async Task Receipt_resolution_does_not_bind_same_account_to_newer_wrong_group_connection()
     {
         var connectionString = $"Data Source=receipt-resolution-scope-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Default Timeout=5";
         await using var anchor = new SqliteConnection(connectionString);
@@ -46,11 +61,31 @@ public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
             .Options;
 
         await SeedTrackedOnlyGroupAsync(options, 9001);
+        using var provider = new ServiceCollection()
+            .AddScoped(_ => new VolleyDraftDbContext(options))
+            .BuildServiceProvider();
+        var client = new ZaloBridgeClient(
+            new HttpClient(new AcceptedSendHandler("provider-scoped"))
+            {
+                BaseAddress = new Uri("https://bridge.test/")
+            },
+            provider.GetRequiredService<IServiceScopeFactory>());
 
-        await using var db = new VolleyDraftDbContext(options);
-        var resolved = await ZaloBridgeClient.ResolveOutboundConnectionIdAsync(db, "bot-account", "g1");
+        await client.SendGroupMessageAsync(
+            "bot-account",
+            "g1",
+            "scoped reply",
+            [],
+            idempotencyKey: "bot-account:parent-scoped");
 
-        Assert.Equal("conn-target", resolved);
+        await using var verifier = new VolleyDraftDbContext(options);
+        var targetReceipt = await new ZaloOutboundReceiptStore(verifier)
+            .LoadLatestByParentAsync("conn-target", "g1", "parent-scoped");
+        var wrongReceipt = await new ZaloOutboundReceiptStore(verifier)
+            .LoadLatestByParentAsync("conn-newer-wrong-group", "g1", "parent-scoped");
+
+        Assert.NotNull(targetReceipt);
+        Assert.Null(wrongReceipt);
     }
 
     private static async Task SeedTrackedOnlyGroupAsync(
@@ -101,5 +136,23 @@ public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
                 ({{Guid.NewGuid().ToString("n")}}, {{admin.Id}}, {{newerWrongGroup.Id}}, {{"g-other"}}, {{"g-other"}}, {{1}}, {{now}}, {{now}});
             """);
         db.ChangeTracker.Clear();
+    }
+
+    private sealed class AcceptedSendHandler(string providerMessageId) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent(
+                    $"{{\"sent\":true,\"mock\":false,\"messageId\":\"{providerMessageId}\"}}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            return Task.FromResult(response);
+        }
     }
 }
