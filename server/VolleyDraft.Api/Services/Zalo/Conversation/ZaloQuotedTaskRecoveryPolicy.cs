@@ -1,3 +1,5 @@
+using VolleyDraft.Api.Data;
+
 namespace VolleyDraft.Api.Services;
 
 /// <summary>
@@ -7,6 +9,39 @@ namespace VolleyDraft.Api.Services;
 /// </summary>
 internal static class ZaloQuotedTaskRecoveryPolicy
 {
+    internal static async Task<bool> IsExactDraftSessionChoiceAnchorAsync(
+        VolleyDraftDbContext db,
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloQuotedSemanticContext quote,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(connectionId) ||
+            string.IsNullOrWhiteSpace(groupId) ||
+            string.IsNullOrWhiteSpace(senderId) ||
+            !quote.RepliesToBot ||
+            string.IsNullOrWhiteSpace(quote.MessageId))
+        {
+            return false;
+        }
+
+        // ConversationState V2 is physically connection-scoped. Recovery happens before
+        // the normal bot lane establishes its own scope, so delayed quoted replies must
+        // explicitly enter the resolved provider connection here. Otherwise a valid
+        // state saved by DraftAutopilot cannot be found after the ambient lease expires,
+        // and a legacy unscoped row could be consulted instead.
+        using var conversationStateScope = ZaloConversationStateScope.Push(connectionId);
+        var state = await new ZaloConversationStateV2Store(db)
+            .LoadActiveAsync(groupId, senderId, cancellationToken);
+        if (state is null)
+            return false;
+
+        var quotedBotRelation = await new ZaloMessageGraphStore(db)
+            .LoadRelationAsync(connectionId, groupId, quote.MessageId, cancellationToken);
+        return IsExactDraftSessionChoiceAnchor(state, quote, quotedBotRelation);
+    }
+
     internal static bool IsExactDraftSessionChoiceAnchor(
         ZaloConversationStateV2Snapshot? state,
         ZaloQuotedSemanticContext quote,
