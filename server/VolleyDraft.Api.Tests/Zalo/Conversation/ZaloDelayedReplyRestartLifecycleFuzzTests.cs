@@ -129,7 +129,62 @@ public sealed class ZaloDelayedReplyRestartLifecycleFuzzTests
     }
 
     [Fact]
-    public void Expired_or_non_bot_quote_cannot_recover_authority_even_when_message_ids_match()
+    public async Task Persisted_state_past_its_context_expiry_cannot_recover_an_old_prompt()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        const string connectionId = "connection-expiry";
+        const string groupId = "group-expiry";
+        const string senderId = "user-expiry";
+        const string sourceMessageId = "source-expiry";
+        const string botMessageId = "bot-expiry";
+
+        using (ZaloConversationStateScope.Push(connectionId))
+        {
+            await new ZaloConversationStateV2Store(db).SaveActiveAsync(
+                groupId,
+                senderId,
+                ZaloConversationLifetimePolicy.DraftReadinessSessionChoiceIntent,
+                "{}",
+                "[]",
+                "[\"session-expiry\"]",
+                sourceMessageId,
+                sourceMessageId,
+                DateTimeOffset.UtcNow.AddMinutes(10));
+        }
+        await new ZaloMessageGraphStore(db)
+            .RememberOutboundAsync(connectionId, groupId, botMessageId, sourceMessageId);
+
+        // Move only the persisted context deadline past the boundary. LoadActiveAsync is
+        // the production authority that atomically turns this row from Active to Expired.
+        var physicalGroupId = ZaloConversationStateScope.ScopeGroupId(groupId, connectionId);
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            UPDATE "ZaloConversationStatesV2"
+            SET "ExpiresAt" = {{DateTimeOffset.UtcNow.AddMinutes(-1)}}
+            WHERE "GroupId" = {{physicalGroupId}} AND "SenderZaloUserId" = {{senderId}};
+            """);
+
+        Assert.False(await ZaloQuotedTaskRecoveryPolicy.IsExactDraftSessionChoiceAnchorAsync(
+            db,
+            connectionId,
+            groupId,
+            senderId,
+            Quote(botMessageId, DateTimeOffset.UtcNow)));
+
+        using (ZaloConversationStateScope.Push(connectionId))
+        {
+            Assert.Null(await new ZaloConversationStateV2Store(db).LoadActiveAsync(groupId, senderId));
+        }
+    }
+
+    [Fact]
+    public void Non_bot_quote_cannot_recover_authority_even_when_message_ids_match()
     {
         var now = DateTimeOffset.UtcNow;
         var state = new ZaloConversationStateV2Snapshot(
@@ -143,10 +198,10 @@ public sealed class ZaloDelayedReplyRestartLifecycleFuzzTests
             "source-1",
             "source-1",
             1,
-            ZaloConversationStateV2Status.Expired,
-            now.AddMinutes(-1),
-            now.AddHours(-5),
-            now.AddMinutes(-1));
+            ZaloConversationStateV2Status.Active,
+            now.AddHours(1),
+            now.AddHours(-1),
+            now);
         var relation = new ZaloMessageGraphRelation(
             "relation-1",
             "connection-1",
@@ -158,11 +213,7 @@ public sealed class ZaloDelayedReplyRestartLifecycleFuzzTests
             null,
             null,
             "bot-prompt",
-            now.AddHours(-4));
-
-        // The pure policy is deliberately only an anchor matcher; callers must load an
-        // active state. Lock that contract down by proving non-bot quote evidence never
-        // becomes an anchor, while the persisted-store path is responsible for expiry.
+            now.AddMinutes(-30));
         var nonBotQuote = new ZaloQuotedSemanticContext(
             "bot-prompt",
             "member-2",
@@ -173,6 +224,7 @@ public sealed class ZaloDelayedReplyRestartLifecycleFuzzTests
             false,
             true,
             true);
+
         Assert.False(ZaloQuotedTaskRecoveryPolicy.IsExactDraftSessionChoiceAnchor(state, nonBotQuote, relation));
     }
 
