@@ -102,6 +102,13 @@ public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
             Email = $"receipt-resolution-{seed}@example.test",
             PasswordHash = "x"
         };
+        var otherAdmin = new User
+        {
+            Id = $"admin-other-{seed}",
+            DisplayName = "Other Admin",
+            Email = $"receipt-resolution-other-{seed}@example.test",
+            PasswordHash = "x"
+        };
         var target = new ZaloConnection
         {
             Id = "conn-target",
@@ -116,14 +123,15 @@ public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
         var newerWrongGroup = new ZaloConnection
         {
             Id = "conn-newer-wrong-group",
-            AdminUserId = admin.Id,
+            AdminUserId = otherAdmin.Id,
+            AdminUser = otherAdmin,
             AccountZaloId = "bot-account",
             DisplayName = "Npc newer",
             EncryptedCredentials = "x",
             Status = ZaloConnectionStatus.Connected,
             UpdatedAt = DateTimeOffset.UtcNow
         };
-        db.AddRange(admin, target, newerWrongGroup);
+        db.AddRange(admin, otherAdmin, target, newerWrongGroup);
         await db.SaveChangesAsync();
 
         await new ZaloAutoSessionStore(db).EnsureAsync();
@@ -133,7 +141,7 @@ public sealed class ZaloOutboundReceiptConnectionResolutionFuzzTests
                 "Id", "AdminUserId", "ZaloConnectionId", "GroupId", "GroupName", "AutoSessionEnabled", "CreatedAt", "UpdatedAt")
             VALUES (
                 {{Guid.NewGuid().ToString("n")}}, {{admin.Id}}, {{target.Id}}, {{"g1"}}, {{"g1"}}, {{1}}, {{now}}, {{now}}),
-                ({{Guid.NewGuid().ToString("n")}}, {{admin.Id}}, {{newerWrongGroup.Id}}, {{"g-other"}}, {{"g-other"}}, {{1}}, {{now}}, {{now}});
+                ({{Guid.NewGuid().ToString("n")}}, {{otherAdmin.Id}}, {{newerWrongGroup.Id}}, {{"g-other"}}, {{"g-other"}}, {{1}}, {{now}}, {{now}});
             """);
         db.ChangeTracker.Clear();
     }
