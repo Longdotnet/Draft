@@ -390,7 +390,24 @@ public sealed class ZaloSchedulerWorker(
                 bool renewed;
                 try
                 {
-                    renewed = await renewLease(cancellationToken);
+                    var renewalTask = renewLease(cancellationToken);
+                    // A renewal that stops making progress is itself a lease-loss condition. Bound
+                    // the call to one heartbeat interval so stage authority is revoked with a full
+                    // heartbeat interval still remaining before the previous durable lease expires.
+                    var renewalCompleted = await Task.WhenAny(
+                        renewalTask,
+                        Task.Delay(renewalInterval, cancellationToken));
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (renewalCompleted != renewalTask)
+                    {
+                        operationCancellation.Cancel();
+                        await ObserveAfterLeaseCancellationAsync(operationTask);
+                        ObserveDetachedRenewalTask(renewalTask);
+                        throw new ZaloSchedulerLeaseLostException();
+                    }
+
+                    renewed = await renewalTask;
                 }
                 catch
                 {
@@ -569,6 +586,15 @@ public sealed class ZaloSchedulerWorker(
             return await new ZaloSchedulerLeaseStore(renewalDb)
                 .TryAcquireAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
         }
+    }
+
+    private static void ObserveDetachedRenewalTask(Task renewalTask)
+    {
+        _ = renewalTask.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private static async Task ObserveAfterLeaseCancellationAsync(Task operationTask)
