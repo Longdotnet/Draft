@@ -101,19 +101,42 @@ public sealed class ZaloAutoSessionLifecycleTerminalStatusFuzzTests
                     """);
             }
 
-            // Restart-shaped reconciliation must derive terminal lifecycle authority from the
-            // current durable proposal, not from an aggregate created by an obsolete Created
-            // revision. A non-Created proposal can no longer own HandedOff authority.
+            // A stale aggregate must lose read authority immediately after the durable proposal
+            // leaves Created. Reconciliation then removes only the aggregate; historical
+            // per-session handoff evidence remains available for diagnostics/provenance.
             await using (var restartDb = new VolleyDraftDbContext(options))
             {
                 var lifecycle = new ZaloAutoSessionLifecycleHandoffStoreV5(restartDb);
-                Assert.True(await lifecycle.HasHandedOffOwnershipAsync(proposalId));
+                Assert.False(await lifecycle.HasHandedOffOwnershipAsync(proposalId));
 
                 await lifecycle.ReconcileCompletedOwnershipsAsync();
 
                 Assert.False(await lifecycle.HasHandedOffOwnershipAsync(proposalId));
                 Assert.Empty(await lifecycle.GetMissingAsync(limit: 10));
+                Assert.Equal(0L, await CountByProposalAsync(
+                    restartDb,
+                    "ZaloAutoSessionLifecycleOwnerships",
+                    proposalId));
+                Assert.Equal(1L, await CountByProposalAsync(
+                    restartDb,
+                    "ZaloAutoSessionLifecycleHandoffs",
+                    proposalId));
             }
         }
+    }
+
+    private static async Task<long> CountByProposalAsync(
+        VolleyDraftDbContext db,
+        string tableName,
+        string proposalId)
+    {
+        var connection = db.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM \"{tableName}\" WHERE \"ProposalId\" = @ProposalId;";
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "@ProposalId";
+        parameter.Value = proposalId;
+        command.Parameters.Add(parameter);
+        return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 }
