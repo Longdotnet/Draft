@@ -390,10 +390,12 @@ public sealed class ZaloSchedulerWorker(
                 bool renewed;
                 try
                 {
-                    var renewalTask = renewLease(cancellationToken);
-                    // A renewal that stops making progress is itself a lease-loss condition. Bound
-                    // the call to one heartbeat interval so stage authority is revoked with a full
-                    // heartbeat interval still remaining before the previous durable lease expires.
+                    using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    var renewalTask = renewLease(renewalCancellation.Token);
+                    // Give every renewal attempt its own revocable authority. If it stops making
+                    // progress beyond one heartbeat interval, revoke that in-flight renewal before
+                    // revoking stage authority so a cancellation-aware DB/provider call cannot
+                    // commit a late lease extension after this wrapper reports lease loss.
                     var renewalCompleted = await Task.WhenAny(
                         renewalTask,
                         Task.Delay(renewalInterval, cancellationToken));
@@ -401,6 +403,7 @@ public sealed class ZaloSchedulerWorker(
 
                     if (renewalCompleted != renewalTask)
                     {
+                        renewalCancellation.Cancel();
                         operationCancellation.Cancel();
                         await ObserveAfterLeaseCancellationAsync(operationTask);
                         ObserveDetachedRenewalTask(renewalTask);
