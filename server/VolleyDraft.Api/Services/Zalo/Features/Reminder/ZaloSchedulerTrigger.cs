@@ -262,9 +262,11 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         await EnsureAsync(cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var releasedOwnerId = $"released:{Guid.NewGuid():N}";
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
-            SET "LeaseUntil" = {{atText}}
+            SET "OwnerId" = {{releasedOwnerId}},
+                "LeaseUntil" = {{atText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
               AND "LeaseUntil" > {{atText}};
