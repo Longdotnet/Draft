@@ -217,4 +217,60 @@ for seed in $(seq 1 "$lost_wake_seed_count"); do
       200 healthy 0 "$baseline_attempt" "$successor_attempt" "$observed_at" '')" = "0" ]
 done
 
-echo "scheduler verifier fuzz: clock-skew=$seed_count running-window=$running_seed_count predecessor-transition=$predecessor_seed_count lost-wake=$lost_wake_seed_count seeds passed; legacy clock false-negatives=$legacy_false_negatives predecessor failure-attribution cases=$legacy_predecessor_failure_misattributions"
+# Recovery replay amplification corpus. The previous workflow gated retries on
+# whether a recovery POST reached HTTP 202. If that POST failed, the next poll
+# could try again, turning one lost-wake rescue into repeated POST amplification.
+# The authoritative bound is now "attempted once", not "accepted once".
+recovery_replay_seed_count=256
+for seed in $(seq 1 "$recovery_replay_seed_count"); do
+  recovery_requeue_attempted=0
+  recovery_requeue_accepted=0
+  recovery_candidate_count=0
+  recovery_post_count=0
+  candidate_start=$((8 + seed % 3))
+
+  for verification_attempt in $(seq 1 24); do
+    if [ "$verification_attempt" -ge "$candidate_start" ]; then
+      recovery_candidate=1
+      recovery_candidate_count=$((recovery_candidate_count + 1))
+    else
+      recovery_candidate=0
+      recovery_candidate_count=0
+    fi
+
+    if [ "$(scheduler_should_attempt_recovery_requeue \
+        "$recovery_candidate" "$verification_attempt" "$recovery_candidate_count" \
+        "$recovery_requeue_attempted")" = "1" ]; then
+      recovery_requeue_attempted=1
+      recovery_post_count=$((recovery_post_count + 1))
+
+      # Mutate the recovery transport result. Even when the only recovery POST is
+      # rejected or lost, later identical observations must not POST again.
+      if [ $((seed % 4)) -eq 0 ]; then
+        recovery_requeue_accepted=1
+      fi
+    fi
+  done
+
+  [ "$recovery_post_count" -eq 1 ]
+  [ "$recovery_requeue_attempted" -eq 1 ]
+
+  # A second restart/lost-channel observation in the same verifier run cannot
+  # resurrect another recovery POST, whether the first POST was accepted or not.
+  [ "$(scheduler_should_attempt_recovery_requeue 1 24 12 "$recovery_requeue_attempted")" = "0" ]
+
+  if [ $((seed % 4)) -eq 0 ]; then
+    [ "$recovery_requeue_accepted" -eq 1 ]
+  else
+    [ "$recovery_requeue_accepted" -eq 0 ]
+  fi
+done
+
+# Negative boundary cases: too early, insufficient grounded observations, or an
+# already-attempted recovery are never allowed to issue a recovery POST.
+[ "$(scheduler_should_attempt_recovery_requeue 1 11 9 0)" = "0" ]
+[ "$(scheduler_should_attempt_recovery_requeue 1 12 2 0)" = "0" ]
+[ "$(scheduler_should_attempt_recovery_requeue 0 24 12 0)" = "0" ]
+[ "$(scheduler_should_attempt_recovery_requeue 1 24 12 1)" = "0" ]
+
+echo "scheduler verifier fuzz: clock-skew=$seed_count running-window=$running_seed_count predecessor-transition=$predecessor_seed_count lost-wake=$lost_wake_seed_count recovery-replay=$recovery_replay_seed_count seeds passed; legacy clock false-negatives=$legacy_false_negatives predecessor failure-attribution cases=$legacy_predecessor_failure_misattributions"
