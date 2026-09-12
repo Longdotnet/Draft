@@ -205,4 +205,56 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
             }
         }
     }
+
+    [Fact]
+    public async Task Expired_owner_must_not_publish_terminal_state_before_successor_takeover()
+    {
+        const int seedCount = 64;
+
+        for (var seed = 1; seed <= seedCount; seed++)
+        {
+            var random = new StableFuzzRandom(seed * 170141);
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            var acquiredAt = new DateTimeOffset(2026, 9, 12, 3, 0, 0, TimeSpan.Zero)
+                .AddMilliseconds(random.NextInt(1000));
+            var leaseDuration = TimeSpan.FromSeconds(15 + random.NextInt(90));
+            var owner = $"expired-terminal-{seed}";
+            var expiry = acquiredAt.Add(leaseDuration);
+            var lateAt = expiry.AddTicks(1 + random.NextInt(1000));
+
+            await using (var ownerDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(ownerDb);
+                Assert.True(await store.TryAcquireAsync(owner, acquiredAt, leaseDuration));
+                await store.MarkAttemptAsync(owner, acquiredAt.AddSeconds(1));
+            }
+
+            await using (var expiredDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(expiredDb);
+                await store.MarkAttemptAsync(owner, lateAt);
+                await store.MarkSuccessAsync(owner, lateAt.AddTicks(1));
+                await store.MarkFailureAsync(owner, lateAt.AddTicks(2), "exception:finalize");
+                Assert.False(await store.ReleaseAsync(owner, lateAt.AddTicks(3)));
+            }
+
+            await using (var verifyDb = new VolleyDraftDbContext(options))
+            {
+                var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
+                    await new ZaloSchedulerLeaseStore(verifyDb).GetAsync());
+
+                Assert.Equal(owner, snapshot.OwnerId);
+                Assert.Equal(expiry, snapshot.LeaseUntil);
+                Assert.Equal(acquiredAt.AddSeconds(1), snapshot.LastAttemptAt);
+                Assert.Null(snapshot.LastSuccessAt);
+                Assert.Null(snapshot.LastFailureAt);
+                Assert.Null(snapshot.LastFailureCode);
+            }
+        }
+    }
 }
