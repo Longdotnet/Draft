@@ -118,4 +118,66 @@ public sealed class ZaloSchedulerLeaseClockSkewFuzzTests
             Assert.Equal(renewalLocalNow.Add(leaseDuration), snapshot.LeaseUntil);
         }
     }
+
+    [Fact]
+    public async Task Terminal_release_ends_database_authority_even_when_local_clocks_disagree()
+    {
+        const int seedCount = 96;
+
+        for (var seed = 1; seed <= seedCount; seed++)
+        {
+            var random = new StableFuzzRandom(seed * 196613);
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            var acquiredLocalNow = new DateTimeOffset(2026, 9, 12, 17, 0, 0, TimeSpan.Zero)
+                .AddMilliseconds(random.NextInt(1000));
+            var leaseDuration = TimeSpan.FromSeconds(60 + random.NextInt(121));
+            var predecessorOwner = ZaloSchedulerWorker.CreateCycleOwnerId($"clock-release-a-{seed}");
+            var successorOwner = ZaloSchedulerWorker.CreateCycleOwnerId($"clock-release-b-{seed}");
+
+            await using (var acquireDb = new VolleyDraftDbContext(options))
+            {
+                Assert.True(await new ZaloSchedulerLeaseStore(acquireDb, useDatabaseAuthorityClock: true)
+                    .TryAcquireAsync(predecessorOwner, acquiredLocalNow, leaseDuration));
+            }
+
+            // Make terminal timestamps hostile to the authority clock in both directions. A clean
+            // terminal release is an explicit ownership handoff and must not leave a hidden future
+            // authority deadline that blocks the next instance.
+            var releaseSkewSeconds = random.NextBool()
+                ? 3600 + random.NextInt(6 * 3600)
+                : -(3600 + random.NextInt(6 * 3600));
+            var releasedLocalAt = acquiredLocalNow.AddSeconds(releaseSkewSeconds);
+
+            await using (var releaseDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(releaseDb, useDatabaseAuthorityClock: true);
+                await store.MarkSuccessAsync(predecessorOwner, releasedLocalAt);
+                Assert.True(
+                    await store.ReleaseAsync(predecessorOwner, releasedLocalAt),
+                    $"seed={seed} fingerprint=scheduler-lease:release-authority-stuck " +
+                    $"releaseSkewSeconds={releaseSkewSeconds}");
+            }
+
+            var successorLocalNow = acquiredLocalNow.AddSeconds(
+                random.NextBool() ? 8 * 3600 : -8 * 3600);
+            await using (var successorDb = new VolleyDraftDbContext(options))
+            {
+                Assert.True(
+                    await new ZaloSchedulerLeaseStore(successorDb, useDatabaseAuthorityClock: true)
+                        .TryAcquireAsync(successorOwner, successorLocalNow, leaseDuration),
+                    $"seed={seed} fingerprint=scheduler-lease:release-authority-stuck successor");
+            }
+
+            await using var verifyDb = new VolleyDraftDbContext(options);
+            var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
+                await new ZaloSchedulerLeaseStore(verifyDb).GetAsync());
+            Assert.Equal(successorOwner, snapshot.OwnerId);
+            Assert.Equal(successorLocalNow, snapshot.LastAttemptAt);
+        }
+    }
 }
