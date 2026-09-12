@@ -87,4 +87,51 @@ IFS=$'\t' read -r source boundary_at boundary_epoch < <(
 [ "$(scheduler_verified_failed failed 0 0 0 0)" = "0" ]
 [ "$(scheduler_verified_failed healthy 1 1 1 1)" = "0" ]
 
-echo "scheduler verifier fuzz: $seed_count seeds passed; legacy false-negatives reproduced=$legacy_false_negatives"
+# Production incident #241 is a permanent seed. The verifier exhausted its fixed
+# 24-poll window while the API still reported a fresh running attempt with a live
+# durable lease extending another ~13 minutes. This is evidence of work still in
+# progress, not evidence that the scheduler cycle failed.
+production_boundary=$(date -u -d '2026-09-12T05:51:34.4179435Z' +%s)
+production_attempt='2026-09-12T05:51:34.409815Z'
+# The attempt predates requestedAt by milliseconds because the worker consumed the
+# trigger while the HTTP response was being formed. Baseline advancement therefore
+# grounds ownership; freshness uses a one-second API receipt granularity here.
+production_boundary=$((production_boundary - 1))
+production_attempt_fresh=$(scheduler_timestamp_is_fresh "$production_attempt" "$production_boundary")
+[ "$production_attempt_fresh" = "1" ]
+[ "$(scheduler_verified_in_progress \
+  200 running 1 "$production_attempt_fresh" \
+  '2026-09-12T05:53:39.8710278Z' \
+  '2026-09-12T06:06:34.409815Z')" = "1" ]
+
+# Stateful running-cycle corpus: mutate verification-window exhaustion, lease
+# runway, timestamp precision and stale ownership. A fresh running attempt under a
+# lease that remains live at the API observation is never a timeout failure.
+running_seed_count=256
+running_base=$(date -u -d '2026-09-12T10:00:00Z' +%s)
+for seed in $(seq 1 "$running_seed_count"); do
+  accepted_epoch=$((running_base + seed * 11))
+  attempt_epoch=$((accepted_epoch + seed % 3))
+  observed_epoch=$((attempt_epoch + 120 + seed % 91))
+  lease_runway=$((1 + (seed * 29) % 901))
+  lease_epoch=$((observed_epoch + lease_runway))
+
+  attempt_at=$(iso_from_epoch "$attempt_epoch")
+  observed_at=$(iso_from_epoch "$observed_epoch")
+  lease_until=$(iso_from_epoch "$lease_epoch")
+  attempt_fresh=$(scheduler_timestamp_is_fresh "$attempt_at" "$accepted_epoch")
+  [ "$attempt_fresh" = "1" ]
+  [ "$(scheduler_verified_in_progress 200 running 1 "$attempt_fresh" "$observed_at" "$lease_until")" = "1" ]
+
+  # Expired lease, stale/unadvanced attempt, failed state, malformed clocks and a
+  # non-200 health response must never be accepted as authoritative in-progress.
+  expired_lease=$(iso_from_epoch "$observed_epoch")
+  [ "$(scheduler_verified_in_progress 200 running 1 1 "$observed_at" "$expired_lease")" = "0" ]
+  [ "$(scheduler_verified_in_progress 200 running 0 1 "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_in_progress 200 running 1 0 "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_in_progress 503 running 1 1 "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_in_progress 200 failed 1 1 "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_in_progress 200 running 1 1 garbage "$lease_until")" = "0" ]
+done
+
+echo "scheduler verifier fuzz: clock-skew=$seed_count running-window=$running_seed_count seeds passed; legacy false-negatives reproduced=$legacy_false_negatives"
