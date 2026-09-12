@@ -182,16 +182,21 @@ public sealed class ZaloSchedulerLegacyMigrationFuzzTests
             await store.EnsureAsync();
             var authorityBefore = await ReadAuthorityLeaseUntilAsync(db);
 
-            var oldNow = legacyAttempt.AddMinutes(10);
+            // Mutate renewal timing only inside the legacy lease's own clock window. This models an
+            // old worker that is genuinely allowed to renew; expiry/rejection belongs to a different
+            // scenario family and must not be mistaken for a bridge failure.
+            var maxElapsedMinutes = Math.Max(1, (int)legacyDuration.TotalMinutes - 1);
+            var elapsedMinutes = 1 + random.NextInt(maxElapsedMinutes);
+            var oldNow = legacyAttempt.AddMinutes(elapsedMinutes);
             var renewedLeaseUntil = oldNow.Add(legacyDuration);
             var affected = await ExecuteLegacyRenewAsync(db, owner, oldNow, renewedLeaseUntil);
             Assert.Equal(1, affected);
 
             var authorityAfter = await ReadAuthorityLeaseUntilAsync(db);
             Assert.True(
-                authorityAfter > authorityBefore.AddMinutes(8),
+                authorityAfter > authorityBefore.AddSeconds(30),
                 $"seed={seed} fingerprint=scheduler-migration:legacy-renewal-not-bridged " +
-                $"authorityBefore={authorityBefore:O} authorityAfter={authorityAfter:O}");
+                $"authorityBefore={authorityBefore:O} authorityAfter={authorityAfter:O} elapsedMinutes={elapsedMinutes}");
             var observedAt = await ReadDatabaseNowAsync(db);
             Assert.True(authorityAfter <= observedAt.AddHours(1).AddSeconds(2));
         }
