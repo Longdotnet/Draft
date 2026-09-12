@@ -204,6 +204,7 @@ internal sealed class ZaloSchedulerLeaseStore(
                     ELSE excluded."LastAttemptAt"
                 END
             WHERE "ZaloSchedulerLeases"."OwnerId" = {{ownerId}}
+               OR "ZaloSchedulerLeases"."OwnerId" LIKE 'released:%'
                OR "ZaloSchedulerLeases"."AuthorityLeaseUntil" <= {{authorityNowText}};
             """, cancellationToken);
 
@@ -221,7 +222,6 @@ internal sealed class ZaloSchedulerLeaseStore(
         await EnsureAsync(cancellationToken);
 
         var authorityNow = await ResolveAuthorityNowAsync(now, cancellationToken);
-        var nowText = now.ToUniversalTime().ToString("O");
         var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
         var authorityNowText = authorityNow.ToUniversalTime().ToString("O");
         var authorityLeaseUntilText = authorityNow.Add(leaseDuration).ToUniversalTime().ToString("O");
@@ -243,13 +243,15 @@ internal sealed class ZaloSchedulerLeaseStore(
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastAttemptAt" = {{atText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{atText}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
     }
 
@@ -259,13 +261,15 @@ internal sealed class ZaloSchedulerLeaseStore(
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastSuccessAt" = {{atText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{atText}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
     }
 
@@ -279,17 +283,19 @@ internal sealed class ZaloSchedulerLeaseStore(
             throw new ArgumentException("Scheduler failure code must be a bounded deterministic code.", nameof(failureCode));
 
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var failureAt = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastFailureAt" = {{failureAt}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{failureAt}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
 
         // Failure diagnosis belongs to the same durable live lease owner as LastFailureAt.
-        // Re-check the fence in the diagnostic statement too: ownership can change
+        // Re-check the authority fence in the diagnostic statement too: ownership can change
         // after the timestamp update but before this second statement executes.
         if (affected == 0)
             return;
@@ -302,7 +308,7 @@ internal sealed class ZaloSchedulerLeaseStore(
                 FROM "ZaloSchedulerLeases"
                 WHERE "Name" = {{LeaseName}}
                   AND "OwnerId" = {{ownerId}}
-                  AND "LeaseUntil" > {{failureAt}}
+                  AND "AuthorityLeaseUntil" > {{authorityAtText}}
                   AND "LastFailureAt" = {{failureAt}}
             )
             ON CONFLICT ("Name") DO UPDATE SET
@@ -318,15 +324,18 @@ internal sealed class ZaloSchedulerLeaseStore(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         var releasedOwnerId = $"released:{Guid.NewGuid():N}";
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "OwnerId" = {{releasedOwnerId}},
-                "LeaseUntil" = {{atText}}
+                "LeaseUntil" = {{atText}},
+                "AuthorityLeaseUntil" = {{authorityAtText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{atText}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
         return affected > 0;
     }
