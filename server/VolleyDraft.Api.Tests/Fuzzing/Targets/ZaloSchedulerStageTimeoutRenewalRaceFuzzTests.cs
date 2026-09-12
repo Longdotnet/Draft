@@ -20,7 +20,7 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
             var stageTimeout = renewalInterval + TimeSpan.FromMilliseconds(35 + random.NextInt(16));
             using var stop = new CancellationTokenSource();
             var renewalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var renewalCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var renewalAuthorityRevoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var stageCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var run = ZaloSchedulerWorker.RunWithLeaseHeartbeatAsync(
@@ -39,17 +39,11 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
                 },
                 async renewalToken =>
                 {
+                    using var authorityRegistration = renewalToken.Register(
+                        () => renewalAuthorityRevoked.TrySetResult());
                     renewalStarted.TrySetResult();
-                    try
-                    {
-                        await Task.Delay(Timeout.InfiniteTimeSpan, renewalToken);
-                        return true;
-                    }
-                    catch (OperationCanceledException) when (renewalToken.IsCancellationRequested)
-                    {
-                        renewalCancelled.TrySetResult();
-                        throw;
-                    }
+                    await Task.Delay(Timeout.InfiniteTimeSpan, renewalToken);
+                    return true;
                 },
                 leaseDuration,
                 stop.Token,
@@ -68,10 +62,11 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
                 await Assert.ThrowsAsync<TimeoutException>(async () =>
                     await run.WaitAsync(HarnessGuard));
 
-                // Stage cleanup is drained before the wrapper reports timeout, while the renewal is
-                // deliberately observed as a detached task after its authority token is revoked.
+                // Stage cleanup is drained before the wrapper reports timeout. Renewal work is
+                // intentionally detached, so observe cancellation authority at the token boundary
+                // itself instead of depending on when its async continuation happens to be scheduled.
                 Assert.True(stageCancelled.Task.IsCompletedSuccessfully);
-                await renewalCancelled.Task.WaitAsync(HarnessGuard);
+                Assert.True(renewalAuthorityRevoked.Task.IsCompletedSuccessfully);
             }
             finally
             {
