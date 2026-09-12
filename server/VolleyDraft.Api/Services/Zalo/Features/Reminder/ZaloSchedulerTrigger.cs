@@ -413,6 +413,12 @@ public sealed class ZaloSchedulerWorker(
         return TimeSpan.FromTicks(Math.Max(1, leaseDuration.Ticks / 3));
     }
 
+    internal static string CreateCycleOwnerId(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        return $"{instanceId}:{Guid.NewGuid():N}";
+    }
+
     internal static bool HasStageFailures(
         int reminderFailedCount,
         int rescueFailedCount,
@@ -528,7 +534,8 @@ public sealed class ZaloSchedulerWorker(
         var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
         var lease = new ZaloSchedulerLeaseStore(db);
         var acquiredAt = DateTimeOffset.UtcNow;
-        if (!await lease.TryAcquireAsync(instanceId, acquiredAt, leaseDuration, cancellationToken))
+        var cycleOwnerId = CreateCycleOwnerId(instanceId);
+        if (!await lease.TryAcquireAsync(cycleOwnerId, acquiredAt, leaseDuration, cancellationToken))
         {
             logger.LogInformation("Skipped Zalo scheduler cycle because another API instance owns the durable scheduler lease");
             if (retryOnLeaseContention)
@@ -542,7 +549,7 @@ public sealed class ZaloSchedulerWorker(
             return;
         }
 
-        await lease.MarkAttemptAsync(instanceId, acquiredAt, cancellationToken);
+        await lease.MarkAttemptAsync(cycleOwnerId, acquiredAt, cancellationToken);
         var stage = ZaloSchedulerStage.Listener;
 
         try
@@ -622,7 +629,7 @@ public sealed class ZaloSchedulerWorker(
                     result.FailedCount,
                     rescue.FailedCount,
                     handoff.FailedCount);
-                await lease.MarkFailureAsync(instanceId, completedAt, failureCode, cancellationToken);
+                await lease.MarkFailureAsync(cycleOwnerId, completedAt, failureCode, cancellationToken);
                 logger.LogWarning(
                     "Zalo scheduler cycle completed degraded FailureCode={FailureCode} ReminderFailed={ReminderFailed} RescueFailed={RescueFailed} LifecycleFailed={LifecycleFailed}",
                     failureCode,
@@ -632,10 +639,10 @@ public sealed class ZaloSchedulerWorker(
             }
             else
             {
-                await lease.MarkSuccessAsync(instanceId, completedAt, cancellationToken);
+                await lease.MarkSuccessAsync(cycleOwnerId, completedAt, cancellationToken);
             }
 
-            await lease.ReleaseAsync(instanceId, completedAt, cancellationToken);
+            await lease.ReleaseAsync(cycleOwnerId, completedAt, cancellationToken);
             logger.LogInformation(
                 "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed} LifecycleCandidates={LifecycleCandidates} LifecycleHandedOff={LifecycleHandedOff} LifecycleFailed={LifecycleFailed}",
                 result.GroupCount,
@@ -658,8 +665,8 @@ public sealed class ZaloSchedulerWorker(
         {
             var failedAt = DateTimeOffset.UtcNow;
             var failureCode = ZaloSchedulerFailureCodes.ForException(stage);
-            await lease.MarkFailureAsync(instanceId, failedAt, failureCode, CancellationToken.None);
-            await lease.ReleaseAsync(instanceId, failedAt, CancellationToken.None);
+            await lease.MarkFailureAsync(cycleOwnerId, failedAt, failureCode, CancellationToken.None);
+            await lease.ReleaseAsync(cycleOwnerId, failedAt, CancellationToken.None);
             logger.LogError(exception, "Triggered Zalo scheduler cycle failed FailureCode={FailureCode}", failureCode);
         }
 
@@ -670,7 +677,7 @@ public sealed class ZaloSchedulerWorker(
             await using var renewalScope = scopeFactory.CreateAsyncScope();
             var renewalDb = renewalScope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
             return await new ZaloSchedulerLeaseStore(renewalDb)
-                .TryRenewAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
+                .TryRenewAsync(cycleOwnerId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
         }
     }
 
