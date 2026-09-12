@@ -14,8 +14,8 @@ public sealed class SchedulerWorkflowFreshnessContractTests
         var helper = File.ReadAllText(helperPath);
 
         Assert.Contains("source scripts/scheduler-verifier.sh", workflow, StringComparison.Ordinal);
-        Assert.Contains("runner_attempt_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')", workflow, StringComparison.Ordinal);
-        Assert.Contains("runner_queue_requested_at=\"$runner_attempt_requested_at\"", workflow, StringComparison.Ordinal);
+        Assert.Contains("last_runner_queue_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')", workflow, StringComparison.Ordinal);
+        Assert.Contains("runner_queue_requested_at=\"$last_runner_queue_requested_at\"", workflow, StringComparison.Ordinal);
         Assert.Contains("scheduler_choose_freshness_boundary \"$runner_queue_requested_at\" /tmp/scheduler-response", workflow, StringComparison.Ordinal);
         Assert.Contains("scheduler_timestamp_is_fresh \"$current_attempt\" \"$queue_requested_epoch\"", workflow, StringComparison.Ordinal);
         Assert.Contains("scheduler_timestamp_is_fresh \"$current_success\" \"$queue_requested_epoch\"", workflow, StringComparison.Ordinal);
@@ -32,6 +32,20 @@ public sealed class SchedulerWorkflowFreshnessContractTests
         Assert.Contains("scheduler_verified_predecessor_in_progress", workflow, StringComparison.Ordinal);
         Assert.Contains("\"$baseline_attempt\"", workflow, StringComparison.Ordinal);
         Assert.Contains("the accepted wake remains queued behind that authoritative cycle", workflow, StringComparison.Ordinal);
+
+        // HTTP 202 is only process-local wake acceptance. If a restart destroys that
+        // signal before a durable attempt starts, recovery is bounded and fenced:
+        // require sustained unchanged authoritative state, replay at most once, and
+        // retain the original API-clock freshness boundary for the same logical wake.
+        Assert.Contains("scheduler_should_requeue_unstarted_wake", workflow, StringComparison.Ordinal);
+        Assert.Contains("recovery_candidate_count=$((recovery_candidate_count + 1))", workflow, StringComparison.Ordinal);
+        Assert.Contains("[ \"$attempt\" -ge 12 ]", workflow, StringComparison.Ordinal);
+        Assert.Contains("[ \"$recovery_candidate_count\" -ge 3 ]", workflow, StringComparison.Ordinal);
+        Assert.Contains("[ \"$recovery_requeue_used\" -eq 0 ]", workflow, StringComparison.Ordinal);
+        Assert.Contains("replaying the logical wake once", workflow, StringComparison.Ordinal);
+        Assert.Contains("retaining original freshness boundary for the same logical wake", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("queue_requested_epoch=$(scheduler_parse_timestamp_epoch \"$recovery_requested_at\")", workflow, StringComparison.Ordinal);
+
         Assert.Contains("terminal_healthy=false", workflow, StringComparison.Ordinal);
         Assert.Contains("terminal_healthy=true", workflow, StringComparison.Ordinal);
         Assert.Contains("success() && steps.scheduler.outputs.terminal_healthy == 'true'", workflow, StringComparison.Ordinal);
@@ -45,6 +59,9 @@ public sealed class SchedulerWorkflowFreshnessContractTests
         Assert.Contains("One scheduler cycle can legitimately outlive the short GitHub polling window", helper, StringComparison.Ordinal);
         Assert.Contains("[ \"$lease_epoch\" -gt \"$observed_epoch\" ]", helper, StringComparison.Ordinal);
         Assert.Contains("The exact baseline attempt must still own a live", helper, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("HTTP 202 only proves that the in-process bounded channel accepted a signal", helper, StringComparison.Ordinal);
+        Assert.Contains("scheduler_verified_predecessor_in_progress", helper, StringComparison.Ordinal);
+        Assert.Contains("[ \"$current_attempt\" != \"$baseline_attempt\" ]", helper, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()
