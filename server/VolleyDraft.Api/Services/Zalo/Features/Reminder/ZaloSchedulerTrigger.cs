@@ -231,6 +231,9 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
               AND "LeaseUntil" > {{failureAt}};
             """, cancellationToken);
 
+        // Failure diagnosis belongs to the same durable live lease owner as LastFailureAt.
+        // Re-check the fence in the diagnostic statement too: ownership can change
+        // after the timestamp update but before this second statement executes.
         if (affected == 0)
             return;
 
@@ -341,6 +344,9 @@ public sealed class ZaloSchedulerWorker(
         var leaseDuration = ResolveLeaseDuration(configuration, watchdogInterval);
         var stageTimeout = ResolveStageTimeout(configuration);
 
+        // Durable reminders, pass-slot rescue and Auto Session lifecycle handoff should catch up
+        // whenever the API process becomes available, even if the external scheduler missed the
+        // wake-up that originally should have driven them.
         await RunCycleAsync(leaseDuration, stageTimeout, retryOnLeaseContention: false, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -460,6 +466,10 @@ public sealed class ZaloSchedulerWorker(
                 {
                     using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     var renewalTask = renewLease(renewalCancellation.Token);
+                    // Give every renewal attempt its own revocable authority. A stage timeout is a
+                    // stronger execution-authority boundary than the heartbeat deadline, so it must
+                    // also interrupt an in-flight renewal instead of waiting for that renewal window
+                    // to elapse first.
                     var renewalCompleted = await Task.WhenAny(
                         renewalTask,
                         Task.Delay(renewalInterval, cancellationToken),
@@ -505,6 +515,9 @@ public sealed class ZaloSchedulerWorker(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // A cycle/host cancellation owns the result, but the stage may still be unwinding
+            // provider/domain cleanup with scoped services. Drain it before returning so the
+            // owning scheduler scope cannot be disposed underneath active work.
             operationCancellation.Cancel();
             await ObserveAfterLeaseCancellationAsync(operationTask);
             throw;
@@ -562,6 +575,9 @@ public sealed class ZaloSchedulerWorker(
                 cancellationToken,
                 stageTimeout);
 
+            // Every potentially long provider/domain stage renews the lease from a separate scope.
+            // This prevents a second API instance from taking ownership mid-stage merely because
+            // the stage exceeded the lease duration.
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
@@ -582,6 +598,9 @@ public sealed class ZaloSchedulerWorker(
                 throw new ZaloSchedulerLeaseLostException();
 
             stage = ZaloSchedulerStage.Lifecycle;
+            // Match creation commits before V5 lifecycle handoff. A transient failure in that
+            // post-commit window must survive request loss/restart and be retried from durable
+            // Created proposal + link state rather than depending on the original webhook.
             var handoffStore = new ZaloAutoSessionLifecycleHandoffStoreV5(db);
             var handoff = await RunWithLeaseHeartbeatAsync(
                 stageToken => handoffStore.ReconcileMissingAsync(logger, stageToken),
@@ -591,6 +610,8 @@ public sealed class ZaloSchedulerWorker(
                 stageTimeout);
 
             stage = ZaloSchedulerStage.Finalize;
+            // Do not record or announce success if ownership changed in the narrow window after the
+            // last stage. A successor is then responsible for the next authoritative cycle.
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
@@ -601,6 +622,9 @@ public sealed class ZaloSchedulerWorker(
                 handoff.FailedCount);
             if (degraded)
             {
+                // A cycle that executed to completion but failed durable/user-facing work is not a
+                // successful recovery signal. Keep LastSuccessAt unchanged so /health/scheduler and
+                // the external verifier cannot certify a Zalo delivery/reconciliation outage as healthy.
                 var failureCode = ZaloSchedulerFailureCodes.BuildDegraded(
                     result.FailedCount,
                     rescue.FailedCount,
@@ -648,6 +672,8 @@ public sealed class ZaloSchedulerWorker(
 
         async Task<bool> RenewLeaseAsync(CancellationToken renewCancellationToken)
         {
+            // Lease heartbeats must not share the stage DbContext: provider/domain work can be using
+            // that context concurrently, and EF DbContext is not safe for concurrent operations.
             await using var renewalScope = scopeFactory.CreateAsyncScope();
             var renewalDb = renewalScope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
             return await new ZaloSchedulerLeaseStore(renewalDb)
@@ -672,6 +698,8 @@ public sealed class ZaloSchedulerWorker(
         }
         catch
         {
+            // The lease-loss/cancellation decision is authoritative here. The operation is awaited
+            // only to avoid leaving scoped services running in the background after their owning cycle exits.
         }
     }
 }
