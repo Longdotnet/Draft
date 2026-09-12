@@ -38,14 +38,14 @@ for seed in $(seq 1 "$seed_count"); do
 
   [ "$source" = "server" ]
   [ "$boundary_at" = "$server_requested_at" ]
-  [ "$boundary_epoch" -eq "$server_epoch" ]
+  [ "$boundary_epoch" -eq $((server_epoch - 1)) ]
   attempt_fresh=$(scheduler_timestamp_is_fresh "$attempt_at" "$boundary_epoch")
   success_fresh=$(scheduler_timestamp_is_fresh "$success_at" "$boundary_epoch")
   [ "$attempt_fresh" = "1" ]
   [ "$success_fresh" = "1" ]
   [ "$(scheduler_verified_healthy 200 healthy 1 1 "$attempt_fresh" "$success_fresh")" = "1" ]
 
-  stale_at=$(iso_from_epoch $((server_epoch - 1)))
+  stale_at=$(iso_from_epoch $((server_epoch - 2)))
   [ "$(scheduler_timestamp_is_fresh "$stale_at" "$boundary_epoch")" = "0" ]
   [ "$(scheduler_verified_healthy 200 healthy 1 0 1 1)" = "0" ]
   [ "$(scheduler_verified_healthy 200 healthy 1 1 0 1)" = "0" ]
@@ -89,14 +89,15 @@ IFS=$'\t' read -r source boundary_at boundary_epoch < <(
 
 # Production incident #241 is a permanent seed. The verifier exhausted its fixed
 # 24-poll window while the API still reported a fresh running attempt with a live
-# durable lease extending another ~13 minutes. This is evidence of work still in
-# progress, not evidence that the scheduler cycle failed.
-production_boundary=$(date -u -d '2026-09-12T05:51:34.4179435Z' +%s)
+# durable lease extending another ~13 minutes. The historical endpoint also
+# stamped requestedAt 8ms after the worker had already persisted LastAttemptAt;
+# the one-second server-clock receipt margin preserves that causal wake.
+printf '{"accepted":true,"queued":true,"requestedAt":"2026-09-12T05:51:34.4179435Z"}\n' > "$response_file"
+IFS=$'\t' read -r source boundary_at production_boundary < <(
+  scheduler_choose_freshness_boundary '2026-09-12T05:51:34Z' "$response_file"
+)
+[ "$source" = "server" ]
 production_attempt='2026-09-12T05:51:34.409815Z'
-# The attempt predates requestedAt by milliseconds because the worker consumed the
-# trigger while the HTTP response was being formed. Baseline advancement therefore
-# grounds ownership; freshness uses a one-second API receipt granularity here.
-production_boundary=$((production_boundary - 1))
 production_attempt_fresh=$(scheduler_timestamp_is_fresh "$production_attempt" "$production_boundary")
 [ "$production_attempt_fresh" = "1" ]
 [ "$(scheduler_verified_in_progress \
@@ -105,8 +106,8 @@ production_attempt_fresh=$(scheduler_timestamp_is_fresh "$production_attempt" "$
   '2026-09-12T06:06:34.409815Z')" = "1" ]
 
 # Stateful running-cycle corpus: mutate verification-window exhaustion, lease
-# runway, timestamp precision and stale ownership. A fresh running attempt under a
-# lease that remains live at the API observation is never a timeout failure.
+# runway and stale ownership. A fresh running attempt under a lease that remains
+# live at the API observation is never a timeout failure.
 running_seed_count=256
 running_base=$(date -u -d '2026-09-12T10:00:00Z' +%s)
 for seed in $(seq 1 "$running_seed_count"); do
