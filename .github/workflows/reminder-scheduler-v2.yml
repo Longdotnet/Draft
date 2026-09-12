@@ -43,6 +43,7 @@ jobs:
 
           echo "failure_kind=unknown" >> "$GITHUB_OUTPUT"
           echo "failure_detail=Scheduler wake/queue/verification failed without a more specific diagnosis." >> "$GITHUB_OUTPUT"
+          echo "terminal_healthy=false" >> "$GITHUB_OUTPUT"
 
           if [ -z "$SCHEDULER_URL" ] || [ -z "$SCHEDULER_KEY" ]; then
             echo "failure_kind=configuration_missing" >> "$GITHUB_OUTPUT"
@@ -202,9 +203,22 @@ jobs:
           fi
           echo "Scheduler freshness boundary source=$freshness_source at=$queue_requested_at epoch=$queue_requested_epoch"
 
+          health_http="000"
+          health_state="unknown"
+          current_attempt=""
+          current_success=""
+          current_failure=""
+          current_failure_code=""
+          current_observed_at=""
+          current_lease_until=""
+          attempt_advanced=0
+          attempt_is_fresh=0
+
           for attempt in $(seq 1 24); do
             health_http=$(read_scheduler_health /tmp/scheduler-health-current)
             health_state=$(jq -r '.status // "unknown"' /tmp/scheduler-health-current 2>/dev/null || printf 'unknown')
+            current_observed_at=$(jq -r '.observedAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
+            current_lease_until=$(jq -r '.leaseUntil // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_attempt=$(jq -r '.lastAttemptAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_success=$(jq -r '.lastSuccessAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_failure=$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
@@ -227,9 +241,10 @@ jobs:
             success_is_fresh=$(scheduler_timestamp_is_fresh "$current_success" "$queue_requested_epoch")
             failure_is_fresh=$(scheduler_timestamp_is_fresh "$current_failure" "$queue_requested_epoch")
 
-            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh boundary_source=$freshness_source"
+            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} lease_until=${current_lease_until:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh boundary_source=$freshness_source"
 
             if [ "$(scheduler_verified_healthy "$health_http" "$health_state" "$terminal_advanced" "$attempt_advanced" "$attempt_is_fresh" "$success_is_fresh")" = "1" ]; then
+              echo "terminal_healthy=true" >> "$GITHUB_OUTPUT"
               echo "Scheduler cycle reached a fresh durable healthy terminal state."
               exit 0
             fi
@@ -249,9 +264,21 @@ jobs:
             sleep 5
           done
 
+          if [ "$(scheduler_verified_in_progress \
+              "$health_http" \
+              "$health_state" \
+              "$attempt_advanced" \
+              "$attempt_is_fresh" \
+              "$current_observed_at" \
+              "$current_lease_until")" = "1" ]; then
+            echo "Scheduler verification window ended while the fresh cycle is still authoritatively running under a live durable lease; leaving terminal recovery assessment to a later observation."
+            cat /tmp/scheduler-health-current 2>/dev/null || true
+            exit 0
+          fi
+
           echo "failure_kind=scheduler_cycle_timeout" >> "$GITHUB_OUTPUT"
-          echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state within the verification window." >> "$GITHUB_OUTPUT"
-          echo "Scheduler accepted the trigger but did not reach a fresh healthy terminal state within the verification window."
+          echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no fresh live running lease remained at the end of the verification window." >> "$GITHUB_OUTPUT"
+          echo "Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no authoritative in-progress cycle remained."
           cat /tmp/scheduler-health-current 2>/dev/null || true
           exit 1
 
@@ -297,7 +324,7 @@ jobs:
           fi
 
       - name: Close recovered scheduler reliability incident
-        if: success()
+        if: success() && steps.scheduler.outputs.terminal_healthy == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

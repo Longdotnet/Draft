@@ -23,10 +23,22 @@ public sealed class SchedulerWorkflowFreshnessContractTests
         Assert.Contains("scheduler_verified_healthy", workflow, StringComparison.Ordinal);
         Assert.Contains("scheduler_verified_failed", workflow, StringComparison.Ordinal);
 
+        // Verification-window exhaustion is not a scheduler failure while the accepted
+        // fresh attempt is still running under a live API-observed durable lease.
+        Assert.Contains("current_observed_at=$(jq -r '.observedAt // empty'", workflow, StringComparison.Ordinal);
+        Assert.Contains("current_lease_until=$(jq -r '.leaseUntil // empty'", workflow, StringComparison.Ordinal);
+        Assert.Contains("scheduler_verified_in_progress", workflow, StringComparison.Ordinal);
+        Assert.Contains("terminal_healthy=false", workflow, StringComparison.Ordinal);
+        Assert.Contains("terminal_healthy=true", workflow, StringComparison.Ordinal);
+        Assert.Contains("success() && steps.scheduler.outputs.terminal_healthy == 'true'", workflow, StringComparison.Ordinal);
+
         Assert.Contains("server_requested_at=$(jq -r '.requestedAt // empty'", helper, StringComparison.Ordinal);
-        Assert.Contains("printf 'server\\t%s\\t%s\\n' \"$server_requested_at\" \"$server_epoch\"", helper, StringComparison.Ordinal);
+        Assert.Contains("printf 'server\\t%s\\t%s\\n' \"$server_requested_at\" \"$((server_epoch - 1))\"", helper, StringComparison.Ordinal);
+        Assert.Contains("baseline advancement is still required", helper, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("printf 'runner\\t%s\\t%s\\n' \"$runner_requested_at\" \"$runner_epoch\"", helper, StringComparison.Ordinal);
         Assert.Contains("A failed health state can be backed either by a newly persisted failure marker", helper, StringComparison.Ordinal);
+        Assert.Contains("One scheduler cycle can legitimately outlive the short GitHub polling window", helper, StringComparison.Ordinal);
+        Assert.Contains("[ \"$lease_epoch\" -gt \"$observed_epoch\" ]", helper, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()
