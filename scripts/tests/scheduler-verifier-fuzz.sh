@@ -78,14 +78,15 @@ IFS=$'\t' read -r source boundary_at boundary_epoch < <(
 [ "$(scheduler_timestamp_is_fresh 'garbage' "$boundary_epoch")" = "0" ]
 [ "$(scheduler_timestamp_is_fresh "$successful_runner_at" 0)" = "0" ]
 
-# Preserve both grounded failed-cycle shapes. A newly persisted failure is one
-# terminal path; an abandoned fresh attempt with no new failure marker is the
-# other path emitted by ZaloSchedulerHealth after lease expiry.
-[ "$(scheduler_verified_failed failed 1 1 1 1)" = "1" ]
-[ "$(scheduler_verified_failed failed 0 1 0 1)" = "1" ]
-[ "$(scheduler_verified_failed failed 1 0 0 0)" = "0" ]
-[ "$(scheduler_verified_failed failed 0 0 0 0)" = "0" ]
-[ "$(scheduler_verified_failed healthy 1 1 1 1)" = "0" ]
+# Preserve both grounded failed-cycle shapes, but only after the accepted cycle's
+# own durable attempt advanced. A predecessor failure that lands after the queue
+# receipt is not the queued successor's terminal result.
+[ "$(scheduler_verified_failed failed 'degraded:reminder' 1 1 1 1)" = "1" ]
+[ "$(scheduler_verified_failed failed 'abandoned:leaseexpired' 0 1 0 1)" = "1" ]
+[ "$(scheduler_verified_failed failed 'degraded:reminder' 1 0 1 0)" = "0" ]
+[ "$(scheduler_verified_failed failed 'degraded:reminder' 1 1 0 1)" = "0" ]
+[ "$(scheduler_verified_failed failed '' 0 1 0 1)" = "0" ]
+[ "$(scheduler_verified_failed healthy 'degraded:reminder' 1 1 1 1)" = "0" ]
 
 # Production incident #241 is a permanent seed. The verifier exhausted its fixed
 # 24-poll window while the API still reported a fresh running attempt with a live
@@ -135,4 +136,65 @@ for seed in $(seq 1 "$running_seed_count"); do
   [ "$(scheduler_verified_in_progress 200 running 1 1 garbage "$lease_until")" = "0" ]
 done
 
-echo "scheduler verifier fuzz: clock-skew=$seed_count running-window=$running_seed_count seeds passed; legacy false-negatives reproduced=$legacy_false_negatives"
+# Cross-run predecessor corpus. A scheduled/manual wake can be accepted while the
+# baseline cycle still owns the lease. The successor cannot advance LastAttemptAt
+# until that predecessor terminates, so verifier exhaustion must preserve this as
+# grounded in-progress work rather than manufacture scheduler_cycle_timeout.
+predecessor_seed_count=192
+predecessor_base=$(date -u -d '2026-09-12T12:00:00Z' +%s)
+legacy_predecessor_failure_misattributions=0
+for seed in $(seq 1 "$predecessor_seed_count"); do
+  predecessor_attempt_epoch=$((predecessor_base + seed * 17))
+  queue_epoch=$((predecessor_attempt_epoch + 5 + seed % 31))
+  observed_epoch=$((queue_epoch + 120 + seed % 61))
+  lease_epoch=$((observed_epoch + 1 + (seed * 43) % 901))
+
+  predecessor_attempt=$(iso_from_epoch "$predecessor_attempt_epoch")
+  observed_at=$(iso_from_epoch "$observed_epoch")
+  lease_until=$(iso_from_epoch "$lease_epoch")
+
+  [ "$(scheduler_verified_predecessor_in_progress \
+      200 running 0 "$predecessor_attempt" "$predecessor_attempt" \
+      "$observed_at" "$lease_until")" = "1" ]
+
+  # The same predecessor can fail after the new queue receipt. Its failure marker
+  # is fresh by wall-clock order but it is still not the queued successor's result.
+  predecessor_failure_epoch=$((queue_epoch + 1 + seed % 7))
+  predecessor_failure=$(iso_from_epoch "$predecessor_failure_epoch")
+  predecessor_failure_fresh=$(scheduler_timestamp_is_fresh "$predecessor_failure" "$queue_epoch")
+  [ "$predecessor_failure_fresh" = "1" ]
+  [ "$(scheduler_verified_failed \
+      failed 'degraded:reminder' 1 0 "$predecessor_failure_fresh" 0)" = "0" ]
+  legacy_predecessor_failure_misattributions=$((legacy_predecessor_failure_misattributions + 1))
+
+  # Once the queued successor actually starts, authority transfers to its attempt.
+  successor_attempt_epoch=$((predecessor_failure_epoch + 1 + seed % 3))
+  successor_failure_epoch=$((successor_attempt_epoch + 1 + seed % 5))
+  successor_attempt=$(iso_from_epoch "$successor_attempt_epoch")
+  successor_failure=$(iso_from_epoch "$successor_failure_epoch")
+  successor_attempt_fresh=$(scheduler_timestamp_is_fresh "$successor_attempt" "$queue_epoch")
+  successor_failure_fresh=$(scheduler_timestamp_is_fresh "$successor_failure" "$queue_epoch")
+  [ "$(scheduler_verified_failed \
+      failed 'degraded:reminder' 1 1 "$successor_failure_fresh" "$successor_attempt_fresh")" = "1" ]
+
+  # An abandoned successor is also authoritative only after its own attempt starts.
+  [ "$(scheduler_verified_failed \
+      failed 'abandoned:leaseexpired' 0 1 0 "$successor_attempt_fresh")" = "1" ]
+
+  # Negative predecessor shapes: different attempt, expired lease, empty baseline,
+  # terminal state, or non-200 health cannot hide a real verification timeout.
+  changed_attempt=$(iso_from_epoch $((predecessor_attempt_epoch + 1)))
+  expired_lease=$(iso_from_epoch "$observed_epoch")
+  [ "$(scheduler_verified_predecessor_in_progress 200 running 0 "$predecessor_attempt" "$changed_attempt" "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_predecessor_in_progress 200 running 0 "$predecessor_attempt" "$predecessor_attempt" "$observed_at" "$expired_lease")" = "0" ]
+  [ "$(scheduler_verified_predecessor_in_progress 200 running 0 '' "$predecessor_attempt" "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_predecessor_in_progress 200 healthy 0 "$predecessor_attempt" "$predecessor_attempt" "$observed_at" "$lease_until")" = "0" ]
+  [ "$(scheduler_verified_predecessor_in_progress 503 running 0 "$predecessor_attempt" "$predecessor_attempt" "$observed_at" "$lease_until")" = "0" ]
+done
+
+if [ "$legacy_predecessor_failure_misattributions" -eq 0 ]; then
+  echo "Expected predecessor transition corpus to exercise failure attribution." >&2
+  exit 1
+fi
+
+echo "scheduler verifier fuzz: clock-skew=$seed_count running-window=$running_seed_count predecessor-transition=$predecessor_seed_count seeds passed; legacy clock false-negatives=$legacy_false_negatives predecessor failure-attribution cases=$legacy_predecessor_failure_misattributions"
