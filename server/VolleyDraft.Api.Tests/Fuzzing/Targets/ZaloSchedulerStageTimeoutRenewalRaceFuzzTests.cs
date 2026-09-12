@@ -16,7 +16,6 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
             var leaseDuration = TimeSpan.FromMilliseconds(600 + random.NextInt(301));
             var renewalInterval = ZaloSchedulerWorker.ResolveLeaseRenewalInterval(leaseDuration);
             var stageTimeout = renewalInterval + TimeSpan.FromMilliseconds(35 + random.NextInt(16));
-            var overrunGuard = TimeSpan.FromMilliseconds(120);
             using var stop = new CancellationTokenSource();
             var renewalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var renewalCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -58,18 +57,17 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
             {
                 await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-                var authorityDecision = await Task.WhenAny(
-                        stageCancelled.Task,
-                        Task.Delay(overrunGuard))
-                    .WaitAsync(TimeSpan.FromSeconds(5));
-
-                // The execution budget is authoritative even while a heartbeat renewal itself is
-                // blocked. Before this regression, the inner renewal wait ignored the stage timeout,
-                // keeping stage authority alive until the later renewal deadline.
-                Assert.Same(stageCancelled.Task, authorityDecision);
-                await renewalCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                // The result type is the deterministic authority oracle. Before the production fix,
+                // the in-flight renewal ignored the stage timeout until its later heartbeat deadline
+                // and surfaced ZaloSchedulerLeaseLostException. The stage budget must win instead.
                 await Assert.ThrowsAsync<TimeoutException>(async () =>
                     await run.WaitAsync(TimeSpan.FromSeconds(5)));
+
+                // The wrapper must revoke both authorities before it reports that timeout. These are
+                // event-order assertions rather than a sub-100ms wall-clock deadline so loaded CI
+                // runners cannot manufacture a false fuzz finding from scheduler jitter.
+                Assert.True(stageCancelled.Task.IsCompletedSuccessfully);
+                Assert.True(renewalCancelled.Task.IsCompletedSuccessfully);
             }
             finally
             {
