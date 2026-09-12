@@ -330,6 +330,8 @@ public sealed class ZaloSchedulerWorker(
     ILogger<ZaloSchedulerWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan DefaultWatchdogInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan DefaultStageTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan MaximumStageTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MinimumLeaseDuration = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan LeaseContentionRetryDelay = TimeSpan.FromSeconds(5);
     private readonly string instanceId = Guid.NewGuid().ToString("N");
@@ -338,11 +340,12 @@ public sealed class ZaloSchedulerWorker(
     {
         var watchdogInterval = ResolveWatchdogInterval(configuration);
         var leaseDuration = ResolveLeaseDuration(configuration, watchdogInterval);
+        var stageTimeout = ResolveStageTimeout(configuration);
 
         // Durable reminders, pass-slot rescue and Auto Session lifecycle handoff should catch up
         // whenever the API process becomes available, even if the external scheduler missed the
         // wake-up that originally should have driven them.
-        await RunCycleAsync(leaseDuration, retryOnLeaseContention: false, stoppingToken);
+        await RunCycleAsync(leaseDuration, stageTimeout, retryOnLeaseContention: false, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -355,7 +358,7 @@ public sealed class ZaloSchedulerWorker(
                     "Zalo scheduler watchdog started a recovery cycle after {WatchdogMinutes} minutes without an external tick",
                     watchdogInterval.TotalMinutes);
 
-            await RunCycleAsync(leaseDuration, retryOnLeaseContention: externalTrigger, stoppingToken);
+            await RunCycleAsync(leaseDuration, stageTimeout, retryOnLeaseContention: externalTrigger, stoppingToken);
         }
     }
 
@@ -388,6 +391,20 @@ public sealed class ZaloSchedulerWorker(
             : MinimumLeaseDuration;
     }
 
+    internal static TimeSpan ResolveStageTimeout(IConfiguration configuration)
+    {
+        var configuredSeconds = configuration.GetValue<double?>("Scheduler:StageTimeoutSeconds");
+        if (configuredSeconds is > 0)
+        {
+            var configured = TimeSpan.FromSeconds(configuredSeconds.Value);
+            return configured <= MaximumStageTimeout
+                ? configured
+                : MaximumStageTimeout;
+        }
+
+        return DefaultStageTimeout;
+    }
+
     internal static TimeSpan ResolveLeaseRenewalInterval(TimeSpan leaseDuration)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(leaseDuration, TimeSpan.Zero);
@@ -404,23 +421,37 @@ public sealed class ZaloSchedulerWorker(
         Func<CancellationToken, Task<T>> operation,
         Func<CancellationToken, Task<bool>> renewLease,
         TimeSpan leaseDuration,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? stageTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(renewLease);
+        if (stageTimeout.HasValue)
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(stageTimeout.Value, TimeSpan.Zero);
 
         var renewalInterval = ResolveLeaseRenewalInterval(leaseDuration);
         using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var operationTask = operation(operationCancellation.Token);
+        var timeoutTask = stageTimeout.HasValue
+            ? Task.Delay(stageTimeout.Value, cancellationToken)
+            : Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
 
         try
         {
             while (!operationTask.IsCompleted)
             {
-                await Task.WhenAny(operationTask, Task.Delay(renewalInterval, cancellationToken));
+                var heartbeatDelay = Task.Delay(renewalInterval, cancellationToken);
+                var completed = await Task.WhenAny(operationTask, heartbeatDelay, timeoutTask);
                 cancellationToken.ThrowIfCancellationRequested();
-                if (operationTask.IsCompleted)
+                if (completed == operationTask)
                     break;
+
+                if (completed == timeoutTask)
+                {
+                    operationCancellation.Cancel();
+                    await ObserveAfterLeaseCancellationAsync(operationTask);
+                    throw new TimeoutException($"Zalo scheduler stage exceeded its {stageTimeout!.Value.TotalSeconds:0.###} second execution budget.");
+                }
 
                 bool renewed;
                 try
@@ -477,6 +508,7 @@ public sealed class ZaloSchedulerWorker(
 
     private async Task RunCycleAsync(
         TimeSpan leaseDuration,
+        TimeSpan stageTimeout,
         bool retryOnLeaseContention,
         CancellationToken cancellationToken)
     {
@@ -512,7 +544,8 @@ public sealed class ZaloSchedulerWorker(
                 },
                 RenewLeaseAsync,
                 leaseDuration,
-                cancellationToken);
+                cancellationToken,
+                stageTimeout);
 
             stage = ZaloSchedulerStage.Reminder;
             var result = await RunWithLeaseHeartbeatAsync(
@@ -520,7 +553,8 @@ public sealed class ZaloSchedulerWorker(
                     .SendDueRemindersAsync(stageToken),
                 RenewLeaseAsync,
                 leaseDuration,
-                cancellationToken);
+                cancellationToken,
+                stageTimeout);
 
             // Every potentially long provider/domain stage renews the lease from a separate scope.
             // This prevents a second API instance from taking ownership mid-stage merely because
@@ -538,7 +572,8 @@ public sealed class ZaloSchedulerWorker(
                 rescueService.RunDueAsync,
                 RenewLeaseAsync,
                 leaseDuration,
-                cancellationToken);
+                cancellationToken,
+                stageTimeout);
 
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
@@ -552,7 +587,8 @@ public sealed class ZaloSchedulerWorker(
                 stageToken => handoffStore.ReconcileMissingAsync(logger, stageToken),
                 RenewLeaseAsync,
                 leaseDuration,
-                cancellationToken);
+                cancellationToken,
+                stageTimeout);
 
             stage = ZaloSchedulerStage.Finalize;
             // Do not record or announce success if ownership changed in the narrow window after the
