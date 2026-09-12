@@ -222,7 +222,7 @@ public sealed class ZaloSchedulerLegacyMigrationFuzzTests
         var lastAttemptAtText = lastAttemptAt?.ToUniversalTime().ToString("O");
         return db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "LastAttemptAt")
-            VALUES ("zalo-scheduler", {{ownerId}}, {{leaseUntilText}}, {{lastAttemptAtText}});
+            VALUES ('zalo-scheduler', {{ownerId}}, {{leaseUntilText}}, {{lastAttemptAtText}});
             """);
     }
 
@@ -236,7 +236,7 @@ public sealed class ZaloSchedulerLegacyMigrationFuzzTests
         var leaseUntilText = leaseUntil.ToUniversalTime().ToString("O");
         return db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "LastAttemptAt")
-            VALUES ("zalo-scheduler", {{ownerId}}, {{leaseUntilText}}, {{nowText}})
+            VALUES ('zalo-scheduler', {{ownerId}}, {{leaseUntilText}}, {{nowText}})
             ON CONFLICT ("Name") DO UPDATE SET
                 "OwnerId" = excluded."OwnerId",
                 "LeaseUntil" = excluded."LeaseUntil",
@@ -261,7 +261,7 @@ public sealed class ZaloSchedulerLegacyMigrationFuzzTests
         return db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LeaseUntil" = {{leaseUntilText}}
-            WHERE "Name" = "zalo-scheduler"
+            WHERE "Name" = 'zalo-scheduler'
               AND "OwnerId" = {{ownerId}}
               AND "LeaseUntil" > {{nowText}};
             """);
