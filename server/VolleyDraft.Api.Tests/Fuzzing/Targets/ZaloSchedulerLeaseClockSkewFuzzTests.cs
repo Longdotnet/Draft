@@ -9,7 +9,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 public sealed class ZaloSchedulerLeaseClockSkewFuzzTests
 {
     [Fact]
-    public async Task Fast_successor_clock_cannot_take_over_before_predecessor_lease_expires_in_real_time()
+    public async Task Fast_successor_clock_cannot_take_over_before_database_authority_lease_expires()
     {
         const int seedCount = 128;
 
@@ -22,7 +22,7 @@ public sealed class ZaloSchedulerLeaseClockSkewFuzzTests
                 .UseSqlite(connection)
                 .Options;
 
-            var realStartedAt = new DateTimeOffset(2026, 9, 12, 15, 30, 0, TimeSpan.Zero)
+            var predecessorLocalNow = new DateTimeOffset(2026, 9, 12, 15, 30, 0, TimeSpan.Zero)
                 .AddMilliseconds(random.NextInt(1000));
             var leaseDuration = TimeSpan.FromSeconds(40 + random.NextInt(81));
             var predecessorOwner = ZaloSchedulerWorker.CreateCycleOwnerId($"clock-predecessor-{seed}");
@@ -30,42 +30,92 @@ public sealed class ZaloSchedulerLeaseClockSkewFuzzTests
 
             await using (var predecessorDb = new VolleyDraftDbContext(options))
             {
-                var store = new ZaloSchedulerLeaseStore(predecessorDb);
-                Assert.True(await store.TryAcquireAsync(predecessorOwner, realStartedAt, leaseDuration));
+                var store = new ZaloSchedulerLeaseStore(predecessorDb, useDatabaseAuthorityClock: true);
+                Assert.True(await store.TryAcquireAsync(predecessorOwner, predecessorLocalNow, leaseDuration));
             }
 
-            // Real time is deliberately still inside the predecessor's lease. The competing API
-            // instance has a fast wall clock, though, so its local `now` appears to be past the
-            // durable LeaseUntil. A distributed lease must not allow that local skew to create two
-            // simultaneously-authoritative scheduler owners.
-            var realElapsed = TimeSpan.FromMilliseconds(
-                leaseDuration.TotalMilliseconds * (0.55 + random.NextInt(31) / 100.0));
-            var realNow = realStartedAt.Add(realElapsed);
-            Assert.True(realNow < realStartedAt.Add(leaseDuration));
+            await using var baselineDb = new VolleyDraftDbContext(options);
+            var baseline = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
+                await new ZaloSchedulerLeaseStore(baselineDb).GetAsync());
+            Assert.Equal(predecessorOwner, baseline.OwnerId);
+            Assert.Equal(predecessorLocalNow, baseline.LastAttemptAt);
 
-            var minimumSkewToCrossExpiry = realStartedAt.Add(leaseDuration) - realNow;
-            var fastClockSkew = minimumSkewToCrossExpiry
-                .Add(TimeSpan.FromMilliseconds(1 + random.NextInt(30_000)));
-            var successorLocalNow = realNow.Add(fastClockSkew);
+            // Mutate only the competing API instance's wall clock. The caller-visible timestamp is
+            // deliberately well beyond the predecessor's observable LeaseUntil, but no comparable
+            // amount of database-authority time has elapsed. Local skew must therefore have zero
+            // power to advance the distributed ownership epoch.
+            var fastClockSkew = leaseDuration
+                .Add(TimeSpan.FromSeconds(1 + random.NextInt(600)));
+            var successorLocalNow = predecessorLocalNow.Add(fastClockSkew);
+            Assert.True(successorLocalNow > baseline.LeaseUntil);
 
             bool acquired;
             await using (var successorDb = new VolleyDraftDbContext(options))
             {
-                var store = new ZaloSchedulerLeaseStore(successorDb);
+                var store = new ZaloSchedulerLeaseStore(successorDb, useDatabaseAuthorityClock: true);
                 acquired = await store.TryAcquireAsync(successorOwner, successorLocalNow, leaseDuration);
             }
 
             Assert.False(
                 acquired,
                 $"seed={seed} fingerprint=scheduler-lease:fast-clock-early-takeover " +
-                $"realNow={realNow:O} successorLocalNow={successorLocalNow:O} " +
+                $"predecessorLocalNow={predecessorLocalNow:O} successorLocalNow={successorLocalNow:O} " +
                 $"skewMs={fastClockSkew.TotalMilliseconds:0.###}");
 
             await using var verifyDb = new VolleyDraftDbContext(options);
             var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
                 await new ZaloSchedulerLeaseStore(verifyDb).GetAsync());
             Assert.Equal(predecessorOwner, snapshot.OwnerId);
-            Assert.Equal(realStartedAt, snapshot.LastAttemptAt);
+            Assert.Equal(predecessorLocalNow, snapshot.LastAttemptAt);
+            Assert.Equal(baseline.LeaseUntil, snapshot.LeaseUntil);
+        }
+    }
+
+    [Fact]
+    public async Task Slow_or_fast_owner_clock_cannot_revoke_its_live_database_authority_renewal()
+    {
+        const int seedCount = 96;
+
+        for (var seed = 1; seed <= seedCount; seed++)
+        {
+            var random = new StableFuzzRandom(seed * 170141);
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            var acquiredLocalNow = new DateTimeOffset(2026, 9, 12, 16, 0, 0, TimeSpan.Zero)
+                .AddMilliseconds(random.NextInt(1000));
+            var leaseDuration = TimeSpan.FromSeconds(45 + random.NextInt(76));
+            var owner = ZaloSchedulerWorker.CreateCycleOwnerId($"clock-renew-{seed}");
+
+            await using (var acquireDb = new VolleyDraftDbContext(options))
+            {
+                Assert.True(await new ZaloSchedulerLeaseStore(acquireDb, useDatabaseAuthorityClock: true)
+                    .TryAcquireAsync(owner, acquiredLocalNow, leaseDuration));
+            }
+
+            var signedSkewSeconds = random.NextBool()
+                ? 3600 + random.NextInt(6 * 3600)
+                : -(3600 + random.NextInt(6 * 3600));
+            var renewalLocalNow = acquiredLocalNow.AddSeconds(signedSkewSeconds);
+
+            await using (var renewDb = new VolleyDraftDbContext(options))
+            {
+                Assert.True(
+                    await new ZaloSchedulerLeaseStore(renewDb, useDatabaseAuthorityClock: true)
+                        .TryRenewAsync(owner, renewalLocalNow, leaseDuration),
+                    $"seed={seed} fingerprint=scheduler-lease:local-clock-renewal-authority " +
+                    $"signedSkewSeconds={signedSkewSeconds}");
+            }
+
+            await using var verifyDb = new VolleyDraftDbContext(options);
+            var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
+                await new ZaloSchedulerLeaseStore(verifyDb).GetAsync());
+            Assert.Equal(owner, snapshot.OwnerId);
+            Assert.Equal(acquiredLocalNow, snapshot.LastAttemptAt);
+            Assert.Equal(renewalLocalNow.Add(leaseDuration), snapshot.LeaseUntil);
         }
     }
 }
