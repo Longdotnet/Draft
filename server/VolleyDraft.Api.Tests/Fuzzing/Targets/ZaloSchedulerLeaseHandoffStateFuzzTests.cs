@@ -142,4 +142,67 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
             }
         }
     }
+
+    [Fact]
+    public async Task Expired_heartbeat_must_not_resurrect_authority_before_successor_takeover()
+    {
+        const int seedCount = 64;
+
+        for (var seed = 1; seed <= seedCount; seed++)
+        {
+            var random = new StableFuzzRandom(seed * 130363);
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            var acquiredAt = new DateTimeOffset(2026, 9, 12, 2, 0, 0, TimeSpan.Zero)
+                .AddMilliseconds(random.NextInt(1000));
+            var leaseDuration = TimeSpan.FromSeconds(15 + random.NextInt(90));
+            var ownerA = $"renew-a-{seed}";
+            var ownerB = $"renew-b-{seed}";
+            var expiry = acquiredAt.Add(leaseDuration);
+            var beforeExpiry = expiry.AddTicks(-(1 + random.NextInt(1000)));
+            var afterExpiry = expiry.AddTicks(1 + random.NextInt(1000));
+
+            await using (var firstDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(firstDb);
+                Assert.True(await store.TryAcquireAsync(ownerA, acquiredAt, leaseDuration));
+
+                // A heartbeat that still owns an unexpired lease may extend it. Reset to a fresh
+                // lease afterwards so every seed also attacks the exact expiry boundary below.
+                Assert.True(await store.TryRenewAsync(ownerA, beforeExpiry, leaseDuration));
+                Assert.True(await store.ReleaseAsync(ownerA, acquiredAt));
+                Assert.True(await store.TryAcquireAsync(ownerA, acquiredAt, leaseDuration));
+            }
+
+            await using (var lateHeartbeatDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(lateHeartbeatDb);
+
+                // Reproducer for the previous bug: TryAcquireAsync doubled as renewal, so the same
+                // owner could arrive after LeaseUntil and silently resurrect its authority before a
+                // successor got a chance to claim the already-expired lease.
+                Assert.False(await store.TryRenewAsync(ownerA, afterExpiry, leaseDuration));
+            }
+
+            await using (var successorDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(successorDb);
+                Assert.True(await store.TryAcquireAsync(ownerB, afterExpiry, leaseDuration));
+                Assert.False(await store.TryRenewAsync(ownerA, afterExpiry.AddTicks(1), leaseDuration));
+            }
+
+            await using (var verifyDb = new VolleyDraftDbContext(options))
+            {
+                var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
+                    await new ZaloSchedulerLeaseStore(verifyDb).GetAsync());
+
+                Assert.Equal(ownerB, snapshot.OwnerId);
+                Assert.Equal(afterExpiry.Add(leaseDuration), snapshot.LeaseUntil);
+            }
+        }
+    }
 }
