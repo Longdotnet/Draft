@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout verifier
+        uses: actions/checkout@v4
+
       - name: Report trigger
         run: |
           echo "event=${{ github.event_name }}"
@@ -36,6 +39,7 @@ jobs:
         shell: bash
         run: |
           set -u
+          source scripts/scheduler-verifier.sh
 
           echo "failure_kind=unknown" >> "$GITHUB_OUTPUT"
           echo "failure_detail=Scheduler wake/queue/verification failed without a more specific diagnosis." >> "$GITHUB_OUTPUT"
@@ -105,15 +109,6 @@ jobs:
               "$scheduler_health_url" 2>/tmp/scheduler-health-error || printf '000'
           }
 
-          parse_timestamp_epoch() {
-            local value="$1"
-            if [ -z "$value" ]; then
-              printf '0'
-              return 0
-            fi
-            date -u -d "$value" +%s 2>/dev/null || printf '0'
-          }
-
           wait_for_health "zalo-bridge" "$bridge_health_url" &
           bridge_health_pid=$!
           wait_for_health "draft-api" "$backend_health_url" &
@@ -147,14 +142,14 @@ jobs:
             baseline_failure_code=$(jq -r '.failureCode // empty' /tmp/scheduler-health-baseline 2>/dev/null || true)
             echo "Scheduler baseline: HTTP $baseline_status attempt=${baseline_attempt:-none} success=${baseline_success:-none} failure=${baseline_failure:-none} failure_code=${baseline_failure_code:-none}"
           else
-            echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require timestamps at or after this run's queue request."
+            echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require timestamps from the accepted queue request."
           fi
 
-          queue_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          queue_requested_epoch=$(parse_timestamp_epoch "$queue_requested_at")
-          echo "Queueing scheduler cycle at $queue_requested_at: $SCHEDULER_URL"
           queued=0
+          runner_queue_requested_at=""
           for attempt in 1 2 3 4; do
+            runner_attempt_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            echo "Queueing scheduler cycle attempt $attempt/4 at runner time $runner_attempt_requested_at: $SCHEDULER_URL"
             set +e
             status=$(curl \
               --silent \
@@ -170,6 +165,7 @@ jobs:
             set -e
 
             if [ "$curl_exit" -eq 0 ] && [ "$status" = "202" ]; then
+              runner_queue_requested_at="$runner_attempt_requested_at"
               cat /tmp/scheduler-response
               echo
               queued=1
@@ -195,6 +191,17 @@ jobs:
             exit 1
           fi
 
+          IFS=$'\t' read -r freshness_source queue_requested_at queue_requested_epoch < <(
+            scheduler_choose_freshness_boundary "$runner_queue_requested_at" /tmp/scheduler-response
+          )
+          if [ "$queue_requested_epoch" -le 0 ]; then
+            echo "failure_kind=scheduler_queue_receipt_invalid" >> "$GITHUB_OUTPUT"
+            echo "failure_detail=Scheduler returned HTTP 202 but neither its requestedAt receipt nor the successful runner attempt timestamp was parseable." >> "$GITHUB_OUTPUT"
+            echo "Unable to establish a scheduler freshness boundary."
+            exit 1
+          fi
+          echo "Scheduler freshness boundary source=$freshness_source at=$queue_requested_at epoch=$queue_requested_epoch"
+
           for attempt in $(seq 1 24); do
             health_http=$(read_scheduler_health /tmp/scheduler-health-current)
             health_state=$(jq -r '.status // "unknown"' /tmp/scheduler-health-current 2>/dev/null || printf 'unknown')
@@ -202,9 +209,6 @@ jobs:
             current_success=$(jq -r '.lastSuccessAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_failure=$(jq -r '.lastFailureAt // empty' /tmp/scheduler-health-current 2>/dev/null || true)
             current_failure_code=$(jq -r '.failureCode // empty' /tmp/scheduler-health-current 2>/dev/null || true)
-            current_attempt_epoch=$(parse_timestamp_epoch "$current_attempt")
-            current_success_epoch=$(parse_timestamp_epoch "$current_success")
-            current_failure_epoch=$(parse_timestamp_epoch "$current_failure")
 
             terminal_advanced=0
             if [ -n "$current_success" ] && [ "$current_success" != "$baseline_success" ]; then
@@ -219,31 +223,18 @@ jobs:
               failure_advanced=1
             fi
 
-            # Baseline comparison alone is insufficient: a stale timestamp can differ from an
-            # unavailable baseline. Require every terminal result we certify to be from this queue request.
-            attempt_is_fresh=0
-            if [ "$current_attempt_epoch" -ge "$queue_requested_epoch" ] && [ "$current_attempt_epoch" -gt 0 ]; then
-              attempt_is_fresh=1
-            fi
-            success_is_fresh=0
-            if [ "$current_success_epoch" -ge "$queue_requested_epoch" ] && [ "$current_success_epoch" -gt 0 ]; then
-              success_is_fresh=1
-            fi
-            failure_is_fresh=0
-            if [ "$current_failure_epoch" -ge "$queue_requested_epoch" ] && [ "$current_failure_epoch" -gt 0 ]; then
-              failure_is_fresh=1
-            fi
+            attempt_is_fresh=$(scheduler_timestamp_is_fresh "$current_attempt" "$queue_requested_epoch")
+            success_is_fresh=$(scheduler_timestamp_is_fresh "$current_success" "$queue_requested_epoch")
+            failure_is_fresh=$(scheduler_timestamp_is_fresh "$current_failure" "$queue_requested_epoch")
 
-            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh"
+            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh boundary_source=$freshness_source"
 
-            if [ "$health_http" = "200" ] && [ "$health_state" = "healthy" ] && \
-               [ "$terminal_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ] && [ "$success_is_fresh" -eq 1 ]; then
+            if [ "$(scheduler_verified_healthy "$health_http" "$health_state" "$terminal_advanced" "$attempt_advanced" "$attempt_is_fresh" "$success_is_fresh")" = "1" ]; then
               echo "Scheduler cycle reached a fresh durable healthy terminal state."
               exit 0
             fi
 
-            if [ "$health_state" = "failed" ] && \
-               { [ "$failure_is_fresh" -eq 1 ] || [ "$attempt_is_fresh" -eq 1 ]; }; then
+            if [ "$(scheduler_verified_failed "$health_state" "$failure_advanced" "$attempt_advanced" "$failure_is_fresh" "$attempt_is_fresh")" = "1" ]; then
               echo "failure_kind=scheduler_cycle_failed" >> "$GITHUB_OUTPUT"
               if [ -n "$current_failure_code" ]; then
                 echo "failure_detail=Scheduler recorded a fresh failed cycle. Grounded failure code: ${current_failure_code}." >> "$GITHUB_OUTPUT"
