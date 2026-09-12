@@ -28,7 +28,13 @@ scheduler_choose_freshness_boundary() {
   fi
 
   if [ "$server_epoch" -gt 0 ]; then
-    printf 'server\t%s\t%s\n' "$server_requested_at" "$server_epoch"
+    # The current endpoint stamps requestedAt while forming the HTTP 202 response,
+    # after TryTrigger() has already made the wake visible to the worker. A fast
+    # worker can therefore persist LastAttemptAt a few milliseconds before this
+    # receipt. Keep the API clock as authority but widen the response receipt by
+    # one second. Baseline advancement is still required before any observation can
+    # be certified, so this compatibility margin cannot authorize stale old state.
+    printf 'server\t%s\t%s\n' "$server_requested_at" "$((server_epoch - 1))"
     return 0
   fi
 
@@ -104,9 +110,8 @@ scheduler_verified_in_progress() {
 
   # A verifier timeout is not a scheduler failure while the API itself still
   # reports the accepted fresh attempt as running under a live durable lease.
-  # This distinction matters because one scheduler cycle can legitimately outlive
-  # the short GitHub polling window while sequential bounded stages keep renewing
-  # ownership. Only API-owned timestamps participate in this authority check.
+  # One scheduler cycle can legitimately outlive the short GitHub polling window
+  # while sequential bounded stages keep renewing ownership.
   if [ "$health_http" = "200" ] && [ "$health_state" = "running" ] && \
      [ "$attempt_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ] && \
      [ "$observed_epoch" -gt 0 ] && [ "$lease_epoch" -gt "$observed_epoch" ]; then
