@@ -167,11 +167,84 @@ internal sealed class ZaloSchedulerLeaseStore(
             }
         }
 
+        // Legacy LeaseUntil/LastAttemptAt were written from each API instance's wall clock. Their
+        // absolute values are therefore not safe authority after an upgrade. Preserve only the
+        // relative lease window (which survives a constant clock offset), clamp it to the product's
+        // supported 2..60 minute lease range, and anchor the migrated authority to SQLite time.
+        // Missing/malformed legacy attempt evidence gets the conservative 60 minute handoff window.
         await db.Database.ExecuteSqlRawAsync(
             """
             UPDATE "ZaloSchedulerLeases"
-            SET "AuthorityLeaseUntil" = "LeaseUntil"
+            SET "AuthorityLeaseUntil" = CASE
+                WHEN "OwnerId" LIKE 'released:%'
+                    THEN strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+                ELSE strftime(
+                    '%Y-%m-%dT%H:%M:%f0000+00:00',
+                    'now',
+                    printf(
+                        '+%f seconds',
+                        CASE
+                            WHEN "LastAttemptAt" IS NULL
+                              OR julianday("LastAttemptAt") IS NULL
+                              OR julianday("LeaseUntil") IS NULL
+                                THEN 3600.0
+                            WHEN (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0 < 120.0
+                                THEN 120.0
+                            WHEN (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0 > 3600.0
+                                THEN 3600.0
+                            ELSE (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0
+                        END))
+            END
             WHERE "AuthorityLeaseUntil" IS NULL;
+            """,
+            cancellationToken);
+
+        // Rolling upgrades can briefly run a pre-authority worker beside a new worker. Old code
+        // changes OwnerId/LeaseUntil without touching AuthorityLeaseUntil. Fence an old fast-clock
+        // takeover while the DB-clock authority is live, then translate any permitted legacy
+        // acquire/renew into a fresh DB-clock authority window. New code changes AuthorityLeaseUntil
+        // in the same statement, so these compatibility triggers stay out of its path.
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyTakeoverFence"
+            BEFORE UPDATE OF "OwnerId", "LeaseUntil" ON "ZaloSchedulerLeases"
+            FOR EACH ROW
+            WHEN NEW."OwnerId" <> OLD."OwnerId"
+              AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
+              AND OLD."OwnerId" NOT LIKE 'released:%'
+              AND OLD."AuthorityLeaseUntil" > strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyAuthorityBridge"
+            AFTER UPDATE OF "OwnerId", "LeaseUntil" ON "ZaloSchedulerLeases"
+            FOR EACH ROW
+            WHEN NEW."OwnerId" NOT LIKE 'released:%'
+              AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
+              AND (NEW."OwnerId" <> OLD."OwnerId" OR NEW."LeaseUntil" <> OLD."LeaseUntil")
+            BEGIN
+                UPDATE "ZaloSchedulerLeases"
+                SET "AuthorityLeaseUntil" = strftime(
+                    '%Y-%m-%dT%H:%M:%f0000+00:00',
+                    'now',
+                    printf(
+                        '+%f seconds',
+                        CASE
+                            WHEN NEW."LastAttemptAt" IS NULL
+                              OR julianday(NEW."LastAttemptAt") IS NULL
+                              OR julianday(NEW."LeaseUntil") IS NULL
+                                THEN 3600.0
+                            WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 < 120.0
+                                THEN 120.0
+                            WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 > 3600.0
+                                THEN 3600.0
+                            ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
+                        END))
+                WHERE "Name" = NEW."Name"
+                  AND "OwnerId" = NEW."OwnerId"
+                  AND "AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil";
+            END;
             """,
             cancellationToken);
     }
