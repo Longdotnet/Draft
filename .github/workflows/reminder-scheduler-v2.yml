@@ -249,14 +249,14 @@ jobs:
               exit 0
             fi
 
-            if [ "$(scheduler_verified_failed "$health_state" "$failure_advanced" "$attempt_advanced" "$failure_is_fresh" "$attempt_is_fresh")" = "1" ]; then
+            if [ "$(scheduler_verified_failed "$health_state" "$current_failure_code" "$failure_advanced" "$attempt_advanced" "$failure_is_fresh" "$attempt_is_fresh")" = "1" ]; then
               echo "failure_kind=scheduler_cycle_failed" >> "$GITHUB_OUTPUT"
               if [ -n "$current_failure_code" ]; then
                 echo "failure_detail=Scheduler recorded a fresh failed cycle. Grounded failure code: ${current_failure_code}." >> "$GITHUB_OUTPUT"
               else
-                echo "failure_detail=Scheduler recorded a fresh failed or abandoned cycle after accepting the trigger, but the deployed API did not expose a failure code." >> "$GITHUB_OUTPUT"
+                echo "failure_detail=Scheduler recorded a fresh failed cycle after accepting the trigger." >> "$GITHUB_OUTPUT"
               fi
-              echo "Scheduler recorded a fresh failed or abandoned cycle."
+              echo "Scheduler recorded a fresh failed cycle."
               cat /tmp/scheduler-health-current
               exit 1
             fi
@@ -276,8 +276,21 @@ jobs:
             exit 0
           fi
 
+          if [ "$(scheduler_verified_predecessor_in_progress \
+              "$health_http" \
+              "$health_state" \
+              "$attempt_advanced" \
+              "$baseline_attempt" \
+              "$current_attempt" \
+              "$current_observed_at" \
+              "$current_lease_until")" = "1" ]; then
+            echo "Scheduler verification window ended while the baseline predecessor still owns a live durable lease; the accepted wake remains queued behind that authoritative cycle."
+            cat /tmp/scheduler-health-current 2>/dev/null || true
+            exit 0
+          fi
+
           echo "failure_kind=scheduler_cycle_timeout" >> "$GITHUB_OUTPUT"
-          echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no fresh live running lease remained at the end of the verification window." >> "$GITHUB_OUTPUT"
+          echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no authoritative current or predecessor cycle remained in progress at the end of the verification window." >> "$GITHUB_OUTPUT"
           echo "Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no authoritative in-progress cycle remained."
           cat /tmp/scheduler-health-current 2>/dev/null || true
           exit 1
