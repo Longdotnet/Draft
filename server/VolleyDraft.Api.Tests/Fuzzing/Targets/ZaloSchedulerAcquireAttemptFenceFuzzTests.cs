@@ -9,7 +9,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 public sealed class ZaloSchedulerAcquireAttemptFenceFuzzTests
 {
     [Fact]
-    public async Task Successor_acquire_must_not_inherit_predecessor_unterminated_attempt_authority()
+    public async Task Successor_acquire_atomically_rebinds_attempt_authority_to_new_owner_epoch()
     {
         const int seedCount = 96;
 
@@ -52,23 +52,33 @@ public sealed class ZaloSchedulerAcquireAttemptFenceFuzzTests
             }
 
             Assert.Equal(successorOwner, snapshot.OwnerId);
-            Assert.Equal(predecessorAttemptAt, snapshot.LastAttemptAt);
+            Assert.Equal(successorAcquireAt, snapshot.LastAttemptAt);
+            Assert.NotEqual(predecessorAttemptAt, snapshot.LastAttemptAt);
 
-            // This is the critical acquire -> MarkAttempt race. Durable ownership already belongs
-            // to the successor, but the only persisted attempt evidence still belongs to the dead
-            // predecessor. Health must not combine those two different ownership epochs and report
-            // the successor as a live running attempt.
+            // Lease ownership and attempt authority must move in the same SQL statement. Health may
+            // legitimately report the successor as Running immediately after acquisition, but the
+            // attempt timestamp must belong to that successor epoch rather than the dead predecessor.
             var observedAt = successorAcquireAt.AddMilliseconds(1 + random.NextInt(250));
             var assessment = ZaloSchedulerHealth.Evaluate(
                 snapshot,
                 observedAt,
                 TimeSpan.FromMinutes(45));
 
-            Assert.False(
-                assessment.State == ZaloSchedulerHealthState.Running,
-                $"seed={seed} fingerprint=scheduler-acquire:successor-inherits-predecessor-attempt-authority " +
-                $"predecessorAttempt={predecessorAttemptAt:O} successorAcquire={successorAcquireAt:O} " +
-                $"leaseUntil={snapshot.LeaseUntil:O}");
+            Assert.Equal(ZaloSchedulerHealthState.Running, assessment.State);
+            Assert.True(assessment.IsHealthy);
+            Assert.Equal(successorAcquireAt, assessment.LastAttemptAt);
+
+            // A duplicate acquire by the same cycle owner is an idempotent lease refresh, not a new
+            // logical scheduler attempt. It must not advance the attempt marker or create a new epoch.
+            var duplicateAcquireAt = observedAt.AddMilliseconds(1 + random.NextInt(250));
+            await using (var duplicateDb = new VolleyDraftDbContext(options))
+            {
+                var store = new ZaloSchedulerLeaseStore(duplicateDb);
+                Assert.True(await store.TryAcquireAsync(successorOwner, duplicateAcquireAt, successorLease));
+                var duplicateSnapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(await store.GetAsync());
+                Assert.Equal(successorAcquireAt, duplicateSnapshot.LastAttemptAt);
+                Assert.Equal(successorOwner, duplicateSnapshot.OwnerId);
+            }
         }
     }
 }
