@@ -39,11 +39,16 @@ for seed in $(seq 1 "$seed_count"); do
   [ "$source" = "server" ]
   [ "$boundary_at" = "$server_requested_at" ]
   [ "$boundary_epoch" -eq "$server_epoch" ]
-  [ "$(scheduler_timestamp_is_fresh "$attempt_at" "$boundary_epoch")" = "1" ]
-  [ "$(scheduler_timestamp_is_fresh "$success_at" "$boundary_epoch")" = "1" ]
+  attempt_fresh=$(scheduler_timestamp_is_fresh "$attempt_at" "$boundary_epoch")
+  success_fresh=$(scheduler_timestamp_is_fresh "$success_at" "$boundary_epoch")
+  [ "$attempt_fresh" = "1" ]
+  [ "$success_fresh" = "1" ]
+  [ "$(scheduler_verified_healthy 200 healthy 1 1 "$attempt_fresh" "$success_fresh")" = "1" ]
 
   stale_at=$(iso_from_epoch $((server_epoch - 1)))
   [ "$(scheduler_timestamp_is_fresh "$stale_at" "$boundary_epoch")" = "0" ]
+  [ "$(scheduler_verified_healthy 200 healthy 1 0 1 1)" = "0" ]
+  [ "$(scheduler_verified_healthy 200 healthy 1 1 0 1)" = "0" ]
 
   # This is the minimized failure class in the old workflow: a perfectly fresh
   # server attempt is rejected solely because the runner clock is ahead.
@@ -72,5 +77,14 @@ IFS=$'\t' read -r source boundary_at boundary_epoch < <(
 [ "$(scheduler_timestamp_is_fresh '' "$boundary_epoch")" = "0" ]
 [ "$(scheduler_timestamp_is_fresh 'garbage' "$boundary_epoch")" = "0" ]
 [ "$(scheduler_timestamp_is_fresh "$successful_runner_at" 0)" = "0" ]
+
+# Preserve both grounded failed-cycle shapes. A newly persisted failure is one
+# terminal path; an abandoned fresh attempt with no new failure marker is the
+# other path emitted by ZaloSchedulerHealth after lease expiry.
+[ "$(scheduler_verified_failed failed 1 1 1 1)" = "1" ]
+[ "$(scheduler_verified_failed failed 0 1 0 1)" = "1" ]
+[ "$(scheduler_verified_failed failed 1 0 0 0)" = "0" ]
+[ "$(scheduler_verified_failed failed 0 0 0 0)" = "0" ]
+[ "$(scheduler_verified_failed healthy 1 1 1 1)" = "0" ]
 
 echo "scheduler verifier fuzz: $seed_count seeds passed; legacy false-negatives reproduced=$legacy_false_negatives"
