@@ -106,7 +106,9 @@ internal sealed record ZaloSchedulerLeaseSnapshot(
     DateTimeOffset? LastFailureAt,
     string? LastFailureCode);
 
-internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
+internal sealed class ZaloSchedulerLeaseStore(
+    VolleyDraftDbContext db,
+    bool useDatabaseAuthorityClock = false)
 {
     private const string LeaseName = "zalo-scheduler";
 
@@ -118,6 +120,7 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
                 "Name" TEXT PRIMARY KEY,
                 "OwnerId" TEXT NOT NULL,
                 "LeaseUntil" TEXT NOT NULL,
+                "AuthorityLeaseUntil" TEXT NULL,
                 "LastAttemptAt" TEXT NULL,
                 "LastSuccessAt" TEXT NULL,
                 "LastFailureAt" TEXT NULL
@@ -128,6 +131,47 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
                 "FailureAt" TEXT NOT NULL,
                 "FailureCode" TEXT NOT NULL
             );
+            """,
+            cancellationToken);
+
+        // Existing deployments predate the authority deadline. Keep the observable LeaseUntil
+        // contract intact and add a separate shared-clock fence used only for distributed authority.
+        var authorityColumnCount = await db.Database.SqlQueryRaw<int>(
+                """
+                SELECT COUNT(*) AS "Value"
+                FROM pragma_table_info('ZaloSchedulerLeases')
+                WHERE "name" = 'AuthorityLeaseUntil'
+                """)
+            .SingleAsync(cancellationToken);
+        if (authorityColumnCount == 0)
+        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"ZaloSchedulerLeases\" ADD COLUMN \"AuthorityLeaseUntil\" TEXT NULL;",
+                    cancellationToken);
+            }
+            catch
+            {
+                // Two API instances may race the additive compatibility migration. Only suppress
+                // the loser when another instance really did create the same column.
+                authorityColumnCount = await db.Database.SqlQueryRaw<int>(
+                        """
+                        SELECT COUNT(*) AS "Value"
+                        FROM pragma_table_info('ZaloSchedulerLeases')
+                        WHERE "name" = 'AuthorityLeaseUntil'
+                        """)
+                    .SingleAsync(cancellationToken);
+                if (authorityColumnCount == 0)
+                    throw;
+            }
+        }
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "ZaloSchedulerLeases"
+            SET "AuthorityLeaseUntil" = "LeaseUntil"
+            WHERE "AuthorityLeaseUntil" IS NULL;
             """,
             cancellationToken);
     }
@@ -142,21 +186,26 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(leaseDuration, TimeSpan.Zero);
         await EnsureAsync(cancellationToken);
 
+        var authorityNow = await ResolveAuthorityNowAsync(now, cancellationToken);
         var nowText = now.ToUniversalTime().ToString("O");
         var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
+        var authorityNowText = authorityNow.ToUniversalTime().ToString("O");
+        var authorityLeaseUntilText = authorityNow.Add(leaseDuration).ToUniversalTime().ToString("O");
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
-            INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "LastAttemptAt")
-            VALUES ({{LeaseName}}, {{ownerId}}, {{leaseUntilText}}, {{nowText}})
+            INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "AuthorityLeaseUntil", "LastAttemptAt")
+            VALUES ({{LeaseName}}, {{ownerId}}, {{leaseUntilText}}, {{authorityLeaseUntilText}}, {{nowText}})
             ON CONFLICT ("Name") DO UPDATE SET
                 "OwnerId" = excluded."OwnerId",
                 "LeaseUntil" = excluded."LeaseUntil",
+                "AuthorityLeaseUntil" = excluded."AuthorityLeaseUntil",
                 "LastAttemptAt" = CASE
                     WHEN "ZaloSchedulerLeases"."OwnerId" = excluded."OwnerId"
                         THEN "ZaloSchedulerLeases"."LastAttemptAt"
                     ELSE excluded."LastAttemptAt"
                 END
             WHERE "ZaloSchedulerLeases"."OwnerId" = {{ownerId}}
-               OR "ZaloSchedulerLeases"."LeaseUntil" <= {{nowText}};
+               OR "ZaloSchedulerLeases"."OwnerId" LIKE 'released:%'
+               OR "ZaloSchedulerLeases"."AuthorityLeaseUntil" <= {{authorityNowText}};
             """, cancellationToken);
 
         return affected > 0;
@@ -172,14 +221,17 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(leaseDuration, TimeSpan.Zero);
         await EnsureAsync(cancellationToken);
 
-        var nowText = now.ToUniversalTime().ToString("O");
+        var authorityNow = await ResolveAuthorityNowAsync(now, cancellationToken);
         var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
+        var authorityNowText = authorityNow.ToUniversalTime().ToString("O");
+        var authorityLeaseUntilText = authorityNow.Add(leaseDuration).ToUniversalTime().ToString("O");
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
-            SET "LeaseUntil" = {{leaseUntilText}}
+            SET "LeaseUntil" = {{leaseUntilText}},
+                "AuthorityLeaseUntil" = {{authorityLeaseUntilText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{nowText}};
+              AND "AuthorityLeaseUntil" > {{authorityNowText}};
             """, cancellationToken);
 
         return affected > 0;
@@ -191,13 +243,15 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastAttemptAt" = {{atText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{atText}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
     }
 
@@ -207,13 +261,15 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastSuccessAt" = {{atText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{atText}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
     }
 
@@ -227,17 +283,19 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
             throw new ArgumentException("Scheduler failure code must be a bounded deterministic code.", nameof(failureCode));
 
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var failureAt = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastFailureAt" = {{failureAt}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{failureAt}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
 
         // Failure diagnosis belongs to the same durable live lease owner as LastFailureAt.
-        // Re-check the fence in the diagnostic statement too: ownership can change
+        // Re-check the authority fence in the diagnostic statement too: ownership can change
         // after the timestamp update but before this second statement executes.
         if (affected == 0)
             return;
@@ -250,7 +308,7 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
                 FROM "ZaloSchedulerLeases"
                 WHERE "Name" = {{LeaseName}}
                   AND "OwnerId" = {{ownerId}}
-                  AND "LeaseUntil" > {{failureAt}}
+                  AND "AuthorityLeaseUntil" > {{authorityAtText}}
                   AND "LastFailureAt" = {{failureAt}}
             )
             ON CONFLICT ("Name") DO UPDATE SET
@@ -266,15 +324,18 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         await EnsureAsync(cancellationToken);
+        var authorityAt = await ResolveAuthorityNowAsync(at, cancellationToken);
         var atText = at.ToUniversalTime().ToString("O");
+        var authorityAtText = authorityAt.ToUniversalTime().ToString("O");
         var releasedOwnerId = $"released:{Guid.NewGuid():N}";
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "OwnerId" = {{releasedOwnerId}},
-                "LeaseUntil" = {{atText}}
+                "LeaseUntil" = {{atText}},
+                "AuthorityLeaseUntil" = {{authorityAtText}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
-              AND "LeaseUntil" > {{atText}};
+              AND "AuthorityLeaseUntil" > {{authorityAtText}};
             """, cancellationToken);
         return affected > 0;
     }
@@ -306,6 +367,21 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
             Parse(row.LastSuccessAt),
             Parse(row.LastFailureAt),
             row.LastFailureCode);
+    }
+
+    private async Task<DateTimeOffset> ResolveAuthorityNowAsync(
+        DateTimeOffset callerNow,
+        CancellationToken cancellationToken)
+    {
+        if (!useDatabaseAuthorityClock)
+            return callerNow;
+
+        var databaseNow = await db.Database.SqlQueryRaw<string>(
+                """
+                SELECT strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now') AS "Value"
+                """)
+            .SingleAsync(cancellationToken);
+        return DateTimeOffset.Parse(databaseNow);
     }
 
     private static DateTimeOffset? Parse(string? value) =>
@@ -537,7 +613,7 @@ public sealed class ZaloSchedulerWorker(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
-        var lease = new ZaloSchedulerLeaseStore(db);
+        var lease = new ZaloSchedulerLeaseStore(db, useDatabaseAuthorityClock: true);
         var acquiredAt = DateTimeOffset.UtcNow;
         var cycleOwnerId = CreateCycleOwnerId(instanceId);
         if (!await lease.TryAcquireAsync(cycleOwnerId, acquiredAt, leaseDuration, cancellationToken))
@@ -683,7 +759,7 @@ public sealed class ZaloSchedulerWorker(
             // that context concurrently, and EF DbContext is not safe for concurrent operations.
             await using var renewalScope = scopeFactory.CreateAsyncScope();
             var renewalDb = renewalScope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
-            return await new ZaloSchedulerLeaseStore(renewalDb)
+            return await new ZaloSchedulerLeaseStore(renewalDb, useDatabaseAuthorityClock: true)
                 .TryRenewAsync(cycleOwnerId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
         }
     }
