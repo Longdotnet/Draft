@@ -74,21 +74,28 @@ scheduler_verified_healthy() {
 
 scheduler_verified_failed() {
   local health_state="${1:-unknown}"
-  local failure_advanced="${2:-0}"
-  local attempt_advanced="${3:-0}"
-  local failure_is_fresh="${4:-0}"
-  local attempt_is_fresh="${5:-0}"
+  local failure_code="${2:-}"
+  local failure_advanced="${3:-0}"
+  local attempt_advanced="${4:-0}"
+  local failure_is_fresh="${5:-0}"
+  local attempt_is_fresh="${6:-0}"
 
-  if [ "$health_state" != "failed" ]; then
+  if [ "$health_state" != "failed" ] || \
+     [ "$attempt_advanced" -ne 1 ] || [ "$attempt_is_fresh" -ne 1 ]; then
     printf '0'
     return 0
   fi
 
-  # A failed health state can be backed either by a newly persisted failure marker
-  # or by a newly advanced attempt whose lease expired before any terminal marker
-  # could be written. Preserve both grounded failure paths.
+  # Failure authority belongs to the accepted cycle only after that cycle's own
+  # durable attempt advanced. A predecessor that was already running at baseline
+  # can fail after this queue request and produce a fresh failure timestamp, but
+  # that terminal marker must not be misattributed to the queued successor.
+  #
+  # Once the accepted attempt is grounded, two failure shapes are authoritative:
+  # a fresh persisted failure marker or the health evaluator's explicit abandoned
+  # lease code when the attempt lost its lease before writing a terminal marker.
   if { [ "$failure_advanced" -eq 1 ] && [ "$failure_is_fresh" -eq 1 ]; } || \
-     { [ "$attempt_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ]; }; then
+     [ "$failure_code" = "abandoned:leaseexpired" ]; then
     printf '1'
   else
     printf '0'
@@ -114,6 +121,38 @@ scheduler_verified_in_progress() {
   # while sequential bounded stages keep renewing ownership.
   if [ "$health_http" = "200" ] && [ "$health_state" = "running" ] && \
      [ "$attempt_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ] && \
+     [ "$observed_epoch" -gt 0 ] && [ "$lease_epoch" -gt "$observed_epoch" ]; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
+
+scheduler_verified_predecessor_in_progress() {
+  local health_http="${1:-000}"
+  local health_state="${2:-unknown}"
+  local attempt_advanced="${3:-0}"
+  local baseline_attempt="${4:-}"
+  local current_attempt="${5:-}"
+  local observed_at="${6:-}"
+  local lease_until="${7:-}"
+  local observed_epoch
+  local lease_epoch
+
+  observed_epoch=$(scheduler_parse_timestamp_epoch "$observed_at")
+  lease_epoch=$(scheduler_parse_timestamp_epoch "$lease_until")
+
+  # A newly accepted external wake may arrive while a predecessor cycle is still
+  # running. The bounded trigger coalesces that wake for the worker to consume when
+  # the predecessor exits. Do not call the new wake timed out merely because its own
+  # LastAttemptAt cannot advance until the live predecessor releases authority.
+  #
+  # This is intentionally narrow: the exact baseline attempt must still own a live
+  # lease. Once it terminates, the verifier again requires the queued successor to
+  # advance its own attempt before any healthy/failed result can be certified.
+  if [ "$health_http" = "200" ] && [ "$health_state" = "running" ] && \
+     [ "$attempt_advanced" -eq 0 ] && [ -n "$baseline_attempt" ] && \
+     [ "$current_attempt" = "$baseline_attempt" ] && \
      [ "$observed_epoch" -gt 0 ] && [ "$lease_epoch" -gt "$observed_epoch" ]; then
     printf '1'
   else
