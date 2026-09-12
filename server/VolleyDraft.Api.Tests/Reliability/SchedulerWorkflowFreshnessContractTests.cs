@@ -35,15 +35,17 @@ public sealed class SchedulerWorkflowFreshnessContractTests
 
         // HTTP 202 is only process-local wake acceptance. If a restart destroys that
         // signal before a durable attempt starts, recovery is bounded and fenced:
-        // require sustained unchanged authoritative state, replay at most once, and
-        // retain the original API-clock freshness boundary for the same logical wake.
+        // require sustained unchanged authoritative state, attempt one replay at most
+        // once per verifier run, and retain the original API-clock freshness boundary.
         Assert.Contains("scheduler_should_requeue_unstarted_wake", workflow, StringComparison.Ordinal);
         Assert.Contains("recovery_candidate_count=$((recovery_candidate_count + 1))", workflow, StringComparison.Ordinal);
-        Assert.Contains("[ \"$attempt\" -ge 12 ]", workflow, StringComparison.Ordinal);
-        Assert.Contains("[ \"$recovery_candidate_count\" -ge 3 ]", workflow, StringComparison.Ordinal);
-        Assert.Contains("[ \"$recovery_requeue_used\" -eq 0 ]", workflow, StringComparison.Ordinal);
-        Assert.Contains("replaying the logical wake once", workflow, StringComparison.Ordinal);
+        Assert.Contains("scheduler_should_attempt_recovery_requeue", workflow, StringComparison.Ordinal);
+        Assert.Contains("recovery_requeue_attempted=1", workflow, StringComparison.Ordinal);
+        Assert.Contains("recovery_requeue_accepted=1", workflow, StringComparison.Ordinal);
+        Assert.Contains("attempting one bounded replay", workflow, StringComparison.Ordinal);
+        Assert.Contains("later verifier polls will not issue additional recovery POSTs", workflow, StringComparison.Ordinal);
         Assert.Contains("retaining original freshness boundary for the same logical wake", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("recovery_requeue_used", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("queue_requested_epoch=$(scheduler_parse_timestamp_epoch \"$recovery_requested_at\")", workflow, StringComparison.Ordinal);
 
         Assert.Contains("terminal_healthy=false", workflow, StringComparison.Ordinal);
@@ -62,6 +64,9 @@ public sealed class SchedulerWorkflowFreshnessContractTests
         Assert.Contains("HTTP 202 only proves that the in-process bounded channel accepted a signal", helper, StringComparison.Ordinal);
         Assert.Contains("scheduler_verified_predecessor_in_progress", helper, StringComparison.Ordinal);
         Assert.Contains("[ \"$current_attempt\" != \"$baseline_attempt\" ]", helper, StringComparison.Ordinal);
+        Assert.Contains("scheduler_should_attempt_recovery_requeue", helper, StringComparison.Ordinal);
+        Assert.Contains("regardless of whether that POST reached", helper, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[ \"$recovery_requeue_attempted\" -eq 0 ]", helper, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()
