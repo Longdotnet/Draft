@@ -229,15 +229,12 @@ jobs:
 
             echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh boundary_source=$freshness_source"
 
-            if [ "$health_http" = "200" ] && [ "$health_state" = "healthy" ] && \
-               [ "$terminal_advanced" -eq 1 ] && [ "$attempt_advanced" -eq 1 ] && \
-               [ "$attempt_is_fresh" -eq 1 ] && [ "$success_is_fresh" -eq 1 ]; then
+            if [ "$(scheduler_verified_healthy "$health_http" "$health_state" "$terminal_advanced" "$attempt_advanced" "$attempt_is_fresh" "$success_is_fresh")" = "1" ]; then
               echo "Scheduler cycle reached a fresh durable healthy terminal state."
               exit 0
             fi
 
-            if [ "$health_state" = "failed" ] && [ "$failure_advanced" -eq 1 ] && \
-               { [ "$failure_is_fresh" -eq 1 ] || [ "$attempt_is_fresh" -eq 1 ]; }; then
+            if [ "$(scheduler_verified_failed "$health_state" "$failure_advanced" "$attempt_advanced" "$failure_is_fresh" "$attempt_is_fresh")" = "1" ]; then
               echo "failure_kind=scheduler_cycle_failed" >> "$GITHUB_OUTPUT"
               if [ -n "$current_failure_code" ]; then
                 echo "failure_detail=Scheduler recorded a fresh failed cycle. Grounded failure code: ${current_failure_code}." >> "$GITHUB_OUTPUT"
