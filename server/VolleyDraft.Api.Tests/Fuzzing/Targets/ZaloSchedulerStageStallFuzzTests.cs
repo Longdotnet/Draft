@@ -14,7 +14,8 @@ public sealed class ZaloSchedulerStageStallFuzzTests
         {
             var random = new StableFuzzRandom(seed * 196613);
             var leaseDuration = TimeSpan.FromMilliseconds(75 + random.NextInt(45));
-            var renewalsBeforeBudget = 4 + random.NextInt(4);
+            var stageTimeout = TimeSpan.FromMilliseconds(95 + random.NextInt(55));
+            var renewalsBeforeBudget = 8 + random.NextInt(5);
             using var stop = new CancellationTokenSource();
             var stageCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var renewalBudgetReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -46,18 +47,22 @@ public sealed class ZaloSchedulerStageStallFuzzTests
                     return Task.FromResult(true);
                 },
                 leaseDuration,
-                stop.Token);
+                stop.Token,
+                stageTimeout);
 
             try
             {
-                await renewalBudgetReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                var authorityDecision = await Task.WhenAny(
+                        stageCancelled.Task,
+                        renewalBudgetReached.Task)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
 
                 // Invariant: lease heartbeat is an ownership fence, not permission for a dead stage
-                // to run forever. Once a bounded stage budget is exhausted, stage authority must be
-                // revoked even while lease renewal itself is healthy.
-                Assert.True(
-                    stageCancelled.Task.IsCompleted,
-                    $"scheduler-stage-stall:successful-heartbeats-outlive-stage-budget seed={seed} renewals={renewalCount}");
+                // to run forever. The stage timeout must revoke authority before an arbitrary stream
+                // of otherwise-successful renewals can extend the stalled operation indefinitely.
+                Assert.Same(stageCancelled.Task, authorityDecision);
+                await Assert.ThrowsAsync<TimeoutException>(async () =>
+                    await run.WaitAsync(TimeSpan.FromSeconds(5)));
             }
             finally
             {
@@ -68,8 +73,7 @@ public sealed class ZaloSchedulerStageStallFuzzTests
                 }
                 catch
                 {
-                    // The reproducer assertion above owns the finding. Cleanup only proves the
-                    // stalled stage is cancellation-aware and does not leak work after the test.
+                    // The timeout decision owns the result; cleanup only ensures no stage work leaks.
                 }
             }
         }
