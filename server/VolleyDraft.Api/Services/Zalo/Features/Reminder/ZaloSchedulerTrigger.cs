@@ -199,17 +199,55 @@ internal sealed class ZaloSchedulerLeaseStore(
             """,
             cancellationToken);
 
+        // #379 shipped this compatibility fence under the final trigger name. During a rolling
+        // upgrade an old process keeps calling CREATE TRIGGER IF NOT EXISTS, so a corrected trigger
+        // must retain that exact name: once replaced transactionally, legacy processes can no longer
+        // overwrite it. Upgrade only the stale definition so normal EnsureAsync calls do not churn DDL.
+        var staleLegacyFenceCount = await db.Database.SqlQueryRaw<int>(
+                """
+                SELECT COUNT(*) AS "Value"
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'ZaloSchedulerLegacyTakeoverFence'
+                  AND sql NOT LIKE '%NEW."OwnerId" NOT LIKE ''released:%''%'
+                """)
+            .SingleAsync(cancellationToken);
+        if (staleLegacyFenceCount > 0)
+        {
+            await using var migration = await db.Database.BeginTransactionAsync(cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                "DROP TRIGGER IF EXISTS \"ZaloSchedulerLegacyTakeoverFence\";",
+                cancellationToken);
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER "ZaloSchedulerLegacyTakeoverFence"
+                BEFORE UPDATE OF "OwnerId", "LeaseUntil" ON "ZaloSchedulerLeases"
+                FOR EACH ROW
+                WHEN NEW."OwnerId" <> OLD."OwnerId"
+                  AND NEW."OwnerId" NOT LIKE 'released:%'
+                  AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
+                  AND OLD."OwnerId" NOT LIKE 'released:%'
+                  AND OLD."AuthorityLeaseUntil" > strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
+                """,
+                cancellationToken);
+            await migration.CommitAsync(cancellationToken);
+        }
+
         // Rolling upgrades can briefly run a pre-authority worker beside a new worker. Old code
         // changes OwnerId/LeaseUntil without touching AuthorityLeaseUntil. Fence an old fast-clock
         // takeover while the DB-clock authority is live, then translate any permitted legacy
-        // acquire/renew into a fresh DB-clock authority window. New code changes AuthorityLeaseUntil
-        // in the same statement, so these compatibility triggers stay out of its path.
+        // acquire/renew/release into DB-clock authority. New code changes AuthorityLeaseUntil in the
+        // same statement, so these compatibility triggers stay out of its path.
         await db.Database.ExecuteSqlRawAsync(
             """
             CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyTakeoverFence"
             BEFORE UPDATE OF "OwnerId", "LeaseUntil" ON "ZaloSchedulerLeases"
             FOR EACH ROW
             WHEN NEW."OwnerId" <> OLD."OwnerId"
+              AND NEW."OwnerId" NOT LIKE 'released:%'
               AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
               AND OLD."OwnerId" NOT LIKE 'released:%'
               AND OLD."AuthorityLeaseUntil" > strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
@@ -241,6 +279,20 @@ internal sealed class ZaloSchedulerLeaseStore(
                                 THEN 3600.0
                             ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
                         END))
+                WHERE "Name" = NEW."Name"
+                  AND "OwnerId" = NEW."OwnerId"
+                  AND "AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil";
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyReleaseBridge"
+            AFTER UPDATE OF "OwnerId", "LeaseUntil" ON "ZaloSchedulerLeases"
+            FOR EACH ROW
+            WHEN NEW."OwnerId" LIKE 'released:%'
+              AND OLD."OwnerId" NOT LIKE 'released:%'
+              AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
+            BEGIN
+                UPDATE "ZaloSchedulerLeases"
+                SET "AuthorityLeaseUntil" = strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
                 WHERE "Name" = NEW."Name"
                   AND "OwnerId" = NEW."OwnerId"
                   AND "AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil";
