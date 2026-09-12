@@ -48,3 +48,43 @@ scheduler_timestamp_is_fresh() {
     printf '0'
   fi
 }
+
+scheduler_verified_healthy() {
+  local health_http="${1:-000}"
+  local health_state="${2:-unknown}"
+  local terminal_advanced="${3:-0}"
+  local attempt_advanced="${4:-0}"
+  local attempt_is_fresh="${5:-0}"
+  local success_is_fresh="${6:-0}"
+
+  if [ "$health_http" = "200" ] && [ "$health_state" = "healthy" ] && \
+     [ "$terminal_advanced" -eq 1 ] && [ "$attempt_advanced" -eq 1 ] && \
+     [ "$attempt_is_fresh" -eq 1 ] && [ "$success_is_fresh" -eq 1 ]; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
+
+scheduler_verified_failed() {
+  local health_state="${1:-unknown}"
+  local failure_advanced="${2:-0}"
+  local attempt_advanced="${3:-0}"
+  local failure_is_fresh="${4:-0}"
+  local attempt_is_fresh="${5:-0}"
+
+  if [ "$health_state" != "failed" ]; then
+    printf '0'
+    return 0
+  fi
+
+  # A failed health state can be backed either by a newly persisted failure marker
+  # or by a newly advanced attempt whose lease expired before any terminal marker
+  # could be written. Preserve both grounded failure paths.
+  if { [ "$failure_advanced" -eq 1 ] && [ "$failure_is_fresh" -eq 1 ]; } || \
+     { [ "$attempt_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ]; }; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
