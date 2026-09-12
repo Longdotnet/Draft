@@ -157,6 +157,29 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         return affected > 0;
     }
 
+    internal async Task<bool> TryRenewAsync(
+        string ownerId,
+        DateTimeOffset now,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(leaseDuration, TimeSpan.Zero);
+        await EnsureAsync(cancellationToken);
+
+        var nowText = now.ToUniversalTime().ToString("O");
+        var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
+        var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            UPDATE "ZaloSchedulerLeases"
+            SET "LeaseUntil" = {{leaseUntilText}}
+            WHERE "Name" = {{LeaseName}}
+              AND "OwnerId" = {{ownerId}}
+              AND "LeaseUntil" > {{nowText}};
+            """, cancellationToken);
+
+        return affected > 0;
+    }
+
     internal async Task MarkAttemptAsync(
         string ownerId,
         DateTimeOffset at,
@@ -587,7 +610,7 @@ public sealed class ZaloSchedulerWorker(
             await using var renewalScope = scopeFactory.CreateAsyncScope();
             var renewalDb = renewalScope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
             return await new ZaloSchedulerLeaseStore(renewalDb)
-                .TryAcquireAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
+                .TryRenewAsync(instanceId, DateTimeOffset.UtcNow, leaseDuration, renewCancellationToken);
         }
     }
 
