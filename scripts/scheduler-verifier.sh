@@ -159,3 +159,41 @@ scheduler_verified_predecessor_in_progress() {
     printf '0'
   fi
 }
+
+scheduler_should_requeue_unstarted_wake() {
+  local health_http="${1:-000}"
+  local health_state="${2:-unknown}"
+  local attempt_advanced="${3:-0}"
+  local baseline_attempt="${4:-}"
+  local current_attempt="${5:-}"
+  local observed_at="${6:-}"
+  local lease_until="${7:-}"
+  local observed_epoch
+
+  observed_epoch=$(scheduler_parse_timestamp_epoch "$observed_at")
+
+  # HTTP 202 only proves that the in-process bounded channel accepted a signal.
+  # A deploy/restart can destroy that channel before the scheduler worker consumes
+  # it. After a sustained grace period the workflow may replay the same logical wake
+  # once, but only when durable state proves that no accepted-cycle attempt started
+  # and no baseline predecessor still owns a live lease.
+  if { [ "$health_http" != "200" ] && [ "$health_http" != "503" ]; } || \
+     [ "$observed_epoch" -le 0 ] || [ "$attempt_advanced" -ne 0 ]; then
+    printf '0'
+    return 0
+  fi
+
+  if [ "$current_attempt" != "$baseline_attempt" ]; then
+    printf '0'
+    return 0
+  fi
+
+  if [ "$(scheduler_verified_predecessor_in_progress \
+      "$health_http" "$health_state" "$attempt_advanced" \
+      "$baseline_attempt" "$current_attempt" "$observed_at" "$lease_until")" = "1" ]; then
+    printf '0'
+    return 0
+  fi
+
+  printf '1'
+}

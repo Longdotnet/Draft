@@ -110,6 +110,52 @@ jobs:
               "$scheduler_health_url" 2>/tmp/scheduler-health-error || printf '000'
           }
 
+          queue_scheduler() {
+            local response_file="$1"
+            local max_attempts="$2"
+            local label="$3"
+            local attempt
+            local status
+            local curl_exit
+
+            last_runner_queue_requested_at=""
+            for attempt in $(seq 1 "$max_attempts"); do
+              last_runner_queue_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+              echo "$label attempt $attempt/$max_attempts at runner time $last_runner_queue_requested_at: $SCHEDULER_URL"
+              set +e
+              status=$(curl \
+                --silent \
+                --show-error \
+                --connect-timeout 15 \
+                --max-time 30 \
+                --output "$response_file" \
+                --write-out "%{http_code}" \
+                --request POST \
+                --header "x-scheduler-key: $SCHEDULER_KEY" \
+                "$SCHEDULER_URL")
+              curl_exit=$?
+              set -e
+
+              if [ "$curl_exit" -eq 0 ] && [ "$status" = "202" ]; then
+                cat "$response_file"
+                echo
+                return 0
+              fi
+
+              if is_render_suspended "$response_file"; then
+                return 2
+              fi
+
+              echo "$label attempt $attempt/$max_attempts failed: curl=$curl_exit HTTP=$status"
+              cat "$response_file" 2>/dev/null || true
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                sleep 5
+              fi
+            done
+
+            return 1
+          }
+
           wait_for_health "zalo-bridge" "$bridge_health_url" &
           bridge_health_pid=$!
           wait_for_health "draft-api" "$backend_health_url" &
@@ -146,49 +192,17 @@ jobs:
             echo "Scheduler baseline unavailable: HTTP $baseline_status; verification will require timestamps from the accepted queue request."
           fi
 
-          queued=0
-          runner_queue_requested_at=""
-          for attempt in 1 2 3 4; do
-            runner_attempt_requested_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            echo "Queueing scheduler cycle attempt $attempt/4 at runner time $runner_attempt_requested_at: $SCHEDULER_URL"
-            set +e
-            status=$(curl \
-              --silent \
-              --show-error \
-              --connect-timeout 15 \
-              --max-time 30 \
-              --output /tmp/scheduler-response \
-              --write-out "%{http_code}" \
-              --request POST \
-              --header "x-scheduler-key: $SCHEDULER_KEY" \
-              "$SCHEDULER_URL")
-            curl_exit=$?
-            set -e
-
-            if [ "$curl_exit" -eq 0 ] && [ "$status" = "202" ]; then
-              runner_queue_requested_at="$runner_attempt_requested_at"
-              cat /tmp/scheduler-response
-              echo
-              queued=1
-              break
-            fi
-
-            if is_render_suspended /tmp/scheduler-response; then
+          if queue_scheduler /tmp/scheduler-response 4 "Queueing scheduler cycle"; then
+            runner_queue_requested_at="$last_runner_queue_requested_at"
+          else
+            queue_result=$?
+            if [ "$queue_result" -eq 2 ]; then
               echo "failure_kind=render_service_suspended" >> "$GITHUB_OUTPUT"
               echo "failure_detail=Render reports the scheduler API service is suspended. Resume draft-api in Render before scheduler verification can succeed." >> "$GITHUB_OUTPUT"
-              echo "::error::Scheduler API is suspended by its hosting owner; retrying cannot produce HTTP 202."
-              exit 1
+            else
+              echo "failure_kind=scheduler_queue_failed" >> "$GITHUB_OUTPUT"
+              echo "failure_detail=Scheduler endpoint did not return HTTP 202 after retries." >> "$GITHUB_OUTPUT"
             fi
-
-            echo "Scheduler attempt $attempt/4 failed: curl=$curl_exit HTTP=$status"
-            cat /tmp/scheduler-response 2>/dev/null || true
-            sleep 5
-          done
-
-          if [ "$queued" -ne 1 ]; then
-            echo "failure_kind=scheduler_queue_failed" >> "$GITHUB_OUTPUT"
-            echo "failure_detail=Scheduler endpoint did not return HTTP 202 after retries." >> "$GITHUB_OUTPUT"
-            echo "Scheduler did not return HTTP 202 after 4 attempts."
             exit 1
           fi
 
@@ -213,6 +227,8 @@ jobs:
           current_lease_until=""
           attempt_advanced=0
           attempt_is_fresh=0
+          recovery_requeue_used=0
+          recovery_candidate_count=0
 
           for attempt in $(seq 1 24); do
             health_http=$(read_scheduler_health /tmp/scheduler-health-current)
@@ -241,7 +257,7 @@ jobs:
             success_is_fresh=$(scheduler_timestamp_is_fresh "$current_success" "$queue_requested_epoch")
             failure_is_fresh=$(scheduler_timestamp_is_fresh "$current_failure" "$queue_requested_epoch")
 
-            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} lease_until=${current_lease_until:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh boundary_source=$freshness_source"
+            echo "Scheduler verification $attempt/24: HTTP=$health_http state=$health_state attempt=${current_attempt:-none} success=${current_success:-none} failure=${current_failure:-none} failure_code=${current_failure_code:-none} lease_until=${current_lease_until:-none} fresh_attempt=$attempt_is_fresh fresh_success=$success_is_fresh fresh_failure=$failure_is_fresh boundary_source=$freshness_source recovery_requeue_used=$recovery_requeue_used"
 
             if [ "$(scheduler_verified_healthy "$health_http" "$health_state" "$terminal_advanced" "$attempt_advanced" "$attempt_is_fresh" "$success_is_fresh")" = "1" ]; then
               echo "terminal_healthy=true" >> "$GITHUB_OUTPUT"
@@ -256,42 +272,60 @@ jobs:
               else
                 echo "failure_detail=Scheduler recorded a fresh failed cycle after accepting the trigger." >> "$GITHUB_OUTPUT"
               fi
-              echo "Scheduler recorded a fresh failed cycle."
               cat /tmp/scheduler-health-current
               exit 1
+            fi
+
+            recovery_candidate=$(scheduler_should_requeue_unstarted_wake \
+              "$health_http" "$health_state" "$attempt_advanced" \
+              "$baseline_attempt" "$current_attempt" \
+              "$current_observed_at" "$current_lease_until")
+            if [ "$recovery_candidate" = "1" ]; then
+              recovery_candidate_count=$((recovery_candidate_count + 1))
+            else
+              recovery_candidate_count=0
+            fi
+
+            # Require a long grace period plus three consecutive grounded observations.
+            # This makes the replay a restart/lost-channel recovery, not a second normal tick.
+            if [ "$attempt" -ge 12 ] && [ "$recovery_candidate_count" -ge 3 ] && [ "$recovery_requeue_used" -eq 0 ]; then
+              echo "Accepted scheduler wake has not produced any durable attempt after sustained observation; replaying the logical wake once to recover a possible process-local channel loss."
+              if queue_scheduler /tmp/scheduler-recovery-response 2 "Recovering unstarted scheduler wake"; then
+                recovery_requeue_used=1
+                recovery_candidate_count=0
+                recovery_requested_at=$(jq -r '.requestedAt // empty' /tmp/scheduler-recovery-response 2>/dev/null || true)
+                echo "Recovery wake accepted at API time ${recovery_requested_at:-unknown}; retaining original freshness boundary for the same logical wake."
+              else
+                echo "::warning::Recovery wake replay was not accepted; continuing verification of the original logical wake."
+              fi
             fi
 
             sleep 5
           done
 
           if [ "$(scheduler_verified_in_progress \
-              "$health_http" \
-              "$health_state" \
-              "$attempt_advanced" \
-              "$attempt_is_fresh" \
-              "$current_observed_at" \
-              "$current_lease_until")" = "1" ]; then
+              "$health_http" "$health_state" "$attempt_advanced" "$attempt_is_fresh" \
+              "$current_observed_at" "$current_lease_until")" = "1" ]; then
             echo "Scheduler verification window ended while the fresh cycle is still authoritatively running under a live durable lease; leaving terminal recovery assessment to a later observation."
             cat /tmp/scheduler-health-current 2>/dev/null || true
             exit 0
           fi
 
           if [ "$(scheduler_verified_predecessor_in_progress \
-              "$health_http" \
-              "$health_state" \
-              "$attempt_advanced" \
-              "$baseline_attempt" \
-              "$current_attempt" \
-              "$current_observed_at" \
-              "$current_lease_until")" = "1" ]; then
+              "$health_http" "$health_state" "$attempt_advanced" \
+              "$baseline_attempt" "$current_attempt" \
+              "$current_observed_at" "$current_lease_until")" = "1" ]; then
             echo "Scheduler verification window ended while the baseline predecessor still owns a live durable lease; the accepted wake remains queued behind that authoritative cycle."
             cat /tmp/scheduler-health-current 2>/dev/null || true
             exit 0
           fi
 
           echo "failure_kind=scheduler_cycle_timeout" >> "$GITHUB_OUTPUT"
-          echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no authoritative current or predecessor cycle remained in progress at the end of the verification window." >> "$GITHUB_OUTPUT"
-          echo "Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no authoritative in-progress cycle remained."
+          if [ "$recovery_requeue_used" -eq 1 ]; then
+            echo "failure_detail=Scheduler accepted the original trigger and one bounded recovery replay, but neither produced a fresh authoritative attempt or terminal result within the verification window." >> "$GITHUB_OUTPUT"
+          else
+            echo "failure_detail=Scheduler accepted the trigger but did not reach a fresh healthy terminal state and no authoritative current or predecessor cycle remained in progress at the end of the verification window." >> "$GITHUB_OUTPUT"
+          fi
           cat /tmp/scheduler-health-current 2>/dev/null || true
           exit 1
 
