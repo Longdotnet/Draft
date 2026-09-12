@@ -145,11 +145,16 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         var nowText = now.ToUniversalTime().ToString("O");
         var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
-            INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil")
-            VALUES ({{LeaseName}}, {{ownerId}}, {{leaseUntilText}})
+            INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "LastAttemptAt")
+            VALUES ({{LeaseName}}, {{ownerId}}, {{leaseUntilText}}, {{nowText}})
             ON CONFLICT ("Name") DO UPDATE SET
                 "OwnerId" = excluded."OwnerId",
-                "LeaseUntil" = excluded."LeaseUntil"
+                "LeaseUntil" = excluded."LeaseUntil",
+                "LastAttemptAt" = CASE
+                    WHEN "ZaloSchedulerLeases"."OwnerId" = excluded."OwnerId"
+                        THEN "ZaloSchedulerLeases"."LastAttemptAt"
+                    ELSE excluded."LastAttemptAt"
+                END
             WHERE "ZaloSchedulerLeases"."OwnerId" = {{ownerId}}
                OR "ZaloSchedulerLeases"."LeaseUntil" <= {{nowText}};
             """, cancellationToken);
@@ -549,7 +554,9 @@ public sealed class ZaloSchedulerWorker(
             return;
         }
 
-        await lease.MarkAttemptAsync(cycleOwnerId, acquiredAt, cancellationToken);
+        // Lease acquisition is also the durable start-of-attempt boundary. Keeping those two
+        // facts in one SQL statement prevents a successor owner from ever inheriting a dead
+        // predecessor's unterminated attempt during the acquire -> MarkAttempt gap.
         var stage = ZaloSchedulerStage.Listener;
 
         try
