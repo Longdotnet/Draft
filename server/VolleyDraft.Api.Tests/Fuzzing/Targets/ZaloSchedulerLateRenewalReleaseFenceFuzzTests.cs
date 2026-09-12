@@ -54,6 +54,8 @@ public sealed class ZaloSchedulerLateRenewalReleaseFenceFuzzTests
                 var snapshot = Assert.IsType<ZaloSchedulerLeaseSnapshot>(
                     await new ZaloSchedulerLeaseStore(verifyDb).GetAsync());
 
+                Assert.NotEqual(owner, snapshot.OwnerId);
+                Assert.StartsWith("released:", snapshot.OwnerId, StringComparison.Ordinal);
                 Assert.Equal(releasedAt, snapshot.LeaseUntil);
                 Assert.True(snapshot.LeaseUntil <= releasedAt);
             }
