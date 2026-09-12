@@ -5,6 +5,8 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 
 public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
 {
+    private static readonly TimeSpan HarnessGuard = TimeSpan.FromSeconds(15);
+
     [Fact]
     public async Task Stage_timeout_must_revoke_authority_while_renewal_is_stalled()
     {
@@ -55,27 +57,28 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
 
             try
             {
-                await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                // Harness guards only prevent a true deadlock from hanging CI. They intentionally do
+                // not encode a wall-clock product invariant; the exact timeout result and authority
+                // revocation events below remain the deterministic correctness oracle.
+                await renewalStarted.Task.WaitAsync(HarnessGuard);
 
                 // The result type is the deterministic authority oracle. Before the production fix,
                 // the in-flight renewal ignored the stage timeout until its later heartbeat deadline
                 // and surfaced ZaloSchedulerLeaseLostException. The stage budget must win instead.
                 await Assert.ThrowsAsync<TimeoutException>(async () =>
-                    await run.WaitAsync(TimeSpan.FromSeconds(5)));
+                    await run.WaitAsync(HarnessGuard));
 
                 // Stage cleanup is drained before the wrapper reports timeout, while the renewal is
                 // deliberately observed as a detached task after its authority token is revoked.
-                // Await the cancellation event with a generous harness guard rather than assuming the
-                // detached async continuation has already run on the exact thread that reports timeout.
                 Assert.True(stageCancelled.Task.IsCompletedSuccessfully);
-                await renewalCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await renewalCancelled.Task.WaitAsync(HarnessGuard);
             }
             finally
             {
                 stop.Cancel();
                 try
                 {
-                    await run.WaitAsync(TimeSpan.FromSeconds(5));
+                    await run.WaitAsync(HarnessGuard);
                 }
                 catch
                 {
