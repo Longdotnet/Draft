@@ -197,3 +197,22 @@ scheduler_should_requeue_unstarted_wake() {
 
   printf '1'
 }
+
+scheduler_should_attempt_recovery_requeue() {
+  local recovery_candidate="${1:-0}"
+  local verification_attempt="${2:-0}"
+  local recovery_candidate_count="${3:-0}"
+  local recovery_requeue_attempted="${4:-0}"
+
+  # Recovery is a bounded rescue for a possibly lost process-local wake, not an
+  # alternate retry loop. Once a recovery POST has been attempted, later polling
+  # observations in the same verification run must never amplify a provider/API
+  # outage into repeated scheduler POSTs, regardless of whether that POST reached
+  # HTTP 202. The next normal scheduled run owns any later fresh logical wake.
+  if [ "$recovery_candidate" -eq 1 ] && [ "$verification_attempt" -ge 12 ] && \
+     [ "$recovery_candidate_count" -ge 3 ] && [ "$recovery_requeue_attempted" -eq 0 ]; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
