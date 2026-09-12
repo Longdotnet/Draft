@@ -56,6 +56,8 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
                 await successorStore.MarkFailureAsync(ownerB, successorFailure, successorFailureCode);
             }
 
+            // Recreate the store/DbContext before stale writes to model a restart-shaped delayed
+            // completion from the previous scheduler instance rather than process-local state.
             await using (var staleDb = new VolleyDraftDbContext(options))
             {
                 var staleStore = new ZaloSchedulerLeaseStore(staleDb);
@@ -64,6 +66,7 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
                 await staleStore.MarkFailureAsync(ownerA, successorFailure.AddSeconds(3), "degraded:reminder");
                 Assert.False(await staleStore.ReleaseAsync(ownerA, successorFailure.AddSeconds(4)));
 
+                // A third worker still cannot enter while the successor's durable lease is live.
                 Assert.False(await staleStore.TryAcquireAsync(
                     ownerCAttacker,
                     takeoverAt.Add(leaseDuration).AddTicks(-1),
@@ -121,6 +124,9 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
                 var store = new ZaloSchedulerLeaseStore(secondDb);
                 Assert.True(await store.TryAcquireAsync(newOwner, takeoverAt, leaseDuration));
                 await store.MarkFailureAsync(newOwner, newFailureAt, "degraded:lifecycle");
+
+                // Delayed old-owner persistence must be fenced after handoff, even when it carries
+                // a later timestamp that would otherwise look fresher to health diagnostics.
                 await store.MarkFailureAsync(oldOwner, newFailureAt.AddMinutes(1), "exception:reminder");
             }
 
@@ -164,6 +170,9 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
             {
                 var store = new ZaloSchedulerLeaseStore(firstDb);
                 Assert.True(await store.TryAcquireAsync(ownerA, acquiredAt, leaseDuration));
+
+                // A heartbeat that still owns an unexpired lease may extend it. Reset to a fresh
+                // lease afterwards so every seed also attacks the exact expiry boundary below.
                 Assert.True(await store.TryRenewAsync(ownerA, beforeExpiry, leaseDuration));
                 Assert.True(await store.ReleaseAsync(ownerA, acquiredAt));
                 Assert.True(await store.TryAcquireAsync(ownerA, acquiredAt, leaseDuration));
@@ -172,6 +181,10 @@ public sealed class ZaloSchedulerLeaseHandoffStateFuzzTests
             await using (var lateHeartbeatDb = new VolleyDraftDbContext(options))
             {
                 var store = new ZaloSchedulerLeaseStore(lateHeartbeatDb);
+
+                // Reproducer for the previous bug: TryAcquireAsync doubled as renewal, so the same
+                // owner could arrive after LeaseUntil and silently resurrect its authority before a
+                // successor got a chance to claim the already-expired lease.
                 Assert.False(await store.TryRenewAsync(ownerA, afterExpiry, leaseDuration));
             }
 
