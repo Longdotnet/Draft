@@ -3,6 +3,7 @@ using Xunit;
 
 namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 
+[Collection(ZaloSchedulerTimingFuzzCollection.Name)]
 public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
 {
     private static readonly TimeSpan HarnessGuard = TimeSpan.FromSeconds(15);
@@ -82,4 +83,10 @@ public sealed class ZaloSchedulerStageTimeoutRenewalRaceFuzzTests
             }
         }
     }
+}
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class ZaloSchedulerTimingFuzzCollection
+{
+    public const string Name = "Zalo scheduler timing fuzz";
 }
