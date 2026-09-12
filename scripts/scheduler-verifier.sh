@@ -88,3 +88,30 @@ scheduler_verified_failed() {
     printf '0'
   fi
 }
+
+scheduler_verified_in_progress() {
+  local health_http="${1:-000}"
+  local health_state="${2:-unknown}"
+  local attempt_advanced="${3:-0}"
+  local attempt_is_fresh="${4:-0}"
+  local observed_at="${5:-}"
+  local lease_until="${6:-}"
+  local observed_epoch
+  local lease_epoch
+
+  observed_epoch=$(scheduler_parse_timestamp_epoch "$observed_at")
+  lease_epoch=$(scheduler_parse_timestamp_epoch "$lease_until")
+
+  # A verifier timeout is not a scheduler failure while the API itself still
+  # reports the accepted fresh attempt as running under a live durable lease.
+  # This distinction matters because one scheduler cycle can legitimately outlive
+  # the short GitHub polling window while sequential bounded stages keep renewing
+  # ownership. Only API-owned timestamps participate in this authority check.
+  if [ "$health_http" = "200" ] && [ "$health_state" = "running" ] && \
+     [ "$attempt_advanced" -eq 1 ] && [ "$attempt_is_fresh" -eq 1 ] && \
+     [ "$observed_epoch" -gt 0 ] && [ "$lease_epoch" -gt "$observed_epoch" ]; then
+    printf '1'
+  else
+    printf '0'
+  fi
+}
