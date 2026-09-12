@@ -54,6 +54,17 @@ jobs:
       - name: Guest agent conversation evals
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-build --no-restore --filter Category=GuestAgentEval
 
+  scheduler-verifier:
+    name: Scheduler verifier fuzz
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run deterministic verifier fuzz corpus
+        run: bash scripts/tests/scheduler-verifier-fuzz.sh
+
   npc11-worker:
     name: NPC11 worker syntax
     runs-on: ubuntu-latest
@@ -103,6 +114,7 @@ jobs:
     needs:
       - backend
       - zalo-bridge
+      - scheduler-verifier
 
     steps:
       - name: Checkout
