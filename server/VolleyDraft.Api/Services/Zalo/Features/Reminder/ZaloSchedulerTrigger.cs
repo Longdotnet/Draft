@@ -186,10 +186,13 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var atText = at.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
-            SET "LastAttemptAt" = {{at.ToUniversalTime().ToString("O")}}
-            WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
+            SET "LastAttemptAt" = {{atText}}
+            WHERE "Name" = {{LeaseName}}
+              AND "OwnerId" = {{ownerId}}
+              AND "LeaseUntil" > {{atText}};
             """, cancellationToken);
     }
 
@@ -199,10 +202,13 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await EnsureAsync(cancellationToken);
+        var atText = at.ToUniversalTime().ToString("O");
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
-            SET "LastSuccessAt" = {{at.ToUniversalTime().ToString("O")}}
-            WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
+            SET "LastSuccessAt" = {{atText}}
+            WHERE "Name" = {{LeaseName}}
+              AND "OwnerId" = {{ownerId}}
+              AND "LeaseUntil" > {{atText}};
             """, cancellationToken);
     }
 
@@ -220,10 +226,12 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LastFailureAt" = {{failureAt}}
-            WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
+            WHERE "Name" = {{LeaseName}}
+              AND "OwnerId" = {{ownerId}}
+              AND "LeaseUntil" > {{failureAt}};
             """, cancellationToken);
 
-        // Failure diagnosis belongs to the same durable lease owner as LastFailureAt.
+        // Failure diagnosis belongs to the same durable live lease owner as LastFailureAt.
         // Re-check the fence in the diagnostic statement too: ownership can change
         // after the timestamp update but before this second statement executes.
         if (affected == 0)
@@ -237,6 +245,7 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
                 FROM "ZaloSchedulerLeases"
                 WHERE "Name" = {{LeaseName}}
                   AND "OwnerId" = {{ownerId}}
+                  AND "LeaseUntil" > {{failureAt}}
                   AND "LastFailureAt" = {{failureAt}}
             )
             ON CONFLICT ("Name") DO UPDATE SET
@@ -252,10 +261,13 @@ internal sealed class ZaloSchedulerLeaseStore(VolleyDraftDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         await EnsureAsync(cancellationToken);
+        var atText = at.ToUniversalTime().ToString("O");
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
-            SET "LeaseUntil" = {{at.ToUniversalTime().ToString("O")}}
-            WHERE "Name" = {{LeaseName}} AND "OwnerId" = {{ownerId}};
+            SET "LeaseUntil" = {{atText}}
+            WHERE "Name" = {{LeaseName}}
+              AND "OwnerId" = {{ownerId}}
+              AND "LeaseUntil" > {{atText}};
             """, cancellationToken);
         return affected > 0;
     }
