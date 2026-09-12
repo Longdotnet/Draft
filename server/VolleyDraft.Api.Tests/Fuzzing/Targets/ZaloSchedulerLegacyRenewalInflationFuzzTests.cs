@@ -9,7 +9,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 public sealed class ZaloSchedulerLegacyRenewalInflationFuzzTests
 {
     [Fact]
-    public async Task Legacy_same_owner_renewals_cannot_inflate_database_authority_beyond_the_lease_duration()
+    public async Task Expired_database_authority_cannot_be_resurrected_by_a_late_legacy_same_owner_renewal()
     {
         const int seedCount = 96;
 
@@ -29,34 +29,40 @@ public sealed class ZaloSchedulerLegacyRenewalInflationFuzzTests
             var leaseDuration = TimeSpan.FromMinutes(5 + random.NextInt(26));
             var legacyAttempt = databaseNow.Add(skew);
             var legacyLeaseUntil = legacyAttempt.Add(leaseDuration);
-            var owner = ZaloSchedulerWorker.CreateCycleOwnerId($"legacy-renew-inflation-{seed}");
+            var owner = ZaloSchedulerWorker.CreateCycleOwnerId($"legacy-late-renew-{seed}");
             await InsertLegacyRowAsync(db, owner, legacyAttempt, legacyLeaseUntil);
 
             var store = new ZaloSchedulerLeaseStore(db, useDatabaseAuthorityClock: true);
             await store.EnsureAsync();
 
-            // A pre-authority worker renews with its own wall clock and does not update LastAttemptAt.
-            // Mutate that clock forward while keeping the same logical lease duration. A shared-clock
-            // bridge may move the authority deadline forward, but it must never reinterpret elapsed
-            // time since the original attempt as a longer lease duration.
-            var renewalCount = 2 + random.NextInt(4);
-            var legacyNow = legacyAttempt;
-            for (var renewal = 0; renewal < renewalCount; renewal++)
-            {
-                var stepMinutes = 1 + random.NextInt(Math.Max(1, (int)leaseDuration.TotalMinutes - 1));
-                legacyNow = legacyNow.AddMinutes(stepMinutes);
-                var renewedLeaseUntil = legacyNow.Add(leaseDuration);
-                var affected = await ExecuteLegacyRenewAsync(db, owner, legacyNow, renewedLeaseUntil);
-                Assert.Equal(1, affected);
-            }
+            // Deterministically advance only the authoritative lease epoch to an expired state.
+            // This models a legacy worker that was paused past the DB-clock deadline while its skewed
+            // local wall clock still considers the old LeaseUntil live. New workers are forbidden to
+            // TryRenew after this boundary and legacy compatibility must preserve that rule.
+            await ExpireAuthorityAsync(db);
+            var expiredAuthority = await ReadAuthorityLeaseUntilAsync(db);
+            var expirationObservedAt = await ReadDatabaseNowAsync(db);
+            Assert.True(expiredAuthority <= expirationObservedAt);
+
+            var legacyNow = legacyLeaseUntil.AddMinutes(-1);
+            var renewedLeaseUntil = legacyNow.Add(leaseDuration);
+            var affected = await ExecuteLegacyRenewAsync(db, owner, legacyNow, renewedLeaseUntil);
 
             var authorityAfter = await ReadAuthorityLeaseUntilAsync(db);
             var observedAt = await ReadDatabaseNowAsync(db);
+            Assert.Equal(
+                0,
+                affected);
             Assert.True(
-                authorityAfter <= observedAt.Add(leaseDuration).AddSeconds(2),
-                $"seed={seed} fingerprint=scheduler-migration:legacy-renewal-authority-inflation " +
+                authorityAfter <= observedAt,
+                $"seed={seed} fingerprint=scheduler-migration:expired-legacy-renewal-resurrected-authority " +
                 $"skewMinutes={skew.TotalMinutes:0} leaseMinutes={leaseDuration.TotalMinutes:0} " +
-                $"renewals={renewalCount} authorityAfter={authorityAfter:O} databaseNow={observedAt:O}");
+                $"expiredAuthority={expiredAuthority:O} authorityAfter={authorityAfter:O} databaseNow={observedAt:O}");
+
+            var successor = ZaloSchedulerWorker.CreateCycleOwnerId($"legacy-late-renew-successor-{seed}");
+            Assert.True(
+                await store.TryAcquireAsync(successor, databaseNow, leaseDuration),
+                $"seed={seed} fingerprint=scheduler-migration:expired-legacy-renewal-blocked-successor");
         }
     }
 
@@ -88,6 +94,14 @@ public sealed class ZaloSchedulerLegacyRenewalInflationFuzzTests
             VALUES ('zalo-scheduler', {{ownerId}}, {{leaseUntilText}}, {{lastAttemptAtText}});
             """);
     }
+
+    private static Task ExpireAuthorityAsync(VolleyDraftDbContext db) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "ZaloSchedulerLeases"
+            SET "AuthorityLeaseUntil" = strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now', '-1 second')
+            WHERE "Name" = 'zalo-scheduler';
+            """);
 
     private static Task<int> ExecuteLegacyRenewAsync(
         VolleyDraftDbContext db,
