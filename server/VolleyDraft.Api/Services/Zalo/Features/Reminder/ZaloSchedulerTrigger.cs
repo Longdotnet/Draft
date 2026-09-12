@@ -458,14 +458,24 @@ public sealed class ZaloSchedulerWorker(
                 {
                     using var renewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     var renewalTask = renewLease(renewalCancellation.Token);
-                    // Give every renewal attempt its own revocable authority. If it stops making
-                    // progress beyond one heartbeat interval, revoke that in-flight renewal before
-                    // revoking stage authority so a cancellation-aware DB/provider call cannot
-                    // commit a late lease extension after this wrapper reports lease loss.
+                    // Give every renewal attempt its own revocable authority. A stage timeout is a
+                    // stronger execution-authority boundary than the heartbeat deadline, so it must
+                    // also interrupt an in-flight renewal instead of waiting for that renewal window
+                    // to elapse first.
                     var renewalCompleted = await Task.WhenAny(
                         renewalTask,
-                        Task.Delay(renewalInterval, cancellationToken));
+                        Task.Delay(renewalInterval, cancellationToken),
+                        timeoutTask);
                     cancellationToken.ThrowIfCancellationRequested();
+
+                    if (renewalCompleted == timeoutTask)
+                    {
+                        renewalCancellation.Cancel();
+                        operationCancellation.Cancel();
+                        await ObserveAfterLeaseCancellationAsync(operationTask);
+                        ObserveDetachedRenewalTask(renewalTask);
+                        throw new TimeoutException($"Zalo scheduler stage exceeded its {stageTimeout!.Value.TotalSeconds:0.###} second execution budget.");
+                    }
 
                     if (renewalCompleted != renewalTask)
                     {
