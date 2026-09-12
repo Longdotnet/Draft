@@ -238,9 +238,10 @@ internal sealed class ZaloSchedulerLeaseStore(
 
         // Rolling upgrades can briefly run a pre-authority worker beside a new worker. Old code
         // changes OwnerId/LeaseUntil without touching AuthorityLeaseUntil. Fence an old fast-clock
-        // takeover while the DB-clock authority is live, then translate any permitted legacy
-        // acquire/renew/release into DB-clock authority. New code changes AuthorityLeaseUntil in the
-        // same statement, so these compatibility triggers stay out of its path.
+        // takeover while the DB-clock authority is live, reject a same-owner legacy renewal after
+        // that DB-clock epoch has expired, then translate only permitted legacy acquire/renew/release
+        // into DB-clock authority. New code changes AuthorityLeaseUntil in the same statement, so
+        // these compatibility triggers stay out of its path.
         await db.Database.ExecuteSqlRawAsync(
             """
             CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyTakeoverFence"
@@ -251,6 +252,18 @@ internal sealed class ZaloSchedulerLeaseStore(
               AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
               AND OLD."OwnerId" NOT LIKE 'released:%'
               AND OLD."AuthorityLeaseUntil" > strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyExpiredRenewalFence"
+            BEFORE UPDATE OF "LeaseUntil" ON "ZaloSchedulerLeases"
+            FOR EACH ROW
+            WHEN NEW."OwnerId" = OLD."OwnerId"
+              AND NEW."OwnerId" NOT LIKE 'released:%'
+              AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
+              AND NEW."LeaseUntil" <> OLD."LeaseUntil"
+              AND OLD."AuthorityLeaseUntil" <= strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
             BEGIN
                 SELECT RAISE(IGNORE);
             END;
