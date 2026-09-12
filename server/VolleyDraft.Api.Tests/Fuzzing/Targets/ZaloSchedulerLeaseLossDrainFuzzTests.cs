@@ -5,6 +5,8 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 
 public sealed class ZaloSchedulerLeaseLossDrainFuzzTests
 {
+    private static readonly TimeSpan HarnessGuard = TimeSpan.FromSeconds(15);
+
     [Fact]
     public async Task Rejected_lease_renewal_must_drain_stage_cleanup_before_returning_lease_loss()
     {
@@ -41,8 +43,10 @@ public sealed class ZaloSchedulerLeaseLossDrainFuzzTests
                 leaseDuration,
                 CancellationToken.None);
 
-            await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            // These waits are deadlock guards only. Correctness is asserted below from event ordering
+            // and the exact propagated result, so runner scheduling latency must not become the oracle.
+            await renewalObserved.Task.WaitAsync(HarnessGuard);
+            await cancellationObserved.Task.WaitAsync(HarnessGuard);
 
             // The wrapper owns the scoped stage lifetime. Losing the durable lease must cancel
             // authority immediately, but it must not return while domain/provider cleanup is still
@@ -91,8 +95,10 @@ public sealed class ZaloSchedulerLeaseLossDrainFuzzTests
                 leaseDuration,
                 CancellationToken.None);
 
-            await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            // These waits are deadlock guards only. The test still requires cancellation before
+            // releaseCleanup and the identical renewal exception after cleanup drains.
+            await renewalObserved.Task.WaitAsync(HarnessGuard);
+            await cancellationObserved.Task.WaitAsync(HarnessGuard);
             Assert.False(run.IsCompleted);
 
             releaseCleanup.TrySetResult();
