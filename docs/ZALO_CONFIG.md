@@ -17,7 +17,21 @@ The help response is sent with line breaks. These commands still work without an
 
 ## Local AI config
 
-Edit `server/VolleyDraft.Api/appsettings.Development.json` and restart the API:
+The text/semantic AI path uses an ordered provider pool. Feature code still talks only to `IZaloAiGateway`; it does not choose a concrete provider or model.
+
+The repository defaults currently try these OpenRouter slots in order:
+
+```text
+1. inclusionai/ling-3.0-flash-vl:free
+2. nex-agi/nex-n2.5-pro:free
+3. nex-agi/nex-n2.5-mini:free
+4. inclusionai/ling-3.0-flash-vl:free
+5. nex-agi/nex-n2.5-pro:free
+```
+
+Each pool slot can have an independent API key. When a slot key is blank, the gateway inherits the legacy `Ai:ApiKey`. Exact duplicate endpoint/key/model slots are collapsed automatically, so a deployment with only one shared key does not waste calls retrying the exact same model credential twice. Once separate keys are configured, repeated model slots remain distinct failover credentials.
+
+For a local override, edit `server/VolleyDraft.Api/appsettings.Development.json` and restart the API. The legacy single-provider format remains supported when no `Ai:Providers` entries are configured:
 
 ```json
 "Ai": {
@@ -27,7 +41,9 @@ Edit `server/VolleyDraft.Api/appsettings.Development.json` and restart the API:
 }
 ```
 
-The AI settings are used for free-form questions, intent classification, and optional final-answer wording. Business facts and actions still come from .NET/database. Do not put the key in frontend code or in a `VITE_*` variable.
+The AI settings are used for semantic classification/extraction and optional natural wording. Business facts and actions still come from .NET/database. Do not put keys in frontend code, a `VITE_*` variable, or committed source configuration.
+
+`Npc11` AI art is a separate image-generation path. It is disabled by default (`Npc11:AiEnabled=false`) and is not part of the text-model failover pool.
 
 ## Public image on Render
 
@@ -76,11 +92,21 @@ Zalo__WebhookKey=<webhook-shared-secret>
 Zalo__WorkerLoopSeconds=45
 Zalo__ListenerReconcileSeconds=300
 AutoSession__SafetyReconcileSeconds=900
-Ai__Endpoint=<ai-provider-endpoint>
-Ai__ApiKey=<ai-provider-key>
-Ai__Model=<ai-model-id>
+
+# Existing shared OpenRouter credential. Pool slots inherit this when their own key is blank.
+Ai__ApiKey=<shared-openrouter-key>
+
+# Optional independent credentials for all five failover slots.
+Ai__Providers__0__ApiKey=<key-for-slot-1>
+Ai__Providers__1__ApiKey=<key-for-slot-2>
+Ai__Providers__2__ApiKey=<key-for-slot-3>
+Ai__Providers__3__ApiKey=<key-for-slot-4>
+Ai__Providers__4__ApiKey=<key-for-slot-5>
+
 ZaloBot__AiStyleEnabled=true
 ```
+
+The repository supplies the current OpenRouter endpoint and five model IDs through `appsettings.json`. Existing `Ai__Endpoint` and `Ai__Model` variables may remain during rollout for legacy compatibility, but a valid `Ai:Providers` pool takes precedence for `IZaloAiGateway` calls.
 
 Bridge service `draft-zalo-bridge`:
 
