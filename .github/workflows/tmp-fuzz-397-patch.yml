@@ -1,0 +1,116 @@
+name: Temporary PR397 patch
+
+on:
+  push:
+    branches:
+      - fuzz/failed-share-preserve-preexisting-uow
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fuzz/failed-share-preserve-preexisting-uow
+          fetch-depth: 0
+      - name: Apply focused rollback-state patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("server/VolleyDraft.Api/Services/SessionDraftService.cs")
+          text = path.read_text()
+
+          old_start = '''        await using var transaction = await db.Database.BeginTransactionAsync();
+        var committed = false;
+        try
+        {
+            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();'''
+          new_start = '''        // A service call may share the request DbContext with caller-owned pending work. Snapshot
+        // that preexisting unit of work before the share transaction starts so a rejected share can
+        // discard only mutations introduced by this command, not unrelated changes staged by caller code.
+        var callerTrackedState = CaptureTrackedState();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var committed = false;
+        try
+        {
+            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();'''
+          if text.count(old_start) != 1:
+              raise SystemExit(f"expected one SharePreDraftSlot transaction start, found {text.count(old_start)}")
+          text = text.replace(old_start, new_start, 1)
+
+          old_finally = '''                // Database rollback/disposal does not restore EF tracked values. A rejected share
+                // may already have reactivated an absent player, enriched a profile, or tracked a
+                // new participant before a later participant fails validation. Discard the failed
+                // unit of work so a later unrelated SaveChanges cannot persist those rejected edits.
+                db.ChangeTracker.Clear();'''
+          new_finally = '''                // Database rollback/disposal does not restore EF tracked values. Restore the exact
+                // caller-owned tracker snapshot: this removes new/rejected share entities and values
+                // while preserving unrelated Added/Modified/Deleted work that existed before this call.
+                RestoreTrackedState(callerTrackedState);'''
+          if text.count(old_finally) != 1:
+              raise SystemExit(f"expected one rejected-share clear block, found {text.count(old_finally)}")
+          text = text.replace(old_finally, new_finally, 1)
+
+          marker = '''    private IQueryable<MatchSession> LoadSessionForAdmin(string adminUserId, string sessionId)
+    {
+        return db.MatchSessions.Where(session => session.Id == sessionId && session.AdminUserId == adminUserId);
+    }
+'''
+          helper = '''    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
+    {
+        db.ChangeTracker.DetectChanges();
+        return db.ChangeTracker.Entries()
+            .Select(entry => new TrackedEntrySnapshot(
+                entry.Entity,
+                entry.State,
+                entry.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.CurrentValue,
+                    StringComparer.Ordinal),
+                entry.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.OriginalValue,
+                    StringComparer.Ordinal)))
+            .ToList();
+    }
+
+    private void RestoreTrackedState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+    {
+        db.ChangeTracker.Clear();
+        foreach (var snapshot in snapshots)
+        {
+            var entry = db.Entry(snapshot.Entity);
+            foreach (var property in entry.Properties)
+            {
+                if (snapshot.CurrentValues.TryGetValue(property.Metadata.Name, out var currentValue))
+                    property.CurrentValue = currentValue;
+                if (snapshot.OriginalValues.TryGetValue(property.Metadata.Name, out var originalValue))
+                    property.OriginalValue = originalValue;
+            }
+            entry.State = snapshot.State;
+        }
+    }
+
+    private sealed record TrackedEntrySnapshot(
+        object Entity,
+        EntityState State,
+        IReadOnlyDictionary<string, object?> CurrentValues,
+        IReadOnlyDictionary<string, object?> OriginalValues);
+
+''' + marker
+          if text.count(marker) != 1:
+              raise SystemExit(f"expected one LoadSessionForAdmin marker, found {text.count(marker)}")
+          text = text.replace(marker, helper, 1)
+          path.write_text(text)
+      - name: Self-remove temporary workflow and commit
+        run: |
+          rm .github/workflows/tmp-fuzz-397-patch.yml
+          git config user.name "Draft Stateful Fuzzing Autopilot"
+          git config user.email "actions@users.noreply.github.com"
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs .github/workflows/tmp-fuzz-397-patch.yml
+          git commit -m "fix(fuzz): preserve caller state on rejected share"
+          git push origin HEAD:fuzz/failed-share-preserve-preexisting-uow
