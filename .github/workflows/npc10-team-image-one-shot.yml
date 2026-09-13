@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch-and-validate:
-    if: github.event.head_commit.message != 'fix(zalo): restore @Npc 10 team image delivery'
+    if: "${{ github.event.head_commit.message != 'fix(zalo): restore @Npc 10 team image delivery' }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
