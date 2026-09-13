@@ -36,19 +36,21 @@ public sealed class ZaloSchedulerLegacyTerminalAuthorityFuzzTests
             await ExpireAuthorityAsync(db);
 
             var statusKind = random.NextInt(3);
+            var beforeStatus = await ReadStatusAsync(db, statusKind);
             var affected = statusKind switch
             {
-                0 => await ExecuteLegacyStatusWriteAsync(db, owner, legacyNow, "LastAttemptAt"),
-                1 => await ExecuteLegacyStatusWriteAsync(db, owner, legacyNow, "LastSuccessAt"),
-                _ => await ExecuteLegacyStatusWriteAsync(db, owner, legacyNow, "LastFailureAt")
+                0 => await ExecuteLegacyStatusWriteAsync(db, owner, legacyNow.AddSeconds(1), "LastAttemptAt"),
+                1 => await ExecuteLegacyStatusWriteAsync(db, owner, legacyNow.AddSeconds(1), "LastSuccessAt"),
+                _ => await ExecuteLegacyStatusWriteAsync(db, owner, legacyNow.AddSeconds(1), "LastFailureAt")
             };
 
-            Assert.Equal(
-                0,
-                affected);
+            Assert.True(
+                affected == 0,
+                $"seed={seed} fingerprint=scheduler-migration:expired-legacy-status-write " +
+                $"statusKind={statusKind} skewHours={slowClockSkew.TotalHours:0} leaseMinutes={leaseDuration.TotalMinutes:0}");
 
             var persisted = await ReadStatusAsync(db, statusKind);
-            Assert.Null(persisted);
+            Assert.Equal(beforeStatus, persisted);
         }
     }
 
@@ -95,7 +97,10 @@ public sealed class ZaloSchedulerLegacyTerminalAuthorityFuzzTests
                 failureAt,
                 $"exception:{(seed % 2 == 0 ? "reminder" : "lifecycle")}");
 
-            Assert.Equal(0, affected);
+            Assert.True(
+                affected == 0,
+                $"seed={seed} fingerprint=scheduler-migration:expired-legacy-failure-diagnostic " +
+                $"skewHours={slowClockSkew.TotalHours:0} leaseMinutes={leaseDuration.TotalMinutes:0}");
             Assert.Equal(0, await CountFailureDiagnosticsAsync(db));
         }
     }
@@ -183,14 +188,13 @@ public sealed class ZaloSchedulerLegacyTerminalAuthorityFuzzTests
 
     private static async Task<string?> ReadStatusAsync(VolleyDraftDbContext db, int statusKind)
     {
-        var column = statusKind switch
+        var sql = statusKind switch
         {
-            0 => "LastAttemptAt",
-            1 => "LastSuccessAt",
-            _ => "LastFailureAt"
+            0 => "SELECT \"LastAttemptAt\" AS \"Value\" FROM \"ZaloSchedulerLeases\" WHERE \"Name\" = 'zalo-scheduler'",
+            1 => "SELECT \"LastSuccessAt\" AS \"Value\" FROM \"ZaloSchedulerLeases\" WHERE \"Name\" = 'zalo-scheduler'",
+            _ => "SELECT \"LastFailureAt\" AS \"Value\" FROM \"ZaloSchedulerLeases\" WHERE \"Name\" = 'zalo-scheduler'"
         };
-        return await db.Database.SqlQueryRaw<string?>($"SELECT \"{column}\" AS \"Value\" FROM \"ZaloSchedulerLeases\" WHERE \"Name\" = 'zalo-scheduler'")
-            .SingleAsync();
+        return await db.Database.SqlQueryRaw<string?>(sql).SingleAsync();
     }
 
     private static async Task<int> CountFailureDiagnosticsAsync(VolleyDraftDbContext db) =>
