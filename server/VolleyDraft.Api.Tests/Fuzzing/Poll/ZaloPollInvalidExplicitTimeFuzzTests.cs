@@ -35,6 +35,64 @@ public sealed class ZaloPollInvalidExplicitTimeFuzzTests
         }
     }
 
+    [Fact]
+    public void Minimized_invalid_boundary_24_00_is_a_permanent_fail_closed_regression()
+    {
+        var extraction = Extract("Vote sân UTE tuần sau. Max 18 slots/sân. 17:45", "CN 13/09/2026 24:00");
+
+        Assert.Empty(extraction.Candidates);
+        Assert.Contains(extraction.Issues, issue => issue.Code == "invalid_explicit_time");
+    }
+
+    [Fact]
+    public void Valid_boundary_23_59_remains_authoritative()
+    {
+        var extraction = Extract("Vote sân UTE tuần sau. Max 18 slots/sân. 17:45", "CN 13/09/2026 23:59");
+
+        var candidate = Assert.Single(extraction.Candidates);
+        Assert.Empty(extraction.Issues);
+        Assert.Equal(23, candidate.StartTime.ToOffset(VietnamOffset).Hour);
+        Assert.Equal(59, candidate.StartTime.ToOffset(VietnamOffset).Minute);
+    }
+
+    [Fact]
+    public void Invalid_approval_time_cannot_silently_clamp_an_existing_candidate()
+    {
+        var original = new ZaloAutoSessionCandidate(
+            "o1",
+            "CN 13/09/2026 17:45",
+            "CN",
+            new DateTimeOffset(2026, 9, 13, 17, 45, 0, VietnamOffset),
+            2);
+
+        var selected = ZaloPollScheduleParser.SelectFromApproval("CN 29:59", [original]);
+
+        var candidate = Assert.Single(selected);
+        Assert.Equal(original.StartTime, candidate.StartTime);
+    }
+
+    private static ZaloPollScheduleExtraction Extract(string question, string option)
+    {
+        var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, VietnamOffset);
+        var poll = new BridgePoll(
+            "poll-fuzz-invalid-time",
+            question,
+            "leader-1",
+            [new BridgePollOption("o1", option, 2, [])],
+            true,
+            false,
+            false,
+            false,
+            2,
+            created.ToUnixTimeMilliseconds(),
+            created.ToUnixTimeMilliseconds(),
+            0);
+        return ZaloPollScheduleParser.ExtractSchedule(
+            poll,
+            new ZaloTrackedGroupData(),
+            new DateTimeOffset(2026, 9, 5, 21, 0, 0, VietnamOffset));
+    }
+
     private sealed record InvalidTimeAction(bool UseQuestion, string TimeText);
 
     private sealed class InvalidTimeState
@@ -54,32 +112,13 @@ public sealed class ZaloPollInvalidExplicitTimeFuzzTests
             int actionIndex,
             CancellationToken cancellationToken)
         {
-            var created = new DateTimeOffset(2026, 9, 5, 20, 0, 0, VietnamOffset);
-            var now = new DateTimeOffset(2026, 9, 5, 21, 0, 0, VietnamOffset);
             var question = action.UseQuestion
                 ? $"Vote sân UTE tuần sau. Max 18 slots/sân. {action.TimeText}"
                 : "Vote sân UTE tuần sau. Max 18 slots/sân. 17:45";
             var option = action.UseQuestion
                 ? "CN 13/09/2026"
                 : $"CN 13/09/2026 {action.TimeText}";
-            var poll = new BridgePoll(
-                "poll-fuzz-invalid-time",
-                question,
-                "leader-1",
-                [new BridgePollOption("o1", option, 2, [])],
-                true,
-                false,
-                false,
-                false,
-                2,
-                created.ToUnixTimeMilliseconds(),
-                created.ToUnixTimeMilliseconds(),
-                0);
-
-            state.Extraction = ZaloPollScheduleParser.ExtractSchedule(
-                poll,
-                new ZaloTrackedGroupData(),
-                now);
+            state.Extraction = Extract(question, option);
             return ValueTask.CompletedTask;
         }
 
