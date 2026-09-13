@@ -25,4 +25,8 @@ Permanent mutation families:
 - durable reread before caller save;
 - explicit caller save after the share as the progression check.
 
-The pre-fix head deterministically flushes caller state during the successful share command because its internal `SaveChangesAsync` writes every dirty entry on the shared EF `ChangeTracker`. The systemic fix must isolate command-owned persistence without dropping caller state and without weakening rejected-share rollback coverage.
+The pre-fix head deterministically flushes caller state during the successful share command because its internal `SaveChangesAsync` writes every dirty entry on the shared EF `ChangeTracker`.
+
+The systemic fix snapshots caller-owned tracked state, temporarily detaches only preexisting pending `Added`/`Modified`/`Deleted` entries while the share transaction executes, then restores that pending unit of work after commit. When caller state overlaps an entity the command reloaded, committed values are retained for properties the caller did not modify while the caller's exact pending property values/flags remain pending. The same snapshot restoration path remains the rejection/exception fence.
+
+The Added, Modified-overlap and Deleted minimized regressions must all pass before this corpus is considered fixed.
