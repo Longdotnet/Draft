@@ -51,7 +51,7 @@ internal static class ZaloPollScheduleParser
         @"(?<!\d)(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ExplicitTimeTokenRegex = new(
-        @"(?<!\d)(?<hour>\d{1,2})\s*(?:h|:)(?:\s*(?<minute>\d{1,2}))?(?!\d)",
+        @"(?<!\d)(?<hour>\d+)\s*(?:h|:)(?:\s*(?<minute>\d+))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ApprovalDayTimeRegex = new(
         @"(?<day>t\s*[2-7]|cn)[^0-9]{0,24}(?<hour>\d{1,2})\s*(?:h|:)(?:\s*(?<minute>\d{1,2}))?",
@@ -403,9 +403,25 @@ internal static class ZaloPollScheduleParser
         }
     }
 
-    private static bool HasInvalidExplicitTime(string normalized, bool assumePmForHourUnder12) =>
-        ExplicitTimeTokenRegex.IsMatch(normalized) &&
-        !TryReadTimeMinutes(normalized, assumePmForHourUnder12, out _);
+    private static bool HasInvalidExplicitTime(string normalized, bool assumePmForHourUnder12)
+    {
+        foreach (Match token in ExplicitTimeTokenRegex.Matches(normalized))
+        {
+            if (!IsValidExplicitTimeToken(token.Value, assumePmForHourUnder12))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsValidExplicitTimeToken(string token, bool assumePmForHourUnder12)
+    {
+        var match = ExplicitTimeRegex.Match(token);
+        return match.Success &&
+               match.Index == 0 &&
+               match.Length == token.Length &&
+               TryReadTimeMinutes(token, assumePmForHourUnder12, out _);
+    }
 
     private static bool TryReadTimeMinutes(string normalized, bool assumePmForHourUnder12, out int minutes)
     {
