@@ -34,10 +34,10 @@ internal sealed record StatefulFuzzPromotionReport<TAction>(
 /// <summary>
 /// Promotion gate for a candidate stateful fuzz finding.
 ///
-/// A candidate must first reproduce deterministically, then survive minimization, and finally
-/// the minimized scenario must independently reproduce the exact same fingerprint. This prevents
-/// one lucky minimizer replay from turning a flaky or behavior-drifted scenario into permanent
-/// executable corpus knowledge.
+/// A candidate must first reproduce deterministically, then survive action and scenario-state
+/// minimization, and finally the minimized scenario must independently reproduce the exact same
+/// fingerprint. This prevents one lucky minimizer replay from turning a flaky or behavior-drifted
+/// scenario into permanent executable corpus knowledge.
 /// </summary>
 internal static class StatefulFuzzPromotion
 {
@@ -46,7 +46,8 @@ internal static class StatefulFuzzPromotion
         IStatefulFuzzTarget<TState, TAction> target,
         Func<TAction, IEnumerable<TAction>>? shrinkAction = null,
         int confirmationRuns = StatefulFuzzReproducibility.DefaultConfirmationRuns,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<StatefulFuzzCase<TAction>, IEnumerable<StatefulFuzzCase<TAction>>>? shrinkScenario = null)
     {
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(target);
@@ -67,11 +68,12 @@ internal static class StatefulFuzzPromotion
                 null);
         }
 
-        var minimization = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+        var minimization = await StatefulFuzzScenarioMinimizer.MinimizeWithReportAsync(
             candidate,
             target,
             candidateVerification.FailureFingerprint,
             shrinkAction,
+            shrinkScenario,
             cancellationToken);
 
         var minimizedVerification = await StatefulFuzzReproducibility.VerifyAsync(
