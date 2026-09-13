@@ -30,6 +30,35 @@ public sealed class FailedShareRollbackStateFuzzTests
     }
 
     [Fact]
+    public async Task Failed_share_must_preserve_preexisting_tracked_changes()
+    {
+        await using var state = new FailedShareState();
+        const string pendingName = "Pending change before rejected share";
+        var session = await state.Db.MatchSessions.SingleAsync(item => item.Id == state.SessionId);
+        session.Name = pendingName;
+
+        var service = new SessionDraftService(state.Db);
+        var rejected = await service.SharePreDraftSlotAsync(
+            state.AdminId,
+            state.SessionId,
+            "Anchor",
+            [
+                new ShareSlotParticipantInput("Returning"),
+                new ShareSlotParticipantInput("Anchor")
+            ]);
+
+        Assert.False(rejected.IsSuccess);
+        await state.Db.SaveChangesAsync();
+        await state.RestartAsync();
+        var durableName = await state.Db.MatchSessions.AsNoTracking()
+            .Where(item => item.Id == state.SessionId)
+            .Select(item => item.Name)
+            .SingleAsync();
+
+        Assert.Equal(pendingName, durableName);
+    }
+
+    [Fact]
     public async Task Stateful_failure_restart_and_save_mutations_preserve_failed_share_atomicity()
     {
         for (var seed = 1; seed <= 128; seed += 1)
