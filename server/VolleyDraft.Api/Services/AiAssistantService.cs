@@ -1,9 +1,8 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -29,19 +28,18 @@ public sealed class AiAssistantService(
         ZaloBotIntent.SyncMemberActivity,
         ZaloBotIntent.GetActivitySyncStatus
     ];
-    public bool IsConfigured =>
-        !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
-        !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
+    private readonly IZaloAiGateway aiGateway = ZaloAiGatewayFactory.Create(httpClient, configuration, logger);
+
+    public bool IsConfigured => aiGateway.IsConfigured;
 
     public async Task<ZaloIntentDecision> ClassifyAsync(
         ZaloIntentClassifierContext context,
         CancellationToken cancellationToken = default)
     {
-        var endpoint = configuration["Ai:Endpoint"];
-        var apiKey = configuration["Ai:ApiKey"];
+        var endpoint = configuration["Ai:Endpoint"] ?? string.Empty;
+        var apiKey = configuration["Ai:ApiKey"] ?? string.Empty;
         var model = configuration["Ai:Model"];
-        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(model))
+        if (!IsConfigured)
             return new(ZaloBotIntent.Unknown, 0, null, false, null, "ai_not_configured");
 
         context = context with
@@ -522,8 +520,8 @@ public sealed class AiAssistantService(
 
     public string GetPublicModelInfo()
     {
-        var model = configuration["Ai:Model"];
-        var endpoint = configuration["Ai:Endpoint"];
+        var model = configuration["Ai:Providers:0:Model"] ?? configuration["Ai:Model"];
+        var endpoint = configuration["Ai:Providers:0:Endpoint"] ?? configuration["Ai:Endpoint"];
         var provider = Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) &&
                        uri.Host.Contains("openrouter", StringComparison.OrdinalIgnoreCase)
             ? "OpenRouter"
@@ -535,13 +533,10 @@ public sealed class AiAssistantService(
         ZaloAiRewriteContext context,
         CancellationToken cancellationToken = default)
     {
-        var endpoint = configuration["Ai:Endpoint"];
-        var apiKey = configuration["Ai:ApiKey"];
+        var endpoint = configuration["Ai:Endpoint"] ?? string.Empty;
+        var apiKey = configuration["Ai:ApiKey"] ?? string.Empty;
         var model = configuration["Ai:Model"];
-        if (string.IsNullOrWhiteSpace(endpoint) ||
-            string.IsNullOrWhiteSpace(apiKey) ||
-            string.IsNullOrWhiteSpace(model) ||
-            string.IsNullOrWhiteSpace(context.FactualAnswer))
+        if (!IsConfigured || string.IsNullOrWhiteSpace(context.FactualAnswer))
         {
             return null;
         }
@@ -615,10 +610,8 @@ public sealed class AiAssistantService(
 
     public async Task<string> AnswerAsync(ZaloAiContext context, CancellationToken cancellationToken = default)
     {
-        var endpoint = configuration["Ai:Endpoint"];
-        var apiKey = configuration["Ai:ApiKey"];
         var model = configuration["Ai:Model"];
-        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(model))
+        if (!IsConfigured)
         {
             return new AiProviderFailure(AiProviderFailureKind.NotConfigured).ToUserMessage();
         }
@@ -696,46 +689,11 @@ public sealed class AiAssistantService(
             }
         };
 
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
-            {
-                Content = JsonContent.Create(payload)
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                var failure = AiProviderFailure.FromHttp(response.StatusCode, body);
-                LogProviderFailure("general_answer", failure);
-                return failure.ToUserMessage();
-            }
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
-            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0 &&
-                choices[0].TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var content))
-            {
-                return GetSafeGeneralAnswer(content.GetString());
-            }
-            if (root.TryGetProperty("output_text", out var outputText))
-            {
-                return GetSafeGeneralAnswer(outputText.GetString());
-            }
+        var completion = await CompleteViaGatewayAsync(payload, "general_answer", cancellationToken);
+        if (!completion.Success)
+            return (completion.Failure ?? new AiProviderFailure(AiProviderFailureKind.Unknown)).ToUserMessage();
 
-            var invalidResponse = new AiProviderFailure(
-                AiProviderFailureKind.InvalidResponse,
-                (int)response.StatusCode);
-            LogProviderFailure("general_answer", invalidResponse);
-            return invalidResponse.ToUserMessage();
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
-        {
-            var failure = AiProviderFailure.FromException(exception, cancellationToken);
-            LogProviderFailure("general_answer", failure, exception);
-            return failure.ToUserMessage();
-        }
+        return GetSafeGeneralAnswer(completion.Content);
     }
 
     private string GetSafeGeneralAnswer(string? answer)
@@ -788,35 +746,97 @@ public sealed class AiAssistantService(
         string operation,
         CancellationToken cancellationToken)
     {
+        _ = endpoint;
+        _ = apiKey;
+        var completion = await CompleteViaGatewayAsync(payload, operation, cancellationToken);
+        return completion.Success ? completion.Content?.Trim() : null;
+    }
+
+    private async Task<LegacyAiCompletion> CompleteViaGatewayAsync(
+        object payload,
+        string operation,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = JsonContent.Create(payload) };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            using var response = await httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                LogProviderFailure(operation, AiProviderFailure.FromHttp(response.StatusCode, body));
-                return null;
-            }
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
-            if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0 &&
-                choices[0].TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var content)) return content.GetString()?.Trim();
-            if (root.TryGetProperty("output_text", out var outputText)) return outputText.GetString()?.Trim();
+            var root = JsonSerializer.SerializeToElement(payload, JsonOptions);
+            if (!root.TryGetProperty("messages", out var messagesNode) || messagesNode.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException("AI payload does not contain messages.");
 
-            LogProviderFailure(
-                operation,
-                new AiProviderFailure(AiProviderFailureKind.InvalidResponse, (int)response.StatusCode));
-            return null;
+            var messages = messagesNode
+                .EnumerateArray()
+                .Where(item =>
+                    item.TryGetProperty("role", out var roleNode) && roleNode.ValueKind == JsonValueKind.String &&
+                    item.TryGetProperty("content", out var contentNode) && contentNode.ValueKind == JsonValueKind.String)
+                .Select(item => new ZaloAiChatMessage(
+                    item.GetProperty("role").GetString()!,
+                    item.GetProperty("content").GetString()!))
+                .Where(item => !string.IsNullOrWhiteSpace(item.Role) && !string.IsNullOrWhiteSpace(item.Content))
+                .ToList();
+            if (messages.Count == 0)
+                throw new InvalidOperationException("AI payload does not contain usable messages.");
+
+            var temperature = root.TryGetProperty("temperature", out var temperatureNode) &&
+                              temperatureNode.TryGetDouble(out var parsedTemperature)
+                ? parsedTemperature
+                : 0.2;
+            var maxTokens = root.TryGetProperty("max_tokens", out var maxTokensNode) &&
+                            maxTokensNode.TryGetInt32(out var parsedMaxTokens)
+                ? parsedMaxTokens
+                : 300;
+
+            var result = await aiGateway.CompleteAsync(
+                new ZaloAiCompletionRequest(
+                    ResolveWorkload(operation),
+                    messages,
+                    Temperature: temperature,
+                    MaxTokens: maxTokens,
+                    CorrelationId: $"legacy:{operation}"),
+                cancellationToken);
+
+            if (result.Success)
+                return new LegacyAiCompletion(true, result.Content?.Trim(), null);
+
+            var failure = ToLegacyFailure(result);
+            LogProviderFailure(operation, failure);
+            return new LegacyAiCompletion(false, null, failure);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or OperationCanceledException or JsonException or InvalidOperationException or NotSupportedException)
         {
-            LogProviderFailure(operation, AiProviderFailure.FromException(exception, cancellationToken), exception);
-            return null;
+            var failure = AiProviderFailure.FromException(exception, cancellationToken);
+            LogProviderFailure(operation, failure, exception);
+            return new LegacyAiCompletion(false, null, failure);
         }
     }
+
+    private static ZaloAiWorkload ResolveWorkload(string operation) => operation switch
+    {
+        "classifier" or "member_activity_classifier" => ZaloAiWorkload.IntentClassification,
+        "answer_rewrite" => ZaloAiWorkload.SafeRewrite,
+        "general_answer" => ZaloAiWorkload.GeneralChat,
+        _ => ZaloAiWorkload.StructuredExtraction
+    };
+
+    private static AiProviderFailure ToLegacyFailure(ZaloAiCompletionResult result) =>
+        new(
+            result.FailureKind switch
+            {
+                ZaloAiFailureKind.NotConfigured => AiProviderFailureKind.NotConfigured,
+                ZaloAiFailureKind.AuthenticationFailed => AiProviderFailureKind.AuthenticationFailed,
+                ZaloAiFailureKind.QuotaExceeded => AiProviderFailureKind.QuotaExceeded,
+                ZaloAiFailureKind.RateLimited => AiProviderFailureKind.RateLimited,
+                ZaloAiFailureKind.Timeout => AiProviderFailureKind.Timeout,
+                ZaloAiFailureKind.ProviderUnavailable => AiProviderFailureKind.ProviderUnavailable,
+                ZaloAiFailureKind.ModelOrEndpointUnavailable => AiProviderFailureKind.ModelOrEndpointUnavailable,
+                ZaloAiFailureKind.InvalidRequest => AiProviderFailureKind.InvalidRequest,
+                ZaloAiFailureKind.InvalidResponse => AiProviderFailureKind.InvalidResponse,
+                ZaloAiFailureKind.NetworkFailure => AiProviderFailureKind.NetworkFailure,
+                ZaloAiFailureKind.Cancelled => AiProviderFailureKind.Cancelled,
+                _ => AiProviderFailureKind.Unknown
+            },
+            result.StatusCode,
+            result.ProviderCode,
+            result.Retryable);
 
     private void LogProviderFailure(string operation, AiProviderFailure failure, Exception? exception = null)
     {
@@ -872,6 +892,11 @@ public sealed class AiAssistantService(
         }
         return count;
     }
+
+    private sealed record LegacyAiCompletion(
+        bool Success,
+        string? Content,
+        AiProviderFailure? Failure);
 
     private sealed record AiProtectedReplacement(
         string Placeholder,
