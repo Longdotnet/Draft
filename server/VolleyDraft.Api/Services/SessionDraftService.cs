@@ -947,6 +947,27 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 return BadRequest<PreDraftSharedSlotResult>($"{partner.DisplayName} đang nằm trong một share slot khác.");
             if (currentSlot?.Players.Any(link => link.SessionPlayerId == partner.Id) == true)
                 return ServiceResult<PreDraftSharedSlotResult>.Failure(StatusCodes.Status409Conflict, $"{partner.DisplayName} đã share slot với {anchor.DisplayName}.");
+
+            // Tracked SessionPlayer state can be stale across overlapping requests. Claim durable
+            // shared-slot ownership atomically instead of trusting the tracked boolean. The
+            // conditional UPDATE is the cross-request authority fence: exactly one transaction
+            // can change false -> true; losers fail closed and their transaction is rolled back.
+            if (db.Entry(partner).State != EntityState.Added)
+            {
+                var claimed = await db.SessionPlayers
+                    .Where(player => player.Id == partner.Id &&
+                                     player.SessionId == sessionId &&
+                                     !player.IsInsideSharedSlot)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(player => player.IsInsideSharedSlot, true));
+                if (claimed != 1)
+                    return Conflict<PreDraftSharedSlotResult>($"{partner.DisplayName} vừa được ghép vào share slot khác; vui lòng tải lại trạng thái.");
+
+                // ExecuteUpdate bypasses the tracker; keep the command-local entity aligned so
+                // the later SaveChanges cannot write the stale false value back.
+                partner.IsInsideSharedSlot = true;
+            }
+
             addedPlayers.Add(partner);
         }
 
@@ -958,6 +979,18 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         };
         if (currentSlot is null)
         {
+            // The anchor owns a shared slot too. Fence a stale/multi-instance request at the
+            // durable row before creating any slot/link rows.
+            var anchorClaimed = await db.SessionPlayers
+                .Where(player => player.Id == anchor.Id &&
+                                 player.SessionId == sessionId &&
+                                 !player.IsInsideSharedSlot)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(player => player.IsInsideSharedSlot, true));
+            if (anchorClaimed != 1)
+                return Conflict<PreDraftSharedSlotResult>($"{anchor.DisplayName} vừa được ghép vào share slot khác; vui lòng tải lại trạng thái.");
+
+            anchor.IsInsideSharedSlot = true;
             slot.Players.Add(new DraftSlotPlayer
             {
                 DraftSlotId = slot.Id,
