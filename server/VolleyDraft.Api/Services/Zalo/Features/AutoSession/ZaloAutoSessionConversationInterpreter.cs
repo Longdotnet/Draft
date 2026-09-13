@@ -47,11 +47,18 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex DayTimeRegex = new(
-        @"(?:(?:t|thu)\s*(?<weekday>[2-7])|(?<sunday>cn|chu\s*nhat))[^0-9]{0,20}(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?",
+        @"(?:(?:t|thu)\s*(?<weekday>[2-7])|(?<sunday>cn|chu\s*nhat))[^0-9]{0,20}(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex GenericTimeRegex = new(
         @"(?<!\d)(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?(?!\d)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    // Discover a complete numeric clock token before narrower deterministic parsing. This prevents
+    // prefix matches such as 17:600 -> 17:06 and range clamping such as 29:30 -> 23:30 from turning
+    // malformed organizer input into a plausible but unintended authoritative draft mutation.
+    private static readonly Regex ExplicitClockTokenRegex = new(
+        @"(?<!\d)(?<hour>\d+)\s*(?:h|:)(?:\s*(?<minute>\d+))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex LocationRegex = new(
@@ -103,6 +110,17 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
             @"(?<!\d)([0-2]?\d)\s*(?:h\s*)?ruoi(?![a-z0-9])",
             "$1h30",
             RegexOptions.CultureInvariant);
+
+        if (HasMalformedExplicitClock(normalized))
+        {
+            return Result(
+                ZaloAutoSessionConversationIntent.Uncertain,
+                needsClarification: true,
+                clarification: "Giờ bạn vừa ghi chưa hợp lệ. Hãy dùng giờ từ 00:00 đến 23:59, ví dụ “T6 18h” hoặc “CN 17:45”. Bản nháp chưa đổi.",
+                questionType: "time",
+                confidence: 0.99);
+        }
+
         var selectedItems = draft.Items.Where(item => item.Selected).OrderBy(item => item.StartTime).ToList();
         var allItems = draft.Items.OrderBy(item => item.StartTime).ToList();
         var days = ReadDays(normalized, allItems);
@@ -542,16 +560,34 @@ internal sealed class ZaloAutoSessionConversationInterpreter(
         return result;
     }
 
+    private static bool HasMalformedExplicitClock(string normalized)
+    {
+        foreach (Match match in ExplicitClockTokenRegex.Matches(normalized))
+        {
+            if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hour) ||
+                hour is < 0 or > 23)
+                return true;
+
+            if (match.Groups["minute"].Success &&
+                (!int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var minute) ||
+                 minute is < 0 or > 59))
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool TryReadMinutes(Match match, out int minutes)
     {
         minutes = 0;
         if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hour))
             return false;
         var minute = 0;
-        if (match.Groups["minute"].Success)
-            int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
-        hour = Math.Clamp(hour, 0, 23);
-        minute = Math.Clamp(minute, 0, 59);
+        if (match.Groups["minute"].Success &&
+            !int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute))
+            return false;
+        if (hour is < 0 or > 23 || minute is < 0 or > 59)
+            return false;
         if (hour is >= 1 and <= 11) hour += 12;
         minutes = hour * 60 + minute;
         return true;
