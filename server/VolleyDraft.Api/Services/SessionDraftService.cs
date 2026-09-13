@@ -775,13 +775,14 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return BadRequest<PreDraftSharedSlotResult>("Share slot chỉ nhận +1 hoặc +2 người; +2 phải có đúng hai tên khác nhau.");
 
         // A service call may share the request DbContext with caller-owned pending work. Snapshot
-        // that preexisting unit of work before the share transaction starts so a rejected share can
-        // discard only mutations introduced by this command, not unrelated changes staged by caller code.
+        // that preexisting unit of work before the share transaction starts so accepted and rejected
+        // shares can isolate command-owned persistence from unrelated caller changes.
         var callerTrackedState = CaptureTrackedState();
         await using var transaction = await db.Database.BeginTransactionAsync();
         var committed = false;
         try
         {
+            SuspendCallerPendingState(callerTrackedState);
             var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
         if (session is null) return NotFound<PreDraftSharedSlotResult>("Không tìm thấy session.");
         if (session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
@@ -1002,6 +1003,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         await transaction.CommitAsync();
+        RestoreCallerPendingState(callerTrackedState);
         committed = true;
         return ServiceResult<PreDraftSharedSlotResult>.Created(new(
             anchor.DisplayName,
@@ -3471,8 +3473,54 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 entry.Properties.ToDictionary(
                     property => property.Metadata.Name,
                     property => property.OriginalValue,
-                    StringComparer.Ordinal)))
+                    StringComparer.Ordinal),
+                entry.Properties
+                    .Where(property => property.IsModified)
+                    .Select(property => property.Metadata.Name)
+                    .ToHashSet(StringComparer.Ordinal)))
             .ToList();
+    }
+
+    private void SuspendCallerPendingState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+    {
+        foreach (var snapshot in snapshots.Where(snapshot =>
+                     snapshot.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+        {
+            db.Entry(snapshot.Entity).State = EntityState.Detached;
+        }
+    }
+
+    private void RestoreCallerPendingState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+    {
+        foreach (var snapshot in snapshots.Where(snapshot =>
+                     snapshot.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+        {
+            var snapshotEntry = db.Entry(snapshot.Entity);
+            var primaryKey = snapshotEntry.Metadata.FindPrimaryKey();
+            Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry? conflict = null;
+            if (primaryKey is not null)
+            {
+                conflict = db.ChangeTracker.Entries()
+                    .FirstOrDefault(entry =>
+                        !ReferenceEquals(entry.Entity, snapshot.Entity) &&
+                        entry.Metadata.ClrType == snapshotEntry.Metadata.ClrType &&
+                        primaryKey.Properties.All(property =>
+                            snapshot.CurrentValues.TryGetValue(property.Name, out var expected) &&
+                            Equals(entry.Property(property.Name).CurrentValue, expected)));
+            }
+
+            IReadOnlyDictionary<string, object?>? committedValues = null;
+            if (conflict is not null)
+            {
+                committedValues = conflict.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.CurrentValue,
+                    StringComparer.Ordinal);
+                conflict.State = EntityState.Detached;
+            }
+
+            RestoreTrackedEntry(snapshot, committedValues);
+        }
     }
 
     private void RestoreTrackedState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
@@ -3480,7 +3528,18 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         db.ChangeTracker.Clear();
         foreach (var snapshot in snapshots)
         {
-            var entry = db.Entry(snapshot.Entity);
+            RestoreTrackedEntry(snapshot);
+        }
+    }
+
+    private void RestoreTrackedEntry(
+        TrackedEntrySnapshot snapshot,
+        IReadOnlyDictionary<string, object?>? committedValues = null)
+    {
+        var entry = db.Entry(snapshot.Entity);
+        if (snapshot.State == EntityState.Added)
+        {
+            entry.State = EntityState.Added;
             foreach (var property in entry.Properties)
             {
                 if (snapshot.CurrentValues.TryGetValue(property.Metadata.Name, out var currentValue))
@@ -3488,15 +3547,49 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 if (snapshot.OriginalValues.TryGetValue(property.Metadata.Name, out var originalValue))
                     property.OriginalValue = originalValue;
             }
-            entry.State = snapshot.State;
+            return;
         }
+
+        entry.State = EntityState.Unchanged;
+        foreach (var property in entry.Properties)
+        {
+            var propertyName = property.Metadata.Name;
+            var callerModified = snapshot.State == EntityState.Modified &&
+                                 snapshot.ModifiedProperties.Contains(propertyName);
+            if (!callerModified &&
+                snapshot.State == EntityState.Modified &&
+                committedValues is not null &&
+                committedValues.TryGetValue(propertyName, out var committedValue))
+            {
+                property.CurrentValue = committedValue;
+                property.OriginalValue = committedValue;
+            }
+            else
+            {
+                if (snapshot.OriginalValues.TryGetValue(propertyName, out var originalValue))
+                    property.OriginalValue = originalValue;
+                if (snapshot.CurrentValues.TryGetValue(propertyName, out var currentValue))
+                    property.CurrentValue = currentValue;
+            }
+            property.IsModified = callerModified;
+        }
+
+        if (snapshot.State == EntityState.Deleted)
+        {
+            entry.State = EntityState.Deleted;
+            return;
+        }
+
+        if (snapshot.State == EntityState.Modified && snapshot.ModifiedProperties.Count == 0)
+            entry.State = EntityState.Modified;
     }
 
     private sealed record TrackedEntrySnapshot(
         object Entity,
         EntityState State,
         IReadOnlyDictionary<string, object?> CurrentValues,
-        IReadOnlyDictionary<string, object?> OriginalValues);
+        IReadOnlyDictionary<string, object?> OriginalValues,
+        IReadOnlySet<string> ModifiedProperties);
 
     private IQueryable<MatchSession> LoadSessionForAdmin(string adminUserId, string sessionId)
     {
