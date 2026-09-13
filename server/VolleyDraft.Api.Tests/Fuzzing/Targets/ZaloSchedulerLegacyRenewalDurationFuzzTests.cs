@@ -61,6 +61,60 @@ public sealed class ZaloSchedulerLegacyRenewalDurationFuzzTests
         }
     }
 
+    [Fact]
+    public async Task Legacy_successor_takeover_cannot_derive_authority_from_predecessor_attempt()
+    {
+        const int seedCount = 96;
+
+        for (var seed = 1; seed <= seedCount; seed++)
+        {
+            var random = new StableFuzzRandom(seed * 811003);
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            await using var db = new VolleyDraftDbContext(options);
+            await CreateLegacySchemaAsync(db);
+            var databaseNow = await ReadDatabaseNowAsync(db);
+            var skew = TimeSpan.FromHours(random.NextBool() ? 4 : -4);
+            var leaseDuration = TimeSpan.FromMinutes(5 + random.NextInt(26));
+            var legacyNow = databaseNow.Add(skew);
+
+            // Pre-authority TryAcquireAsync only changed OwnerId + LeaseUntil. It did not advance
+            // LastAttemptAt until the worker later called MarkAttemptAsync. Preserve that exact old
+            // contract: the predecessor attempt is stale when a different old worker takes over.
+            var predecessorAttempt = legacyNow.Subtract(leaseDuration).Subtract(TimeSpan.FromMinutes(1));
+            var predecessorLeaseUntil = predecessorAttempt.Add(leaseDuration);
+            var predecessor = ZaloSchedulerWorker.CreateCycleOwnerId($"legacy-predecessor-{seed}");
+            await InsertLegacyRowAsync(db, predecessor, predecessorAttempt, predecessorLeaseUntil);
+
+            var store = new ZaloSchedulerLeaseStore(db, useDatabaseAuthorityClock: true);
+            await store.EnsureAsync();
+
+            // Model passage beyond the migrated DB-clock epoch without changing the legacy worker's
+            // own skewed wall clock. The old worker is now legitimately allowed to acquire the row.
+            await ExpireAuthorityAsync(db);
+            var successor = ZaloSchedulerWorker.CreateCycleOwnerId($"legacy-successor-{seed}");
+            var successorLeaseUntil = legacyNow.Add(leaseDuration);
+            var affected = await ExecuteLegacyAcquireAsync(db, successor, legacyNow, successorLeaseUntil);
+            Assert.Equal(1, affected);
+
+            var authorityAfter = await ReadAuthorityLeaseUntilAsync(db);
+            var observedAt = await ReadDatabaseNowAsync(db);
+            Assert.True(
+                authorityAfter <= observedAt.Add(leaseDuration).AddSeconds(2),
+                $"seed={seed} fingerprint=scheduler-migration:legacy-owner-handoff-inherits-predecessor-attempt " +
+                $"skewMinutes={skew.TotalMinutes:0} leaseMinutes={leaseDuration.TotalMinutes:0} " +
+                $"predecessorAttempt={predecessorAttempt:O} authorityAfter={authorityAfter:O} databaseNow={observedAt:O}");
+            Assert.True(
+                authorityAfter >= observedAt.Add(leaseDuration).AddSeconds(-2),
+                $"seed={seed} fingerprint=scheduler-migration:legacy-owner-handoff-loses-configured-duration " +
+                $"leaseMinutes={leaseDuration.TotalMinutes:0} authorityAfter={authorityAfter:O} databaseNow={observedAt:O}");
+        }
+    }
+
     private static async Task CreateLegacySchemaAsync(VolleyDraftDbContext db)
     {
         await db.Database.ExecuteSqlRawAsync(
@@ -106,6 +160,31 @@ public sealed class ZaloSchedulerLegacyRenewalDurationFuzzTests
               AND "LeaseUntil" > {{nowText}};
             """);
     }
+
+    private static Task<int> ExecuteLegacyAcquireAsync(
+        VolleyDraftDbContext db,
+        string ownerId,
+        DateTimeOffset now,
+        DateTimeOffset leaseUntil)
+    {
+        var nowText = now.ToUniversalTime().ToString("O");
+        var leaseUntilText = leaseUntil.ToUniversalTime().ToString("O");
+        return db.Database.ExecuteSqlInterpolatedAsync($$"""
+            UPDATE "ZaloSchedulerLeases"
+            SET "OwnerId" = {{ownerId}},
+                "LeaseUntil" = {{leaseUntilText}}
+            WHERE "Name" = 'zalo-scheduler'
+              AND ("OwnerId" = {{ownerId}} OR "LeaseUntil" <= {{nowText}});
+            """);
+    }
+
+    private static Task ExpireAuthorityAsync(VolleyDraftDbContext db) =>
+        db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "ZaloSchedulerLeases"
+            SET "AuthorityLeaseUntil" = strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now', '-1 second')
+            WHERE "Name" = 'zalo-scheduler';
+            """);
 
     private static async Task<DateTimeOffset> ReadDatabaseNowAsync(VolleyDraftDbContext db)
     {
