@@ -26,86 +26,64 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import textwrap
 
           path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
           text = path.read_text(encoding='utf-8')
 
-          replacements = []
-          replacements.append((
-          '''        // A service call may share the request DbContext with caller-owned pending work. Snapshot
-          // that preexisting unit of work before the share transaction starts so a rejected share can
-          // discard only mutations introduced by this command, not unrelated changes staged by caller code.
-          var callerTrackedState = CaptureTrackedState();
-          await using var transaction = await db.Database.BeginTransactionAsync();
-          var committed = false;
-          try
-          {
-          ''',
-          '''        // A service call may share the request DbContext with caller-owned pending work. Snapshot
-          // that preexisting unit of work before the share transaction starts so accepted and rejected
-          // shares can isolate command-owned persistence from unrelated caller changes.
-          var callerTrackedState = CaptureTrackedState();
-          await using var transaction = await db.Database.BeginTransactionAsync();
-          var committed = false;
-          try
-          {
-              SuspendCallerPendingState(callerTrackedState);
-          '''))
+          def replace_once(source, old, new, label):
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              return source.replace(old, new, 1)
 
-          replacements.append((
-          '''        await transaction.CommitAsync();
-          committed = true;
-          return ServiceResult<PreDraftSharedSlotResult>.Created(new(
-          ''',
-          '''        await transaction.CommitAsync();
-          committed = true;
-          RestoreCallerPendingState(callerTrackedState);
-          return ServiceResult<PreDraftSharedSlotResult>.Created(new(
-          '''))
+          old_start = "\n".join([
+              "        // A service call may share the request DbContext with caller-owned pending work. Snapshot",
+              "        // that preexisting unit of work before the share transaction starts so a rejected share can",
+              "        // discard only mutations introduced by this command, not unrelated changes staged by caller code.",
+              "        var callerTrackedState = CaptureTrackedState();",
+              "        await using var transaction = await db.Database.BeginTransactionAsync();",
+              "        var committed = false;",
+              "        try",
+              "        {",
+              "            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();",
+          ])
+          new_start = "\n".join([
+              "        // A service call may share the request DbContext with caller-owned pending work. Snapshot",
+              "        // that preexisting unit of work before the share transaction starts so accepted and rejected",
+              "        // shares can isolate command-owned persistence from unrelated caller changes.",
+              "        var callerTrackedState = CaptureTrackedState();",
+              "        await using var transaction = await db.Database.BeginTransactionAsync();",
+              "        var committed = false;",
+              "        try",
+              "        {",
+              "            SuspendCallerPendingState(callerTrackedState);",
+              "            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();",
+          ])
+          text = replace_once(text, old_start, new_start, 'share-start')
 
-          replacements.append((
-          '''    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
-          {
-              db.ChangeTracker.DetectChanges();
-              return db.ChangeTracker.Entries()
-                  .Select(entry => new TrackedEntrySnapshot(
-                      entry.Entity,
-                      entry.State,
-                      entry.Properties.ToDictionary(
-                          property => property.Metadata.Name,
-                          property => property.CurrentValue,
-                          StringComparer.Ordinal),
-                      entry.Properties.ToDictionary(
-                          property => property.Metadata.Name,
-                          property => property.OriginalValue,
-                          StringComparer.Ordinal)))
-                  .ToList();
-          }
+          old_commit = "\n".join([
+              "        await transaction.CommitAsync();",
+              "        committed = true;",
+              "        return ServiceResult<PreDraftSharedSlotResult>.Created(new(",
+          ])
+          new_commit = "\n".join([
+              "        await transaction.CommitAsync();",
+              "        RestoreCallerPendingState(callerTrackedState);",
+              "        committed = true;",
+              "        return ServiceResult<PreDraftSharedSlotResult>.Created(new(",
+          ])
+          text = replace_once(text, old_commit, new_commit, 'share-commit')
 
-          private void RestoreTrackedState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
-          {
-              db.ChangeTracker.Clear();
-              foreach (var snapshot in snapshots)
-              {
-                  var entry = db.Entry(snapshot.Entity);
-                  foreach (var property in entry.Properties)
-                  {
-                      if (snapshot.CurrentValues.TryGetValue(property.Metadata.Name, out var currentValue))
-                          property.CurrentValue = currentValue;
-                      if (snapshot.OriginalValues.TryGetValue(property.Metadata.Name, out var originalValue))
-                          property.OriginalValue = originalValue;
-                  }
-                  entry.State = snapshot.State;
-              }
-          }
+          helper_start = "    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()\n"
+          helper_end = "    private IQueryable<MatchSession> LoadSessionForAdmin"
+          if text.count(helper_start) != 1 or text.count(helper_end) != 1:
+              raise SystemExit('tracked-state helper markers are not unique')
+          start = text.index(helper_start)
+          end = text.index(helper_end, start)
 
-          private sealed record TrackedEntrySnapshot(
-              object Entity,
-              EntityState State,
-              IReadOnlyDictionary<string, object?> CurrentValues,
-              IReadOnlyDictionary<string, object?> OriginalValues);
-          ''',
-          '''    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
+          helper_source = textwrap.dedent('''
+          private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
           {
               db.ChangeTracker.DetectChanges();
               return db.ChangeTracker.Entries()
@@ -200,21 +178,20 @@ jobs:
               foreach (var property in entry.Properties)
               {
                   var propertyName = property.Metadata.Name;
-                  var preserveCallerValue = snapshot.State != EntityState.Modified ||
-                                            snapshot.ModifiedProperties.Contains(propertyName) ||
-                                            committedValues is null ||
-                                            !committedValues.TryGetValue(propertyName, out var committedValue);
-                  if (preserveCallerValue)
+                  if (snapshot.State == EntityState.Modified &&
+                      !snapshot.ModifiedProperties.Contains(propertyName) &&
+                      committedValues is not null &&
+                      committedValues.TryGetValue(propertyName, out var committedValue))
+                  {
+                      property.CurrentValue = committedValue;
+                      property.OriginalValue = committedValue;
+                  }
+                  else
                   {
                       if (snapshot.CurrentValues.TryGetValue(propertyName, out var currentValue))
                           property.CurrentValue = currentValue;
                       if (snapshot.OriginalValues.TryGetValue(propertyName, out var originalValue))
                           property.OriginalValue = originalValue;
-                  }
-                  else
-                  {
-                      property.CurrentValue = committedValue;
-                      property.OriginalValue = committedValue;
                   }
                   property.IsModified = false;
               }
@@ -240,14 +217,9 @@ jobs:
               IReadOnlyDictionary<string, object?> CurrentValues,
               IReadOnlyDictionary<string, object?> OriginalValues,
               IReadOnlySet<string> ModifiedProperties);
-          '''))
-
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'guarded replacement expected exactly one match, found {count}')
-              text = text.replace(old, new, 1)
-
+          ''').strip('\n')
+          helper = textwrap.indent(helper_source, '    ') + '\n\n'
+          text = text[:start] + helper + text[end:]
           path.write_text(text, encoding='utf-8')
 
       - name: Run successful-share UoW fuzz regressions
