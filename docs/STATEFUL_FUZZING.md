@@ -34,6 +34,7 @@ The shared test foundation under `server/VolleyDraft.Api.Tests/Fuzzing/Core` pro
 - a stable failure fingerprint that includes normalized exception origin where available;
 - a reproducibility gate that requires repeated executions to produce the same fingerprint;
 - sequence minimization that removes actions while preserving the same fingerprint on candidate replays;
+- whole-scenario fixed-point reduction that revisits earlier action payloads after later payload/state reductions reopen them;
 - a promotion pipeline that re-verifies the minimized scenario before allowing durable reproducer serialization;
 - isolated target replay support so DB connections, process-local caches and mutable target fields cannot contaminate confirmation/minimization runs;
 - JSON reproducer serialization for confirmed promotion-ready cases.
@@ -54,6 +55,8 @@ candidate
   -> require original fingerprint == minimized fingerprint
   -> serialize/promote
 ```
+
+Minimization itself must reach a **global fixed point**, not merely a per-field/per-action local minimum. Reducers can depend on one another: shrinking action B may make action A shrinkable, and reducing initial scenario state may make previously essential actions removable. The promotion path therefore re-runs sequence/payload reduction after accepted reductions until the serialized scenario stops changing, while preserving the exact failure fingerprint and detecting reducer cycles.
 
 If the original candidate is flaky, minimization is not attempted. If the minimized result is flaky, stops failing, or converges on another fingerprint, it is not promotable and durable serialization is rejected. This keeps the permanent corpus from learning accidental timing noise or a different root failure.
 

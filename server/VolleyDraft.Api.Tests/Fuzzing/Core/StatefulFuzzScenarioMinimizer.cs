@@ -5,9 +5,10 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 /// state. Targets commonly derive their initial clock/account/group fixture from the deterministic
 /// scenario seed, so a reproducer is not truly minimal if only its actions can shrink.
 ///
-/// Scenario shrinkers own domain semantics. The core preserves the already-minimized action list so
-/// a scenario-state candidate cannot accidentally re-expand action noise while reducing initial state.
-/// Every accepted candidate must reproduce the exact original failure fingerprint.
+/// Scenario shrinkers own domain semantics. The core never accepts action expansion from a state
+/// candidate, but after an accepted state reduction it re-runs action minimization because the
+/// smaller state can make previously essential actions removable or shrinkable. Every accepted
+/// candidate must reproduce the exact original failure fingerprint.
 /// </summary>
 internal static class StatefulFuzzScenarioMinimizer
 {
@@ -23,7 +24,7 @@ internal static class StatefulFuzzScenarioMinimizer
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(failureFingerprint);
 
-        var actionMinimization = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+        var actionMinimization = await StatefulFuzzFixedPointMinimizer.MinimizeWithReportAsync(
             failingScenario,
             target,
             failureFingerprint,
@@ -51,8 +52,8 @@ internal static class StatefulFuzzScenarioMinimizer
                 if (rawVariant is null)
                     continue;
 
-                // Scenario-level minimization owns initial-state metadata only. Keep the action list
-                // produced by ddmin/payload shrinking so state reduction cannot reintroduce noise.
+                // Scenario-level minimization owns initial-state metadata only. Discard action
+                // expansion from the state shrinker; action reduction remains owned by the core.
                 var variant = rawVariant with { Actions = current.Actions.ToArray() };
                 var identity = StatefulFuzzReproducerSerializer.Serialize(variant, failureFingerprint);
                 if (!visited.Add(identity))
@@ -63,7 +64,15 @@ internal static class StatefulFuzzScenarioMinimizer
                 if (!string.Equals(replay.FailureFingerprint, failureFingerprint, StringComparison.Ordinal))
                     continue;
 
-                current = variant;
+                var reminimized = await StatefulFuzzFixedPointMinimizer.MinimizeWithReportAsync(
+                    variant,
+                    target,
+                    failureFingerprint,
+                    shrinkAction,
+                    cancellationToken);
+                replayCount += reminimized.ReplayCount;
+                current = reminimized.Scenario;
+                visited.Add(StatefulFuzzReproducerSerializer.Serialize(current, failureFingerprint));
                 reduced = true;
                 break;
             }
