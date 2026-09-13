@@ -365,6 +365,62 @@ internal sealed class ZaloSchedulerLeaseStore(
             END;
             """,
             cancellationToken);
+
+        // The strict terminal fences compare against SQLite's live clock and therefore belong only
+        // to the production distributed-authority mode. Caller-clock stores remain useful for pure
+        // deterministic state tests and health reads; once a production DB-clock worker installs
+        // these triggers, old binaries cannot remove or bypass them during a rolling upgrade.
+        if (useDatabaseAuthorityClock)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyExpiredStatusFence"
+                BEFORE UPDATE OF "LastAttemptAt", "LastSuccessAt", "LastFailureAt" ON "ZaloSchedulerLeases"
+                FOR EACH ROW
+                WHEN NEW."OwnerId" = OLD."OwnerId"
+                  AND NEW."OwnerId" NOT LIKE 'released:%'
+                  AND OLD."AuthorityLeaseUntil" <= strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+                  AND (
+                      NEW."LastAttemptAt" IS NOT OLD."LastAttemptAt"
+                      OR NEW."LastSuccessAt" IS NOT OLD."LastSuccessAt"
+                      OR NEW."LastFailureAt" IS NOT OLD."LastFailureAt"
+                  )
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyFailureDiagnosticInsertFence"
+                BEFORE INSERT ON "ZaloSchedulerFailureDiagnostics"
+                FOR EACH ROW
+                WHEN NEW."Name" = 'zalo-scheduler'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM "ZaloSchedulerLeases"
+                      WHERE "Name" = NEW."Name"
+                        AND "AuthorityLeaseUntil" > strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+                        AND "LastFailureAt" = NEW."FailureAt"
+                  )
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS "ZaloSchedulerLegacyFailureDiagnosticUpdateFence"
+                BEFORE UPDATE OF "FailureAt", "FailureCode" ON "ZaloSchedulerFailureDiagnostics"
+                FOR EACH ROW
+                WHEN NEW."Name" = 'zalo-scheduler'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM "ZaloSchedulerLeases"
+                      WHERE "Name" = NEW."Name"
+                        AND "AuthorityLeaseUntil" > strftime('%Y-%m-%dT%H:%M:%f0000+00:00', 'now')
+                        AND "LastFailureAt" = NEW."FailureAt"
+                  )
+                BEGIN
+                    SELECT RAISE(IGNORE);
+                END;
+                """,
+                cancellationToken);
+        }
     }
 
     internal async Task<bool> TryAcquireAsync(
@@ -793,7 +849,7 @@ public sealed class ZaloSchedulerWorker(
         {
             // A cycle/host cancellation owns the result, but the stage may still be unwinding
             // provider/domain cleanup with scoped services. Drain it before returning so the
-            // owning scheduler scope cannot be disposed underneath active work.
+            // owning scheduler scope cannot be disposed underneath active work after their owning cycle exits.
             operationCancellation.Cancel();
             await ObserveAfterLeaseCancellationAsync(operationTask);
             throw;
