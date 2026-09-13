@@ -17,35 +17,38 @@ public sealed class SuccessfulShareCallerUnitOfWorkFuzzTests
     {
         await using var state = new ShareState();
         var pendingUserId = $"pending-success-share-{Guid.NewGuid():N}";
-        state.Db.Users.Add(new User
+        var pendingUser = new User
         {
             Id = pendingUserId,
             DisplayName = "Pending caller-owned user",
             Email = $"{pendingUserId}@example.test",
             PasswordHash = "test"
-        });
+        };
+        state.Db.Users.Add(pendingUser);
 
-        var service = new SessionDraftService(state.Db);
-        var shared = await service.SharePreDraftSlotAsync(
-            state.AdminId,
-            state.SessionId,
-            "Anchor",
-            [new ShareSlotParticipantInput("Returning")]);
-
+        var shared = await ShareReturningAsync(state);
         Assert.True(shared.IsSuccess, shared.Error);
 
-        await using var verifier = state.CreateVerifier();
-        var callerStateWasCommitted = await verifier.Users.AsNoTracking()
-            .AnyAsync(user => user.Id == pendingUserId);
-        var returningIsPresent = await verifier.SessionPlayers.AsNoTracking()
-            .Where(player => player.Id == state.ReturningId)
-            .Select(player => player.IsPresent)
-            .SingleAsync();
+        await using (var verifier = state.CreateVerifier())
+        {
+            var callerStateWasCommitted = await verifier.Users.AsNoTracking()
+                .AnyAsync(user => user.Id == pendingUserId);
+            var returningIsPresent = await verifier.SessionPlayers.AsNoTracking()
+                .Where(player => player.Id == state.ReturningId)
+                .Select(player => player.IsPresent)
+                .SingleAsync();
 
-        Assert.True(returningIsPresent);
-        Assert.False(
-            callerStateWasCommitted,
-            $"{Fingerprint}: successful share persisted caller-owned Added state before the caller saved it.");
+            Assert.True(returningIsPresent);
+            Assert.False(
+                callerStateWasCommitted,
+                $"{Fingerprint}: successful share persisted caller-owned Added state before the caller saved it.");
+        }
+
+        Assert.Equal(EntityState.Added, state.Db.Entry(pendingUser).State);
+        await state.Db.SaveChangesAsync();
+
+        await using var afterCallerSave = state.CreateVerifier();
+        Assert.True(await afterCallerSave.Users.AsNoTracking().AnyAsync(user => user.Id == pendingUserId));
     }
 
     [Fact]
@@ -57,22 +60,79 @@ public sealed class SuccessfulShareCallerUnitOfWorkFuzzTests
         var durableName = session.Name;
         session.Name = pendingName;
 
+        var shared = await ShareReturningAsync(state);
+        Assert.True(shared.IsSuccess, shared.Error);
+
+        await using (var verifier = state.CreateVerifier())
+        {
+            var persistedName = await verifier.MatchSessions.AsNoTracking()
+                .Where(item => item.Id == state.SessionId)
+                .Select(item => item.Name)
+                .SingleAsync();
+            Assert.Equal(durableName, persistedName);
+        }
+
+        Assert.Equal(pendingName, session.Name);
+        Assert.True(state.Db.Entry(session).Property(item => item.Name).IsModified);
+        await state.Db.SaveChangesAsync();
+
+        await using var afterCallerSave = state.CreateVerifier();
+        var callerSavedName = await afterCallerSave.MatchSessions.AsNoTracking()
+            .Where(item => item.Id == state.SessionId)
+            .Select(item => item.Name)
+            .SingleAsync();
+        Assert.Equal(pendingName, callerSavedName);
+    }
+
+    [Fact]
+    public async Task Successful_share_must_not_persist_unrelated_pending_deleted_entity()
+    {
+        await using var state = new ShareState();
+        var victimId = $"pending-delete-success-share-{Guid.NewGuid():N}";
+        var victim = new User
+        {
+            Id = victimId,
+            DisplayName = "Pending caller-owned delete",
+            Email = $"{victimId}@example.test",
+            PasswordHash = "test"
+        };
+        state.Db.Users.Add(victim);
+        await state.Db.SaveChangesAsync();
+        state.Db.Users.Remove(victim);
+
+        var shared = await ShareReturningAsync(state);
+        Assert.True(shared.IsSuccess, shared.Error);
+
+        await using (var verifier = state.CreateVerifier())
+        {
+            var callerDeleteWasCommitted = !await verifier.Users.AsNoTracking()
+                .AnyAsync(user => user.Id == victimId);
+            var returningIsPresent = await verifier.SessionPlayers.AsNoTracking()
+                .Where(player => player.Id == state.ReturningId)
+                .Select(player => player.IsPresent)
+                .SingleAsync();
+
+            Assert.True(returningIsPresent);
+            Assert.False(
+                callerDeleteWasCommitted,
+                $"{Fingerprint}: successful share persisted caller-owned Deleted state before the caller saved it.");
+        }
+
+        Assert.Equal(EntityState.Deleted, state.Db.Entry(victim).State);
+        await state.Db.SaveChangesAsync();
+
+        await using var afterCallerSave = state.CreateVerifier();
+        Assert.False(await afterCallerSave.Users.AsNoTracking().AnyAsync(user => user.Id == victimId));
+    }
+
+    private static Task<ServiceResult<PreDraftSharedSlotResult>> ShareReturningAsync(ShareState state)
+    {
         var service = new SessionDraftService(state.Db);
-        var shared = await service.SharePreDraftSlotAsync(
+        return service.SharePreDraftSlotAsync(
             state.AdminId,
             state.SessionId,
             "Anchor",
             [new ShareSlotParticipantInput("Returning")]);
-
-        Assert.True(shared.IsSuccess, shared.Error);
-
-        await using var verifier = state.CreateVerifier();
-        var persistedName = await verifier.MatchSessions.AsNoTracking()
-            .Where(item => item.Id == state.SessionId)
-            .Select(item => item.Name)
-            .SingleAsync();
-
-        Assert.Equal(durableName, persistedName);
     }
 
     private sealed class ShareState : IAsyncDisposable
