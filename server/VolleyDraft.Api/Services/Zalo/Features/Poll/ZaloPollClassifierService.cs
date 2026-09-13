@@ -407,19 +407,26 @@ internal static class ZaloPollScheduleParser
     {
         foreach (Match token in ExplicitTimeTokenRegex.Matches(normalized))
         {
-            if (!TryReadTimeMinutes(token.Value, assumePmForHourUnder12, out _))
+            if (!IsValidExplicitTimeToken(token.Value, assumePmForHourUnder12))
                 return true;
         }
 
         return false;
     }
 
+    private static bool IsValidExplicitTimeToken(string token, bool assumePmForHourUnder12)
+    {
+        var match = ExplicitTimeRegex.Match(token);
+        return match.Success &&
+               match.Index == 0 &&
+               match.Length == token.Length &&
+               TryReadTimeMinutes(token, assumePmForHourUnder12, out _);
+    }
+
     private static bool TryReadTimeMinutes(string normalized, bool assumePmForHourUnder12, out int minutes)
     {
         var timeMatch = ExplicitTimeRegex.Match(normalized);
         if (!timeMatch.Success ||
-            timeMatch.Index != 0 ||
-            timeMatch.Length != normalized.Length ||
             !int.TryParse(timeMatch.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hour))
         {
             minutes = 0;
