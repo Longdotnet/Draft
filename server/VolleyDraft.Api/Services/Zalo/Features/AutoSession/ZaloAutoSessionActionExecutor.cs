@@ -41,6 +41,7 @@ internal sealed class ZaloAutoSessionActionExecutor(
         CancellationToken cancellationToken = default)
     {
         EnsureCandidatesMatchPollSource(poll, selected);
+        EnsureCandidatesStillUpcoming(selected, DateTimeOffset.UtcNow);
 
         var created = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
         var linked = new List<(string SessionId, ZaloAutoSessionCandidate Candidate)>();
@@ -293,6 +294,25 @@ internal sealed class ZaloAutoSessionActionExecutor(
             throw new InvalidOperationException(
                 $"auto_session_candidate_source_mismatch:{candidate.OptionId}:{reason ?? "unknown"}");
         }
+    }
+
+    internal static bool HasElapsedCandidates(
+        IReadOnlyList<ZaloAutoSessionCandidate> selected,
+        DateTimeOffset executionNow) =>
+        selected.Any(candidate => candidate.StartTime <= executionNow);
+
+    internal static void EnsureCandidatesStillUpcoming(
+        IReadOnlyList<ZaloAutoSessionCandidate> selected,
+        DateTimeOffset executionNow)
+    {
+        var elapsed = selected
+            .GroupBy(item => item.OptionId, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .FirstOrDefault(candidate => candidate.StartTime <= executionNow);
+        if (elapsed is null) return;
+
+        throw new InvalidOperationException(
+            $"auto_session_candidate_start_elapsed:{elapsed.OptionId}:{elapsed.StartTime:O}:{executionNow:O}");
     }
 
     private static string BuildSessionName(ZaloAutoSessionCandidate candidate)
