@@ -775,7 +775,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return BadRequest<PreDraftSharedSlotResult>("Share slot chỉ nhận +1 hoặc +2 người; +2 phải có đúng hai tên khác nhau.");
 
         await using var transaction = await db.Database.BeginTransactionAsync();
-        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        var committed = false;
+        try
+        {
+            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
         if (session is null) return NotFound<PreDraftSharedSlotResult>("Không tìm thấy session.");
         if (session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
             return BadRequest<PreDraftSharedSlotResult>("Chỉ ghép share slot kiểu này trước khi draft bắt đầu.");
@@ -995,6 +998,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         await transaction.CommitAsync();
+        committed = true;
         return ServiceResult<PreDraftSharedSlotResult>.Created(new(
             anchor.DisplayName,
             addedPlayers.Select(player => player.DisplayName).ToList(),
@@ -1003,6 +1007,18 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             presentPlayers,
             effectiveSlotCount,
             incompleteNames));
+        }
+        finally
+        {
+            if (!committed)
+            {
+                // Database rollback/disposal does not restore EF tracked values. A rejected share
+                // may already have reactivated an absent player, enriched a profile, or tracked a
+                // new participant before a later participant fails validation. Discard the failed
+                // unit of work so a later unrelated SaveChanges cannot persist those rejected edits.
+                db.ChangeTracker.Clear();
+            }
+        }
     }
 
     public async Task<ServiceResult<IReadOnlyList<SessionPlayerResponse>>> GetPlayersAsync(
