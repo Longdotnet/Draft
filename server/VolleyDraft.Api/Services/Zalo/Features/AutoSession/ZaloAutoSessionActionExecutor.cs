@@ -71,6 +71,11 @@ internal sealed class ZaloAutoSessionActionExecutor(
                          .GroupBy(item => item.OptionId, StringComparer.Ordinal)
                          .Select(group => group.First()))
             {
+                // The pre-transaction fence rejects normal delayed confirmations. Re-check at the
+                // write boundary too so a slow DB/policy read cannot let a candidate cross its start
+                // time between authorization and the durable link/session mutation.
+                EnsureCandidatesStillUpcoming([candidate], DateTimeOffset.UtcNow);
+
                 var existingLink = await store.GetLinkAsync(tracked.Id, poll.Id, candidate.OptionId, cancellationToken);
                 if (existingLink is not null)
                 {
@@ -295,11 +300,6 @@ internal sealed class ZaloAutoSessionActionExecutor(
                 $"auto_session_candidate_source_mismatch:{candidate.OptionId}:{reason ?? "unknown"}");
         }
     }
-
-    internal static bool HasElapsedCandidates(
-        IReadOnlyList<ZaloAutoSessionCandidate> selected,
-        DateTimeOffset executionNow) =>
-        selected.Any(candidate => candidate.StartTime <= executionNow);
 
     internal static void EnsureCandidatesStillUpcoming(
         IReadOnlyList<ZaloAutoSessionCandidate> selected,
