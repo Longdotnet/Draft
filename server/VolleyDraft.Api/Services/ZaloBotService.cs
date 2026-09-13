@@ -837,7 +837,7 @@ public sealed partial class ZaloBotService(
                 ZaloTeamLineupFormatter.WantsPlayerMentions(question),
                 cancellationToken,
                 readiness);
-            var imageUrl = decision.Intent == ZaloBotIntent.TeamImage && readiness?.HasTeams == true
+            var imageUrl = decision.Intent == ZaloBotIntent.TeamImage
                 ? teamCards.GetPublicUrl(session.Id)
                 : null;
             return new BotAnswer(lineup.Text, imageUrl, decision.Intent, Mentions: lineup.Mentions);
@@ -4767,7 +4767,7 @@ public sealed partial class ZaloBotService(
                 readiness);
             return new BotAnswer(
                 lineup.Text,
-                decision.Intent == ZaloBotIntent.TeamImage && readiness?.HasTeams == true
+                decision.Intent == ZaloBotIntent.TeamImage
                     ? teamCards.GetPublicUrl(teamSession.Id)
                     : null,
                 decision.Intent,
