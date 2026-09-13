@@ -52,6 +52,17 @@ public sealed class ZaloPollMalformedClockFuzzTests
     }
 
     [Fact]
+    public void Valid_clock_cannot_mask_a_later_malformed_clock_in_the_same_source()
+    {
+        var extraction = Extract(
+            "Vote sân UTE tuần sau. Max 18 slots/sân. 17:45 rồi sửa 100:00",
+            "CN 13/09/2026");
+
+        Assert.Empty(extraction.Candidates);
+        Assert.Contains(extraction.Issues, issue => issue.Code == "invalid_explicit_time");
+    }
+
+    [Fact]
     public void Valid_clock_next_to_boundary_remains_authoritative()
     {
         var extraction = Extract(
