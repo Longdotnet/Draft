@@ -50,8 +50,11 @@ internal static class ZaloPollScheduleParser
     private static readonly Regex ExplicitTimeRegex = new(
         @"(?<!\d)(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?(?!\d)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ExplicitTimeTokenRegex = new(
+        @"(?<!\d)(?<hour>\d{1,2})\s*(?:h|:)(?:\s*(?<minute>\d{1,2}))?(?!\d)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex ApprovalDayTimeRegex = new(
-        @"(?<day>t\s*[2-7]|cn)[^0-9]{0,24}(?<hour>[0-2]?\d)\s*(?:h|:)(?:\s*(?<minute>[0-5]?\d))?",
+        @"(?<day>t\s*[2-7]|cn)[^0-9]{0,24}(?<hour>\d{1,2})\s*(?:h|:)(?:\s*(?<minute>\d{1,2}))?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex NextWeekRegex = new(
         @"(?<![a-z0-9])tuan\s+(?:sau|toi|ke)(?![a-z0-9])",
@@ -81,6 +84,9 @@ internal static class ZaloPollScheduleParser
         var normalizedQuestion = NormalizeText(poll.Question);
         var nextWeekScope = NextWeekRegex.IsMatch(normalizedQuestion);
         var pollDefaultMinutes = trackedGroup.DefaultStartMinutes;
+        var questionHasInvalidExplicitTime = HasInvalidExplicitTime(
+            normalizedQuestion,
+            trackedGroup.AssumePmForHourUnder12);
         if (TryReadTimeMinutes(
                 normalizedQuestion,
                 trackedGroup.AssumePmForHourUnder12,
@@ -117,9 +123,30 @@ internal static class ZaloPollScheduleParser
                 continue;
             }
 
-            var minutes = pollDefaultMinutes;
-            if (TryReadTimeMinutes(normalized, trackedGroup.AssumePmForHourUnder12, out var optionMinutes))
-                minutes = optionMinutes;
+            var hasOptionTime = TryReadTimeMinutes(
+                normalized,
+                trackedGroup.AssumePmForHourUnder12,
+                out var optionMinutes);
+            if (HasInvalidExplicitTime(normalized, trackedGroup.AssumePmForHourUnder12))
+            {
+                issues.Add(new ZaloPollScheduleIssue(
+                    option.Id,
+                    option.Content.Trim(),
+                    "invalid_explicit_time",
+                    $"Option “{option.Content.Trim()}” có giờ không hợp lệ. Hãy dùng giờ từ 00:00 đến 23:59."));
+                continue;
+            }
+            if (!hasOptionTime && questionHasInvalidExplicitTime)
+            {
+                issues.Add(new ZaloPollScheduleIssue(
+                    option.Id,
+                    option.Content.Trim(),
+                    "invalid_explicit_time",
+                    "Câu hỏi poll có giờ mặc định không hợp lệ. Hãy dùng giờ từ 00:00 đến 23:59 hoặc ghi giờ hợp lệ ngay trong option."));
+                continue;
+            }
+
+            var minutes = hasOptionTime ? optionMinutes : pollDefaultMinutes;
 
             DateTimeOffset start;
             if (hasDate)
@@ -376,6 +403,10 @@ internal static class ZaloPollScheduleParser
         }
     }
 
+    private static bool HasInvalidExplicitTime(string normalized, bool assumePmForHourUnder12) =>
+        ExplicitTimeTokenRegex.IsMatch(normalized) &&
+        !TryReadTimeMinutes(normalized, assumePmForHourUnder12, out _);
+
     private static bool TryReadTimeMinutes(string normalized, bool assumePmForHourUnder12, out int minutes)
     {
         var timeMatch = ExplicitTimeRegex.Match(normalized);
@@ -387,10 +418,17 @@ internal static class ZaloPollScheduleParser
         }
 
         var minute = 0;
-        if (timeMatch.Groups["minute"].Success)
-            int.TryParse(timeMatch.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
-        hour = Math.Clamp(hour, 0, 23);
-        minute = Math.Clamp(minute, 0, 59);
+        if (timeMatch.Groups["minute"].Success &&
+            !int.TryParse(timeMatch.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute))
+        {
+            minutes = 0;
+            return false;
+        }
+        if (hour is < 0 or > 23 || minute is < 0 or > 59)
+        {
+            minutes = 0;
+            return false;
+        }
         if (assumePmForHourUnder12 && hour is >= 1 and <= 11) hour += 12;
         minutes = hour * 60 + minute;
         return true;
@@ -455,10 +493,10 @@ internal static class ZaloPollScheduleParser
             var day = match.Groups["day"].Value.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
             if (!int.TryParse(match.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hour)) continue;
             var minute = 0;
-            if (match.Groups["minute"].Success)
-                int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute);
-            hour = Math.Clamp(hour, 0, 23);
-            minute = Math.Clamp(minute, 0, 59);
+            if (match.Groups["minute"].Success &&
+                !int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute))
+                continue;
+            if (hour is < 0 or > 23 || minute is < 0 or > 59) continue;
             if (hour is >= 1 and <= 11) hour += 12;
             result[day] = hour * 60 + minute;
         }
