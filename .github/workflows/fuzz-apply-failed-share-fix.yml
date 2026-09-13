@@ -20,73 +20,25 @@ jobs:
           fetch-depth: 0
 
       - name: Apply transactional tracker fix
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-
           path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
           text = path.read_text()
-
-          before_start = '''        await using var transaction = await db.Database.BeginTransactionAsync();
-        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
-'''
-          after_start = '''        await using var transaction = await db.Database.BeginTransactionAsync();
-        var committed = false;
-        try
-        {
-        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
-'''
-          if text.count(before_start) < 1:
-              raise SystemExit('SharePreDraft transaction start marker not found')
-
           method_start = text.index('    public async Task<ServiceResult<PreDraftSharedSlotResult>> SharePreDraftSlotAsync(')
           method_end = text.index('    public async Task<ServiceResult<IReadOnlyList<SessionPlayerResponse>>> GetPlayersAsync(', method_start)
           method = text[method_start:method_end]
+          before_start = '        await using var transaction = await db.Database.BeginTransactionAsync();\n        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();\n'
+          after_start = '        await using var transaction = await db.Database.BeginTransactionAsync();\n        var committed = false;\n        try\n        {\n            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();\n'
           if method.count(before_start) != 1:
               raise SystemExit(f'Expected one transaction start in SharePreDraftSlotAsync, found {method.count(before_start)}')
           method = method.replace(before_start, after_start, 1)
-
-          before_end = '''        await transaction.CommitAsync();
-        return ServiceResult<PreDraftSharedSlotResult>.Created(new(
-            anchor.DisplayName,
-            addedPlayers.Select(player => player.DisplayName).ToList(),
-            newlyAddedNames,
-            slot.DisplayName,
-            presentPlayers,
-            effectiveSlotCount,
-            incompleteNames));
-    }
-
-'''
-          after_end = '''        await transaction.CommitAsync();
-        committed = true;
-        return ServiceResult<PreDraftSharedSlotResult>.Created(new(
-            anchor.DisplayName,
-            addedPlayers.Select(player => player.DisplayName).ToList(),
-            newlyAddedNames,
-            slot.DisplayName,
-            presentPlayers,
-            effectiveSlotCount,
-            incompleteNames));
-        }
-        finally
-        {
-            if (!committed)
-            {
-                // Database rollback/disposal does not restore EF tracked values. A rejected share
-                // may already have reactivated an absent player, enriched a profile, or tracked a
-                // new participant before a later participant fails validation. Discard the failed
-                // unit of work so a later unrelated SaveChanges cannot persist those rejected edits.
-                db.ChangeTracker.Clear();
-            }
-        }
-    }
-
-'''
+          before_end = '        await transaction.CommitAsync();\n        return ServiceResult<PreDraftSharedSlotResult>.Created(new(\n            anchor.DisplayName,\n            addedPlayers.Select(player => player.DisplayName).ToList(),\n            newlyAddedNames,\n            slot.DisplayName,\n            presentPlayers,\n            effectiveSlotCount,\n            incompleteNames));\n    }\n\n'
+          after_end = '        await transaction.CommitAsync();\n        committed = true;\n        return ServiceResult<PreDraftSharedSlotResult>.Created(new(\n            anchor.DisplayName,\n            addedPlayers.Select(player => player.DisplayName).ToList(),\n            newlyAddedNames,\n            slot.DisplayName,\n            presentPlayers,\n            effectiveSlotCount,\n            incompleteNames));\n        }\n        finally\n        {\n            if (!committed)\n            {\n                // Database rollback/disposal does not restore EF tracked values. A rejected share\n                // may already have reactivated an absent player, enriched a profile, or tracked a\n                // new participant before a later participant fails validation. Discard the failed\n                // unit of work so a later unrelated SaveChanges cannot persist those rejected edits.\n                db.ChangeTracker.Clear();\n            }\n        }\n    }\n\n'
           if method.count(before_end) != 1:
               raise SystemExit(f'Expected one success tail in SharePreDraftSlotAsync, found {method.count(before_end)}')
           method = method.replace(before_end, after_end, 1)
-
           text = text[:method_start] + method + text[method_end:]
           path.write_text(text)
           PY
@@ -94,7 +46,7 @@ jobs:
       - name: Run targeted failed-share fuzz regression
         run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --filter FullyQualifiedName~FailedShareRollbackStateFuzzTests
 
-      - name: Remove temporary patch workflow and commit fix
+      - name: Remove temporary workflow and commit fix
         run: |
           rm .github/workflows/fuzz-apply-failed-share-fix.yml
           git config user.name "Draft Stateful Fuzzing Autopilot"
