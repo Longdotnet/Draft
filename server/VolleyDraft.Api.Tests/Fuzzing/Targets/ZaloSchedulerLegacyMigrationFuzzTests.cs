@@ -180,7 +180,6 @@ public sealed class ZaloSchedulerLegacyMigrationFuzzTests
 
             var store = new ZaloSchedulerLeaseStore(db, useDatabaseAuthorityClock: true);
             await store.EnsureAsync();
-            var authorityBefore = await ReadAuthorityLeaseUntilAsync(db);
 
             // Mutate renewal timing only inside the legacy lease's own clock window. This models an
             // old worker that is genuinely allowed to renew; expiry/rejection belongs to a different
@@ -192,13 +191,19 @@ public sealed class ZaloSchedulerLegacyMigrationFuzzTests
             var affected = await ExecuteLegacyRenewAsync(db, owner, oldNow, renewedLeaseUntil);
             Assert.Equal(1, affected);
 
+            // Legacy renewal is translated onto the shared SQLite clock. It may occur immediately
+            // after migration, so a strict increase over the previous deadline is not meaningful;
+            // the semantic invariant is one fresh configured-duration authority window, neither a
+            // stale wall-clock deadline nor configured duration + cycle age.
             var authorityAfter = await ReadAuthorityLeaseUntilAsync(db);
-            Assert.True(
-                authorityAfter > authorityBefore.AddSeconds(30),
-                $"seed={seed} fingerprint=scheduler-migration:legacy-renewal-not-bridged " +
-                $"authorityBefore={authorityBefore:O} authorityAfter={authorityAfter:O} elapsedMinutes={elapsedMinutes}");
             var observedAt = await ReadDatabaseNowAsync(db);
-            Assert.True(authorityAfter <= observedAt.AddHours(1).AddSeconds(2));
+            var minimumExpected = observedAt.Add(legacyDuration).AddSeconds(-2);
+            var maximumExpected = observedAt.Add(legacyDuration).AddSeconds(2);
+            Assert.True(
+                authorityAfter >= minimumExpected && authorityAfter <= maximumExpected,
+                $"seed={seed} fingerprint=scheduler-migration:legacy-renewal-not-bridged " +
+                $"authorityAfter={authorityAfter:O} observedAt={observedAt:O} " +
+                $"legacyDurationMinutes={legacyDuration.TotalMinutes:0} elapsedMinutes={elapsedMinutes}");
         }
     }
 
