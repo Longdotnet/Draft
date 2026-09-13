@@ -774,6 +774,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         if (inputs.Count is < 1 or > 2)
             return BadRequest<PreDraftSharedSlotResult>("Share slot chỉ nhận +1 hoặc +2 người; +2 phải có đúng hai tên khác nhau.");
 
+        // A service call may share the request DbContext with caller-owned pending work. Snapshot
+        // that preexisting unit of work before the share transaction starts so a rejected share can
+        // discard only mutations introduced by this command, not unrelated changes staged by caller code.
+        var callerTrackedState = CaptureTrackedState();
         await using var transaction = await db.Database.BeginTransactionAsync();
         var committed = false;
         try
@@ -1012,11 +1016,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         {
             if (!committed)
             {
-                // Database rollback/disposal does not restore EF tracked values. A rejected share
-                // may already have reactivated an absent player, enriched a profile, or tracked a
-                // new participant before a later participant fails validation. Discard the failed
-                // unit of work so a later unrelated SaveChanges cannot persist those rejected edits.
-                db.ChangeTracker.Clear();
+                // Database rollback/disposal does not restore EF tracked values. Restore the exact
+                // caller-owned tracker snapshot: this removes new/rejected share entities and values
+                // while preserving unrelated Added/Modified/Deleted work that existed before this call.
+                RestoreTrackedState(callerTrackedState);
             }
         }
     }
@@ -3453,6 +3456,47 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
 
         return ServiceResult<CaptainsResponse>.Success(ToCaptainsResponse(savedTeams));
     }
+
+    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
+    {
+        db.ChangeTracker.DetectChanges();
+        return db.ChangeTracker.Entries()
+            .Select(entry => new TrackedEntrySnapshot(
+                entry.Entity,
+                entry.State,
+                entry.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.CurrentValue,
+                    StringComparer.Ordinal),
+                entry.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.OriginalValue,
+                    StringComparer.Ordinal)))
+            .ToList();
+    }
+
+    private void RestoreTrackedState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+    {
+        db.ChangeTracker.Clear();
+        foreach (var snapshot in snapshots)
+        {
+            var entry = db.Entry(snapshot.Entity);
+            foreach (var property in entry.Properties)
+            {
+                if (snapshot.CurrentValues.TryGetValue(property.Metadata.Name, out var currentValue))
+                    property.CurrentValue = currentValue;
+                if (snapshot.OriginalValues.TryGetValue(property.Metadata.Name, out var originalValue))
+                    property.OriginalValue = originalValue;
+            }
+            entry.State = snapshot.State;
+        }
+    }
+
+    private sealed record TrackedEntrySnapshot(
+        object Entity,
+        EntityState State,
+        IReadOnlyDictionary<string, object?> CurrentValues,
+        IReadOnlyDictionary<string, object?> OriginalValues);
 
     private IQueryable<MatchSession> LoadSessionForAdmin(string adminUserId, string sessionId)
     {
