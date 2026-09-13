@@ -277,15 +277,17 @@ internal sealed class ZaloSchedulerLeaseStore(
             await migration.CommitAsync(cancellationToken);
         }
 
-        // Replace the older authority bridge once so mixed-version heartbeats use the durable
-        // configured-duration basis instead of deriving a growing window from cycle-start time.
+        // Replace older authority bridges once so mixed-version heartbeats use the durable
+        // configured-duration basis. Pre-authority TryAcquire changed OwnerId + LeaseUntil before
+        // MarkAttempt, so an owner handoff can still carry the predecessor's LastAttemptAt; that
+        // stale timestamp must never be used to derive the successor's authority window.
         var staleLegacyAuthorityBridgeCount = await db.Database.SqlQueryRaw<int>(
                 """
                 SELECT COUNT(*) AS "Value"
                 FROM sqlite_master
                 WHERE type = 'trigger'
                   AND name = 'ZaloSchedulerLegacyAuthorityBridge'
-                  AND sql NOT LIKE '%LegacyLeaseDurationSeconds%'
+                  AND sql NOT LIKE '%owner handoff preserves durable lease duration%'
                 """)
             .SingleAsync(cancellationToken);
         if (staleLegacyAuthorityBridgeCount > 0)
@@ -334,42 +336,15 @@ internal sealed class ZaloSchedulerLeaseStore(
               AND NEW."AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil"
               AND (NEW."OwnerId" <> OLD."OwnerId" OR NEW."LeaseUntil" <> OLD."LeaseUntil")
             BEGIN
+                -- owner handoff preserves durable lease duration
                 UPDATE "ZaloSchedulerLeases"
-                SET "LegacyLeaseDurationSeconds" = CASE
-                        WHEN NEW."OwnerId" <> OLD."OwnerId" THEN
-                            CASE
-                                WHEN NEW."LastAttemptAt" IS NULL
-                                  OR julianday(NEW."LastAttemptAt") IS NULL
-                                  OR julianday(NEW."LeaseUntil") IS NULL
-                                    THEN 3600.0
-                                WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 < 120.0
-                                    THEN 120.0
-                                WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 > 3600.0
-                                    THEN 3600.0
-                                ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
-                            END
-                        ELSE COALESCE(OLD."LegacyLeaseDurationSeconds", 3600.0)
-                    END,
+                SET "LegacyLeaseDurationSeconds" = COALESCE(OLD."LegacyLeaseDurationSeconds", 3600.0),
                     "AuthorityLeaseUntil" = strftime(
                         '%Y-%m-%dT%H:%M:%f0000+00:00',
                         'now',
                         printf(
                             '+%f seconds',
-                            CASE
-                                WHEN NEW."OwnerId" <> OLD."OwnerId" THEN
-                                    CASE
-                                        WHEN NEW."LastAttemptAt" IS NULL
-                                          OR julianday(NEW."LastAttemptAt") IS NULL
-                                          OR julianday(NEW."LeaseUntil") IS NULL
-                                            THEN 3600.0
-                                        WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 < 120.0
-                                            THEN 120.0
-                                        WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 > 3600.0
-                                            THEN 3600.0
-                                        ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
-                                    END
-                                ELSE COALESCE(OLD."LegacyLeaseDurationSeconds", 3600.0)
-                            END))
+                            COALESCE(OLD."LegacyLeaseDurationSeconds", 3600.0)))
                 WHERE "Name" = NEW."Name"
                   AND "OwnerId" = NEW."OwnerId"
                   AND "AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil";
