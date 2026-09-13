@@ -1,0 +1,263 @@
+name: Autopilot fix successful share UoW
+
+on:
+  push:
+    branches:
+      - autopilot/fuzz-successful-share-uow-isolation
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: autopilot/fuzz-successful-share-uow-isolation
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Apply guarded production patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('server/VolleyDraft.Api/Services/SessionDraftService.cs')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = []
+          replacements.append((
+          '''        // A service call may share the request DbContext with caller-owned pending work. Snapshot
+          // that preexisting unit of work before the share transaction starts so a rejected share can
+          // discard only mutations introduced by this command, not unrelated changes staged by caller code.
+          var callerTrackedState = CaptureTrackedState();
+          await using var transaction = await db.Database.BeginTransactionAsync();
+          var committed = false;
+          try
+          {
+          ''',
+          '''        // A service call may share the request DbContext with caller-owned pending work. Snapshot
+          // that preexisting unit of work before the share transaction starts so accepted and rejected
+          // shares can isolate command-owned persistence from unrelated caller changes.
+          var callerTrackedState = CaptureTrackedState();
+          await using var transaction = await db.Database.BeginTransactionAsync();
+          var committed = false;
+          try
+          {
+              SuspendCallerPendingState(callerTrackedState);
+          '''))
+
+          replacements.append((
+          '''        await transaction.CommitAsync();
+          committed = true;
+          return ServiceResult<PreDraftSharedSlotResult>.Created(new(
+          ''',
+          '''        await transaction.CommitAsync();
+          committed = true;
+          RestoreCallerPendingState(callerTrackedState);
+          return ServiceResult<PreDraftSharedSlotResult>.Created(new(
+          '''))
+
+          replacements.append((
+          '''    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
+          {
+              db.ChangeTracker.DetectChanges();
+              return db.ChangeTracker.Entries()
+                  .Select(entry => new TrackedEntrySnapshot(
+                      entry.Entity,
+                      entry.State,
+                      entry.Properties.ToDictionary(
+                          property => property.Metadata.Name,
+                          property => property.CurrentValue,
+                          StringComparer.Ordinal),
+                      entry.Properties.ToDictionary(
+                          property => property.Metadata.Name,
+                          property => property.OriginalValue,
+                          StringComparer.Ordinal)))
+                  .ToList();
+          }
+
+          private void RestoreTrackedState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+          {
+              db.ChangeTracker.Clear();
+              foreach (var snapshot in snapshots)
+              {
+                  var entry = db.Entry(snapshot.Entity);
+                  foreach (var property in entry.Properties)
+                  {
+                      if (snapshot.CurrentValues.TryGetValue(property.Metadata.Name, out var currentValue))
+                          property.CurrentValue = currentValue;
+                      if (snapshot.OriginalValues.TryGetValue(property.Metadata.Name, out var originalValue))
+                          property.OriginalValue = originalValue;
+                  }
+                  entry.State = snapshot.State;
+              }
+          }
+
+          private sealed record TrackedEntrySnapshot(
+              object Entity,
+              EntityState State,
+              IReadOnlyDictionary<string, object?> CurrentValues,
+              IReadOnlyDictionary<string, object?> OriginalValues);
+          ''',
+          '''    private IReadOnlyList<TrackedEntrySnapshot> CaptureTrackedState()
+          {
+              db.ChangeTracker.DetectChanges();
+              return db.ChangeTracker.Entries()
+                  .Select(entry => new TrackedEntrySnapshot(
+                      entry.Entity,
+                      entry.State,
+                      entry.Properties.ToDictionary(
+                          property => property.Metadata.Name,
+                          property => property.CurrentValue,
+                          StringComparer.Ordinal),
+                      entry.Properties.ToDictionary(
+                          property => property.Metadata.Name,
+                          property => property.OriginalValue,
+                          StringComparer.Ordinal),
+                      entry.Properties
+                          .Where(property => property.IsModified)
+                          .Select(property => property.Metadata.Name)
+                          .ToHashSet(StringComparer.Ordinal)))
+                  .ToList();
+          }
+
+          private void SuspendCallerPendingState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+          {
+              foreach (var snapshot in snapshots.Where(snapshot =>
+                           snapshot.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+              {
+                  db.Entry(snapshot.Entity).State = EntityState.Detached;
+              }
+          }
+
+          private void RestoreCallerPendingState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+          {
+              foreach (var snapshot in snapshots.Where(snapshot =>
+                           snapshot.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+              {
+                  var snapshotEntry = db.Entry(snapshot.Entity);
+                  var primaryKey = snapshotEntry.Metadata.FindPrimaryKey();
+                  Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry? conflict = null;
+                  if (primaryKey is not null)
+                  {
+                      conflict = db.ChangeTracker.Entries()
+                          .FirstOrDefault(entry =>
+                              !ReferenceEquals(entry.Entity, snapshot.Entity) &&
+                              entry.Metadata.ClrType == snapshotEntry.Metadata.ClrType &&
+                              primaryKey.Properties.All(property =>
+                                  snapshot.CurrentValues.TryGetValue(property.Name, out var expected) &&
+                                  Equals(entry.Property(property.Name).CurrentValue, expected)));
+                  }
+
+                  IReadOnlyDictionary<string, object?>? committedValues = null;
+                  if (conflict is not null)
+                  {
+                      committedValues = conflict.Properties.ToDictionary(
+                          property => property.Metadata.Name,
+                          property => property.CurrentValue,
+                          StringComparer.Ordinal);
+                      conflict.State = EntityState.Detached;
+                  }
+
+                  RestoreTrackedEntry(snapshot, committedValues);
+              }
+          }
+
+          private void RestoreTrackedState(IReadOnlyList<TrackedEntrySnapshot> snapshots)
+          {
+              db.ChangeTracker.Clear();
+              foreach (var snapshot in snapshots)
+              {
+                  RestoreTrackedEntry(snapshot);
+              }
+          }
+
+          private void RestoreTrackedEntry(
+              TrackedEntrySnapshot snapshot,
+              IReadOnlyDictionary<string, object?>? committedValues = null)
+          {
+              var entry = db.Entry(snapshot.Entity);
+              if (snapshot.State == EntityState.Added)
+              {
+                  entry.State = EntityState.Added;
+                  foreach (var property in entry.Properties)
+                  {
+                      if (snapshot.CurrentValues.TryGetValue(property.Metadata.Name, out var currentValue))
+                          property.CurrentValue = currentValue;
+                      if (snapshot.OriginalValues.TryGetValue(property.Metadata.Name, out var originalValue))
+                          property.OriginalValue = originalValue;
+                  }
+                  return;
+              }
+
+              entry.State = EntityState.Unchanged;
+              foreach (var property in entry.Properties)
+              {
+                  var propertyName = property.Metadata.Name;
+                  var preserveCallerValue = snapshot.State != EntityState.Modified ||
+                                            snapshot.ModifiedProperties.Contains(propertyName) ||
+                                            committedValues is null ||
+                                            !committedValues.TryGetValue(propertyName, out var committedValue);
+                  if (preserveCallerValue)
+                  {
+                      if (snapshot.CurrentValues.TryGetValue(propertyName, out var currentValue))
+                          property.CurrentValue = currentValue;
+                      if (snapshot.OriginalValues.TryGetValue(propertyName, out var originalValue))
+                          property.OriginalValue = originalValue;
+                  }
+                  else
+                  {
+                      property.CurrentValue = committedValue;
+                      property.OriginalValue = committedValue;
+                  }
+                  property.IsModified = false;
+              }
+
+              if (snapshot.State == EntityState.Deleted)
+              {
+                  entry.State = EntityState.Deleted;
+                  return;
+              }
+
+              if (snapshot.State == EntityState.Modified)
+              {
+                  foreach (var propertyName in snapshot.ModifiedProperties)
+                      entry.Property(propertyName).IsModified = true;
+                  if (snapshot.ModifiedProperties.Count == 0)
+                      entry.State = EntityState.Modified;
+              }
+          }
+
+          private sealed record TrackedEntrySnapshot(
+              object Entity,
+              EntityState State,
+              IReadOnlyDictionary<string, object?> CurrentValues,
+              IReadOnlyDictionary<string, object?> OriginalValues,
+              IReadOnlySet<string> ModifiedProperties);
+          '''))
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'guarded replacement expected exactly one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Run successful-share UoW fuzz regressions
+        run: dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --filter FullyQualifiedName~SuccessfulShareCallerUnitOfWorkFuzzTests
+
+      - name: Commit verified patch and remove bootstrap workflow
+        run: |
+          git config user.name "Draft Stateful Fuzzing Autopilot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/autopilot-fix-successful-share-uow.yml
+          git add server/VolleyDraft.Api/Services/SessionDraftService.cs
+          git commit -m "fix(fuzz): isolate successful share unit of work"
+          git push origin HEAD:autopilot/fuzz-successful-share-uow-isolation
