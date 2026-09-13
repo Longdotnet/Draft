@@ -8,14 +8,13 @@ namespace VolleyDraft.Api.Services.Zalo.AI;
 /// <summary>
 /// Provider-neutral boundary for OpenAI-compatible chat APIs.
 /// Domain features choose a workload, not an endpoint/model. Provider/model selection,
-/// timeout, retry and optional fallback live here so model changes do not touch feature code.
+/// timeout, retry and ordered failover live here so model changes do not touch feature code.
 /// </summary>
 public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<OpenAiCompatibleZaloAiGateway> _logger;
-    private readonly ZaloAiProviderProfile? _primary;
-    private readonly ZaloAiProviderProfile? _fallback;
+    private readonly IReadOnlyList<ZaloAiProviderProfile> _providers;
     private readonly int _retryCount;
     private readonly TimeSpan _timeout;
 
@@ -26,52 +25,59 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     {
         _httpClient = httpClient;
         _logger = logger;
-        _primary = LoadProfile(configuration, "Ai", configuration["Ai:Provider"] ?? "primary");
-        _fallback = LoadFallbackProfile(configuration);
-        _retryCount = Math.Clamp(configuration.GetValue("Ai:RetryCount", 1), 0, 2);
-        _timeout = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:TimeoutSeconds", 15), 3, 60));
+        _providers = LoadProfiles(configuration);
+        _retryCount = Math.Clamp(configuration.GetValue("Ai:RetryCount", 0), 0, 2);
+        _timeout = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:TimeoutSeconds", 6), 3, 60));
     }
 
-    public bool IsConfigured => _primary is not null;
+    public bool IsConfigured => _providers.Count > 0;
 
     public async Task<ZaloAiCompletionResult> CompleteAsync(
         ZaloAiCompletionRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (_primary is null)
+        if (_providers.Count == 0)
             return ZaloAiCompletionResult.NotConfigured(request.Workload);
 
         var started = Stopwatch.StartNew();
-        var primaryResult = await ExecuteProfileAsync(
-            _primary,
-            request,
-            usedFallback: false,
-            cancellationToken);
+        var totalAttempts = 0;
+        ZaloAiCompletionResult? lastResult = null;
 
-        if (primaryResult.Success || cancellationToken.IsCancellationRequested || _fallback is null)
-            return primaryResult with { Duration = started.Elapsed };
-
-        if (!ShouldFallback(primaryResult.FailureKind))
-            return primaryResult with { Duration = started.Elapsed };
-
-        _logger.LogWarning(
-            "Zalo AI workload {Workload} falling back from {PrimaryProvider}/{PrimaryModel} after {FailureKind}",
-            request.Workload,
-            primaryResult.Provider,
-            primaryResult.Model,
-            primaryResult.FailureKind);
-
-        var fallbackResult = await ExecuteProfileAsync(
-            _fallback,
-            request,
-            usedFallback: true,
-            cancellationToken);
-
-        return fallbackResult with
+        for (var providerIndex = 0; providerIndex < _providers.Count; providerIndex++)
         {
-            Attempts = primaryResult.Attempts + fallbackResult.Attempts,
-            Duration = started.Elapsed
-        };
+            var profile = _providers[providerIndex];
+            var result = await ExecuteProfileAsync(
+                profile,
+                request,
+                usedFallback: providerIndex > 0,
+                cancellationToken);
+
+            totalAttempts += result.Attempts;
+            result = result with
+            {
+                Attempts = totalAttempts,
+                Duration = started.Elapsed
+            };
+            lastResult = result;
+
+            if (result.Success || cancellationToken.IsCancellationRequested)
+                return result;
+
+            if (!ShouldFallback(result.FailureKind) || providerIndex == _providers.Count - 1)
+                return result;
+
+            var next = _providers[providerIndex + 1];
+            _logger.LogWarning(
+                "Zalo AI workload {Workload} failing over from {Provider}/{Model} to {NextProvider}/{NextModel} after {FailureKind}",
+                request.Workload,
+                result.Provider,
+                result.Model,
+                next.Name,
+                next.ResolveModel(request),
+                result.FailureKind);
+        }
+
+        return lastResult ?? ZaloAiCompletionResult.NotConfigured(request.Workload);
     }
 
     private async Task<ZaloAiCompletionResult> ExecuteProfileAsync(
@@ -204,6 +210,68 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             usedFallback);
     }
 
+    private static IReadOnlyList<ZaloAiProviderProfile> LoadProfiles(IConfiguration configuration)
+    {
+        var configuredPool = LoadConfiguredProviderPool(configuration);
+        if (configuredPool.Count > 0)
+            return configuredPool;
+
+        var legacyProfiles = new List<ZaloAiProviderProfile>(2);
+        var primary = LoadProfile(configuration, "Ai", configuration["Ai:Provider"] ?? "primary");
+        if (primary is not null)
+            legacyProfiles.Add(primary);
+
+        var fallback = LoadFallbackProfile(configuration);
+        if (fallback is not null)
+            legacyProfiles.Add(fallback);
+
+        return legacyProfiles;
+    }
+
+    private static IReadOnlyList<ZaloAiProviderProfile> LoadConfiguredProviderPool(IConfiguration configuration)
+    {
+        var sections = configuration.GetSection("Ai:Providers").GetChildren().ToArray();
+        if (sections.Length == 0)
+            return [];
+
+        var inheritedEndpoint = configuration["Ai:Endpoint"];
+        var inheritedApiKey = configuration["Ai:ApiKey"];
+        var inheritedModel = configuration["Ai:Model"];
+        var inheritedModels = LoadWorkloadModels(configuration, "Ai:Models");
+        var profiles = new List<ZaloAiProviderProfile>(sections.Length);
+        var fingerprints = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var index = 0; index < sections.Length; index++)
+        {
+            var section = sections[index];
+            var endpoint = FirstNonEmpty(section["Endpoint"], inheritedEndpoint);
+            var apiKey = FirstNonEmpty(section["ApiKey"], inheritedApiKey);
+            var model = FirstNonEmpty(section["Model"], inheritedModel);
+            if (endpoint is null || apiKey is null || model is null)
+                continue;
+
+            var workloadModels = new Dictionary<ZaloAiWorkload, string>(inheritedModels);
+            foreach (var (workload, workloadModel) in LoadWorkloadModels(configuration, $"{section.Path}:Models"))
+                workloadModels[workload] = workloadModel;
+
+            var profile = new ZaloAiProviderProfile(
+                FirstNonEmpty(section["Provider"], section["Name"]) ?? $"provider-{index + 1}",
+                endpoint,
+                apiKey,
+                model,
+                workloadModels);
+
+            // When only the legacy Render Ai__ApiKey is configured, repeated model slots would
+            // otherwise call the exact same endpoint/key/model twice. Separate per-provider keys
+            // make those slots distinct automatically.
+            var fingerprint = BuildProfileFingerprint(profile);
+            if (fingerprints.Add(fingerprint))
+                profiles.Add(profile);
+        }
+
+        return profiles;
+    }
+
     private static ZaloAiProviderProfile? LoadProfile(
         IConfiguration configuration,
         string prefix,
@@ -217,21 +285,12 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             string.IsNullOrWhiteSpace(model))
             return null;
 
-        var models = Enum.GetValues<ZaloAiWorkload>()
-            .Select(workload => new
-            {
-                Workload = workload,
-                Model = configuration[$"{prefix}:Models:{workload}"]
-            })
-            .Where(item => !string.IsNullOrWhiteSpace(item.Model))
-            .ToDictionary(item => item.Workload, item => item.Model!.Trim());
-
         return new ZaloAiProviderProfile(
             configuration[$"{prefix}:Provider"] ?? defaultName,
             endpoint.Trim(),
             apiKey.Trim(),
             model.Trim(),
-            models);
+            LoadWorkloadModels(configuration, $"{prefix}:Models"));
     }
 
     private static ZaloAiProviderProfile? LoadFallbackProfile(IConfiguration configuration)
@@ -254,6 +313,32 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             apiKey.Trim(),
             model.Trim(),
             new Dictionary<ZaloAiWorkload, string>());
+    }
+
+    private static Dictionary<ZaloAiWorkload, string> LoadWorkloadModels(
+        IConfiguration configuration,
+        string prefix) =>
+        Enum.GetValues<ZaloAiWorkload>()
+            .Select(workload => new
+            {
+                Workload = workload,
+                Model = configuration[$"{prefix}:{workload}"]
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item.Model))
+            .ToDictionary(item => item.Workload, item => item.Model!.Trim());
+
+    private static string? FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
+    private static string BuildProfileFingerprint(ZaloAiProviderProfile profile)
+    {
+        var workloadModels = string.Join(
+            "|",
+            Enum.GetValues<ZaloAiWorkload>().Select(workload =>
+                profile.WorkloadModels.TryGetValue(workload, out var model)
+                    ? $"{workload}={model}"
+                    : $"{workload}="));
+        return $"{profile.Endpoint}\u001f{profile.ApiKey}\u001f{profile.DefaultModel}\u001f{workloadModels}";
     }
 
     private static bool ShouldFallback(ZaloAiFailureKind kind) => kind is
