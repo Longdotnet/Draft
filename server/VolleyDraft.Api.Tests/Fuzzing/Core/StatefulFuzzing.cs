@@ -236,26 +236,41 @@ internal static class StatefulFuzzMinimizer
 
         // Once sequence shape is minimal, optionally shrink action payloads while preserving the
         // exact fingerprint. Targets can reduce IDs, counts, timestamps or text without teaching
-        // the generic minimizer domain-specific semantics.
+        // the generic minimizer domain-specific semantics. Re-run the shrinker from every accepted
+        // variant until no unseen candidate preserves the failure: domain shrinkers often expose
+        // only the next smaller payload (for example 100 -> 50 -> 25 -> 12 -> 11), and stopping
+        // after the first enumeration would leave a needlessly large permanent reproducer.
         if (shrinkAction is not null)
         {
             for (var index = 0; index < actions.Count; index += 1)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var current = actions[index];
+                var visited = new HashSet<TAction>(EqualityComparer<TAction>.Default) { current };
 
-                foreach (var variant in shrinkAction(current))
+                while (true)
                 {
-                    if (EqualityComparer<TAction>.Default.Equals(current, variant))
-                        continue;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var reduced = false;
 
-                    var candidateActions = actions.ToArray();
-                    candidateActions[index] = variant;
-                    if (!await PreservesFailureAsync(candidateActions))
-                        continue;
+                    foreach (var variant in shrinkAction(current))
+                    {
+                        if (!visited.Add(variant))
+                            continue;
 
-                    actions[index] = variant;
-                    current = variant;
+                        var candidateActions = actions.ToArray();
+                        candidateActions[index] = variant;
+                        if (!await PreservesFailureAsync(candidateActions))
+                            continue;
+
+                        actions[index] = variant;
+                        current = variant;
+                        reduced = true;
+                        break;
+                    }
+
+                    if (!reduced)
+                        break;
                 }
             }
         }
