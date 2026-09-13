@@ -58,7 +58,8 @@ public sealed class StatefulFuzzScenarioMinimizerTests
 
         Assert.Equal(original.FailureFingerprint, replay.FailureFingerprint);
         Assert.Equal(12, minimized.Scenario.Seed);
-        Assert.Empty(minimized.Scenario.Actions);
+        Assert.Single(minimized.Scenario.Actions);
+        Assert.Equal(new SeedAction(SeedActionKind.Increment, 1), minimized.Scenario.Actions[0]);
     }
 
     [Fact]
