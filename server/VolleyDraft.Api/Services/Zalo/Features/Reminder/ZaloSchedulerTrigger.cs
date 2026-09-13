@@ -121,6 +121,7 @@ internal sealed class ZaloSchedulerLeaseStore(
                 "OwnerId" TEXT NOT NULL,
                 "LeaseUntil" TEXT NOT NULL,
                 "AuthorityLeaseUntil" TEXT NULL,
+                "LegacyLeaseDurationSeconds" REAL NULL,
                 "LastAttemptAt" TEXT NULL,
                 "LastSuccessAt" TEXT NULL,
                 "LastFailureAt" TEXT NULL
@@ -167,11 +168,63 @@ internal sealed class ZaloSchedulerLeaseStore(
             }
         }
 
+        // Keep one durable duration basis for mixed-version compatibility. Legacy heartbeats only
+        // advance LeaseUntil; LastAttemptAt intentionally remains the cycle-start marker, so
+        // recomputing duration from those two fields would convert cycle age into extra authority.
+        var legacyDurationColumnCount = await db.Database.SqlQueryRaw<int>(
+                """
+                SELECT COUNT(*) AS "Value"
+                FROM pragma_table_info('ZaloSchedulerLeases')
+                WHERE "name" = 'LegacyLeaseDurationSeconds'
+                """)
+            .SingleAsync(cancellationToken);
+        if (legacyDurationColumnCount == 0)
+        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE \"ZaloSchedulerLeases\" ADD COLUMN \"LegacyLeaseDurationSeconds\" REAL NULL;",
+                    cancellationToken);
+            }
+            catch
+            {
+                legacyDurationColumnCount = await db.Database.SqlQueryRaw<int>(
+                        """
+                        SELECT COUNT(*) AS "Value"
+                        FROM pragma_table_info('ZaloSchedulerLeases')
+                        WHERE "name" = 'LegacyLeaseDurationSeconds'
+                        """)
+                    .SingleAsync(cancellationToken);
+                if (legacyDurationColumnCount == 0)
+                    throw;
+            }
+        }
+
+        // Capture the legacy configured lease window once, before any post-migration heartbeat can
+        // move LeaseUntil farther away from the cycle-start LastAttemptAt. Absolute legacy timestamps
+        // may be skewed, but their relative duration survives a constant instance clock offset.
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "ZaloSchedulerLeases"
+            SET "LegacyLeaseDurationSeconds" = CASE
+                WHEN "LastAttemptAt" IS NULL
+                  OR julianday("LastAttemptAt") IS NULL
+                  OR julianday("LeaseUntil") IS NULL
+                    THEN 3600.0
+                WHEN (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0 < 120.0
+                    THEN 120.0
+                WHEN (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0 > 3600.0
+                    THEN 3600.0
+                ELSE (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0
+            END
+            WHERE "LegacyLeaseDurationSeconds" IS NULL;
+            """,
+            cancellationToken);
+
         // Legacy LeaseUntil/LastAttemptAt were written from each API instance's wall clock. Their
         // absolute values are therefore not safe authority after an upgrade. Preserve only the
-        // relative lease window (which survives a constant clock offset), clamp it to the product's
-        // supported 2..60 minute lease range, and anchor the migrated authority to SQLite time.
-        // Missing/malformed legacy attempt evidence gets the conservative 60 minute handoff window.
+        // durable relative lease window, clamp it to the product's supported 2..60 minute range,
+        // and anchor the migrated authority to SQLite time.
         await db.Database.ExecuteSqlRawAsync(
             """
             UPDATE "ZaloSchedulerLeases"
@@ -181,19 +234,7 @@ internal sealed class ZaloSchedulerLeaseStore(
                 ELSE strftime(
                     '%Y-%m-%dT%H:%M:%f0000+00:00',
                     'now',
-                    printf(
-                        '+%f seconds',
-                        CASE
-                            WHEN "LastAttemptAt" IS NULL
-                              OR julianday("LastAttemptAt") IS NULL
-                              OR julianday("LeaseUntil") IS NULL
-                                THEN 3600.0
-                            WHEN (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0 < 120.0
-                                THEN 120.0
-                            WHEN (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0 > 3600.0
-                                THEN 3600.0
-                            ELSE (julianday("LeaseUntil") - julianday("LastAttemptAt")) * 86400.0
-                        END))
+                    printf('+%f seconds', COALESCE("LegacyLeaseDurationSeconds", 3600.0)))
             END
             WHERE "AuthorityLeaseUntil" IS NULL;
             """,
@@ -236,6 +277,24 @@ internal sealed class ZaloSchedulerLeaseStore(
             await migration.CommitAsync(cancellationToken);
         }
 
+        // Replace the older authority bridge once so mixed-version heartbeats use the durable
+        // configured-duration basis instead of deriving a growing window from cycle-start time.
+        var staleLegacyAuthorityBridgeCount = await db.Database.SqlQueryRaw<int>(
+                """
+                SELECT COUNT(*) AS "Value"
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'ZaloSchedulerLegacyAuthorityBridge'
+                  AND sql NOT LIKE '%LegacyLeaseDurationSeconds%'
+                """)
+            .SingleAsync(cancellationToken);
+        if (staleLegacyAuthorityBridgeCount > 0)
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "DROP TRIGGER IF EXISTS \"ZaloSchedulerLegacyAuthorityBridge\";",
+                cancellationToken);
+        }
+
         // Rolling upgrades can briefly run a pre-authority worker beside a new worker. Old code
         // changes OwnerId/LeaseUntil without touching AuthorityLeaseUntil. Fence an old fast-clock
         // takeover while the DB-clock authority is live, reject a same-owner legacy renewal after
@@ -276,22 +335,41 @@ internal sealed class ZaloSchedulerLeaseStore(
               AND (NEW."OwnerId" <> OLD."OwnerId" OR NEW."LeaseUntil" <> OLD."LeaseUntil")
             BEGIN
                 UPDATE "ZaloSchedulerLeases"
-                SET "AuthorityLeaseUntil" = strftime(
-                    '%Y-%m-%dT%H:%M:%f0000+00:00',
-                    'now',
-                    printf(
-                        '+%f seconds',
-                        CASE
-                            WHEN NEW."LastAttemptAt" IS NULL
-                              OR julianday(NEW."LastAttemptAt") IS NULL
-                              OR julianday(NEW."LeaseUntil") IS NULL
-                                THEN 3600.0
-                            WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 < 120.0
-                                THEN 120.0
-                            WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 > 3600.0
-                                THEN 3600.0
-                            ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
-                        END))
+                SET "LegacyLeaseDurationSeconds" = CASE
+                        WHEN NEW."OwnerId" <> OLD."OwnerId" THEN
+                            CASE
+                                WHEN NEW."LastAttemptAt" IS NULL
+                                  OR julianday(NEW."LastAttemptAt") IS NULL
+                                  OR julianday(NEW."LeaseUntil") IS NULL
+                                    THEN 3600.0
+                                WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 < 120.0
+                                    THEN 120.0
+                                WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 > 3600.0
+                                    THEN 3600.0
+                                ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
+                            END
+                        ELSE COALESCE(OLD."LegacyLeaseDurationSeconds", 3600.0)
+                    END,
+                    "AuthorityLeaseUntil" = strftime(
+                        '%Y-%m-%dT%H:%M:%f0000+00:00',
+                        'now',
+                        printf(
+                            '+%f seconds',
+                            CASE
+                                WHEN NEW."OwnerId" <> OLD."OwnerId" THEN
+                                    CASE
+                                        WHEN NEW."LastAttemptAt" IS NULL
+                                          OR julianday(NEW."LastAttemptAt") IS NULL
+                                          OR julianday(NEW."LeaseUntil") IS NULL
+                                            THEN 3600.0
+                                        WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 < 120.0
+                                            THEN 120.0
+                                        WHEN (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0 > 3600.0
+                                            THEN 3600.0
+                                        ELSE (julianday(NEW."LeaseUntil") - julianday(NEW."LastAttemptAt")) * 86400.0
+                                    END
+                                ELSE COALESCE(OLD."LegacyLeaseDurationSeconds", 3600.0)
+                            END))
                 WHERE "Name" = NEW."Name"
                   AND "OwnerId" = NEW."OwnerId"
                   AND "AuthorityLeaseUntil" = OLD."AuthorityLeaseUntil";
@@ -329,13 +407,15 @@ internal sealed class ZaloSchedulerLeaseStore(
         var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
         var authorityNowText = authorityNow.ToUniversalTime().ToString("O");
         var authorityLeaseUntilText = authorityNow.Add(leaseDuration).ToUniversalTime().ToString("O");
+        var leaseDurationSeconds = leaseDuration.TotalSeconds;
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
-            INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "AuthorityLeaseUntil", "LastAttemptAt")
-            VALUES ({{LeaseName}}, {{ownerId}}, {{leaseUntilText}}, {{authorityLeaseUntilText}}, {{nowText}})
+            INSERT INTO "ZaloSchedulerLeases" ("Name", "OwnerId", "LeaseUntil", "AuthorityLeaseUntil", "LegacyLeaseDurationSeconds", "LastAttemptAt")
+            VALUES ({{LeaseName}}, {{ownerId}}, {{leaseUntilText}}, {{authorityLeaseUntilText}}, {{leaseDurationSeconds}}, {{nowText}})
             ON CONFLICT ("Name") DO UPDATE SET
                 "OwnerId" = excluded."OwnerId",
                 "LeaseUntil" = excluded."LeaseUntil",
                 "AuthorityLeaseUntil" = excluded."AuthorityLeaseUntil",
+                "LegacyLeaseDurationSeconds" = excluded."LegacyLeaseDurationSeconds",
                 "LastAttemptAt" = CASE
                     WHEN "ZaloSchedulerLeases"."OwnerId" = excluded."OwnerId"
                         THEN "ZaloSchedulerLeases"."LastAttemptAt"
@@ -363,10 +443,12 @@ internal sealed class ZaloSchedulerLeaseStore(
         var leaseUntilText = now.Add(leaseDuration).ToUniversalTime().ToString("O");
         var authorityNowText = authorityNow.ToUniversalTime().ToString("O");
         var authorityLeaseUntilText = authorityNow.Add(leaseDuration).ToUniversalTime().ToString("O");
+        var leaseDurationSeconds = leaseDuration.TotalSeconds;
         var affected = await db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "ZaloSchedulerLeases"
             SET "LeaseUntil" = {{leaseUntilText}},
-                "AuthorityLeaseUntil" = {{authorityLeaseUntilText}}
+                "AuthorityLeaseUntil" = {{authorityLeaseUntilText}},
+                "LegacyLeaseDurationSeconds" = {{leaseDurationSeconds}}
             WHERE "Name" = {{LeaseName}}
               AND "OwnerId" = {{ownerId}}
               AND "AuthorityLeaseUntil" > {{authorityNowText}};
