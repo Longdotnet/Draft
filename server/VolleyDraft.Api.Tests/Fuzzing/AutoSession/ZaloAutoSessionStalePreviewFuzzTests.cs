@@ -73,8 +73,60 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
         Assert.Equal(1, target.LastState.SuccessfulConfirmations);
     }
 
+    [Fact]
+    public async Task Delayed_confirmation_after_match_start_must_fail_closed_even_when_poll_is_unchanged()
+    {
+        var scenario = new StatefulFuzzCase<AutoSessionAction>(
+            "auto-session-preview-midnight-delay-confirm",
+            20260913,
+            [
+                new(AutoSessionActionKind.Preview),
+                new(AutoSessionActionKind.AdvancePastStart),
+                new(AutoSessionActionKind.Confirm)
+            ]);
+        var target = new AutoSessionStalePreviewTarget();
+
+        var result = await StatefulFuzzRunner.RunAsync(scenario, target);
+
+        Assert.False(result.Failed, Describe(result));
+        Assert.Equal(1, target.LastState!.RejectedConfirmations);
+        Assert.Equal(0, target.LastState.SuccessfulConfirmations);
+    }
+
+    [Fact]
+    public async Task Temporal_mutations_never_allow_a_preview_to_create_after_its_selected_start_time()
+    {
+        var temporalSeed = new AutoSessionAction[]
+        {
+            new(AutoSessionActionKind.Preview),
+            new(AutoSessionActionKind.AdvancePastStart),
+            new(AutoSessionActionKind.Confirm)
+        };
+
+        for (var seed = 1; seed <= 128; seed += 1)
+        {
+            var actions = StatefulSequenceMutator.Mutate(
+                temporalSeed,
+                seed,
+                CreateTemporalAction,
+                operationCount: 5);
+            var scenario = new StatefulFuzzCase<AutoSessionAction>(
+                $"auto-session-delayed-confirm-{seed}",
+                seed,
+                actions);
+            var target = new AutoSessionStalePreviewTarget();
+
+            var result = await StatefulFuzzRunner.RunAsync(scenario, target);
+
+            Assert.False(result.Failed, Describe(result));
+        }
+    }
+
     private static AutoSessionAction CreateAction(StableFuzzRandom random) =>
         new((AutoSessionActionKind)random.NextInt(Enum.GetValues<AutoSessionActionKind>().Length));
+
+    private static AutoSessionAction CreateTemporalAction(StableFuzzRandom random) =>
+        new(random.NextBool() ? AutoSessionActionKind.AdvancePastStart : AutoSessionActionKind.Confirm);
 
     private static string Describe(StatefulFuzzRunResult<AutoSessionAction> result) =>
         $"seed={result.Scenario.Seed}; fingerprint={result.FailureFingerprint ?? "none"}; " +
@@ -87,6 +139,7 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
         Preview,
         EditPoll,
         RestorePoll,
+        AdvancePastStart,
         Confirm
     }
 
@@ -95,6 +148,7 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
     internal sealed class AutoSessionFuzzState
     {
         public string OptionText { get; set; } = OriginalOption;
+        public DateTimeOffset ExecutionNow { get; set; } = PreviewNow;
         public ZaloAutoSessionCandidate? PreviewCandidate { get; set; }
         public bool? LastConfirmationAccepted { get; set; }
         public bool? LastConfirmationExpectedFresh { get; set; }
@@ -129,7 +183,7 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
                     var extraction = ZaloPollScheduleParser.ExtractSchedule(
                         BuildPoll(state.OptionText),
                         new ZaloTrackedGroupData(),
-                        Now);
+                        state.ExecutionNow);
                     state.PreviewCandidate = extraction.Candidates.SingleOrDefault();
                     state.LastConfirmationAccepted = null;
                     state.LastConfirmationExpectedFresh = null;
@@ -140,6 +194,9 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
                     break;
                 case AutoSessionActionKind.RestorePoll:
                     state.OptionText = OriginalOption;
+                    break;
+                case AutoSessionActionKind.AdvancePastStart:
+                    state.ExecutionNow = MatchStart.AddMinutes(1);
                     break;
                 case AutoSessionActionKind.Confirm:
                     Confirm(state);
@@ -159,8 +216,10 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
             {
                 yield return new StatefulInvariantViolation(
                     "auto-session",
-                    "preview-provenance-must-match-current-poll",
-                    $"confirmation accepted={state.LastConfirmationAccepted} while sourceFresh={state.LastConfirmationExpectedFresh}");
+                    state.PreviewCandidate is not null && state.ExecutionNow >= state.PreviewCandidate.StartTime
+                        ? "expired-preview-must-not-execute"
+                        : "preview-provenance-must-match-current-poll",
+                    $"confirmation accepted={state.LastConfirmationAccepted} while expectedFresh={state.LastConfirmationExpectedFresh}; now={state.ExecutionNow:O}; start={state.PreviewCandidate?.StartTime:O}");
             }
         }
 
@@ -174,10 +233,11 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
             }
 
             var poll = BuildPoll(state.OptionText);
-            state.LastConfirmationExpectedFresh = ZaloPollScheduleParser.ValidateCandidateConsistency(
+            var sourceFresh = ZaloPollScheduleParser.ValidateCandidateConsistency(
                 poll,
                 state.PreviewCandidate,
                 out _);
+            state.LastConfirmationExpectedFresh = sourceFresh && state.PreviewCandidate.StartTime > state.ExecutionNow;
 
             try
             {
@@ -197,15 +257,17 @@ public sealed class ZaloAutoSessionStalePreviewFuzzTests
     }
 
     private static readonly DateTimeOffset Created =
-        new(2026, 9, 5, 20, 0, 0, VietnamOffset);
-    private static readonly DateTimeOffset Now =
-        new(2026, 9, 5, 21, 0, 0, VietnamOffset);
-    private const string OriginalOption = "CN 13/9 17:45";
-    private const string EditedOption = "CN 20/9 17:45";
+        new(2026, 9, 13, 22, 30, 0, VietnamOffset);
+    private static readonly DateTimeOffset PreviewNow =
+        new(2026, 9, 13, 23, 50, 0, VietnamOffset);
+    private static readonly DateTimeOffset MatchStart =
+        new(2026, 9, 14, 0, 5, 0, VietnamOffset);
+    private const string OriginalOption = "T2 14/9 00:05";
+    private const string EditedOption = "T2 21/9 00:05";
 
     private static BridgePoll BuildPoll(string optionText) => new(
         "poll-fuzz-auto-session-stale-preview",
-        "Vote sân UTE tuần sau. Max 18 slots/sân. 17:45-22:00",
+        "Vote sân UTE. Max 18 slots/sân. 00:05-02:00",
         "leader-1",
         [new BridgePollOption("o1", optionText, 2, [])],
         true,
