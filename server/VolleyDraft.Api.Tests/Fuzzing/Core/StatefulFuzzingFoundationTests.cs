@@ -140,6 +140,30 @@ public sealed class StatefulFuzzingFoundationTests
     }
 
     [Fact]
+    public async Task Minimizer_reapplies_payload_shrinker_until_reproducer_reaches_a_fixed_point()
+    {
+        var scenario = new StatefulFuzzCase<CounterAction>(
+            "counter-payload-fixed-point",
+            20260913,
+            [new CounterAction(CounterActionKind.Add, 100)]);
+        var target = new CounterTarget();
+
+        var result = await StatefulFuzzMinimizer.MinimizeWithReportAsync(
+            scenario,
+            target,
+            "counter:max-value",
+            action => action.Kind != CounterActionKind.Add || action.Amount <= 1
+                ? []
+                : [action with { Amount = Math.Max(1, action.Amount / 2) }]);
+        var replay = await StatefulFuzzRunner.RunAsync(result.Scenario, target);
+
+        Assert.Equal("counter:max-value", replay.FailureFingerprint);
+        Assert.Single(result.Scenario.Actions);
+        Assert.Equal(new CounterAction(CounterActionKind.Add, 12), result.Scenario.Actions[0]);
+        Assert.True(result.ReplayCount >= 4);
+    }
+
+    [Fact]
     public async Task Minimizer_does_not_accept_a_different_failure_fingerprint()
     {
         var scenario = new StatefulFuzzCase<CounterAction>(
