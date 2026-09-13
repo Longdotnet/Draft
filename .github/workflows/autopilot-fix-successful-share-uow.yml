@@ -178,8 +178,10 @@ jobs:
               foreach (var property in entry.Properties)
               {
                   var propertyName = property.Metadata.Name;
-                  if (snapshot.State == EntityState.Modified &&
-                      !snapshot.ModifiedProperties.Contains(propertyName) &&
+                  var callerModified = snapshot.State == EntityState.Modified &&
+                                       snapshot.ModifiedProperties.Contains(propertyName);
+                  if (!callerModified &&
+                      snapshot.State == EntityState.Modified &&
                       committedValues is not null &&
                       committedValues.TryGetValue(propertyName, out var committedValue))
                   {
@@ -188,12 +190,12 @@ jobs:
                   }
                   else
                   {
-                      if (snapshot.CurrentValues.TryGetValue(propertyName, out var currentValue))
-                          property.CurrentValue = currentValue;
                       if (snapshot.OriginalValues.TryGetValue(propertyName, out var originalValue))
                           property.OriginalValue = originalValue;
+                      if (snapshot.CurrentValues.TryGetValue(propertyName, out var currentValue))
+                          property.CurrentValue = currentValue;
                   }
-                  property.IsModified = false;
+                  property.IsModified = callerModified;
               }
 
               if (snapshot.State == EntityState.Deleted)
@@ -202,13 +204,8 @@ jobs:
                   return;
               }
 
-              if (snapshot.State == EntityState.Modified)
-              {
-                  foreach (var propertyName in snapshot.ModifiedProperties)
-                      entry.Property(propertyName).IsModified = true;
-                  if (snapshot.ModifiedProperties.Count == 0)
-                      entry.State = EntityState.Modified;
-              }
+              if (snapshot.State == EntityState.Modified && snapshot.ModifiedProperties.Count == 0)
+                  entry.State = EntityState.Modified;
           }
 
           private sealed record TrackedEntrySnapshot(
