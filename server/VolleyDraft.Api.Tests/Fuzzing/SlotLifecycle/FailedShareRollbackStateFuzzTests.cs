@@ -59,6 +59,53 @@ public sealed class FailedShareRollbackStateFuzzTests
     }
 
     [Fact]
+    public async Task Failed_share_must_preserve_preexisting_added_and_deleted_entries()
+    {
+        await using var state = new FailedShareState();
+        var deletedId = $"pending-delete-{Guid.NewGuid():N}";
+        var addedId = $"pending-add-{Guid.NewGuid():N}";
+        var deleted = new User
+        {
+            Id = deletedId,
+            DisplayName = "Persisted before rejected share",
+            Email = $"{deletedId}@example.test",
+            PasswordHash = "test"
+        };
+        state.Db.Users.Add(deleted);
+        await state.Db.SaveChangesAsync();
+
+        state.Db.Users.Add(new User
+        {
+            Id = addedId,
+            DisplayName = "Pending add before rejected share",
+            Email = $"{addedId}@example.test",
+            PasswordHash = "test"
+        });
+        state.Db.Users.Remove(deleted);
+
+        var service = new SessionDraftService(state.Db);
+        var rejected = await service.SharePreDraftSlotAsync(
+            state.AdminId,
+            state.SessionId,
+            "Anchor",
+            [
+                new ShareSlotParticipantInput("Returning"),
+                new ShareSlotParticipantInput("Anchor")
+            ]);
+
+        Assert.False(rejected.IsSuccess);
+        await state.Db.SaveChangesAsync();
+        await state.RestartAsync();
+
+        Assert.True(await state.Db.Users.AsNoTracking().AnyAsync(user => user.Id == addedId));
+        Assert.False(await state.Db.Users.AsNoTracking().AnyAsync(user => user.Id == deletedId));
+        Assert.False(await state.Db.SessionPlayers.AsNoTracking()
+            .Where(player => player.Id == state.ReturningId)
+            .Select(player => player.IsPresent)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Stateful_failure_restart_and_save_mutations_preserve_failed_share_atomicity()
     {
         for (var seed = 1; seed <= 128; seed += 1)
