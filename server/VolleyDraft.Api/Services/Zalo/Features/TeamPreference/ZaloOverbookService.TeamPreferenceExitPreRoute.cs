@@ -19,10 +19,9 @@ public sealed partial class ZaloOverbookService
     private const string TeamPreferenceExitAppliedIntent = "TeamPreferenceExitApplied";
 
     /// <summary>
-    /// Owns only the consent-removal lane for an existing TeamPreference group.
-    /// AI can suggest that a natural complaint means "maybe I want out", but the
-    /// authoritative group, identity, privilege, preview and confirmation are all
-    /// deterministic and revalidated before any write.
+    /// Consent-removal lane for an existing TeamPreference group.
+    /// AI may only suggest meaning/target for a preview. Stable identity, group ownership,
+    /// lifecycle, authorization, confirmation and mutation remain deterministic.
     /// </summary>
     private async Task<bool> TryHandleTeamPreferenceExitPreRouteAsync(
         ZaloIncomingMessageEvent incoming,
@@ -54,7 +53,8 @@ public sealed partial class ZaloOverbookService
             item.ZaloConnectionId == connection.Id && item.MessageId == incoming.MessageId,
             cancellationToken);
         if (existingIncoming?.BotReplySentAt is not null &&
-            existingIncoming.SelectedIntent is TeamPreferenceExitPendingIntent or TeamPreferenceExitAppliedIntent)
+            (existingIncoming.SelectedIntent == TeamPreferenceExitPendingIntent ||
+             existingIncoming.SelectedIntent == TeamPreferenceExitAppliedIntent))
             return true;
 
         var now = DateTimeOffset.UtcNow;
@@ -72,21 +72,19 @@ public sealed partial class ZaloOverbookService
 
         if (pending is not null && IsTeamPreferenceExitState(pending.PendingIntent))
         {
-            var handledPending = await TryContinueTeamPreferenceExitAsync(
-                connection.Id,
-                connection.AccountZaloId,
-                connection.DisplayName,
-                groupId,
-                senderId,
-                pending,
-                incoming,
-                cancellationToken);
-            if (handledPending) return true;
+            if (await TryContinueTeamPreferenceExitAsync(
+                    connection.Id,
+                    connection.AccountZaloId,
+                    connection.DisplayName,
+                    groupId,
+                    senderId,
+                    pending,
+                    incoming,
+                    cancellationToken))
+                return true;
 
-            // A fresh unrelated turn must not be swallowed by an old custom preview.
-            // Revoke only this feature's pending authority and allow normal routing.
-            var looksLikeFreshExit = ZaloTeamPreferenceExitSemanticInterpreter.LooksPotentialExitLanguage(incoming.Content);
-            if (!looksLikeFreshExit)
+            // Do not let a stale pending exit swallow a fresh unrelated command.
+            if (!ZaloTeamPreferenceExitSemanticInterpreter.LooksPotentialExitLanguage(incoming.Content))
             {
                 db.ZaloBotConversationStates.Remove(pending);
                 await db.SaveChangesAsync(cancellationToken);
@@ -111,8 +109,8 @@ public sealed partial class ZaloOverbookService
         ZaloTeamPreferenceExitMeaningDecision semantic;
         var aiCalled = false;
 
-        // Explicit direct negation plus one verified member mention is already
-        // deterministic enough to preview without spending an AI call.
+        // Explicit negation + one authoritative member mention is safe to understand
+        // deterministically. It still produces only a preview, never an immediate write.
         if (directNegation && mentions.Count == 1 &&
             candidates.Any(candidate => candidate.Members.Any(member =>
                 member.ZaloUserId == ZaloOverbookLogic.NormalizeId(mentions[0].ZaloUserId))))
@@ -140,6 +138,7 @@ public sealed partial class ZaloOverbookService
                 recentIds,
                 8,
                 cancellationToken);
+            aiCalled = true;
             semantic = await new ZaloTeamPreferenceExitSemanticInterpreter(configuration, logger)
                 .InterpretAsync(
                     connection.Id,
@@ -150,24 +149,20 @@ public sealed partial class ZaloOverbookService
                     candidates,
                     mentions,
                     cancellationToken);
-            aiCalled = !semantic.Reason.StartsWith("team_preference_exit_ai_", StringComparison.Ordinal) &&
-                       semantic.Reason != "not_exit_shaped";
         }
 
         if (semantic.Kind != ZaloTeamPreferenceExitMeaningKind.SuggestExit || semantic.Confidence < .65)
         {
-            if (directNegation)
-            {
-                var guidance = mentions.Count == 0
-                    ? "Mình hiểu bạn đang muốn đổi yêu cầu chung team, nhưng chưa xác định chắc người nào. Hãy @mention đúng người hoặc nói ‘tui muốn rời nhóm chung team’ để mình dựng preview; chưa có dữ liệu nào bị đổi."
-                    : "Mình hiểu bạn đang muốn đổi yêu cầu chung team nhưng chưa đủ chắc để chọn đúng nhóm/người. Nói rõ hơn giúp mình; chưa có dữ liệu nào bị đổi.";
-                await SendTeamPreferenceExitReplyAsync(
-                    connection.Id, connection.AccountZaloId, connection.DisplayName,
-                    groupId, incoming, guidance, TeamPreferenceExitPendingIntent,
-                    aiCalled, "needs_clarification", cancellationToken);
-                return true;
-            }
-            return false;
+            if (!directNegation) return false;
+
+            var guidance = mentions.Count == 0
+                ? "Mình hiểu bạn đang muốn đổi yêu cầu chung team, nhưng chưa xác định chắc người nào. Hãy @mention đúng người hoặc nói ‘tui muốn rời nhóm chung team’; chưa có dữ liệu nào bị đổi."
+                : "Mình hiểu bạn đang muốn đổi yêu cầu chung team nhưng chưa đủ chắc để chọn đúng nhóm/người. Nói rõ hơn giúp mình; chưa có dữ liệu nào bị đổi.";
+            await SendTeamPreferenceExitReplyAsync(
+                connection.Id, connection.AccountZaloId, connection.DisplayName,
+                groupId, incoming, guidance, TeamPreferenceExitPendingIntent,
+                aiCalled, "needs_clarification", cancellationToken);
+            return true;
         }
 
         var sessionSelector = semantic.SessionReference;
@@ -186,15 +181,12 @@ public sealed partial class ZaloOverbookService
             out var clarification);
         if (plan is null)
         {
-            if (!string.IsNullOrWhiteSpace(clarification))
-            {
-                await SendTeamPreferenceExitReplyAsync(
-                    connection.Id, connection.AccountZaloId, connection.DisplayName,
-                    groupId, incoming, clarification!, TeamPreferenceExitPendingIntent,
-                    aiCalled, "grounding_clarification", cancellationToken);
-                return true;
-            }
-            return false;
+            if (string.IsNullOrWhiteSpace(clarification)) return false;
+            await SendTeamPreferenceExitReplyAsync(
+                connection.Id, connection.AccountZaloId, connection.DisplayName,
+                groupId, incoming, clarification!, TeamPreferenceExitPendingIntent,
+                aiCalled, "grounding_clarification", cancellationToken);
+            return true;
         }
 
         var preview = BuildTeamPreferenceExitPreview(plan, semantic.TargetDisplayName);
@@ -237,7 +229,6 @@ public sealed partial class ZaloOverbookService
             return false;
         }
 
-        // Exact webhook replay of the source preview is safe and idempotent.
         if (!payload.Applied && string.Equals(payload.Plan.SourceMessageId, incoming.MessageId, StringComparison.Ordinal))
         {
             await SendTeamPreferenceExitReplyAsync(
@@ -318,13 +309,16 @@ public sealed partial class ZaloOverbookService
 
         var response = BuildTeamPreferenceExitAppliedResponse(payload.Plan, applied.Value);
         var appliedPayload = payload with { Applied = true, AppliedResponse = response };
+        var appliedPayloadJson = JsonSerializer.Serialize(appliedPayload);
+        var appliedAt = DateTimeOffset.UtcNow;
+        var appliedExpiresAt = appliedAt.AddMinutes(10);
         await db.ZaloBotConversationStates
             .Where(item => item.Id == pending.Id)
             .ExecuteUpdateAsync(update => update
                 .SetProperty(item => item.PendingIntent, TeamPreferenceExitAppliedIntent)
-                .SetProperty(item => item.PendingPayloadJson, JsonSerializer.Serialize(appliedPayload))
-                .SetProperty(item => item.ExpiresAt, DateTimeOffset.UtcNow.AddMinutes(10))
-                .SetProperty(item => item.UpdatedAt, DateTimeOffset.UtcNow), cancellationToken);
+                .SetProperty(item => item.PendingPayloadJson, appliedPayloadJson)
+                .SetProperty(item => item.ExpiresAt, appliedExpiresAt)
+                .SetProperty(item => item.UpdatedAt, appliedAt), cancellationToken);
 
         var sent = await TrySendTeamPreferenceExitReplyAsync(
             connectionId, accountId, botName, groupId, incoming,
@@ -362,6 +356,7 @@ public sealed partial class ZaloOverbookService
             };
             db.ZaloBotConversationStates.Add(state);
         }
+
         state.PendingIntent = TeamPreferenceExitPendingIntent;
         state.PendingPayloadJson = JsonSerializer.Serialize(payload);
         state.PreviousCommand = "TeamPreferenceExit";
@@ -371,7 +366,7 @@ public sealed partial class ZaloOverbookService
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task SendTeamPreferenceExitReplyAsync(
+    private Task SendTeamPreferenceExitReplyAsync(
         string connectionId,
         string accountId,
         string botName,
@@ -381,12 +376,10 @@ public sealed partial class ZaloOverbookService
         string intent,
         bool aiCalled,
         string outcome,
-        CancellationToken cancellationToken)
-    {
-        await TrySendTeamPreferenceExitReplyAsync(
+        CancellationToken cancellationToken) =>
+        TrySendTeamPreferenceExitReplyAsync(
             connectionId, accountId, botName, groupId, incoming,
             text, intent, aiCalled, outcome, cancellationToken);
-    }
 
     private async Task<bool> TrySendTeamPreferenceExitReplyAsync(
         string connectionId,
@@ -402,6 +395,7 @@ public sealed partial class ZaloOverbookService
     {
         var stored = await EnsureV2IncomingMessageAsync(connectionId, groupId, incoming, cancellationToken);
         if (stored.BotReplySentAt is not null) return true;
+
         var idempotencyKey = $"team-preference-exit:{accountId}:{incoming.MessageId}:{outcome}";
         try
         {
@@ -434,10 +428,11 @@ public sealed partial class ZaloOverbookService
                     cancellationToken);
             }
 
+            var repliedAt = DateTimeOffset.UtcNow;
             await db.ZaloGroupMessages
                 .Where(item => item.ZaloConnectionId == connectionId && item.MessageId == incoming.MessageId)
                 .ExecuteUpdateAsync(update => update
-                    .SetProperty(item => item.BotReplySentAt, DateTimeOffset.UtcNow)
+                    .SetProperty(item => item.BotReplySentAt, repliedAt)
                     .SetProperty(item => item.SelectedIntent, intent)
                     .SetProperty(item => item.AiCalled, aiCalled)
                     .SetProperty(item => item.ReplyOutcome, $"team_preference_exit_{outcome}")
@@ -453,8 +448,8 @@ public sealed partial class ZaloOverbookService
                     Intent: intent,
                     Confidence: 1,
                     AiCalled: aiCalled,
-                    ReplyMessageId: persistedReplyId,
-                    FallbackReason: outcome),
+                    FallbackReason: outcome,
+                    ReplyMessageId: persistedReplyId),
                 cancellationToken);
             return true;
         }
@@ -484,6 +479,7 @@ public sealed partial class ZaloOverbookService
         var remaining = plan.RemainingMemberNames.Count >= 2
             ? $" Nhóm còn lại nếu áp dụng: {string.Join(", ", plan.RemainingMemberNames)}."
             : " Nếu áp dụng, ràng buộc nhóm chung team này sẽ được xoá vì còn dưới 2 người.";
+
         if (plan.Action == ZaloTeamPreferenceExitAction.RemoveTarget)
         {
             return $"Mình hiểu bạn có vẻ không muốn tiếp tục chung team với {plan.RemoveDisplayName} trong {plan.SessionName}. " +
@@ -569,5 +565,7 @@ public sealed partial class ZaloOverbookService
     }
 
     private static bool IsTeamPreferenceExitState(string? intent) =>
-        intent is TeamPreferenceExitPendingIntent or TeamPreferenceExitApplyingIntent or TeamPreferenceExitAppliedIntent;
+        intent == TeamPreferenceExitPendingIntent ||
+        intent == TeamPreferenceExitApplyingIntent ||
+        intent == TeamPreferenceExitAppliedIntent;
 }
