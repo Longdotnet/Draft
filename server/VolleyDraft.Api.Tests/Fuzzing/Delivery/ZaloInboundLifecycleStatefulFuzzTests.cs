@@ -88,6 +88,9 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
         public int AcceptedClaims { get; set; }
         public int DuplicateClaims { get; set; }
         public int RestartCount { get; set; }
+        public string? FirstObservedContent { get; set; }
+        public string? FirstObservedSenderId { get; set; }
+        public long? FirstObservedSentAtUnixMs { get; set; }
         public string? ViolationId { get; set; }
         public string? ViolationMessage { get; set; }
     }
@@ -97,9 +100,6 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
         private readonly SqliteConnection _anchor;
         private readonly DbContextOptions<VolleyDraftDbContext> _options;
         private readonly ZaloIncomingMessageEvent _incoming;
-        private readonly string _originalContent;
-        private readonly string _originalSenderId;
-        private readonly long _originalSentAtUnixMs;
         private int _attempt;
 
         public InboundLifecycleTarget(int seed)
@@ -113,9 +113,9 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
 
             SeedTrackedGroup(seed);
 
-            _originalContent = seed % 2 == 0 ? "@Npc 9" : "claim slot";
-            _originalSenderId = $"u-{seed}";
-            _originalSentAtUnixMs = new DateTimeOffset(2026, 9, 14, 0, 0, 0, TimeSpan.Zero)
+            var originalContent = seed % 2 == 0 ? "@Npc 9" : "claim slot";
+            var originalSenderId = $"u-{seed}";
+            var originalSentAtUnixMs = new DateTimeOffset(2026, 9, 14, 0, 0, 0, TimeSpan.Zero)
                 .AddSeconds(seed)
                 .ToUnixTimeMilliseconds();
             _incoming = new ZaloIncomingMessageEvent(
@@ -123,12 +123,12 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
                 "bot-account",
                 "g1",
                 $"lifecycle-{seed}",
-                _originalSenderId,
-                _originalSenderId,
-                _originalContent,
+                originalSenderId,
+                originalSenderId,
+                originalContent,
                 [],
                 seed % 2 == 0,
-                _originalSentAtUnixMs);
+                originalSentAtUnixMs);
         }
 
         public string Name => "inbound-lifecycle-state-machine";
@@ -202,9 +202,20 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
                 yield break;
 
             var row = rows[0];
-            if (!string.Equals(row.Content, _originalContent, StringComparison.Ordinal) ||
-                !string.Equals(row.SenderId, _originalSenderId, StringComparison.Ordinal) ||
-                row.SentAt.ToUnixTimeMilliseconds() != _originalSentAtUnixMs)
+            if (state.FirstObservedContent is null ||
+                state.FirstObservedSenderId is null ||
+                state.FirstObservedSentAtUnixMs is null)
+            {
+                yield return new StatefulInvariantViolation(
+                    "idempotency",
+                    "durable-inbound-row-missing-first-observation-oracle",
+                    "a durable row exists before the harness captured the accepted first observation");
+                yield break;
+            }
+
+            if (!string.Equals(row.Content, state.FirstObservedContent, StringComparison.Ordinal) ||
+                !string.Equals(row.SenderId, state.FirstObservedSenderId, StringComparison.Ordinal) ||
+                row.SentAt.ToUnixTimeMilliseconds() != state.FirstObservedSentAtUnixMs.Value)
             {
                 yield return new StatefulInvariantViolation(
                     "idempotency",
@@ -253,6 +264,12 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
             {
                 state.AcceptedClaims += 1;
                 state.ExpectedClaimable = false;
+                if (state.FirstObservedContent is null)
+                {
+                    state.FirstObservedContent = incoming.Content.Trim();
+                    state.FirstObservedSenderId = incoming.SenderId.Trim();
+                    state.FirstObservedSentAtUnixMs = incoming.SentAtUnixMs;
+                }
             }
             else if (claim.IsDuplicate)
             {
