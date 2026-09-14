@@ -1231,68 +1231,110 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         string sessionId,
         CreateSharedSlotRequest request)
     {
-        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
-        if (session is null)
-        {
-            return NotFound<SharedSlotResponse>("Không tìm thấy session.");
-        }
-
-        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
-        {
-            return BadRequest<SharedSlotResponse>("Không thể tạo slot thay phiên sau khi draft đã bắt đầu.");
-        }
-
         var playerIds = request.SessionPlayerIds.Distinct().ToList();
         if (playerIds.Count < 2)
         {
             return BadRequest<SharedSlotResponse>("Slot thay phiên cần ít nhất 2 người chơi.");
         }
 
-        var players = await db.SessionPlayers
-            .Where(player => player.SessionId == sessionId && playerIds.Contains(player.Id))
-            .ToListAsync();
-
-        if (players.Count != playerIds.Count)
+        // This command can share a DbContext with unrelated caller-owned pending work. Isolate
+        // durable ownership claims so a losing race cannot leak tracked values into a later save.
+        var callerTrackedState = CaptureTrackedState();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var committed = false;
+        try
         {
-            return BadRequest<SharedSlotResponse>("Một hoặc nhiều người chơi không thuộc session này.");
-        }
+            SuspendCallerPendingState(callerTrackedState);
 
-        if (players.Any(player => !player.IsPresent || player.IsInsideSharedSlot))
-        {
-            return BadRequest<SharedSlotResponse>("Người chơi phải có mặt và chưa nằm trong slot thay phiên khác.");
-        }
-
-        var slot = new DraftSlot
-        {
-            SessionId = sessionId,
-            Type = DraftSlotType.Shared,
-            DisplayName = string.Join(" / ", players.Select(player => player.DisplayName)),
-            Role = request.Role,
-            Gender = players.Any(player => player.Gender == PlayerGender.Female)
-                ? PlayerGender.Female
-                : players.Any(player => player.Gender == PlayerGender.Unknown)
-                    ? PlayerGender.Unknown
-                    : PlayerGender.Male,
-            AverageScore = players.Average(player => player.Score)
-        };
-
-        for (var index = 0; index < players.Count; index += 1)
-        {
-            slot.Players.Add(new DraftSlotPlayer
+            var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+            if (session is null)
             {
-                DraftSlotId = slot.Id,
-                SessionPlayerId = players[index].Id,
-                SessionPlayer = players[index],
-                RotationOrder = index + 1
-            });
-            players[index].IsInsideSharedSlot = true;
+                return NotFound<SharedSlotResponse>("Không tìm thấy session.");
+            }
+
+            if (session.Status is SessionStatus.Drafting or SessionStatus.Finished)
+            {
+                return BadRequest<SharedSlotResponse>("Không thể tạo slot thay phiên sau khi draft đã bắt đầu.");
+            }
+
+            var players = await db.SessionPlayers
+                .Where(player => player.SessionId == sessionId && playerIds.Contains(player.Id))
+                .ToListAsync();
+
+            if (players.Count != playerIds.Count)
+            {
+                return BadRequest<SharedSlotResponse>("Một hoặc nhiều người chơi không thuộc session này.");
+            }
+
+            if (players.Any(player => !player.IsPresent))
+            {
+                return BadRequest<SharedSlotResponse>("Người chơi phải có mặt và chưa nằm trong slot thay phiên khác.");
+            }
+
+            // Tracked IsInsideSharedSlot can be stale across overlapping requests. Claim each
+            // participant against the durable row; a loser rolls back the entire multi-player claim.
+            foreach (var player in players)
+            {
+                var claimed = await db.SessionPlayers
+                    .Where(candidate => candidate.Id == player.Id &&
+                                        candidate.SessionId == sessionId &&
+                                        candidate.IsPresent &&
+                                        !candidate.IsInsideSharedSlot)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(candidate => candidate.IsInsideSharedSlot, true));
+                if (claimed != 1)
+                {
+                    return Conflict<SharedSlotResponse>(
+                        $"{player.DisplayName} vừa được ghép vào slot thay phiên khác hoặc không còn có mặt; vui lòng tải lại trạng thái.");
+                }
+
+                // ExecuteUpdate bypasses EF tracking. Keep command-local state aligned so this
+                // SaveChanges cannot overwrite the successful durable claim with stale false.
+                player.IsInsideSharedSlot = true;
+            }
+
+            var slot = new DraftSlot
+            {
+                SessionId = sessionId,
+                Type = DraftSlotType.Shared,
+                DisplayName = string.Join(" / ", players.Select(player => player.DisplayName)),
+                Role = request.Role,
+                Gender = players.Any(player => player.Gender == PlayerGender.Female)
+                    ? PlayerGender.Female
+                    : players.Any(player => player.Gender == PlayerGender.Unknown)
+                        ? PlayerGender.Unknown
+                        : PlayerGender.Male,
+                AverageScore = players.Average(player => player.Score)
+            };
+
+            for (var index = 0; index < players.Count; index += 1)
+            {
+                slot.Players.Add(new DraftSlotPlayer
+                {
+                    DraftSlotId = slot.Id,
+                    SessionPlayerId = players[index].Id,
+                    SessionPlayer = players[index],
+                    RotationOrder = index + 1
+                });
+            }
+
+            db.DraftSlots.Add(slot);
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            RestoreCallerPendingState(callerTrackedState);
+            committed = true;
+            return ServiceResult<SharedSlotResponse>.Created(ToSharedSlotResponse(slot));
         }
-
-        db.DraftSlots.Add(slot);
-        session.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync();
-
-        return ServiceResult<SharedSlotResponse>.Created(ToSharedSlotResponse(slot));
+        finally
+        {
+            if (!committed)
+            {
+                // Rollback/disposal does not restore EF tracked values changed around ExecuteUpdate.
+                RestoreTrackedState(callerTrackedState);
+            }
+        }
     }
 
     public async Task<ServiceResult<IReadOnlyList<SharedSlotResponse>>> GetSharedSlotsAsync(
