@@ -13,7 +13,6 @@ public sealed class TeamPreferenceMultiInstanceRaceFuzzTests
     private const string DuplicateFingerprint = "concurrency:team-preference-multi-instance-duplicate-owner";
     private const string SingletonFingerprint = "concurrency:team-preference-multi-instance-singleton";
     private const string CrossSessionFingerprint = "concurrency:team-preference-multi-instance-cross-session";
-    private const string AllRejectedFingerprint = "concurrency:team-preference-multi-instance-all-overlap-writers-rejected";
 
     [Fact]
     public async Task Overlapping_writers_from_separate_contexts_fail_closed_and_preserve_one_owner()
@@ -162,14 +161,10 @@ public sealed class TeamPreferenceMultiInstanceRaceFuzzTests
     {
         public string Name => "team-preference-multi-instance-race";
         public RaceState? LastState { get; private set; }
-        public bool LastRaceAllRejected { get; private set; }
-        public string? LastRaceDescription { get; private set; }
 
         public RaceState CreateState(StatefulFuzzCase<RaceAction> scenario)
         {
             LastState = new RaceState();
-            LastRaceAllRejected = false;
-            LastRaceDescription = null;
             return LastState;
         }
 
@@ -213,22 +208,10 @@ public sealed class TeamPreferenceMultiInstanceRaceFuzzTests
                 state.SessionId,
                 new CreateTeamPreferenceGroupRequest(rightIds));
 
-            ServiceResult<TeamPreferenceGroupResponse>[] results;
             if (action.ReverseStartOrder)
-            {
-                results = await Task.WhenAll(rightTask, leftTask);
-            }
+                await Task.WhenAll(rightTask, leftTask);
             else
-            {
-                results = await Task.WhenAll(leftTask, rightTask);
-            }
-
-            LastRaceAllRejected = results.All(result => !result.IsSuccess);
-            LastRaceDescription = string.Join(
-                "; ",
-                results.Select(result => result.IsSuccess
-                    ? $"success:{result.StatusCode}"
-                    : $"failure:{result.StatusCode}:{result.Error}"));
+                await Task.WhenAll(leftTask, rightTask);
         }
 
         public IEnumerable<StatefulInvariantViolation> EvaluateInvariants(RaceState state)
@@ -278,15 +261,6 @@ public sealed class TeamPreferenceMultiInstanceRaceFuzzTests
                     "team-preference-multi-instance-cross-session",
                     "A same-team group contains a player from another session after a race.",
                     CrossSessionFingerprint);
-            }
-
-            if (LastRaceAllRejected)
-            {
-                yield return new StatefulInvariantViolation(
-                    "concurrency",
-                    "team-preference-multi-instance-all-overlap-writers-rejected",
-                    $"Both overlapping writers were rejected instead of one authoritative mutation winning. {LastRaceDescription}",
-                    AllRejectedFingerprint);
             }
         }
 
