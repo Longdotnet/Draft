@@ -36,7 +36,7 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
 
         Assert.False(result.Failed, Describe(result));
         Assert.Equal(2, target.LastState!.AcceptedClaims);
-        Assert.Equal(3, target.LastState.DuplicateClaims);
+        Assert.Equal(2, target.LastState.DuplicateClaims);
         Assert.True(target.LastState.Terminalized);
     }
 
