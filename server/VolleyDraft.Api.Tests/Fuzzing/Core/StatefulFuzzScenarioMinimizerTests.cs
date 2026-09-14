@@ -63,6 +63,48 @@ public sealed class StatefulFuzzScenarioMinimizerTests
     }
 
     [Fact]
+    public async Task Scenario_state_shrinker_is_bounded_when_every_candidate_preserves_the_failure()
+    {
+        var scenario = new StatefulFuzzCase<SeedAction>(
+            "scenario-state-runaway-shrinker",
+            100,
+            []);
+        var target = new SeedStateTarget();
+        var original = await StatefulFuzzRunner.RunAsync(scenario, target);
+
+        Assert.Equal("scenario-state:max-value", original.FailureFingerprint);
+
+        var minimized = await StatefulFuzzScenarioMinimizer.MinimizeWithReportAsync(
+            scenario,
+            target,
+            original.FailureFingerprint!,
+            shrinkScenario: EnumerateEndlessEquivalentFailures,
+            maxScenarioCandidates: 5);
+        var replay = await StatefulFuzzRunner.RunAsync(minimized.Scenario, target);
+
+        Assert.Equal(original.FailureFingerprint, replay.FailureFingerprint);
+        Assert.Equal(105, minimized.Scenario.Seed);
+        Assert.Empty(minimized.Scenario.Actions);
+    }
+
+    [Fact]
+    public async Task Scenario_state_shrinker_rejects_non_positive_candidate_budget()
+    {
+        var scenario = new StatefulFuzzCase<SeedAction>(
+            "scenario-state-invalid-budget",
+            100,
+            []);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await StatefulFuzzScenarioMinimizer.MinimizeWithReportAsync(
+                scenario,
+                new SeedStateTarget(),
+                "scenario-state:max-value",
+                shrinkScenario: EnumerateEndlessEquivalentFailures,
+                maxScenarioCandidates: 0));
+    }
+
+    [Fact]
     public async Task Promotion_serializes_the_minimized_initial_state_not_the_original_seed()
     {
         var scenario = new StatefulFuzzCase<SeedAction>(
@@ -88,6 +130,13 @@ public sealed class StatefulFuzzScenarioMinimizerTests
         Assert.Equal(12, reproducer.Seed);
         Assert.Equal(report.FailureFingerprint, reproducer.FailureFingerprint);
         Assert.Empty(reproducer.Actions);
+    }
+
+    private static IEnumerable<StatefulFuzzCase<SeedAction>> EnumerateEndlessEquivalentFailures(
+        StatefulFuzzCase<SeedAction> current)
+    {
+        for (var offset = 1; ; offset += 1)
+            yield return current with { Seed = current.Seed + offset };
     }
 
     private enum SeedActionKind
