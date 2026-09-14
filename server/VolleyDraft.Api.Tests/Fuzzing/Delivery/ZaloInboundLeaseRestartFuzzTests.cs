@@ -34,10 +34,11 @@ public sealed class ZaloInboundLeaseRestartFuzzTests
                     incoming);
                 Assert.True(first.IsTracked && !first.IsDuplicate);
 
+                var activeLeaseStartedAt = DateTimeOffset.UtcNow.AddSeconds(-119);
                 await firstDb.ZaloGroupMessages
                     .Where(message => message.MessageId == incoming.MessageId)
                     .ExecuteUpdateAsync(updates => updates
-                        .SetProperty(message => message.ProcessingStartedAt, DateTimeOffset.UtcNow.AddSeconds(-119)));
+                        .SetProperty(message => message.ProcessingStartedAt, activeLeaseStartedAt));
             }
 
             await using var retryDb = new VolleyDraftDbContext(options);
@@ -75,10 +76,11 @@ public sealed class ZaloInboundLeaseRestartFuzzTests
                     incoming);
                 Assert.True(first.IsTracked && !first.IsDuplicate);
 
+                var expiredLeaseStartedAt = DateTimeOffset.UtcNow.AddSeconds(-121);
                 await firstDb.ZaloGroupMessages
                     .Where(message => message.MessageId == incoming.MessageId)
                     .ExecuteUpdateAsync(updates => updates
-                        .SetProperty(message => message.ProcessingStartedAt, DateTimeOffset.UtcNow.AddSeconds(-121)));
+                        .SetProperty(message => message.ProcessingStartedAt, expiredLeaseStartedAt));
             }
 
             var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -151,11 +153,12 @@ public sealed class ZaloInboundLeaseRestartFuzzTests
                     incoming);
                 Assert.True(first.IsTracked && !first.IsDuplicate);
 
+                var staleProcessingStartedAt = DateTimeOffset.UtcNow.AddHours(-1);
                 await firstDb.ZaloGroupMessages
                     .Where(message => message.MessageId == incoming.MessageId)
                     .ExecuteUpdateAsync(updates => updates
                         .SetProperty(message => message.ReplyOutcome, terminalOutcome)
-                        .SetProperty(message => message.ProcessingStartedAt, DateTimeOffset.UtcNow.AddHours(-1))
+                        .SetProperty(message => message.ProcessingStartedAt, staleProcessingStartedAt)
                         .SetProperty(message => message.ProcessingToken, "stale-token"));
             }
 
