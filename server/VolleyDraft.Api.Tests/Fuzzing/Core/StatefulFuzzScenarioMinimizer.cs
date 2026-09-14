@@ -12,17 +12,21 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 /// </summary>
 internal static class StatefulFuzzScenarioMinimizer
 {
+    private const int DefaultMaxScenarioCandidates = 256;
+
     public static async ValueTask<StatefulFuzzMinimizationResult<TAction>> MinimizeWithReportAsync<TState, TAction>(
         StatefulFuzzCase<TAction> failingScenario,
         IStatefulFuzzTarget<TState, TAction> target,
         string failureFingerprint,
         Func<TAction, IEnumerable<TAction>>? shrinkAction = null,
         Func<StatefulFuzzCase<TAction>, IEnumerable<StatefulFuzzCase<TAction>>>? shrinkScenario = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int maxScenarioCandidates = DefaultMaxScenarioCandidates)
     {
         ArgumentNullException.ThrowIfNull(failingScenario);
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(failureFingerprint);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxScenarioCandidates, 1);
 
         var actionMinimization = await StatefulFuzzFixedPointMinimizer.MinimizeWithReportAsync(
             failingScenario,
@@ -36,12 +40,13 @@ internal static class StatefulFuzzScenarioMinimizer
 
         var current = actionMinimization.Scenario;
         var replayCount = actionMinimization.ReplayCount;
+        var scenarioCandidatesEvaluated = 0;
         var visited = new HashSet<string>(StringComparer.Ordinal)
         {
             StatefulFuzzReproducerSerializer.Serialize(current, failureFingerprint)
         };
 
-        while (true)
+        while (scenarioCandidatesEvaluated < maxScenarioCandidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var reduced = false;
@@ -59,22 +64,26 @@ internal static class StatefulFuzzScenarioMinimizer
                 if (!visited.Add(identity))
                     continue;
 
+                scenarioCandidatesEvaluated += 1;
                 var replay = await StatefulFuzzRunner.RunAsync(variant, target, cancellationToken);
                 replayCount += 1;
-                if (!string.Equals(replay.FailureFingerprint, failureFingerprint, StringComparison.Ordinal))
-                    continue;
+                if (string.Equals(replay.FailureFingerprint, failureFingerprint, StringComparison.Ordinal))
+                {
+                    var reminimized = await StatefulFuzzFixedPointMinimizer.MinimizeWithReportAsync(
+                        variant,
+                        target,
+                        failureFingerprint,
+                        shrinkAction,
+                        cancellationToken);
+                    replayCount += reminimized.ReplayCount;
+                    current = reminimized.Scenario;
+                    visited.Add(StatefulFuzzReproducerSerializer.Serialize(current, failureFingerprint));
+                    reduced = true;
+                    break;
+                }
 
-                var reminimized = await StatefulFuzzFixedPointMinimizer.MinimizeWithReportAsync(
-                    variant,
-                    target,
-                    failureFingerprint,
-                    shrinkAction,
-                    cancellationToken);
-                replayCount += reminimized.ReplayCount;
-                current = reminimized.Scenario;
-                visited.Add(StatefulFuzzReproducerSerializer.Serialize(current, failureFingerprint));
-                reduced = true;
-                break;
+                if (scenarioCandidatesEvaluated >= maxScenarioCandidates)
+                    break;
             }
 
             if (!reduced)
