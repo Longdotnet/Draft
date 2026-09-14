@@ -161,7 +161,7 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
 
             var foreign = await service.CreateSessionAsync(
                 AdminId,
-                new CreateSessionRequest("CN isolation", 3, 1));
+                new CreateSessionRequest("CN isolation", 3, 2));
             if (!foreign.IsSuccess)
                 throw new InvalidOperationException(foreign.Error);
             ForeignSessionId = foreign.Value!.Id;
