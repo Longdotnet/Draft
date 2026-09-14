@@ -143,8 +143,8 @@ public static class ZaloNaturalCommandParser
                 value,
                 @"(?:\+1|thêm\s+1|them\s+1|cộng\s+1|cong\s+1).*?(?:cho\s+)?(?:bạn|ban|khách|khach)(?:\s+của|\s+cua)?\s+(?<sponsor>.+?)(?=\s+(?:tên|ten)\b|$)",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (sponsorAfterPlusOne.Success)
-                sponsor = RemoveTrailingSessionReference(sponsorAfterPlusOne.Groups["sponsor"].Value, out _);
+            if (sponsorAfterGuestWord.Success)
+                sponsor = RemoveTrailingSessionReference(sponsorAfterGuestWord.Groups["sponsor"].Value, out _);
         }
 
         var explicitlyNamedGuest = Regex.Match(
