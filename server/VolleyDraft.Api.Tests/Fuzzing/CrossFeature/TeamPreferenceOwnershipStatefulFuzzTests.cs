@@ -115,7 +115,6 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
         public string SessionId { get; private set; } = string.Empty;
         public string ForeignSessionId { get; private set; } = string.Empty;
         public string[] PlayerIds { get; private set; } = [];
-        public bool LastActionMutated { get; set; }
 
         public async Task RestartAsync()
         {
@@ -138,7 +137,7 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
             var service = new SessionDraftService(Db);
             var session = await service.CreateSessionAsync(
                 AdminId,
-                new CreateSessionRequest("T4 ownership fuzz", 2, 6));
+                new CreateSessionRequest("T4 ownership fuzz", 3, 2));
             if (!session.IsSuccess)
                 throw new InvalidOperationException(session.Error);
             SessionId = session.Value!.Id;
@@ -162,7 +161,7 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
 
             var foreign = await service.CreateSessionAsync(
                 AdminId,
-                new CreateSessionRequest("CN isolation", 2, 3));
+                new CreateSessionRequest("CN isolation", 3, 1));
             if (!foreign.IsSuccess)
                 throw new InvalidOperationException(foreign.Error);
             ForeignSessionId = foreign.Value!.Id;
@@ -194,7 +193,6 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
             int actionIndex,
             CancellationToken cancellationToken)
         {
-            state.LastActionMutated = false;
             if (action.Kind == PreferenceActionKind.Restart)
             {
                 await state.RestartAsync();
@@ -208,7 +206,7 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
                 var player = await state.Db.SessionPlayers
                     .AsNoTracking()
                     .SingleAsync(item => item.Id == playerId, cancellationToken);
-                var updated = await service.UpdatePlayerAsync(
+                await service.UpdatePlayerAsync(
                     state.AdminId,
                     state.SessionId,
                     player.Id,
@@ -219,7 +217,6 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
                         player.Gender,
                         action.Flag,
                         player.IsCaptainEligible));
-                state.LastActionMutated = updated.IsSuccess;
                 return;
             }
 
@@ -234,11 +231,10 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
                 if (groups.Count == 0)
                     return;
                 var groupId = groups[(action.First + action.Second) % groups.Count];
-                var deleted = await service.DeleteTeamPreferenceGroupAsync(
+                await service.DeleteTeamPreferenceGroupAsync(
                     state.AdminId,
                     state.SessionId,
                     groupId);
-                state.LastActionMutated = deleted.IsSuccess;
                 return;
             }
 
@@ -250,11 +246,10 @@ public sealed class TeamPreferenceOwnershipStatefulFuzzTests
             if (action.Third >= 0)
                 ids.Add(state.PlayerIds[action.Third % state.PlayerIds.Length]);
 
-            var created = await service.CreateTeamPreferenceGroupAsync(
+            await service.CreateTeamPreferenceGroupAsync(
                 state.AdminId,
                 state.SessionId,
                 new CreateTeamPreferenceGroupRequest(ids));
-            state.LastActionMutated = created.IsSuccess;
         }
 
         public IEnumerable<StatefulInvariantViolation> EvaluateInvariants(PreferenceState state)
