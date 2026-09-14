@@ -291,6 +291,7 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
             if (state.Terminalized)
                 return;
 
+            var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-10);
             await using var db = new VolleyDraftDbContext(_options);
             var updated = await db.ZaloGroupMessages
                 .Where(message =>
@@ -300,7 +301,7 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
                 .ExecuteUpdateAsync(
                     updates => updates.SetProperty(
                         message => message.ProcessingStartedAt,
-                        DateTimeOffset.UtcNow.AddMinutes(-10)),
+                        (DateTimeOffset?)expiredAt),
                     cancellationToken);
 
             if (updated > 0)
@@ -309,6 +310,7 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
 
         private async Task MarkTerminalAsync(InboundLifecycleState state, CancellationToken cancellationToken)
         {
+            var terminalProcessingStartedAt = DateTimeOffset.UtcNow.AddHours(-1);
             await using var db = new VolleyDraftDbContext(_options);
             var updated = await db.ZaloGroupMessages
                 .Where(message =>
@@ -318,7 +320,7 @@ public sealed class ZaloInboundLifecycleStatefulFuzzTests
                     updates => updates
                         .SetProperty(message => message.ReplyOutcome, "no_reply")
                         .SetProperty(message => message.ProcessingToken, "terminal-token")
-                        .SetProperty(message => message.ProcessingStartedAt, DateTimeOffset.UtcNow.AddHours(-1)),
+                        .SetProperty(message => message.ProcessingStartedAt, (DateTimeOffset?)terminalProcessingStartedAt),
                     cancellationToken);
 
             if (updated > 0)
