@@ -7,6 +7,7 @@ namespace VolleyDraft.Api.Services;
 public static class ZaloNaturalCommandParser
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+    private const string BlockedNegatedTeamPreference = "__negated_team_preference__";
 
     public static ZaloReminderCommand EnrichReminder(
         string question,
@@ -142,8 +143,8 @@ public static class ZaloNaturalCommandParser
                 value,
                 @"(?:\+1|thêm\s+1|them\s+1|cộng\s+1|cong\s+1).*?(?:cho\s+)?(?:bạn|ban|khách|khach)(?:\s+của|\s+cua)?\s+(?<sponsor>.+?)(?=\s+(?:tên|ten)\b|$)",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            if (sponsorAfterGuestWord.Success)
-                sponsor = RemoveTrailingSessionReference(sponsorAfterGuestWord.Groups["sponsor"].Value, out _);
+            if (sponsorAfterPlusOne.Success)
+                sponsor = RemoveTrailingSessionReference(sponsorAfterPlusOne.Groups["sponsor"].Value, out _);
         }
 
         var explicitlyNamedGuest = Regex.Match(
@@ -181,6 +182,22 @@ public static class ZaloNaturalCommandParser
             currentCommand?.SessionReference ?? ExtractSessionReference(question));
     }
 
+    public static bool IsNegatedTeamPreference(string? question)
+    {
+        if (string.IsNullOrWhiteSpace(question)) return false;
+        var normalized = ZaloBotIntelligence.Normalize(question);
+        var hasSameTeamSemantics = Regex.IsMatch(
+            normalized,
+            @"(?:choi|danh|o)?\s*(?:chung|cung)(?:\s+(?:team|doi))?|(?:team|doi)\s+(?:chung|cung)",
+            RegexOptions.CultureInvariant);
+        if (!hasSameTeamSemantics) return false;
+
+        return Regex.IsMatch(
+            normalized,
+            @"(?:^|\s)(?:khong|ko|k|hong)\s+(?:muon\s+)?(?:(?:choi|danh|o)\s+)?(?:chung|cung)(?:\s+(?:team|doi))?(?:\s|$)|(?:^|\s)(?:dung|khoi)\s+(?:xep\s+)?(?:.+?\s+)?(?:chung|cung)\s+(?:team|doi)(?:\s|$)",
+            RegexOptions.CultureInvariant);
+    }
+
     public static bool TryParseTeamPreference(string question, out ZaloTeamPreferenceCommand command)
     {
         command = new ZaloTeamPreferenceCommand([]);
@@ -192,6 +209,11 @@ public static class ZaloNaturalCommandParser
                 RegexOptions.CultureInvariant))
         {
             return false;
+        }
+        if (IsNegatedTeamPreference(normalized))
+        {
+            command = new ZaloTeamPreferenceCommand([BlockedNegatedTeamPreference]);
+            return true;
         }
 
         Match match = Regex.Match(
@@ -245,6 +267,7 @@ public static class ZaloNaturalCommandParser
         ZaloTeamPreferenceCommand? currentCommand)
     {
         if (mentionedUsers.Count is < 1 or > 12) return currentCommand;
+        if (IsBlockedNegatedTeamPreference(currentCommand)) return currentCommand;
 
         if (mentionedUsers.Count >= 2)
         {
@@ -427,6 +450,10 @@ public static class ZaloNaturalCommandParser
         command.Anchor.Trim().Length > 0 &&
         command.RequestedPartnerCount is >= 1 and <= 2 &&
         command.Partners.Count == command.RequestedPartnerCount;
+
+    private static bool IsBlockedNegatedTeamPreference(ZaloTeamPreferenceCommand? command) =>
+        command?.PlayerReferences.Count == 1 &&
+        string.Equals(command.PlayerReferences[0], BlockedNegatedTeamPreference, StringComparison.Ordinal);
 
     private static bool IsSelfServiceShareAnchor(string anchor) =>
         ZaloBotIntelligence.Normalize(anchor.Trim().TrimStart('@')) is "tui" or "minh" or "toi";
