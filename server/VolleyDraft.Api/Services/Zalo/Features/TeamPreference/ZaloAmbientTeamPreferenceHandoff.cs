@@ -31,10 +31,10 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
-        var accountId = Clean(incoming.AccountId, 100);
-        var groupId = Clean(incoming.GroupId, 100);
-        var senderId = Clean(incoming.SenderId, 100);
-        var botId = Clean(incoming.BotId, 100);
+        var accountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+        var groupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
+        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        var botId = ZaloOverbookLogic.NormalizeId(incoming.BotId);
         if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0 || botId.Length == 0)
             return false;
 
@@ -44,11 +44,11 @@ public sealed class ZaloAmbientTeamPreferenceHandoff(VolleyDraftDbContext db)
             return false;
 
         var quotedMessageId = Clean(incoming.Quote?.MessageId, 160);
-        var quotedSenderId = Clean(incoming.Quote?.SenderId, 100);
+        var quotedSenderId = ZaloOverbookLogic.NormalizeId(incoming.Quote?.SenderId);
         var exactReply = quotedMessageId.Length > 0 &&
                          string.Equals(quotedSenderId, botId, StringComparison.Ordinal);
         var explicitlyAddressed = incoming.MentionedBot && incoming.Mentions.Any(mention =>
-            string.Equals(Clean(mention.Uid, 100), botId, StringComparison.Ordinal));
+            string.Equals(ZaloOverbookLogic.NormalizeId(mention.Uid), botId, StringComparison.Ordinal));
         if (!exactReply && !explicitlyAddressed)
             return false;
 

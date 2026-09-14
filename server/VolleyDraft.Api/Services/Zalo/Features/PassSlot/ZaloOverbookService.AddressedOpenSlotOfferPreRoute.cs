@@ -258,7 +258,7 @@ public sealed partial class ZaloOverbookService
         var subjects = new[] { "tui", "toi", "minh", "em", "anh", "chi", "tao" };
         foreach (var subject in subjects)
         {
-            foreach (var verb in new[] { "vo", "vao" })
+            foreach (var verb in new[] { "vo", "vao", "nhan", "lay", "hot", "giu" })
             {
                 var prefix = $"{subject} {verb}";
                 if (TryBuildNaturalClaim(normalized, prefix, out canonicalClaim)) return true;
@@ -267,7 +267,7 @@ public sealed partial class ZaloOverbookService
 
         foreach (var lead in new[] { "cho tui", "cho toi", "cho minh", "cho em", "de tui", "de toi", "de minh", "de em" })
         {
-            foreach (var verb in new[] { "vo", "vao" })
+            foreach (var verb in new[] { "vo", "vao", "nhan", "lay", "hot", "giu" })
             {
                 var prefix = $"{lead} {verb}";
                 if (TryBuildNaturalClaim(normalized, prefix, out canonicalClaim)) return true;
@@ -289,8 +289,22 @@ public sealed partial class ZaloOverbookService
         if (!normalized.StartsWith(prefix + " ", StringComparison.Ordinal)) return false;
         var tail = normalized[(prefix.Length + 1)..].Trim();
         if (!IsNaturalSessionReference(tail)) return false;
-        canonicalClaim = "tui nhan " + tail;
+        canonicalClaim = "tui nhan " + CanonicalizeNaturalSessionReference(tail);
         return true;
+    }
+
+    private static string CanonicalizeNaturalSessionReference(string tail)
+    {
+        if (tail.StartsWith("chu nhat", StringComparison.Ordinal)) return "chu nhat";
+        if (tail.StartsWith("cn", StringComparison.Ordinal)) return "cn";
+        if (tail.StartsWith("thu ", StringComparison.Ordinal))
+        {
+            var parts = tail.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length >= 2 ? $"thu {parts[1]}" : tail;
+        }
+        if (tail.Length >= 2 && tail[0] == 't' && tail[1] is >= '2' and <= '7')
+            return tail[..2];
+        return tail;
     }
 
     private static bool IsNaturalSessionReference(string tail)
