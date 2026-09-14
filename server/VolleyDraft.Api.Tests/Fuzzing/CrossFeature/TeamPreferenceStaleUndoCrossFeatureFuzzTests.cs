@@ -44,7 +44,7 @@ public sealed class TeamPreferenceStaleUndoCrossFeatureFuzzTests
             var service = new SessionDraftService(db);
             var createdSession = await service.CreateSessionAsync(
                 "admin",
-                new CreateSessionRequest("T6 stale preference undo", 3, 2));
+                new CreateSessionRequest("T6 stale preference undo", 3, 3));
             Assert.True(createdSession.IsSuccess, Describe(seed, createdSession.Error));
             var sessionId = createdSession.Value!.Id;
 
