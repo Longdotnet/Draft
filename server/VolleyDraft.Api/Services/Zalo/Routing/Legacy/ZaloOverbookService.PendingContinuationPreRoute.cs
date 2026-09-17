@@ -16,6 +16,12 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        // TeamPreference exit owns both explicitly-addressed and natural ambient
+        // consent-removal turns. It runs before the legacy mention gate, but it can
+        // only engage when the sender is durably inside a current same-team group.
+        if (await TryHandleTeamPreferenceExitPreRouteAsync(incoming, cancellationToken))
+            return true;
+
         if (botService is null || incoming.MentionedBot)
             return false;
 
