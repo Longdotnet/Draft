@@ -19,7 +19,7 @@ public sealed class ZaloDraftPreparationReminderReadinessAuthorityTests
         Assert.Contains("1 pass slot còn mở", message!);
         Assert.Contains("không chặn draft", message);
         Assert.Contains("`draft đi`", message);
-        Assert.Contains("roster/vote hiện tại", message);
+        Assert.Contains("danh sách/vote hiện tại", message);
     }
 
     [Fact]
