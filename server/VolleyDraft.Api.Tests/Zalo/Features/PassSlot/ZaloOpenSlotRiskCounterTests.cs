@@ -101,6 +101,99 @@ public sealed class ZaloOpenSlotRiskCounterTests
     }
 
     [Fact]
+    public async Task Active_pass_offer_does_not_block_draft_when_authoritative_roster_is_valid()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var admin = new User
+        {
+            Id = "draft-admin",
+            DisplayName = "Admin",
+            Email = "draft-admin@example.test",
+            PasswordHash = "test"
+        };
+        var connection = new ZaloConnection
+        {
+            Id = "draft-conn",
+            AdminUserId = admin.Id,
+            AccountZaloId = "draft-account",
+            DisplayName = "NPC",
+            EncryptedCredentials = "test"
+        };
+        fixture.Db.Users.Add(admin);
+        fixture.Db.ZaloConnections.Add(connection);
+        await fixture.Db.SaveChangesAsync();
+
+        var draftService = new SessionDraftService(fixture.Db);
+        var created = await draftService.CreateSessionAsync(
+            admin.Id,
+            new CreateSessionRequest("UTE tuần sau", 3, 2));
+        Assert.True(created.IsSuccess, created.Error);
+
+        var session = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == created.Value!.Id);
+        session.ZaloConnectionId = connection.Id;
+        session.ZaloGroupId = "draft-group";
+        session.BotEnabled = true;
+        session.StartTime = DateTimeOffset.UtcNow.AddDays(1);
+        await fixture.Db.SaveChangesAsync();
+
+        var playerIds = new List<string>();
+        for (var index = 1; index <= 6; index += 1)
+        {
+            var added = await draftService.AddPlayerAsync(
+                admin.Id,
+                session.Id,
+                new AddPlayerRequest(
+                    $"P{index}",
+                    PlayerRole.New,
+                    PlayerLevel.New,
+                    PlayerGender.Male));
+            Assert.True(added.IsSuccess, added.Error);
+            playerIds.Add(added.Value!.Id);
+        }
+
+        var captains = await draftService.SetManualCaptainsAsync(
+            admin.Id,
+            session.Id,
+            new ManualCaptainsRequest(playerIds.Take(3).ToList()));
+        Assert.True(captains.IsSuccess, captains.Error);
+
+        await new ZaloOpenSlotOfferStore(fixture.Db).OpenAsync(
+            connection.Id,
+            session.ZaloGroupId!,
+            "owner-uid",
+            "Người đang pass",
+            session.Id,
+            session.Name,
+            "m-pass-active",
+            DateTimeOffset.UtcNow.AddHours(2),
+            null);
+
+        var readiness = await new ZaloDraftReadinessService(fixture.Db).BuildAsync(session.Id);
+        Assert.NotNull(readiness);
+        Assert.Equal(1, readiness!.ActivePassSlotRiskCount);
+        Assert.Equal(ZaloDraftReadinessState.Ready, readiness.State);
+        Assert.True(readiness.IsRosterReady);
+        Assert.True(readiness.CanEscalate);
+
+        var drafted = await draftService.StartDraftAsync(admin.Id, session.Id);
+
+        Assert.True(drafted.IsSuccess, drafted.Error);
+        Assert.Equal(
+            SessionStatus.Drafting,
+            await fixture.Db.MatchSessions
+                .Where(item => item.Id == session.Id)
+                .Select(item => item.Status)
+                .SingleAsync());
+        Assert.Equal(
+            1,
+            await fixture.Db.DraftRounds.CountAsync(item => item.SessionId == session.Id));
+        Assert.Equal(
+            1,
+            await new ZaloOpenSlotRiskCounter(fixture.Db)
+                .CountActiveForSessionAsync(connection.Id, session.ZaloGroupId!, session.Id));
+    }
+
+    [Fact]
     public async Task Counter_joins_the_current_ef_transaction()
     {
         await using var fixture = await Fixture.CreateAsync();
