@@ -64,7 +64,7 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
             : $"{readiness.PresentPlayerCount} người, tính ra {count}/{capacity} chỗ để chia đội";
 
         var passNote = activeSlotRiskCount > 0
-            ? $" Lưu ý: đang có {activeSlotRiskCount} pass slot còn mở, nhưng không chặn draft; NPC vẫn chia theo roster/vote hiện tại và offer đó có thể tiếp tục theo flow chuyển suất sau draft."
+            ? $" Lưu ý: đang có {activeSlotRiskCount} pass slot còn mở, nhưng không chặn draft; NPC vẫn chia theo danh sách/vote hiện tại và lượt nhường đó có thể tiếp tục xử lý sau khi chia đội."
             : string.Empty;
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
