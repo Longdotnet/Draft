@@ -2873,23 +2873,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 $"Cần ít nhất {session.TeamCount * 2} slot và tổng số slot sau khi tính người share ({effectiveSlotCount}) phải chia hết cho {session.TeamCount} team.");
         }
 
-        if (!string.IsNullOrWhiteSpace(session.ZaloConnectionId) &&
-            !string.IsNullOrWhiteSpace(session.ZaloGroupId))
-        {
-            var unresolvedPassSlotCount = await new ZaloOpenSlotRiskCounter(db)
-                .CountActiveForSessionAsync(
-                    session.ZaloConnectionId,
-                    session.ZaloGroupId,
-                    session.Id);
-            if (unresolvedPassSlotCount > 0)
-            {
-                return Conflict<DraftStateResponse>(
-                    $"Chưa thể draft vì còn {unresolvedPassSlotCount} suất đang nhường/chờ người nhận. " +
-                    "Hoàn tất việc chuyển suất trước: nếu đổi ý, người nhường gõ `huỷ pass`; " +
-                    "nếu đang nhận suất, người nhận vote xong rồi gõ `xong`. " +
-                    "Khi NPC xác nhận xong mới gõ lại `@Npc 9`.");
-            }
-        }
+        // Active pass-slot offers are intentionally not a draft gate. Draft always uses
+        // the authoritative roster/share-slot state that exists at execution time. Any
+        // still-open pass/claim ledger entry can continue through the post-draft transfer
+        // flow instead of freezing team creation for the whole group.
 
         await ClearDraftRunArtifacts(sessionId);
         await EnsureCaptainSlots(session);
