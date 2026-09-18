@@ -35,7 +35,7 @@ public sealed class ZaloOpenSlotRiskCounterTests
     }
 
     [Fact]
-    public async Task Draft_readiness_itself_fails_closed_while_owner_unvoted_offer_is_active()
+    public async Task Draft_readiness_keeps_pass_offer_in_telemetry_without_hiding_real_roster_blocker()
     {
         await using var fixture = await Fixture.CreateAsync();
         var admin = new User
@@ -88,14 +88,14 @@ public sealed class ZaloOpenSlotRiskCounterTests
             null);
 
         // The owner is intentionally absent from SessionPlayers, matching the real
-        // handoff window after they remove their vote. Readiness must still see the
-        // durable ledger and must not report the roster as safe/escalatable.
+        // handoff window after they remove their vote. The ledger remains visible, but
+        // readiness must report the actual blocker (empty roster), not the pass offer.
         var after = await new ZaloDraftReadinessService(fixture.Db).BuildAsync(session.Id);
 
         Assert.NotNull(after);
         Assert.Equal(1, after!.ActivePassSlotRiskCount);
-        Assert.Equal(ZaloDraftReadinessState.UnresolvedPassSlots, after.State);
-        Assert.Equal("draft_blocked_pass_slot_unresolved", after.ReasonCode);
+        Assert.Equal(ZaloDraftReadinessState.NoRoster, after.State);
+        Assert.Equal("draft_blocked_roster_empty", after.ReasonCode);
         Assert.False(after.IsRosterReady);
         Assert.False(after.CanEscalate);
     }
