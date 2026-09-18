@@ -9,35 +9,30 @@ public sealed class ZaloDraftPreparationReminderReadinessAuthorityTests
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
 
     [Fact]
-    public void ProductionPolicy_UsesPassRiskFromReadinessSnapshot()
+    public void ProductionPolicy_KeepsPassRiskInformationalAndStillOffersDraft()
     {
-        var readiness = Snapshot(ZaloDraftReadinessState.Ready, activePassRisks: 1, canEscalate: false);
+        var readiness = Snapshot(ZaloDraftReadinessState.Ready, activePassRisks: 1, canEscalate: true);
 
         var message = BuildProduction(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("1 chỗ đang nhường/chờ nhận", message!);
-        Assert.DoesNotContain("`draft đi`", message);
-        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("1 pass slot còn mở", message!);
+        Assert.Contains("không chặn draft", message);
+        Assert.Contains("`draft đi`", message);
+        Assert.Contains("roster/vote hiện tại", message);
     }
 
     [Fact]
-    public void PassRiskReminder_TeachesDeterministicRecoveryWithoutAi()
+    public void MultiplePassOffers_DoNotTurnReadySnapshotIntoABlocker()
     {
-        var readiness = Snapshot(ZaloDraftReadinessState.UnresolvedPassSlots, activePassRisks: 2, canEscalate: false);
+        var readiness = Snapshot(ZaloDraftReadinessState.Ready, activePassRisks: 2, canEscalate: true);
 
         var message = BuildProduction(readiness);
 
         Assert.NotNull(message);
-        Assert.Contains("2 chỗ đang nhường/chờ nhận", message!);
-        Assert.Contains("`huỷ pass`", message);
-        Assert.Contains("`xong`", message);
-        Assert.Contains("`huỷ nhận`", message);
-        Assert.Contains("đọc lại vote và danh sách thật", message);
-        Assert.DoesNotContain("`draft đi`", message);
-        Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("roster", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("2 pass slot còn mở", message!);
+        Assert.Contains("không chặn draft", message);
+        Assert.Contains("`draft đi`", message);
     }
 
     [Fact]
@@ -95,8 +90,8 @@ public sealed class ZaloDraftPreparationReminderReadinessAuthorityTests
             HasLinkedPoll: true,
             Fingerprint: "fp-18",
             State: state,
-            ReasonCode: activePassRisks > 0 ? "draft_blocked_pass_slot_unresolved" : "draft_ready",
-            IsRosterReady: activePassRisks == 0,
+            ReasonCode: state == ZaloDraftReadinessState.Ready ? "draft_ready" : "test_state",
+            IsRosterReady: state == ZaloDraftReadinessState.Ready,
             CanEscalate: canEscalate)
         {
             ActivePassSlotRiskCount = activePassRisks
