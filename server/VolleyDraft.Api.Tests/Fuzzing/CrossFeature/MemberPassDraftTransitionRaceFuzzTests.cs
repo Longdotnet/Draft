@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
@@ -12,7 +11,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 public sealed class MemberPassDraftTransitionRaceFuzzTests
 {
     [Fact]
-    public async Task Ambient_member_pass_and_manual_draft_transition_never_leave_drafting_with_active_pass_risk()
+    public async Task Ambient_member_pass_and_manual_draft_transition_can_coexist_without_corrupting_draft_state()
     {
         for (var seed = 1; seed <= 96; seed += 1)
         {
@@ -61,12 +60,11 @@ public sealed class MemberPassDraftTransitionRaceFuzzTests
     }
 
     [Fact]
-    public async Task Race_then_fresh_context_member_and_draft_retries_preserve_one_authoritative_outcome()
+    public async Task Race_then_fresh_context_retries_preserve_one_draft_while_pass_can_remain_active()
     {
         // Model a lost/uncertain client response followed by retries after a process restart.
-        // We deliberately retry both sides in alternating orders. Replaying a member pass must
-        // not create multiple authoritative open risks, and replaying draft start must not create
-        // another draft round or bypass an already-open pass-slot risk.
+        // Replaying a member pass must not create duplicate offers, while draft remains allowed
+        // with an active offer and a repeated draft start must not create another draft round.
         for (var seed = 1; seed <= 64; seed += 1)
         {
             var connectionString = $"Data Source=member-pass-draft-retry-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Default Timeout=5";
@@ -142,31 +140,13 @@ public sealed class MemberPassDraftTransitionRaceFuzzTests
             var roundCount = await verifier.DraftRounds.AsNoTracking()
                 .CountAsync(item => item.SessionId == seeded.SessionId);
 
-            Assert.InRange(
-                activeRisk,
-                0,
-                1);
-            Assert.InRange(roundCount, 0, 1);
-            Assert.False(
-                session.Status == SessionStatus.Drafting && activeRisk > 0,
-                $"seed={seed}; fingerprint=cross-feature:member-pass-draft-retry-authority; " +
-                $"initialMember={firstMember.ReplyKind}; initialDraft={firstDraft.StatusCode}; " +
-                $"retryMember={retryMember.ReplyKind}; retryDraft={retryDraft.StatusCode}; " +
-                $"activeRisk={activeRisk}; rounds={roundCount}; status={session.Status}");
-
-            if (session.Status == SessionStatus.Drafting)
-            {
-                Assert.Equal(0, activeRisk);
-                Assert.Equal(1, roundCount);
-                Assert.False(retryDraft.IsSuccess);
-            }
-            else if (activeRisk > 0)
-            {
-                Assert.Equal(SessionStatus.CaptainSelection, session.Status);
-                Assert.Equal(0, roundCount);
-                Assert.False(retryDraft.IsSuccess);
-                Assert.Equal(StatusCodes.Status409Conflict, retryDraft.StatusCode);
-            }
+            Assert.InRange(activeRisk, 0, 1);
+            Assert.True(
+                firstDraft.IsSuccess,
+                $"seed={seed}; initial draft was blocked by pass flow: status={firstDraft.StatusCode}; activeRisk={activeRisk}");
+            Assert.Equal(SessionStatus.Drafting, session.Status);
+            Assert.Equal(1, roundCount);
+            Assert.False(retryDraft.IsSuccess);
         }
     }
 
@@ -187,26 +167,14 @@ public sealed class MemberPassDraftTransitionRaceFuzzTests
         var roundCount = await verifier.DraftRounds.AsNoTracking()
             .CountAsync(item => item.SessionId == seeded.SessionId);
 
-        Assert.False(
-            session.Status == SessionStatus.Drafting && activeRisk > 0,
-            $"seed={seed}; fingerprint=cross-feature:ambient-pass-opened-across-draft-transition; " +
+        Assert.True(
+            draft.IsSuccess,
+            $"seed={seed}; fingerprint=cross-feature:active-pass-must-not-block-draft; " +
             $"memberDelay={memberDelay}; draftDelay={draftDelay}; memberReply={memberReplyKind}; " +
             $"draftStatus={draft.StatusCode}; activeRisk={activeRisk}; rounds={roundCount}");
-
-        if (activeRisk > 0)
-        {
-            Assert.False(draft.IsSuccess);
-            Assert.Equal(StatusCodes.Status409Conflict, draft.StatusCode);
-            Assert.Equal(SessionStatus.CaptainSelection, session.Status);
-            Assert.Equal(0, roundCount);
-        }
-
-        if (draft.IsSuccess)
-        {
-            Assert.Equal(SessionStatus.Drafting, session.Status);
-            Assert.Equal(0, activeRisk);
-            Assert.Equal(1, roundCount);
-        }
+        Assert.InRange(activeRisk, 0, 1);
+        Assert.Equal(SessionStatus.Drafting, session.Status);
+        Assert.Equal(1, roundCount);
     }
 
     private static async Task<MemberOutcome> RunMemberPassAsync(
