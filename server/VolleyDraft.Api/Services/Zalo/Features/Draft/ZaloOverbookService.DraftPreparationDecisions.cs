@@ -57,8 +57,7 @@ internal static partial class ZaloDraftPreparationDecisionPolicy
         bool canEscalate,
         int activeSlotRisks) =>
         commandKind == ZaloDraftPreparationDecisionKind.KeepRecruiting ||
-        !canEscalate ||
-        activeSlotRisks > 0;
+        !canEscalate;
 }
 
 public sealed partial class ZaloOverbookService
@@ -200,7 +199,6 @@ public sealed partial class ZaloOverbookService
         var readiness = await new ZaloDraftReadinessService(db)
             .BuildAsync(session.Id, DateTimeOffset.UtcNow, cancellationToken);
         if (readiness is null) return false;
-        var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
         // Organizer decisions may supersede an unclaimed request, but once a valid
         // approver has atomically claimed execution we cannot honestly pretend a later
@@ -208,7 +206,7 @@ public sealed partial class ZaloOverbookService
         if (ZaloDraftPreparationDecisionPolicy.ShouldSupersedeActiveDraftRequest(
                 command.Kind,
                 readiness.CanEscalate,
-                activeSlotRisks))
+                readiness.ActivePassSlotRiskCount))
         {
             var supersession = await SupersedeAnyActiveDraftRequestAsync(session, cancellationToken);
             if (supersession == DraftRequestSupersessionResult.CannotSupersedeSafely)
@@ -229,7 +227,7 @@ public sealed partial class ZaloOverbookService
 
         if (command.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting)
         {
-            if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRisks == 0)
+            if (readiness.EffectiveSlotCount >= readiness.Capacity)
             {
                 await decisionStore.SetAsync(
                     session.Id,
@@ -284,24 +282,8 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        if (activeSlotRisks > 0)
-        {
-            await SendDraftReplyAsync(
-                connectionId,
-                connection.AccountZaloId,
-                connection.DisplayName,
-                groupId,
-                incoming,
-                ZaloDraftPreparationClientCopy.PassRisk(
-                    session.Name,
-                    readiness.EffectiveSlotCount,
-                    readiness.Capacity,
-                    activeSlotRisks),
-                [],
-                "draft_preparation_play_current_slot_risk",
-                cancellationToken);
-            return true;
-        }
+        // Active pass/claim offers do not invalidate an organizer decision. The
+        // decision and draft both bind to the authoritative roster snapshot.
 
         if (readiness.EffectiveSlotCount > readiness.Capacity)
         {
@@ -568,21 +550,8 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
-        if (activeSlotRisks > 0)
-        {
-            await SendDraftReplyAsync(
-                connectionId,
-                session.ZaloConnection!.AccountZaloId,
-                session.ZaloConnection.DisplayName,
-                groupId,
-                incoming,
-                ZaloDraftPreparationClientCopy.PartialPassRisk(session.Name, activeSlotRisks),
-                [],
-                "draft_partial_slot_risk",
-                cancellationToken);
-            return true;
-        }
+        // Pass-slot ledger state is allowed to survive into/through draft; only the
+        // current roster/profile/team constraints below can block execution here.
 
         if (readiness.MissingProfileCount > 0)
         {
