@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
