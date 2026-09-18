@@ -63,15 +63,9 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
             ? $"{count}/{capacity} chỗ"
             : $"{readiness.PresentPlayerCount} người, tính ra {count}/{capacity} chỗ để chia đội";
 
-        if (activeSlotRiskCount > 0)
-        {
-            var risk = activeSlotRiskCount == 1
-                ? "1 chỗ đang nhường/chờ nhận"
-                : $"{activeSlotRiskCount} chỗ đang nhường/chờ nhận";
-            return $"Tui vừa kiểm tra {name}: {peopleLabel}, còn {risk} chưa xong nên chưa chia đội nha. " +
-                   "Người nhường đổi ý dùng `huỷ pass`; người nhận đã vote đúng kèo dùng `xong`; người đang giữ lượt nhận muốn nhả dùng `huỷ nhận`. " +
-                   "Xử lý xong tui sẽ đọc lại vote và danh sách thật rồi mới cho đi tiếp.";
-        }
+        var passNote = activeSlotRiskCount > 0
+            ? $" Lưu ý: đang có {activeSlotRiskCount} pass slot còn mở, nhưng không chặn draft; NPC vẫn chia theo danh sách/vote hiện tại và lượt nhường đó có thể tiếp tục xử lý sau khi chia đội."
+            : string.Empty;
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.StopMatch)
             return null;
@@ -92,8 +86,8 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
             {
                 var perTeam = count / teamCount;
                 return urgent
-                    ? $"{name} vẫn giữ đúng danh sách đã chốt: {peopleLabel} → {teamCount} đội x{perTeam} ✅ Sát giờ rồi; nếu muốn chia đội nói `draft đi`, tui đọc lại vote lần cuối rồi chạy."
-                    : $"{name} vẫn đúng danh sách trưởng/phó đã chốt: {peopleLabel} → {teamCount} đội x{perTeam} 👌 Không cần kiếm thêm nữa; khi muốn chia đội nói `draft đi`.";
+                    ? $"{name} vẫn giữ đúng danh sách đã chốt: {peopleLabel} → {teamCount} đội x{perTeam} ✅{passNote} Sát giờ rồi; nếu muốn chia đội nói `draft đi`, tui đọc lại vote lần cuối rồi chạy."
+                    : $"{name} vẫn đúng danh sách trưởng/phó đã chốt: {peopleLabel} → {teamCount} đội x{perTeam} 👌{passNote} Không cần kiếm thêm nữa; khi muốn chia đội nói `draft đi`.";
             }
 
             return $"{name} vẫn giữ quyết định chơi với {peopleLabel} 👌 Nhưng {count} chỗ hiện tại chưa chia đều được {teamCount} đội. Kèo vẫn chơi theo quyết định trưởng/phó; nếu muốn bot tự chia đội thì cần xử lý các chỗ dùng chung/luân phiên hoặc để số chỗ chia hết cho {teamCount}.";
@@ -114,8 +108,8 @@ internal static class ZaloLeaderAwareDraftReminderPolicy
                 ? " Tạm ngưng gọi thêm người vì kèo đã đủ; nếu sau đó lại thiếu chỗ, tui tiếp tục kiếm theo quyết định trước, không bắt trưởng/phó chốt lại."
                 : string.Empty;
             return urgent
-                ? $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ ✅ đội vẫn chưa chia.{recruitmentMemory} Sát giờ rồi, nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy."
-                : $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ rồi nha ✅ Đội chưa chia.{recruitmentMemory} Nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy.";
+                ? $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ ✅ đội vẫn chưa chia.{passNote}{recruitmentMemory} Sát giờ rồi, nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy."
+                : $"{stalePrefix}Tui vừa đọc lại vote {name}: đủ {count}/{capacity} chỗ rồi nha ✅ Đội chưa chia.{passNote}{recruitmentMemory} Nói `draft đi` là tui kiểm tra vote lần cuối rồi chạy.";
         }
 
         if (decision?.Kind == ZaloDraftPreparationDecisionKind.KeepRecruiting && count < capacity)
@@ -239,9 +233,8 @@ public sealed partial class ZaloOverbookService
                 .BuildAsync(session.Id, now, cancellationToken);
             if (readiness is null) continue;
 
-            // Readiness owns unresolved pass/share authority. Keep the entire reminder
-            // decision, anti-spam fingerprint and escalation gate on this one coherent
-            // snapshot instead of issuing a second ledger query that can race it.
+            // Keep pass/share ledger count in the same readiness snapshot for anti-spam
+            // and context. It is informational and must not become a draft/escalation gate.
             var activeSlotRisks = readiness.ActivePassSlotRiskCount;
             var observationFingerprint = ZaloDraftPreparationReminderObservation.BuildFingerprint(
                 readiness,
@@ -333,7 +326,6 @@ public sealed partial class ZaloOverbookService
                                           ZaloDraftEscalationState.ProactiveSoft or
                                           ZaloDraftEscalationState.ApproverTagged) &&
                 (!readiness.CanEscalate ||
-                 activeSlotRisks > 0 ||
                  !string.Equals(existingRequest.RosterFingerprint, readiness.Fingerprint, StringComparison.Ordinal)))
             {
                 var superseded = await TrySupersedeDraftReminderRequestAsync(
@@ -405,7 +397,7 @@ public sealed partial class ZaloOverbookService
                         : item.IsCreator)
                 .ToList();
 
-            var desiredTags = bucket.Urgent || activeSlotRisks > 0 ? 2 : 1;
+            var desiredTags = bucket.Urgent ? 2 : 1;
             desiredTags = Math.Min(desiredTags, settings.MaxApproverTags);
             if (eligible.Count == 0 || desiredTags <= 0)
             {
@@ -421,7 +413,7 @@ public sealed partial class ZaloOverbookService
             ZaloDraftEscalationSnapshot? approvalRequest = null;
             DateTimeOffset? approvalExpiry = null;
 
-            if (readiness.CanEscalate && activeSlotRisks == 0)
+            if (readiness.CanEscalate)
             {
                 approvalExpiry = GetRequestExpiry(
                     readiness.StartTime,

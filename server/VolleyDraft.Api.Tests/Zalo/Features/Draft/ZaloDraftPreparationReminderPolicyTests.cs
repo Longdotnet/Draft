@@ -202,18 +202,16 @@ public sealed class ZaloDraftPreparationReminderPolicyTests
     }
 
     [Fact]
-    public void ActivePassSlot_BlocksDraftInvitationEvenWhenRosterFull()
+    public void ActivePassSlot_RemainsInformationalWhenRosterIsReadyToDraft()
     {
         var readiness = Snapshot(18, 18, 18, ZaloDraftReadinessState.Ready, "fp-18", canEscalate: true);
 
         var message = Build(readiness, risks: 1);
 
         Assert.NotNull(message);
-        Assert.Contains("1 chỗ đang nhường/chờ nhận", message!);
-        Assert.Contains("`huỷ pass`", message);
-        Assert.Contains("`xong`", message);
-        Assert.Contains("`huỷ nhận`", message);
-        Assert.DoesNotContain("`draft đi`", message);
+        Assert.Contains("1 pass slot còn mở", message!);
+        Assert.Contains("không chặn draft", message);
+        Assert.Contains("`draft đi`", message);
         AssertBeginnerLanguage(message);
     }
 

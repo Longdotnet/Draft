@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
@@ -33,7 +32,7 @@ public sealed class PassSlotDraftGateCrossFeatureFuzzTests
     }
 
     [Fact]
-    public async Task Sequence_mutations_never_allow_active_pass_risk_to_cross_final_draft_gate()
+    public async Task Sequence_mutations_never_block_draft_solely_for_active_pass_risk()
     {
         PassSlotDraftGateAction[] seedActions =
         [
@@ -333,34 +332,23 @@ public sealed class PassSlotDraftGateCrossFeatureFuzzTests
             var attempt = state.LastAttempt;
             if (attempt is null) yield break;
 
-            if (attempt.ActiveRiskBeforeAttempt > 0 && attempt.DraftSucceeded)
+            if (!attempt.DraftSucceeded)
             {
                 yield return new StatefulInvariantViolation(
                     "cross-feature",
-                    "pass-risk-crossed-final-draft-gate",
-                    $"Draft started with {attempt.ActiveRiskBeforeAttempt} active authoritative pass-slot offer(s).",
-                    "cross-feature:pass-risk-crossed-final-draft-gate");
+                    "pass-ledger-blocked-valid-draft",
+                    $"Draft was blocked with {attempt.ActiveRiskBeforeAttempt} active pass-slot offer(s) even though the authoritative roster was valid (status {attempt.StatusCode}).",
+                    "cross-feature:pass-ledger-blocked-valid-draft");
             }
 
-            if (attempt.ActiveRiskBeforeAttempt > 0 &&
-                (attempt.StatusCode != StatusCodes.Status409Conflict ||
-                 attempt.SessionStatus != SessionStatus.CaptainSelection ||
-                 attempt.DraftRoundCount != 0))
+            if (attempt.DraftSucceeded &&
+                (attempt.SessionStatus != SessionStatus.Drafting || attempt.DraftRoundCount != 1))
             {
                 yield return new StatefulInvariantViolation(
                     "cross-feature",
-                    "blocked-pass-risk-mutated-draft-state",
-                    "An unresolved pass-slot offer blocked the request but draft state was still mutated or returned the wrong contract.",
-                    "cross-feature:blocked-pass-risk-mutated-draft-state");
-            }
-
-            if (attempt.ActiveRiskBeforeAttempt == 0 && !attempt.DraftSucceeded)
-            {
-                yield return new StatefulInvariantViolation(
-                    "cross-feature",
-                    "resolved-or-foreign-pass-risk-blocked-draft",
-                    $"Draft was blocked without an authoritative active pass-slot risk (status {attempt.StatusCode}).",
-                    "cross-feature:resolved-or-foreign-pass-risk-blocked-draft");
+                    "pass-ledger-draft-state-inconsistent",
+                    "Draft succeeded while pass-slot ledger state existed, but the draft session/round state was inconsistent.",
+                    "cross-feature:pass-ledger-draft-state-inconsistent");
             }
         }
 

@@ -11,7 +11,7 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloDraftPassSlotFinalGateTests
 {
     [Fact]
-    public async Task Draft_is_blocked_by_durable_offer_after_owner_left_roster_then_recovers_after_completion()
+    public async Task Draft_uses_authoritative_roster_even_when_durable_pass_offer_is_active()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -78,19 +78,31 @@ public sealed class ZaloDraftPassSlotFinalGateTests
             DateTimeOffset.UtcNow.AddHours(1),
             null);
 
-        var blocked = await service.StartDraftAsync(admin.Id, sessionId);
-        Assert.False(blocked.IsSuccess);
-        Assert.Equal(409, blocked.StatusCode);
-        Assert.Contains("suất đang nhường", blocked.Error, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(SessionStatus.CaptainSelection, (await db.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId)).Status);
-        Assert.Empty(await db.DraftRounds.AsNoTracking().Where(item => item.SessionId == sessionId).ToListAsync());
-
-        Assert.True(await offerStore.TryClaimAsync(offer, "claimant-uid", "Bình", "m-claim"));
-        Assert.True(await offerStore.TryBeginApplyAsync(offer.Id, "claimant-uid"));
-        Assert.True(await offerStore.CompleteAsync(offer.Id, "claimant-uid"));
+        Assert.Equal(
+            1,
+            await new ZaloOpenSlotRiskCounter(db)
+                .CountActiveForSessionAsync(zaloConnection.Id, "g1", sessionId));
 
         var started = await service.StartDraftAsync(admin.Id, sessionId);
         Assert.True(started.IsSuccess, started.Error);
         Assert.Equal(SessionStatus.Drafting, started.Value!.SessionStatus);
+        Assert.Single(
+            await db.DraftRounds.AsNoTracking()
+                .Where(item => item.SessionId == sessionId)
+                .ToListAsync());
+
+        // The handoff ledger stays alive independently of draft and can continue later.
+        Assert.True(await offerStore.TryClaimAsync(offer, "claimant-uid", "Bình", "m-claim"));
+        Assert.Equal(
+            1,
+            await new ZaloOpenSlotRiskCounter(db)
+                .CountActiveForSessionAsync(zaloConnection.Id, "g1", sessionId));
+
+        var retry = await service.StartDraftAsync(admin.Id, sessionId);
+        Assert.False(retry.IsSuccess);
+        Assert.Single(
+            await db.DraftRounds.AsNoTracking()
+                .Where(item => item.SessionId == sessionId)
+                .ToListAsync());
     }
 }

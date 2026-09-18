@@ -20,18 +20,20 @@ public sealed class ZaloKeepRecruitingAuthorityPolicyTests
     }
 
     [Theory]
-    [InlineData(false, 0)]
-    [InlineData(true, 1)]
-    public void NonRecruitingDecision_StillSupersedesWhenReadinessBecomesUnsafe(
+    [InlineData(false, 0, true)]
+    [InlineData(false, 1, true)]
+    [InlineData(true, 1, false)]
+    public void NonRecruitingDecision_SupersedesOnlyWhenReadinessItselfIsUnsafe(
         bool canEscalate,
-        int activeSlotRisks)
+        int activeSlotRisks,
+        bool expected)
     {
         var supersede = ZaloDraftPreparationDecisionPolicy.ShouldSupersedeActiveDraftRequest(
             ZaloDraftPreparationDecisionKind.PlayCurrentRoster,
             canEscalate,
             activeSlotRisks);
 
-        Assert.True(supersede);
+        Assert.Equal(expected, supersede);
     }
 
     [Fact]

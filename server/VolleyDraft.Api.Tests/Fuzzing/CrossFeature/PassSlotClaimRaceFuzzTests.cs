@@ -11,7 +11,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 public sealed class PassSlotClaimRaceFuzzTests
 {
     [Fact]
-    public async Task Concurrent_claimers_cannot_both_own_one_pass_slot_or_cross_the_draft_gate()
+    public async Task Concurrent_claimers_keep_single_owner_and_active_claim_does_not_block_draft()
     {
         var connectionString = $"Data Source=pass-slot-claim-race-{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
         await using var anchor = new SqliteConnection(connectionString);
@@ -132,14 +132,6 @@ public sealed class PassSlotClaimRaceFuzzTests
                 .CountActiveForSessionAsync(connectionId, groupId, sessionId);
             Assert.Equal(1, activeRisk);
 
-            var blocked = await new SessionDraftService(verifier).StartDraftAsync(adminId, sessionId);
-            Assert.False(blocked.IsSuccess);
-            Assert.Equal(409, blocked.StatusCode);
-            Assert.Equal(
-                SessionStatus.CaptainSelection,
-                (await verifier.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId)).Status);
-            Assert.Empty(await verifier.DraftRounds.AsNoTracking().Where(item => item.SessionId == sessionId).ToListAsync());
-
             Assert.True(await verifyStore.CancelAsync(offer.Id, "owner-uid"));
             Assert.Equal(
                 0,
@@ -148,9 +140,39 @@ public sealed class PassSlotClaimRaceFuzzTests
         }
 
         await using var finalDb = new VolleyDraftDbContext(options);
+        var finalStore = new ZaloOpenSlotOfferStore(finalDb);
+        var finalOffer = await finalStore.OpenAsync(
+            connectionId,
+            groupId,
+            "owner-uid",
+            "Owner",
+            sessionId,
+            "T6",
+            "final-open",
+            DateTimeOffset.UtcNow.AddHours(1),
+            null);
+        Assert.True(await finalStore.TryClaimAsync(
+            finalOffer,
+            "final-claimant",
+            "Final Claimant",
+            "final-claim"));
+        Assert.Equal(
+            1,
+            await new ZaloOpenSlotRiskCounter(finalDb)
+                .CountActiveForSessionAsync(connectionId, groupId, sessionId));
+
         var finalDraft = await new SessionDraftService(finalDb).StartDraftAsync(adminId, sessionId);
         Assert.True(finalDraft.IsSuccess, finalDraft.Error);
-        Assert.Equal(SessionStatus.Drafting, (await finalDb.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId)).Status);
-        Assert.Single(await finalDb.DraftRounds.AsNoTracking().Where(item => item.SessionId == sessionId).ToListAsync());
+        Assert.Equal(
+            SessionStatus.Drafting,
+            (await finalDb.MatchSessions.AsNoTracking().SingleAsync(item => item.Id == sessionId)).Status);
+        Assert.Single(
+            await finalDb.DraftRounds.AsNoTracking()
+                .Where(item => item.SessionId == sessionId)
+                .ToListAsync());
+        Assert.Equal(
+            1,
+            await new ZaloOpenSlotRiskCounter(finalDb)
+                .CountActiveForSessionAsync(connectionId, groupId, sessionId));
     }
 }
