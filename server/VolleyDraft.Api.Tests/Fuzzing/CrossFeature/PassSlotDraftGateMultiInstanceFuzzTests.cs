@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
@@ -12,7 +11,7 @@ namespace VolleyDraft.Api.Tests.Fuzzing;
 public sealed class PassSlotDraftGateMultiInstanceFuzzTests
 {
     [Fact]
-    public async Task Draft_gate_observes_pass_slot_risk_created_by_another_instance()
+    public async Task Draft_allows_pass_slot_risk_created_by_another_instance()
     {
         await using var target = new MultiInstanceDraftGateTarget();
         var scenario = new StatefulFuzzCase<MultiInstanceAction>(
@@ -31,7 +30,7 @@ public sealed class PassSlotDraftGateMultiInstanceFuzzTests
     }
 
     [Fact]
-    public async Task Multi_instance_interleavings_preserve_final_draft_gate_authority()
+    public async Task Multi_instance_interleavings_never_block_valid_draft_for_pass_risk()
     {
         MultiInstanceAction[] seedActions =
         [
@@ -347,34 +346,23 @@ public sealed class PassSlotDraftGateMultiInstanceFuzzTests
             var attempt = state.LastAttempt;
             if (attempt is null) yield break;
 
-            if (attempt.ActiveRiskBeforeAttempt > 0 && attempt.DraftSucceeded)
+            if (!attempt.DraftSucceeded)
             {
                 yield return new StatefulInvariantViolation(
                     "cross-feature",
-                    "cross-instance-pass-risk-crossed-final-draft-gate",
-                    $"{attempt.InstanceName} started draft with {attempt.ActiveRiskBeforeAttempt} active pass-slot offer(s) created through shared durable state.",
-                    "cross-feature:cross-instance-pass-risk-crossed-final-draft-gate");
+                    "cross-instance-pass-ledger-blocked-valid-draft",
+                    $"{attempt.InstanceName} blocked a valid draft with {attempt.ActiveRiskBeforeAttempt} active pass-slot offer(s) (status {attempt.StatusCode}).",
+                    "cross-feature:cross-instance-pass-ledger-blocked-valid-draft");
             }
 
-            if (attempt.ActiveRiskBeforeAttempt > 0 &&
-                (attempt.StatusCode != StatusCodes.Status409Conflict ||
-                 attempt.SessionStatus != SessionStatus.CaptainSelection ||
-                 attempt.DraftRoundCount != 0))
+            if (attempt.DraftSucceeded &&
+                (attempt.SessionStatus != SessionStatus.Drafting || attempt.DraftRoundCount != 1))
             {
                 yield return new StatefulInvariantViolation(
                     "cross-feature",
-                    "cross-instance-blocked-pass-risk-mutated-draft-state",
-                    $"{attempt.InstanceName} observed active pass risk but the final draft gate returned an inconsistent contract or mutated draft state.",
-                    "cross-feature:cross-instance-blocked-pass-risk-mutated-draft-state");
-            }
-
-            if (attempt.ActiveRiskBeforeAttempt == 0 && !attempt.DraftSucceeded)
-            {
-                yield return new StatefulInvariantViolation(
-                    "cross-feature",
-                    "cross-instance-resolved-or-foreign-risk-blocked-draft",
-                    $"{attempt.InstanceName} blocked draft without an authoritative active pass-slot risk (status {attempt.StatusCode}).",
-                    "cross-feature:cross-instance-resolved-or-foreign-risk-blocked-draft");
+                    "cross-instance-pass-ledger-draft-state-inconsistent",
+                    $"{attempt.InstanceName} completed draft but persisted an inconsistent session/round state.",
+                    "cross-feature:cross-instance-pass-ledger-draft-state-inconsistent");
             }
         }
 
