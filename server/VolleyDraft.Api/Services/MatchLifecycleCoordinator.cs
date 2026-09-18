@@ -180,20 +180,8 @@ public sealed class MatchLifecycleCoordinator(VolleyDraftDbContext db)
                 readiness.MissingProfileNames, 0, leaderDecision, "leader_stopped_match", evaluatedAt);
         }
 
-        var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
-        if (activeSlotRisks > 0)
-        {
-            return Response(
-                session, MatchLifecycleStage.ResolvingPassSlots,
-                activeSlotRisks == 1 ? "Đang xử lý 1 pass slot" : $"Đang xử lý {activeSlotRisks} pass slot",
-                "Có offer pass/claim còn hiệu lực nên roster chưa được coi là sạch để chốt draft.",
-                "Để pass-slot/rescue flow xử lý trên Zalo. Chưa cần mở web chỉ vì offer đang mở.",
-                MatchLifecycleOwner.ZaloBot,
-                false, null, null,
-                readiness.PresentPlayerCount, readiness.EffectiveSlotCount, readiness.Capacity,
-                readiness.MissingProfileNames, activeSlotRisks, leaderDecision,
-                "active_pass_slot_risk", evaluatedAt);
-        }
+        // Open pass/claim offers remain visible in readiness telemetry, but they do
+        // not own the lifecycle stage or block draft. The current roster stays authoritative.
 
         var overbook = await new ZaloOverbookStateStore(db).GetAsync(session.Id, cancellationToken);
         var overbookMatchesRoster = overbook is not null &&
