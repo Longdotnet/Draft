@@ -1,0 +1,9 @@
+# Primary project ownership
+* @Longdotnet
+
+# Keep maintainer/repository governance changes explicitly reviewed
+/README.md @Longdotnet
+/LICENSE @Longdotnet
+/SECURITY.md @Longdotnet
+/MAINTAINERS.md @Longdotnet
+/.github/ @Longdotnet
