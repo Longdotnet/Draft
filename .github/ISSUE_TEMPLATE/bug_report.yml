@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible user-facing or reliability problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Draft. Please use mock or redacted data only.
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Real-world scenario
+      description: What was the organizer/player trying to do?
+      placeholder: "Example: import a Zalo poll, then start a Sunday draft..."
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include exact steps and relevant logs with private data removed.
+    validations:
+      required: true
+  - type: textarea
+    id: invariant
+    attributes:
+      label: Invariant at risk
+      description: If known, what must always remain true?
+      placeholder: "Example: one player can belong to at most one authoritative shared slot."
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, cookies, API keys and private user data.
+          required: true
