@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a focused improvement based on a real workflow
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Real workflow
+      description: Describe the group/organizer problem before proposing implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: Current friction
+      description: What is manual, confusing, unsafe, or repetitive today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should the user be able to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints / invariants
+      description: What existing behavior must not break?
