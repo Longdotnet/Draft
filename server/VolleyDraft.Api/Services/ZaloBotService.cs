@@ -290,10 +290,11 @@ public sealed partial class ZaloBotService(
         var exactCooldownSeconds = Math.Clamp(configuration.GetValue("ZaloBot:ExactCommandCooldownSeconds", 2), 0, 60);
         var incomingQuestion = ExtractQuestion(incoming);
         var bypassCooldown = ZaloBotIntelligence.IsConfirmation(incomingQuestion) || ZaloBotIntelligence.IsCancel(incomingQuestion);
+        var cooldownCutoff = DateTimeOffset.UtcNow.AddSeconds(-exactCooldownSeconds);
         var tooSoon = !bypassCooldown && await db.ZaloGroupMessages.AsNoTracking().AnyAsync(message =>
                 message.Id != storedMessage.Id && message.ZaloConnectionId == connection.Id &&
                 message.GroupId == groupId && message.SenderId == NormalizeId(incoming.SenderId) &&
-                message.ProcessingStartedAt >= DateTimeOffset.UtcNow.AddSeconds(-exactCooldownSeconds), cancellationToken);
+                message.ProcessingStartedAt >= cooldownCutoff, cancellationToken);
         if (tooSoon)
         {
             await FinishMessageAsync(storedMessage.Id, processingToken, null, false, "throttled", cancellationToken);
@@ -367,7 +368,10 @@ public sealed partial class ZaloBotService(
                 reply,
                 outgoingMentions,
                 response.ImageUrl,
-                $"{accountId}:{messageId}");
+                $"{accountId}:{messageId}",
+                response.ImageBase64,
+                response.ImageContentType,
+                response.ImageFileName);
         }
         catch
         {
@@ -837,10 +841,20 @@ public sealed partial class ZaloBotService(
                 ZaloTeamLineupFormatter.WantsPlayerMentions(question),
                 cancellationToken,
                 readiness);
-            var imageUrl = decision.Intent == ZaloBotIntent.TeamImage
-                ? teamCards.GetPublicUrl(session.Id)
+            var image = decision.Intent == ZaloBotIntent.TeamImage
+                ? await TryGenerateCourtIndexImageAsync(session.Id, cancellationToken)
                 : null;
-            return new BotAnswer(lineup.Text, imageUrl, decision.Intent, Mentions: lineup.Mentions);
+            var text = decision.Intent == ZaloBotIntent.TeamImage && image is null
+                ? lineup.Text + BuildTeamImageRecoveryText(session.Name)
+                : lineup.Text;
+            return new BotAnswer(
+                text,
+                null,
+                decision.Intent,
+                Mentions: lineup.Mentions,
+                ImageBase64: image?.Base64,
+                ImageContentType: image?.ContentType,
+                ImageFileName: image?.FileName);
         }
 
         if (decision.Intent == ZaloBotIntent.UpdatePlayerProfile)
@@ -963,10 +977,17 @@ public sealed partial class ZaloBotService(
             await actionHistory.RecordAsync(selected.Id, incoming.SenderId, incoming.SenderName,
                 isRedraft ? "Redraft" : "AutoDraft",
                 $"{(isRedraft ? "Draft lại" : "Tự draft")} đội hình {selected.Name}", draftBefore, cancellationToken);
+            var image = await TryGenerateCourtIndexImageAsync(selected.Id, cancellationToken);
+            var resultText =
+                $"Đã {(isRedraft ? "draft lại" : "tự draft")} xong {selected.Name}.\n{FormatTeamLineup(selected.Name, drafted.Value.TeamPreview)}";
+            if (image is null) resultText += BuildTeamImageRecoveryText(selected.Name);
             return new BotAnswer(
-                $"Đã {(isRedraft ? "draft lại" : "tự draft")} xong {selected.Name}.\n{FormatTeamLineup(selected.Name, drafted.Value.TeamPreview)}",
-                teamCards.GetPublicUrl(selected.Id),
-                decision.Intent);
+                resultText,
+                null,
+                decision.Intent,
+                ImageBase64: image?.Base64,
+                ImageContentType: image?.ContentType,
+                ImageFileName: image?.FileName);
         }
 
         if (decision.Intent == ZaloBotIntent.RebalanceTeams)
@@ -4229,6 +4250,36 @@ public sealed partial class ZaloBotService(
     private static string FormatTeamLineup(string sessionName, IReadOnlyList<TeamPreviewResponse> teams)
         => ZaloTeamLineupFormatter.Format(sessionName, teams).Text;
 
+    private async Task<BotImagePayload?> TryGenerateCourtIndexImageAsync(
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var image = await teamCards.GenerateCourtIndexAsync(sessionId, cancellationToken);
+            if (image is null) return null;
+            return new BotImagePayload(
+                Convert.ToBase64String(image.Data),
+                image.ContentType,
+                "court-index.png");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not render fixed Court Index team image Session={SessionId}",
+                sessionId);
+            return null;
+        }
+    }
+
+    private static string BuildTeamImageRecoveryText(string sessionName) =>
+        $"\n\nẢnh Court Index chưa tạo được lúc này. Đội hình đã được lưu; gõ `@Npc 10 {sessionName}` để lấy lại ảnh, không cần draft lại.";
+
     private async Task<ZaloTeamLineupMessage> BuildTeamLineupMessageAsync(
         string sessionName,
         IReadOnlyList<TeamPreviewResponse> teams,
@@ -4765,14 +4816,21 @@ public sealed partial class ZaloBotService(
                 ZaloTeamLineupFormatter.WantsPlayerMentions(ExtractQuestion(incoming)),
                 cancellationToken,
                 readiness);
+            var image = decision.Intent == ZaloBotIntent.TeamImage
+                ? await TryGenerateCourtIndexImageAsync(teamSession.Id, cancellationToken)
+                : null;
+            var text = decision.Intent == ZaloBotIntent.TeamImage && image is null
+                ? lineup.Text + BuildTeamImageRecoveryText(teamSession.Name)
+                : lineup.Text;
             return new BotAnswer(
-                lineup.Text,
-                decision.Intent == ZaloBotIntent.TeamImage
-                    ? teamCards.GetPublicUrl(teamSession.Id)
-                    : null,
+                text,
+                null,
                 decision.Intent,
                 true,
-                Mentions: lineup.Mentions);
+                Mentions: lineup.Mentions,
+                ImageBase64: image?.Base64,
+                ImageContentType: image?.ContentType,
+                ImageFileName: image?.FileName);
         }
         if (decision.Intent == ZaloBotIntent.UpdatePlayerProfile)
             return await UpdatePlayerProfileAsync(decision, sessions, selector, ExtractQuestion(incoming), incoming, true);
@@ -5549,7 +5607,11 @@ public sealed partial class ZaloBotService(
         bool AiCalled = false,
         bool TextGeneratedByAi = false,
         IReadOnlyList<BridgeOutgoingMention>? Mentions = null,
-        IReadOnlyList<string>? ProtectedTerms = null);
+        IReadOnlyList<string>? ProtectedTerms = null,
+        string? ImageBase64 = null,
+        string? ImageContentType = null,
+        string? ImageFileName = null);
+    private sealed record BotImagePayload(string Base64, string ContentType, string FileName);
     private sealed record SessionSelection(SessionSnapshot? Session, string? Clarification);
     private sealed record PendingResolution(
         bool Cancelled,

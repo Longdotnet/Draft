@@ -62,6 +62,29 @@ public sealed class ZaloAutoSessionPreRouteOwnershipTests
             hasActiveLegacyPending: true));
     }
 
+    [Theory]
+    [InlineData("draft đi")]
+    [InlineData("draft di T7")]
+    [InlineData("xác nhận draft")]
+    public void Strong_natural_draft_confirmation_bypasses_auto_session_even_without_mention(string content)
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: $"m-{Guid.NewGuid():N}",
+            senderId: "user-long",
+            senderName: "Thanh Long",
+            content: content,
+            mentions: [],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Assert.True(ZaloAutoSessionPreRouteOwnership.ShouldBypassAutoSession(
+            incoming,
+            hasActiveLegacyPending: false));
+    }
+
     private static ZaloIncomingMessageEvent Explicit(string content) => new(
         accountId: "bot-account",
         botId: "bot-account",

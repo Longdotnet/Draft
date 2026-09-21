@@ -15,6 +15,12 @@ internal static class ZaloAutoSessionPreRouteOwnership
         ZaloIncomingMessageEvent incoming,
         bool hasActiveLegacyPending)
     {
+        // Draft reminders deliberately teach organizers that bare `draft đi` is enough.
+        // Give that narrow destructive-domain confirmation to the draft lane before an
+        // unrelated active Auto Session conversation can interpret it as a poll-draft turn.
+        if (ZaloDraftConversationPolicy.IsStrongDraftConfirmation(incoming.Content))
+            return true;
+
         if (!incoming.MentionedBot) return false;
         if (hasActiveLegacyPending) return true;
 

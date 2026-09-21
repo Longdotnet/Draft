@@ -32,7 +32,20 @@ public sealed class ZaloTeamCardService(
         return hasNonCaptainAssignment;
     }
 
-    public async Task<GeneratedTeamCard?> GenerateAsync(string sessionId, CancellationToken cancellationToken = default)
+    public Task<GeneratedTeamCard?> GenerateAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default) =>
+        GenerateAsync(sessionId, null, cancellationToken);
+
+    public Task<GeneratedTeamCard?> GenerateCourtIndexAsync(
+        string sessionId,
+        CancellationToken cancellationToken = default) =>
+        GenerateAsync(sessionId, (int)TeamPosterTemplate.NeonArena, cancellationToken);
+
+    private async Task<GeneratedTeamCard?> GenerateAsync(
+        string sessionId,
+        int? templateOverride,
+        CancellationToken cancellationToken)
     {
         var session = await db.MatchSessions.AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == sessionId, cancellationToken);
@@ -53,30 +66,33 @@ public sealed class ZaloTeamCardService(
             return null;
         }
 
-        var posterTemplateId = 1;
-        try
+        var posterTemplateId = templateOverride ?? (int)TeamPosterTemplate.NeonArena;
+        if (templateOverride is null)
         {
-            // Preserve a poster already claimed during rollout. If there is no persisted
-            // assignment, only sessions created after the collection rollout join the deck.
-            // Older sessions keep the Neon Arena graphic they historically used.
-            var existingAssignment = await TeamPosterRotationStore.GetAssignmentAsync(db, session.Id, cancellationToken);
-            if (existingAssignment is not null)
+            try
             {
-                posterTemplateId = existingAssignment.TemplateId;
+                // Preserve a poster already claimed during rollout. If there is no persisted
+                // assignment, only sessions created after the collection rollout join the deck.
+                // Older sessions keep the Neon Arena graphic they historically used.
+                var existingAssignment = await TeamPosterRotationStore.GetAssignmentAsync(db, session.Id, cancellationToken);
+                if (existingAssignment is not null)
+                {
+                    posterTemplateId = existingAssignment.TemplateId;
+                }
+                else if (ShouldJoinPosterRotation(session.CreatedAt))
+                {
+                    var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);
+                    posterTemplateId = assignment.TemplateId;
+                }
             }
-            else if (ShouldJoinPosterRotation(session.CreatedAt))
+            catch (Exception exception)
             {
-                var assignment = await TeamPosterRotationStore.EnsureAssignedAsync(db, session.Id, cancellationToken);
-                posterTemplateId = assignment.TemplateId;
+                // Keep image generation available even if the poster-deck persistence layer
+                // is temporarily unavailable. Template 1 is the safe visual fallback.
+                logger.LogWarning(exception,
+                    "Could not resolve poster template for Session={SessionId}; using Neon Arena fallback",
+                    session.Id);
             }
-        }
-        catch (Exception exception)
-        {
-            // Keep image generation available even if the poster-deck persistence layer
-            // is temporarily unavailable. Template 1 is the safe visual fallback.
-            logger.LogWarning(exception,
-                "Could not resolve poster template for Session={SessionId}; using Neon Arena fallback",
-                session.Id);
         }
 
         var hydrated = await zaloIntegration.HydrateMissingMemberAvatarsAsync(session.AdminUserId, session.Id);
@@ -169,30 +185,43 @@ public sealed class ZaloTeamCardService(
                 slots);
         }).ToList();
 
-        byte[] poster;
-        try
-        {
-            poster = TeamPosterRendererRegistry.Render(
+        var poster = RenderPosterOrFallback(
+            templateOverride,
+            () => TeamPosterRendererRegistry.Render(
                 posterTemplateId,
                 session.Name,
                 session.StartTime,
                 session.Location,
-                teams);
-        }
-        catch (Exception exception)
-        {
-            // Keep @bot 10 operational even if a future premium-renderer change hits
-            // an unexpected Skia/font edge case in production. The old renderer is
-            // intentionally retained as a last-resort safety net.
-            logger.LogWarning(
-                exception,
-                "Tournament team poster render failed for Session={SessionId} Template={TemplateId}; falling back to legacy card",
-                session.Id,
-                posterTemplateId);
-            poster = SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams);
-        }
+                teams),
+            exception =>
+            {
+                // Keep ordinary @bot 10 poster rotation operational even if a future premium
+                // renderer hits an unexpected Skia/font edge case. Fixed-template callers must
+                // fail instead so their recovery path does not mislabel this legacy card.
+                logger.LogWarning(
+                    exception,
+                    "Tournament team poster render failed for Session={SessionId} Template={TemplateId}; falling back to legacy card",
+                    session.Id,
+                    posterTemplateId);
+                return SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams);
+            });
 
         return new GeneratedTeamCard(poster, "image/png");
+    }
+
+    internal static byte[] RenderPosterOrFallback(
+        int? templateOverride,
+        Func<byte[]> render,
+        Func<Exception, byte[]> fallback)
+    {
+        try
+        {
+            return render();
+        }
+        catch (Exception exception) when (templateOverride is null)
+        {
+            return fallback(exception);
+        }
     }
 
     private static string? GetAvatarUrl(

@@ -3304,6 +3304,17 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return Conflict<OpenBagResponse>("Túi đã được mở hoặc lượt bốc đã thay đổi. Vui lòng tải lại.");
         }
 
+        var preferenceAssignment = await ApplyTeamPreferenceGroupAsync(
+            session,
+            preparedSlot.Id,
+            activeTurn.TeamId);
+        if (!preferenceAssignment.IsSuccess)
+        {
+            await transaction.RollbackAsync();
+            return Conflict<OpenBagResponse>(
+                preferenceAssignment.ErrorMessage ?? "Không thể giữ nhóm muốn chung team trong lượt draft này.");
+        }
+
         await RecalculateTeamScore(activeTurn.TeamId);
 
         var nextTurn = await ActivateNextAvailableTurn(session, sessionId, now);
@@ -4482,6 +4493,33 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             return await PickBalancedSlotForTeamAsync(session, teamId, requiredGroupSlots);
         }
 
+        // A persisted same-team preference is a hard allocation constraint, not just a
+        // scoring hint. If every team spends its early capacity on ordinary slots, a
+        // multi-slot preference group can be stranded later when each team has fewer
+        // free places than the group requires. Consume an unresolved group at the first
+        // team that can still fit the whole group so random/balance selection cannot make
+        // an otherwise valid draft impossible.
+        var unresolvedPreferenceSlots = unassignedSlots
+            .Where(slot =>
+            {
+                var slotGroupIds = GetGroupIdsForSlot(slot)
+                    .Where(groupId => groupTeamAssignments[groupId].Count == 0)
+                    .ToHashSet();
+                if (slotGroupIds.Count == 0)
+                {
+                    return false;
+                }
+
+                var requiredSlotCount = unassignedSlots.Count(candidate =>
+                    GetGroupIdsForSlot(candidate).Overlaps(slotGroupIds));
+                return requiredSlotCount > 1 && requiredSlotCount <= remainingCapacity;
+            })
+            .ToList();
+        if (unresolvedPreferenceSlots.Count > 0)
+        {
+            return await PickBalancedSlotForTeamAsync(session, teamId, unresolvedPreferenceSlots);
+        }
+
         var validSlots = unassignedSlots
             .Where(slot =>
             {
@@ -4522,9 +4560,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
     private async Task<TeamPreferenceAssignmentResult> ApplyTeamPreferenceGroupAsync(
         MatchSession session,
         string openedDraftSlotId,
-        string teamId,
-        string adminUserId,
-        DateTimeOffset now)
+        string teamId)
     {
         var openedPlayerIds = await db.DraftSlotPlayers
             .Where(slotPlayer => slotPlayer.DraftSlotId == openedDraftSlotId)
@@ -4579,15 +4615,6 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         {
             slot.AssignedTeamId = teamId;
         }
-
-        var linkedSlotIds = linkedSlots.Select(slot => slot.Id).ToList();
-        await db.BlindBags
-            .Where(bag => linkedSlotIds.Contains(bag.DraftSlotId) && !bag.IsOpened)
-            .ExecuteUpdateAsync(updates => updates
-                .SetProperty(bag => bag.IsOpened, true)
-                .SetProperty(bag => bag.OpenedByUserId, adminUserId)
-                .SetProperty(bag => bag.OpenedForTeamId, teamId)
-                .SetProperty(bag => bag.OpenedAt, now));
 
         await db.SaveChangesAsync();
         return TeamPreferenceAssignmentResult.Success(linkedSlots);

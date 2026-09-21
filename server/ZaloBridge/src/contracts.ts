@@ -127,6 +127,9 @@ export type SendGroupMessageRequest = {
   message: string;
   mentions?: BridgeMention[];
   imageUrl?: string | null;
+  imageBase64?: string | null;
+  imageContentType?: string | null;
+  imageFileName?: string | null;
   idempotencyKey?: string | null;
 };
 

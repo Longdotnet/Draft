@@ -61,7 +61,9 @@ const shutdownDrainMs = Math.min(25_000, Math.max(1_000,
 const boardEventQuiesceMs = 1_750;
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "2mb" }));
+// Team-result posters are sent inline so the bridge does not need to call back into
+// the public API after a draft. A 10 MB binary attachment expands to ~13.4 MB in base64.
+app.use(express.json({ limit: "16mb" }));
 
 app.get("/health", (_request, response) => {
   response.json({
@@ -277,11 +279,21 @@ app.post("/v1/group-messages", async (request, response) => {
     message: String(body.message),
     mentions: Array.isArray(body.mentions) ? body.mentions : [],
     imageUrl: body.imageUrl ? String(body.imageUrl) : null,
+    imageBase64: body.imageBase64 ? String(body.imageBase64) : null,
+    imageContentType: body.imageContentType ? String(body.imageContentType) : null,
+    imageFileName: body.imageFileName ? String(body.imageFileName) : null,
     idempotencyKey: null,
   };
   response.json(await outboundMessageIdempotency.run(
     { accountId, groupId, idempotencyKey },
-    { message: outbound.message, mentions: outbound.mentions, imageUrl: outbound.imageUrl },
+    {
+      message: outbound.message,
+      mentions: outbound.mentions,
+      imageUrl: outbound.imageUrl,
+      imageBase64: outbound.imageBase64,
+      imageContentType: outbound.imageContentType,
+      imageFileName: outbound.imageFileName,
+    },
     () => zaloProviderTrafficGovernor.runWithAccount(
       accountId,
       () => sendGroupMessage(outbound),

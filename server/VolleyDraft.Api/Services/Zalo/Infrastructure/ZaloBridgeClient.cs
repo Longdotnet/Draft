@@ -144,11 +144,25 @@ public sealed class ZaloBridgeClient
         string message,
         IReadOnlyList<BridgeOutgoingMention> mentions,
         string? imageUrl = null,
-        string? idempotencyKey = null)
+        string? idempotencyKey = null,
+        string? imageBase64 = null,
+        string? imageContentType = null,
+        string? imageFileName = null)
     {
         using var response = await httpClient.PostAsJsonAsync(
             "v1/group-messages",
-            new { accountId, groupId, message, mentions, imageUrl, idempotencyKey });
+            new
+            {
+                accountId,
+                groupId,
+                message,
+                mentions,
+                imageUrl,
+                imageBase64,
+                imageContentType,
+                imageFileName,
+                idempotencyKey
+            });
         var result = await ReadAsync<BridgeSendMessageResponse>(response);
 
         // Once the provider has accepted the message, observability/persistence must
@@ -173,7 +187,7 @@ public sealed class ZaloBridgeClient
                 accountId,
                 groupId,
                 message,
-                imageUrl,
+                imageUrl ?? (string.IsNullOrWhiteSpace(imageBase64) ? null : "inline:image"),
                 idempotencyKey);
         }
         return result;

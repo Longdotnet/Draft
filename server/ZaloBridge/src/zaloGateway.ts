@@ -510,6 +510,32 @@ async function downloadImage(url: string) {
   return { data, filename: `location.${extension}` as `${string}.${string}`, metadata: { totalSize: data.length } };
 }
 
+export function decodeInlineImage(request: SendGroupMessageRequest) {
+  const encoded = request.imageBase64?.trim();
+  if (!encoded) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
+    throw new Error("Inline image is not valid base64");
+  }
+
+  const data = Buffer.from(encoded, "base64");
+  if (data.length === 0) throw new Error("Inline image is empty");
+  if (data.length > 10 * 1024 * 1024) throw new Error("Inline image exceeds 10 MB");
+
+  const contentType = request.imageContentType?.trim().toLowerCase() ?? "image/png";
+  const extension = contentType === "image/webp"
+    ? "webp"
+    : contentType === "image/jpeg" || contentType === "image/jpg"
+      ? "jpg"
+      : "png";
+  const requestedName = request.imageFileName?.trim() ?? `team-result.${extension}`;
+  const baseName = requestedName
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/\.[^.]+$/, "")
+    .slice(0, 80) || "team-result";
+  const filename = `${baseName}.${extension}` as `${string}.${string}`;
+  return { data, filename, metadata: { totalSize: data.length } };
+}
+
 export async function sendGroupMessage(request: SendGroupMessageRequest) {
   const idempotencyKey = request.idempotencyKey?.trim();
   const now = Date.now();
@@ -538,7 +564,10 @@ async function sendGroupMessageCore(request: SendGroupMessageRequest): Promise<B
     return { sent: true, mock: true, messageId: null };
   }
   let attachments: Array<Awaited<ReturnType<typeof downloadImage>>> | undefined;
-  if (request.imageUrl) {
+  const inlineImage = decodeInlineImage(request);
+  if (inlineImage) {
+    attachments = [inlineImage];
+  } else if (request.imageUrl) {
     try {
       attachments = [await downloadImage(request.imageUrl)];
     } catch (error) {

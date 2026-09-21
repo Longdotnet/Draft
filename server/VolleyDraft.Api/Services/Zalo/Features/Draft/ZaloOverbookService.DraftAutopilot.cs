@@ -70,6 +70,11 @@ public sealed partial class ZaloOverbookService
         var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
         if (senderId.Length == 0 || senderId == ZaloOverbookLogic.NormalizeId(incoming.BotId)) return false;
 
+        var strongDraftConfirmation = ZaloDraftConversationPolicy.IsStrongDraftConfirmation(incoming.Content);
+        var explicitDraftSessionId = strongDraftConfirmation
+            ? await ResolveExplicitDraftSessionIdAsync(connectionId, groupId, incoming.Content, cancellationToken)
+            : null;
+
         var escalationStore = new ZaloDraftEscalationStore(db);
         var approverRequest = await escalationStore.LoadActiveForApproverAsync(
             connectionId, groupId, senderId, cancellationToken);
@@ -101,16 +106,21 @@ public sealed partial class ZaloOverbookService
                 return true;
             }
 
-            if (ZaloDraftConversationPolicy.IsStrongDraftConfirmation(incoming.Content))
+            if (strongDraftConfirmation)
             {
-                if (!targeted) return false;
-                return await HandleDraftApprovalAsync(
-                    connectionId, accountId, botName, groupId, incoming,
-                    approverRequest, settings, escalationStore, cancellationToken);
+                var explicitlyTargetsDifferentSession =
+                    explicitDraftSessionId is not null &&
+                    !string.Equals(explicitDraftSessionId, approverRequest.SessionId, StringComparison.Ordinal);
+                if (!explicitlyTargetsDifferentSession && targeted)
+                {
+                    return await HandleDraftApprovalAsync(
+                        connectionId, accountId, botName, groupId, incoming,
+                        approverRequest, settings, escalationStore, cancellationToken);
+                }
             }
         }
 
-        if (ZaloDraftConversationPolicy.IsStrongDraftConfirmation(incoming.Content))
+        if (strongDraftConfirmation)
         {
             var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
             if (!string.IsNullOrWhiteSpace(quote.MessageId))
@@ -120,7 +130,11 @@ public sealed partial class ZaloOverbookService
                     request.GroupId == groupId &&
                     (string.Equals(request.PrimaryApproverMessageId, quote.MessageId, StringComparison.Ordinal) ||
                      string.Equals(request.SecondaryApproverMessageId, quote.MessageId, StringComparison.Ordinal)));
-                if (quotedRequest is not null)
+                var explicitlyTargetsDifferentSession =
+                    quotedRequest is not null &&
+                    explicitDraftSessionId is not null &&
+                    !string.Equals(explicitDraftSessionId, quotedRequest.SessionId, StringComparison.Ordinal);
+                if (quotedRequest is not null && !explicitlyTargetsDifferentSession)
                 {
                     await SendDraftReplyAsync(
                         connectionId, accountId, botName, groupId, incoming,
@@ -158,6 +172,21 @@ public sealed partial class ZaloOverbookService
         }
 
         if (!settings.NaturalReadinessEnabled) return false;
+
+        if (strongDraftConfirmation)
+        {
+            return await TryHandleFreshDraftCommandAsync(
+                connectionId,
+                accountId,
+                botName,
+                groupId,
+                incoming,
+                explicitDraftSessionId,
+                settings,
+                escalationStore,
+                cancellationToken);
+        }
+
         var selectionStore = new ZaloConversationStateV2Store(db);
         var selectionState = await selectionStore.LoadActiveAsync(groupId, senderId, cancellationToken);
         var continuingSelection = selectionState is not null &&
@@ -198,6 +227,196 @@ public sealed partial class ZaloOverbookService
             connectionId, accountId, botName, groupId, incoming,
             continuingSelection ? selectionState : null,
             settings, escalationStore, cancellationToken);
+    }
+
+    private async Task<bool> TryHandleFreshDraftCommandAsync(
+        string connectionId,
+        string accountId,
+        string botName,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        string? explicitSessionId,
+        DraftAutopilotSettings settings,
+        ZaloDraftEscalationStore escalationStore,
+        CancellationToken cancellationToken)
+    {
+        var resolution = await ResolveDraftPreparationDecisionSessionAsync(
+            connectionId,
+            groupId,
+            incoming.Content,
+            requirePlayCurrentDecision: false,
+            cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var earliestEligibleStart = now.AddHours(-4);
+        var session = explicitSessionId is null
+            ? resolution.Session
+            : await db.MatchSessions
+                .AsNoTracking()
+                .Include(item => item.ZaloConnection)
+                .SingleOrDefaultAsync(item =>
+                    item.Id == explicitSessionId &&
+                    item.ZaloConnectionId == connectionId &&
+                    item.ZaloGroupId == groupId &&
+                    item.BotEnabled &&
+                    item.Status != SessionStatus.Cancelled &&
+                    (item.StartTime == null || item.StartTime >= earliestEligibleStart),
+                    cancellationToken);
+        if (session is null)
+        {
+            if (explicitSessionId is not null)
+            {
+                await SendDraftReplyAsync(
+                    connectionId, accountId, botName, groupId, incoming,
+                    "Tui nhận ra ông đang chỉ một trận cụ thể nhưng trận đó không còn ở phạm vi bot có thể xử lý. Tui chưa draft trận khác để tránh chia nhầm.",
+                    [], "draft_explicit_session_unavailable", cancellationToken);
+                return true;
+            }
+            return await TryReplyDraftPreparationAmbiguityAsync(
+                connectionId,
+                groupId,
+                ZaloOverbookLogic.NormalizeId(incoming.SenderId),
+                incoming,
+                resolution.Candidates,
+                "draft",
+                cancellationToken);
+        }
+
+        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        var authorization = await integration.GetGroupRoleAuthorizationAsync(
+            session.AdminUserId,
+            session.Id,
+            senderId);
+        if (!authorization.IsSuccess)
+        {
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                "Tui chưa xác minh được quyền trưởng/phó từ Zalo nên chưa draft nha. Dữ liệu vẫn giữ nguyên.",
+                [], "draft_role_lookup_failed", cancellationToken);
+            return true;
+        }
+        if (authorization.Value?.CanOperateBot != true)
+        {
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                "Draft sẽ thay đổi đội hình nên lượt `draft đi` cần trưởng/phó nhóm hoặc operator đã được cấp quyền xác nhận nha.",
+                [], "draft_confirmation_wrong_sender", cancellationToken);
+            return true;
+        }
+
+        var readiness = await new ZaloDraftReadinessService(db)
+            .BuildAsync(session.Id, DateTimeOffset.UtcNow, cancellationToken);
+        if (readiness?.State == ZaloDraftReadinessState.AlreadyDrafted)
+        {
+            await WriteDraftTraceAsync(incoming, groupId, session.Id, "draft_already_exists", cancellationToken);
+            if (botService is not null)
+            {
+                await botService.HandleIncomingAsync(PromoteToBot(incoming, $"10 {session.Name}"), cancellationToken);
+                return true;
+            }
+
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                $"{session.Name} có đội hình rồi nha. Tui chưa chạy draft lại.",
+                [], "draft_already_exists", cancellationToken);
+            return true;
+        }
+
+        var refresh = await RefreshLinkedPollForDraftReminderAsync(session, cancellationToken);
+        if (!refresh.Success)
+        {
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                ZaloDraftPreparationClientCopy.DraftVoteRefreshFailed(session.Name),
+                [], "draft_blocked_poll_refresh_failed", cancellationToken);
+            return true;
+        }
+
+        readiness = await new ZaloDraftReadinessService(db)
+            .BuildAsync(session.Id, DateTimeOffset.UtcNow, cancellationToken);
+        if (readiness is null)
+        {
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                $"Tui chưa đọc được trạng thái draft của {session.Name}, nên chưa chạy để tránh chia nhầm.",
+                [], "draft_blocked_session_missing", cancellationToken);
+            return true;
+        }
+
+        if (!readiness.CanEscalate)
+        {
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                BuildReadinessBlockerText(readiness),
+                [], readiness.ReasonCode, cancellationToken);
+            return true;
+        }
+
+        var expiry = GetRequestExpiry(
+            readiness.StartTime,
+            DateTimeOffset.UtcNow,
+            settings,
+            settings.TargetedConfirmationMinutes);
+        var request = await escalationStore.CreateOrReuseAsync(
+            connectionId,
+            groupId,
+            session.Id,
+            "LeaderDirect",
+            senderId,
+            incoming.SenderName,
+            incoming.MessageId,
+            readiness.Fingerprint,
+            ZaloDraftEscalationState.AwaitingRequesterConsent,
+            expiry,
+            cancellationToken);
+
+        if (request.State != ZaloDraftEscalationState.Executing)
+        {
+            await escalationStore.SetPrimaryApproverAsync(
+                request.Id,
+                senderId,
+                incoming.MessageId,
+                DateTimeOffset.UtcNow,
+                expiry,
+                cancellationToken);
+            request = await escalationStore.LoadForSessionAsync(
+                connectionId,
+                groupId,
+                session.Id,
+                cancellationToken) ?? request;
+        }
+
+        return await HandleDraftApprovalAsync(
+            connectionId,
+            accountId,
+            botName,
+            groupId,
+            incoming,
+            request,
+            settings,
+            escalationStore,
+            cancellationToken);
+    }
+
+    private async Task<string?> ResolveExplicitDraftSessionIdAsync(
+        string connectionId,
+        string groupId,
+        string? content,
+        CancellationToken cancellationToken)
+    {
+        var sessions = await db.MatchSessions
+            .AsNoTracking()
+            .Where(session =>
+                session.ZaloConnectionId == connectionId &&
+                session.ZaloGroupId == groupId &&
+                session.BotEnabled)
+            .Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime))
+            .ToListAsync(cancellationToken);
+        if (sessions.Count == 0) return null;
+
+        var matchedIds = ZaloBotIntelligence.ResolveSessionReference(
+            ZaloDraftConversationPolicy.Normalize(content),
+            sessions);
+        return matchedIds.Count == 1 ? matchedIds[0] : null;
     }
 
     private async Task<bool> HandleDraftReadinessQuestionAsync(
@@ -519,6 +738,10 @@ public sealed partial class ZaloOverbookService
         if (session is null)
         {
             await escalationStore.SetStateAsync(request.Id, ZaloDraftEscalationState.Superseded, cancellationToken);
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                "Tui không còn tìm thấy trận của lượt chốt draft này. Tui chưa thay đổi đội hình; nói rõ tên/ngày trận rồi thử `draft đi` lại nha.",
+                [], "draft_blocked_session_missing", cancellationToken);
             return true;
         }
 
@@ -636,13 +859,20 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
+        Exception? nestedDraftFailure = null;
         try
         {
+            await ReleaseIngressLeaseForDraftBotHandoffAsync(
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken);
             await botService.HandleIncomingAsync(
                 PromoteToBot(incoming, "xác nhận draft"), cancellationToken);
         }
         catch (Exception exception)
         {
+            nestedDraftFailure = exception;
             logger.LogWarning(
                 exception,
                 "Natural draft approval failed Group={GroupId} Session={SessionId} Sender={SenderId}",
@@ -661,6 +891,13 @@ public sealed partial class ZaloOverbookService
             await RemoveDraftPendingAsync(connectionId, groupId, senderId, session.Id, cancellationToken);
             await WriteDraftTraceAsync(
                 incoming, groupId, session.Id, "draft_execution_completed", cancellationToken);
+            if (nestedDraftFailure is not null)
+            {
+                await SendDraftReplyAsync(
+                    connectionId, accountId, botName, groupId, incoming,
+                    $"{session.Name} đã draft xong và đội hình đã được lưu, nhưng lần gửi kết quả vừa rồi gặp lỗi. Gõ `@Npc 10 {session.Name}` để lấy lại ảnh Court Index; không cần draft lại.",
+                    [], "draft_execution_completed_send_recovery", cancellationToken);
+            }
             return true;
         }
 
@@ -671,7 +908,36 @@ public sealed partial class ZaloOverbookService
             refuseToOverwriteDifferentPending: true);
         await WriteDraftTraceAsync(
             incoming, groupId, session.Id, "draft_execution_failed", cancellationToken);
+        if (nestedDraftFailure is not null)
+        {
+            await SendDraftReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                $"Tui gặp lỗi khi chạy draft {session.Name}, nên chưa xác nhận hoàn tất. Dữ liệu chốt vẫn được giữ để thử lại; nói `draft đi` lại nha.",
+                [], "draft_execution_failed", cancellationToken);
+        }
         return true;
+    }
+
+    private async Task ReleaseIngressLeaseForDraftBotHandoffAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        var messageId = ZaloOverbookLogic.NormalizeId(incoming.MessageId);
+        if (messageId.Length == 0) return;
+
+        await db.ZaloGroupMessages
+            .Where(message =>
+                message.ZaloConnectionId == connectionId &&
+                message.GroupId == groupId &&
+                message.MessageId == messageId &&
+                message.BotReplySentAt == null &&
+                message.ReplyOutcome == "ingress_processing")
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(message => message.ProcessingStartedAt, (DateTimeOffset?)null)
+                .SetProperty(message => message.ProcessingToken, (string?)null)
+                .SetProperty(message => message.ReplyOutcome, (string?)null), cancellationToken);
     }
 
     public async Task<int> ProcessDraftAutopilotDueAsync(
