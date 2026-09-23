@@ -190,6 +190,124 @@ public static class DatabaseSchemaPatch
         }
     }
 
+    private static async Task EnsureSqliteScheduledDraftTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloScheduledDraftPolicies" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloScheduledDraftPolicies" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "Enabled" INTEGER NOT NULL DEFAULT 0,
+                "LocalDraftMinuteOfDay" INTEGER NOT NULL DEFAULT 1050,
+                "ReminderMinutes" INTEGER NOT NULL DEFAULT 30,
+                "TimeZoneId" TEXT NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+                "EnabledByZaloUserId" TEXT NULL,
+                "EnabledAt" TEXT NULL,
+                "Version" INTEGER NOT NULL DEFAULT 1,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloScheduledDraftPolicies_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloScheduledDraftDecisions" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloScheduledDraftDecisions" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "Skip" INTEGER NOT NULL DEFAULT 0,
+                "DeferredUntil" TEXT NULL,
+                "ChangedByZaloUserId" TEXT NOT NULL,
+                "ChangedAt" TEXT NOT NULL,
+                "PolicyVersion" INTEGER NOT NULL,
+                CONSTRAINT "FK_ZaloScheduledDraftDecisions_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloScheduledDraftRuns" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloScheduledDraftRuns" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "PolicyVersion" INTEGER NOT NULL,
+                "ReminderDueAt" TEXT NOT NULL,
+                "DraftDueAt" TEXT NOT NULL,
+                "ReminderSentAt" TEXT NULL,
+                "DraftedAt" TEXT NULL,
+                "ResultMessageSentAt" TEXT NULL,
+                "State" TEXT NOT NULL DEFAULT 'Pending',
+                "RosterFingerprint" TEXT NULL,
+                "LeaseToken" TEXT NULL,
+                "LeaseUntil" TEXT NULL,
+                "LastError" TEXT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloScheduledDraftRuns_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await EnsureScheduledDraftIndexes(db);
+    }
+
+    private static async Task EnsurePostgresScheduledDraftTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloScheduledDraftPolicies" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloScheduledDraftPolicies" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "Enabled" boolean NOT NULL DEFAULT FALSE,
+                "LocalDraftMinuteOfDay" integer NOT NULL DEFAULT 1050,
+                "ReminderMinutes" integer NOT NULL DEFAULT 30,
+                "TimeZoneId" text NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+                "EnabledByZaloUserId" text NULL,
+                "EnabledAt" timestamp with time zone NULL,
+                "Version" integer NOT NULL DEFAULT 1,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloScheduledDraftPolicies_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloScheduledDraftDecisions" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloScheduledDraftDecisions" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "Skip" boolean NOT NULL DEFAULT FALSE,
+                "DeferredUntil" timestamp with time zone NULL,
+                "ChangedByZaloUserId" text NOT NULL,
+                "ChangedAt" timestamp with time zone NOT NULL,
+                "PolicyVersion" integer NOT NULL,
+                CONSTRAINT "FK_ZaloScheduledDraftDecisions_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloScheduledDraftRuns" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloScheduledDraftRuns" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "PolicyVersion" integer NOT NULL,
+                "ReminderDueAt" timestamp with time zone NOT NULL,
+                "DraftDueAt" timestamp with time zone NOT NULL,
+                "ReminderSentAt" timestamp with time zone NULL,
+                "DraftedAt" timestamp with time zone NULL,
+                "ResultMessageSentAt" timestamp with time zone NULL,
+                "State" text NOT NULL DEFAULT 'Pending',
+                "RosterFingerprint" text NULL,
+                "LeaseToken" text NULL,
+                "LeaseUntil" timestamp with time zone NULL,
+                "LastError" text NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloScheduledDraftRuns_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await EnsureScheduledDraftIndexes(db);
+    }
+
+    private static async Task EnsureScheduledDraftIndexes(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftPolicies_Group" ON "ZaloScheduledDraftPolicies" ("ZaloConnectionId", "GroupId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftDecisions_Session" ON "ZaloScheduledDraftDecisions" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftRuns_Session" ON "ZaloScheduledDraftRuns" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftRuns_Due" ON "ZaloScheduledDraftRuns" ("State", "DraftDueAt");""");
+    }
+
     private static async Task<bool> EnsureSqliteColumn(
         VolleyDraftDbContext db,
         string tableName,
