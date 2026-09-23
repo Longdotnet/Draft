@@ -52,6 +52,16 @@ public sealed class ZaloBotIntelligenceTests
     }
 
     [Theory]
+    [InlineData("Những ai vào nhóm được 45 ngày đổ lại?", ZaloBotIntent.ListRecentlyJoinedMembers)]
+    [InlineData("7 ngày qua có ai mới vào?", ZaloBotIntent.ListRecentlyJoinedMembers)]
+    [InlineData("Có bao nhiêu thành viên mới trong 30 ngày?", ZaloBotIntent.ListRecentlyJoinedMembers)]
+    [InlineData("Tui vào nhóm ngày nào?", ZaloBotIntent.GetMemberJoinDate)]
+    public void Membership_history_questions_have_deterministic_routes(string input, ZaloBotIntent expected)
+    {
+        Assert.Equal(expected, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
+    }
+
+    [Theory]
     [InlineData("nhắc nhóm sau 6 tiếng nếu còn thiếu người", ZaloReminderCommandKind.Schedule, 360, true)]
     [InlineData("cứ mỗi 8h tag @all nếu thiếu slot", ZaloReminderCommandKind.Schedule, 480, true)]
     [InlineData("nhắc T6 ngay", ZaloReminderCommandKind.TriggerNow, 0, true)]
