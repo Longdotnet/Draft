@@ -61,6 +61,47 @@ public sealed class ZaloGroupMember
     public ZaloConnection ZaloConnection { get; set; } = null!;
 }
 
+public enum ZaloMembershipEvidenceKind
+{
+    ObservedOnly,
+    ProviderJoinEvent,
+    ProviderRejoinEvent,
+    HistoricalProviderEvent
+}
+
+public sealed class ZaloGroupMembershipPeriod
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("n");
+    public string ZaloConnectionId { get; set; } = string.Empty;
+    public string GroupId { get; set; } = string.Empty;
+    public string ZaloUserId { get; set; } = string.Empty;
+    public DateTimeOffset? JoinedAt { get; set; }
+    public DateTimeOffset? LeftAt { get; set; }
+    public DateTimeOffset FirstObservedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset LastObservedAt { get; set; } = DateTimeOffset.UtcNow;
+    public ZaloMembershipEvidenceKind EvidenceKind { get; set; } = ZaloMembershipEvidenceKind.ObservedOnly;
+    public string? SourceEventId { get; set; }
+    public bool IsCurrentPeriod { get; set; } = true;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public ZaloConnection ZaloConnection { get; set; } = null!;
+}
+
+public sealed class ZaloMembershipCoverage
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("n");
+    public string ZaloConnectionId { get; set; } = string.Empty;
+    public string GroupId { get; set; } = string.Empty;
+    public DateTimeOffset? CoveredFrom { get; set; }
+    public DateTimeOffset CoveredThrough { get; set; } = DateTimeOffset.UtcNow;
+    public bool HasCompleteHistoricalJoinEvents { get; set; }
+    public string Source { get; set; } = "RealtimeListener";
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public ZaloConnection ZaloConnection { get; set; } = null!;
+}
+
 public sealed class ZaloPollSnapshot
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
