@@ -66,6 +66,8 @@ public enum ZaloBotIntent
     ListAtRiskMembers,
     SyncMemberActivity,
     GetActivitySyncStatus,
+    ListRecentlyJoinedMembers,
+    GetMemberJoinDate,
     GeneralChat
 }
 
@@ -485,6 +487,10 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.SyncMemberActivity, .99, q, false, null, "member_activity_sync");
         if (Has(q, "dong bo toi dau", "tien do dong bo", "trang thai dong bo", "quet du lieu toi dau"))
             return new(ZaloBotIntent.GetActivitySyncStatus, .99, q, false, null, "member_activity_sync_status");
+        if (IsRecentJoinListQuestion(q))
+            return new(ZaloBotIntent.ListRecentlyJoinedMembers, .99, q, false, null, "recent_group_joins");
+        if (IsMemberJoinDateQuestion(q))
+            return new(ZaloBotIntent.GetMemberJoinDate, .99, q, false, null, "member_join_date");
         if (Has(q, "top") && Has(q, "it hoat dong", "khong hoat dong", "im lang", "inactive"))
             return new(ZaloBotIntent.ListMostInactiveMembers, .98, q, false, null, "most_inactive_members");
         if (Has(q, "dau hieu giam hoat dong", "co nguy co roi nhom", "at risk", "giam tuong tac"))
@@ -653,6 +659,21 @@ public static class ZaloBotIntelligence
 
     private static string? ReadString(JsonElement root, string property) =>
         root.TryGetProperty(property, out var node) && node.ValueKind == JsonValueKind.String ? node.GetString()?.Trim() : null;
+
+    private static bool IsRecentJoinListQuestion(string q)
+    {
+        var mentionsJoin = Has(q, "vao nhom", "tham gia nhom", "moi vao", "moi tham gia");
+        var asksList = Has(q, "ai ", "nhung ai", "co ai", "danh sach", "bao nhieu", "thanh vien nao");
+        var asksWindow = Has(q, "ngay", "gan day", "vua qua", "do lai", "tro lai", "trong khoang");
+        return mentionsJoin && asksList && asksWindow;
+    }
+
+    private static bool IsMemberJoinDateQuestion(string q)
+    {
+        var mentionsJoin = Has(q, "vao nhom", "tham gia nhom");
+        var asksWhen = Has(q, "ngay nao", "khi nao", "tu khi nao", "bao lau");
+        return mentionsJoin && asksWhen;
+    }
 
     private static bool IsMembership(string q) => Has(q, "minh co trong", "tui co trong", "toi co trong", "em co trong", "minh co ten", "tui co ten", "toi co ten", "em co ten", "co ten minh", "co ten tui", "co ten toi", "co ten em", "duoc vote", "da vote");
     private static bool IsIncompleteProfileQuery(string q)
