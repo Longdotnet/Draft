@@ -26,6 +26,7 @@ import type {
   BridgeMention,
   BridgePoll,
   IncomingGroupMessageEvent,
+  MembershipChangedEvent,
   PollBoardChangedEvent,
   SendGroupMessageRequest,
   StartListenerRequest,
@@ -147,6 +148,12 @@ type MinimalGroupEvent = {
     time?: string | number;
     groupTopic?: Record<string, unknown> | null;
     extraData?: Record<string, unknown> | null;
+    updateMembers?: Array<{
+      id?: string;
+      dName?: string;
+      avatar?: string;
+      avatar_25?: string;
+    }>;
   };
 };
 
@@ -302,6 +309,14 @@ function pollWebhookUrl(messageWebhookUrl: string): string {
   return parsed.toString();
 }
 
+function membershipWebhookUrl(messageWebhookUrl: string): string {
+  const parsed = new URL(messageWebhookUrl);
+  parsed.pathname = /\/events\/?$/.test(parsed.pathname)
+    ? parsed.pathname.replace(/\/events\/?$/, "/membership-events")
+    : `${parsed.pathname.replace(/\/$/, "")}/membership-events`;
+  return parsed.toString();
+}
+
 function readTopicValue(topic: Record<string, unknown> | null | undefined, ...keys: string[]): string | null {
   if (!topic) return null;
   for (const key of keys) {
@@ -309,6 +324,40 @@ function readTopicValue(topic: Record<string, unknown> | null | undefined, ...ke
     if (typeof value === "string" || typeof value === "number") return String(value);
   }
   return null;
+}
+
+function handleMembershipEvent(accountId: string, listener: ActiveListener, event: MinimalGroupEvent) {
+  if (event.type !== "join" && event.type !== "leave" && event.type !== "remove_member") return;
+  const eventType: MembershipChangedEvent["eventType"] = event.type;
+  const groupId = normalizeId(event.threadId);
+  if (!groupId || !listener.groupIds.has(groupId)) return;
+  const rawTimestamp = Number(event.data?.time ?? Date.now());
+  const occurredAtUnixMs = Number.isFinite(rawTimestamp)
+    ? rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
+    : Date.now();
+  const members = (event.data?.updateMembers ?? [])
+    .map((member) => {
+      const zaloUserId = normalizeMemberId(String(member.id ?? ""));
+      if (!zaloUserId) return null;
+      return {
+        zaloUserId,
+        displayName: String(member.dName ?? `Zalo ${zaloUserId}`),
+        avatarUrl: member.avatar ? String(member.avatar) : member.avatar_25 ? String(member.avatar_25) : null,
+      };
+    })
+    .filter((member): member is NonNullable<typeof member> => member !== null);
+  if (members.length === 0) return;
+
+  void postWebhook(listener, {
+    accountId,
+    groupId,
+    eventType,
+    actorId: normalizeMemberId(String(event.data?.sourceId ?? event.data?.creatorId ?? "")) || null,
+    occurredAtUnixMs,
+    members,
+  }, membershipWebhookUrl(listener.webhookUrl)).catch((error) =>
+    console.error(`[Zalo listener ${accountId}] Failed to forward membership event:`, error),
+  );
 }
 
 function handleBoardEvent(accountId: string, listener: ActiveListener, event: MinimalGroupEvent) {
@@ -384,7 +433,10 @@ function attachListenerHandlers(accountId: string, listener: ActiveListener): vo
       console.error(`[Zalo listener ${accountId}] Failed to forward message:`, error),
     );
   });
-  listener.api.listener.on("group_event", (event) => handleBoardEvent(accountId, listener, event));
+  listener.api.listener.on("group_event", (event) => {
+    handleMembershipEvent(accountId, listener, event);
+    handleBoardEvent(accountId, listener, event);
+  });
   listener.api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
   listener.api.listener.on("closed", (code, reason) => {
     if (consumeIntentionalManualClose(listener, code)) {
