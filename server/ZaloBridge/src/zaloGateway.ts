@@ -26,6 +26,7 @@ import type {
   BridgeMention,
   BridgePoll,
   IncomingGroupMessageEvent,
+  GroupMembershipChangedEvent,
   PollBoardChangedEvent,
   SendGroupMessageRequest,
   StartListenerRequest,
@@ -147,6 +148,7 @@ type MinimalGroupEvent = {
     time?: string | number;
     groupTopic?: Record<string, unknown> | null;
     extraData?: Record<string, unknown> | null;
+    updateMembers?: Array<{ id?: string; dName?: string }> | null;
   };
 };
 
@@ -268,7 +270,7 @@ function normalizeMentions(value: MinimalMessage["data"]["mentions"]): BridgeMen
 
 async function postWebhook(
   listener: ActiveListener,
-  event: IncomingGroupMessageEvent | PollBoardChangedEvent,
+  event: IncomingGroupMessageEvent | PollBoardChangedEvent | GroupMembershipChangedEvent,
   webhookUrl = listener.webhookUrl,
 ) {
   let lastError: unknown;
@@ -299,6 +301,14 @@ function pollWebhookUrl(messageWebhookUrl: string): string {
   parsed.pathname = /\/events\/?$/.test(parsed.pathname)
     ? parsed.pathname.replace(/\/events\/?$/, "/poll-events")
     : `${parsed.pathname.replace(/\/$/, "")}/poll-events`;
+  return parsed.toString();
+}
+
+function membershipWebhookUrl(messageWebhookUrl: string): string {
+  const parsed = new URL(messageWebhookUrl);
+  parsed.pathname = /\/events\/?$/.test(parsed.pathname)
+    ? parsed.pathname.replace(/\/events\/?$/, "/membership-events")
+    : `${parsed.pathname.replace(/\/$/, "")}/membership-events`;
   return parsed.toString();
 }
 
@@ -340,6 +350,39 @@ function handleBoardEvent(accountId: string, listener: ActiveListener, event: Mi
       console.error(`[Zalo listener ${accountId}] Failed to forward poll board event:`, error),
     );
   }, 1_500));
+}
+
+function handleMembershipEvent(accountId: string, listener: ActiveListener, event: MinimalGroupEvent) {
+  if (event.type !== "join" && event.type !== "leave" && event.type !== "remove_member") return;
+  const groupId = normalizeId(event.threadId);
+  if (!groupId || !listener.groupIds.has(groupId)) return;
+
+  const memberIds = [...new Set((event.data?.updateMembers ?? [])
+    .map((member) => normalizeMemberId(String(member.id ?? "")))
+    .filter(Boolean))].sort();
+  if (memberIds.length === 0) return;
+
+  const rawTimestamp = Number(event.data?.time ?? Date.now());
+  const occurredAtUnixMs = Number.isFinite(rawTimestamp)
+    ? rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
+    : Date.now();
+  const actorId = normalizeMemberId(String(event.data?.sourceId ?? event.data?.creatorId ?? "")) || null;
+  const eventId = createHash("sha256")
+    .update([accountId, groupId, event.type, String(occurredAtUnixMs), ...memberIds].join(":"))
+    .digest("hex");
+
+  const payload: GroupMembershipChangedEvent = {
+    accountId,
+    groupId,
+    eventType: event.type,
+    actorId,
+    memberIds,
+    eventId,
+    occurredAtUnixMs,
+  };
+  void postWebhook(listener, payload, membershipWebhookUrl(listener.webhookUrl)).catch((error) =>
+    console.error(`[Zalo listener ${accountId}] Failed to forward membership event:`, error),
+  );
 }
 
 async function handleIncomingMessage(accountId: string, listener: ActiveListener, message: MinimalMessage) {
@@ -384,7 +427,10 @@ function attachListenerHandlers(accountId: string, listener: ActiveListener): vo
       console.error(`[Zalo listener ${accountId}] Failed to forward message:`, error),
     );
   });
-  listener.api.listener.on("group_event", (event) => handleBoardEvent(accountId, listener, event));
+  listener.api.listener.on("group_event", (event) => {
+    handleBoardEvent(accountId, listener, event);
+    handleMembershipEvent(accountId, listener, event);
+  });
   listener.api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
   listener.api.listener.on("closed", (code, reason) => {
     if (consumeIntentionalManualClose(listener, code)) {
