@@ -36,7 +36,9 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         ZaloBotIntent.ListMostInactiveMembers,
         ZaloBotIntent.ListAtRiskMembers,
         ZaloBotIntent.SyncMemberActivity,
-        ZaloBotIntent.GetActivitySyncStatus
+        ZaloBotIntent.GetActivitySyncStatus,
+        ZaloBotIntent.ListRecentlyJoinedMembers,
+        ZaloBotIntent.GetMemberJoinDate
     ];
     private const string PendingCount = "MemberActivity:Count";
     private const string PendingMember = "MemberActivity:Member";
@@ -57,6 +59,15 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 item.SenderZaloUserId == senderId &&
                 item.ExpiresAt > DateTimeOffset.UtcNow,
                 cancellationToken);
+        if (state is not null && state.PendingIntent == PendingJoinPagination)
+        {
+            var membershipPending = await HandleMembershipPendingAsync(
+                state, connectionId, groupId, incoming, question, cancellationToken);
+            if (membershipPending is not null)
+                return membershipPending;
+            state = null;
+        }
+
         if (state is not null && state.PendingIntent.StartsWith("MemberActivity:", StringComparison.Ordinal))
         {
             var pending = await HandlePendingAsync(
@@ -105,6 +116,16 @@ public sealed partial class ZaloMemberIntelligenceBotService(
 
         if (!ActivityIntents.Contains(decision))
             return null;
+
+        if (decision is ZaloBotIntent.ListRecentlyJoinedMembers or ZaloBotIntent.GetMemberJoinDate)
+            return await ExecuteMembershipIntentAsync(
+                connectionId,
+                groupId,
+                incoming,
+                decision,
+                question,
+                aiCalled,
+                cancellationToken);
 
         var period = BuildPeriod(question, classification?.TimeRange);
         var limit = classification?.Limit;
