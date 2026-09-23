@@ -166,6 +166,16 @@ export type IncomingGroupMessageEvent = {
   quote?: BridgeMessageQuote | null;
 };
 
+export type GroupMembershipChangedEvent = {
+  accountId: string;
+  groupId: string;
+  eventType: "join" | "leave" | "remove_member";
+  actorId: string | null;
+  memberIds: string[];
+  eventId: string;
+  occurredAtUnixMs: number;
+};
+
 export type PollBoardChangedEvent = {
   accountId: string;
   groupId: string;
