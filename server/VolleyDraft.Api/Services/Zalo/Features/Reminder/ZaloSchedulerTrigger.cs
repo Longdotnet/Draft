@@ -14,6 +14,7 @@ internal enum ZaloSchedulerStage
 {
     Listener,
     Reminder,
+    ScheduledDraft,
     Rescue,
     Lifecycle,
     Finalize
@@ -24,11 +25,20 @@ internal static class ZaloSchedulerFailureCodes
     internal static string BuildDegraded(
         int reminderFailedCount,
         int rescueFailedCount,
+        int lifecycleFailedCount) =>
+        BuildDegraded(reminderFailedCount, 0, rescueFailedCount, lifecycleFailedCount);
+
+    internal static string BuildDegraded(
+        int reminderFailedCount,
+        int scheduledDraftFailedCount,
+        int rescueFailedCount,
         int lifecycleFailedCount)
     {
-        var stages = new List<string>(3);
+        var stages = new List<string>(4);
         if (reminderFailedCount > 0)
             stages.Add("reminder");
+        if (scheduledDraftFailedCount > 0)
+            stages.Add("scheduleddraft");
         if (rescueFailedCount > 0)
             stages.Add("rescue");
         if (lifecycleFailedCount > 0)
@@ -755,7 +765,17 @@ public sealed class ZaloSchedulerWorker(
         int reminderFailedCount,
         int rescueFailedCount,
         int lifecycleFailedCount) =>
-        reminderFailedCount > 0 || rescueFailedCount > 0 || lifecycleFailedCount > 0;
+        HasStageFailures(reminderFailedCount, 0, rescueFailedCount, lifecycleFailedCount);
+
+    internal static bool HasStageFailures(
+        int reminderFailedCount,
+        int scheduledDraftFailedCount,
+        int rescueFailedCount,
+        int lifecycleFailedCount) =>
+        reminderFailedCount > 0 ||
+        scheduledDraftFailedCount > 0 ||
+        rescueFailedCount > 0 ||
+        lifecycleFailedCount > 0;
 
     internal static async Task<T> RunWithLeaseHeartbeatAsync<T>(
         Func<CancellationToken, Task<T>> operation,
@@ -915,6 +935,18 @@ public sealed class ZaloSchedulerWorker(
             if (!await RenewLeaseAsync(cancellationToken))
                 throw new ZaloSchedulerLeaseLostException();
 
+            stage = ZaloSchedulerStage.ScheduledDraft;
+            var scheduledDraft = await RunWithLeaseHeartbeatAsync(
+                stageToken => scope.ServiceProvider.GetRequiredService<ZaloScheduledDraftService>()
+                    .RunDueAsync(stageToken),
+                RenewLeaseAsync,
+                leaseDuration,
+                cancellationToken,
+                stageTimeout);
+
+            if (!await RenewLeaseAsync(cancellationToken))
+                throw new ZaloSchedulerLeaseLostException();
+
             stage = ZaloSchedulerStage.Rescue;
             var rescueService = new ZaloOpenSlotRescueService(
                 db,
@@ -952,6 +984,7 @@ public sealed class ZaloSchedulerWorker(
             var completedAt = DateTimeOffset.UtcNow;
             var degraded = HasStageFailures(
                 result.FailedCount,
+                scheduledDraft.Failed,
                 rescue.FailedCount,
                 handoff.FailedCount);
             if (degraded)
@@ -961,13 +994,15 @@ public sealed class ZaloSchedulerWorker(
                 // the external verifier cannot certify a Zalo delivery/reconciliation outage as healthy.
                 var failureCode = ZaloSchedulerFailureCodes.BuildDegraded(
                     result.FailedCount,
+                    scheduledDraft.Failed,
                     rescue.FailedCount,
                     handoff.FailedCount);
                 await lease.MarkFailureAsync(cycleOwnerId, completedAt, failureCode, cancellationToken);
                 logger.LogWarning(
-                    "Zalo scheduler cycle completed degraded FailureCode={FailureCode} ReminderFailed={ReminderFailed} RescueFailed={RescueFailed} LifecycleFailed={LifecycleFailed}",
+                    "Zalo scheduler cycle completed degraded FailureCode={FailureCode} ReminderFailed={ReminderFailed} ScheduledDraftFailed={ScheduledDraftFailed} RescueFailed={RescueFailed} LifecycleFailed={LifecycleFailed}",
                     failureCode,
                     result.FailedCount,
+                    scheduledDraft.Failed,
                     rescue.FailedCount,
                     handoff.FailedCount);
             }
@@ -978,10 +1013,13 @@ public sealed class ZaloSchedulerWorker(
 
             await lease.ReleaseAsync(cycleOwnerId, completedAt, cancellationToken);
             logger.LogInformation(
-                "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed} LifecycleCandidates={LifecycleCandidates} LifecycleHandedOff={LifecycleHandedOff} LifecycleFailed={LifecycleFailed}",
+                "Triggered Zalo scheduler completed Groups={Groups} Sent={Sent} Failed={Failed} ScheduledDrafted={ScheduledDrafted} ScheduledDraftFailed={ScheduledDraftFailed} ScheduledDraftSkipped={ScheduledDraftSkipped} OpenSlotCandidates={OpenSlotCandidates} OpenSlotNudged={OpenSlotNudged} ClaimsReleased={ClaimsReleased} OffersClosed={OffersClosed} RescueFailed={RescueFailed} LifecycleCandidates={LifecycleCandidates} LifecycleHandedOff={LifecycleHandedOff} LifecycleFailed={LifecycleFailed}",
                 result.GroupCount,
                 result.SentCount,
                 result.FailedCount,
+                scheduledDraft.Drafted,
+                scheduledDraft.Failed,
+                scheduledDraft.Skipped,
                 rescue.CandidateCount,
                 rescue.NudgedCount,
                 rescue.ClaimReleasedCount,
