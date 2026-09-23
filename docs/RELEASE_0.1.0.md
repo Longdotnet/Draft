@@ -1,10 +1,14 @@
 # Draft 0.1.0 — release notes draft
 
+> Reviewed against `main` on 2026-09-23. Claims below were checked against the repository's implementation/tests and current public screenshots.
+
 > Prepared for the first public GitHub Release. The source package already declares version `0.1.0`; publishing the GitHub release/tag is a separate repository action.
 
 ## From a Zalo poll to balanced teams
 
 Draft 0.1.0 is the first public release baseline for the project: an open-source volleyball session organizer built around a real weekly workflow rather than a generic tournament template.
+
+The public screenshots in the repository show one operating workflow with Zalo polls at **33** and **39** voters and an **18-effective-slot** weekly session. These numbers document a real workflow; they are not presented as broad-adoption metrics.
 
 ### Highlights
 
@@ -37,7 +41,7 @@ The 0.1.0 baseline includes substantial regression and fuzz coverage around:
 
 ### Known project stage
 
-This is still a `0.1.0` project. User workflows are real and actively maintained, but compatibility may continue to evolve while the system is hardened.
+This is still a `0.1.0` project. User workflows are real and actively maintained, but compatibility may continue to evolve while the system is hardened. The public repository currently has limited adoption signals, so release notes intentionally avoid claims of broad usage.
 
 ### Links
 
