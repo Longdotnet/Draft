@@ -301,6 +301,15 @@ public sealed record ZaloIncomingMessageEvent
     public ZaloBridgeMessageQuote? Quote { get; init; }
 }
 
+public sealed record ZaloMembershipChangedEvent(
+    string AccountId,
+    string GroupId,
+    string EventType,
+    string? ActorId,
+    IReadOnlyList<string> MemberIds,
+    string EventId,
+    long OccurredAtUnixMs);
+
 public sealed record ZaloPollBoardEvent(
     string AccountId,
     string GroupId,
