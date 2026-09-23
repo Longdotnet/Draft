@@ -16,6 +16,24 @@ public sealed class ZaloActivityBackfillCoordinator(
     IConfiguration configuration,
     ILogger<ZaloActivityBackfillCoordinator> logger)
 {
+    public ZaloActivityBackfillCoordinator(
+        VolleyDraftDbContext db,
+        ZaloBridgeClient bridge,
+        ZaloCredentialProtector credentialProtector,
+        IConfiguration configuration,
+        ILogger<ZaloActivityBackfillCoordinator> logger)
+        : this(
+            db,
+            bridge,
+            credentialProtector,
+            new ZaloMembershipHistoryService(
+                db,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<ZaloMembershipHistoryService>.Instance),
+            configuration,
+            logger)
+    {
+    }
+
     private readonly int boardPageSize = ReadBounded(configuration, "ZaloActivitySync:BoardPageSize", 50, 1, 100);
     private readonly int maxBoardPages = ReadBounded(configuration, "ZaloActivitySync:MaxBoardPages", 100, 1, 1000);
     private readonly int incrementalBoardPages = ReadBounded(configuration, "ZaloActivitySync:IncrementalBoardPages", 5, 1, 100);
