@@ -175,3 +175,16 @@ export type PollBoardChangedEvent = {
   boardId: string | null;
   occurredAtUnixMs: number;
 };
+
+export type MembershipChangedEvent = {
+  accountId: string;
+  groupId: string;
+  eventType: "join" | "leave" | "remove_member";
+  actorId: string | null;
+  occurredAtUnixMs: number;
+  members: Array<{
+    zaloUserId: string;
+    displayName: string;
+    avatarUrl: string | null;
+  }>;
+};
