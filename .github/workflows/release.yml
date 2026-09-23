@@ -27,6 +27,17 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
       - name: Validate requested version
         shell: bash
         run: |
@@ -55,22 +66,45 @@ jobs:
             exit 1
           fi
 
-      - name: Run release confidence checks
+      - name: Frontend release check
         shell: bash
         run: |
           set -euo pipefail
           npm ci
           npm run build
-          dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
 
-      - name: Publish GitHub release
+      - name: Backend release check
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj
+          dotnet build server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-restore
+          dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release --no-build --no-restore
+
+      - name: Zalo Bridge release check
+        working-directory: server/ZaloBridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          npm test
+
+      - name: Scheduler verifier release check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/tests/scheduler-verifier-fuzz.sh
+
+      - name: Publish GitHub release from validated main head
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           tag="v${{ inputs.version }}"
+          target="$(git rev-parse HEAD)"
           gh release create "$tag" \
-            --target "${{ github.sha }}" \
+            --target "$target" \
             --title "Draft $tag" \
             --notes-file "${{ inputs.notes_path }}"
