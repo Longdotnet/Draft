@@ -210,6 +210,20 @@ public sealed partial class ZaloOverbookService
             if (sent >= settings.MaxSendsPerCycle) break;
             var session = candidate.Session;
             var bucket = candidate.Bucket!;
+
+            // When an organizer has explicitly enabled scheduled auto-draft, that policy owns
+            // the pre-draft notice lane. Do not send the older "nói draft đi" preparation
+            // reminder beside the "30 phút nữa tui tự draft" message.
+            var scheduledPolicyOwnsReminder = await db.ZaloScheduledDraftPolicies
+                .AsNoTracking()
+                .AnyAsync(policy =>
+                    policy.ZaloConnectionId == session.ZaloConnectionId &&
+                    policy.GroupId == session.ZaloGroupId &&
+                    policy.Enabled,
+                    cancellationToken);
+            if (scheduledPolicyOwnsReminder)
+                continue;
+
             var previous = await reminderStore.GetAsync(session.Id, cancellationToken);
             var sameBucket = string.Equals(previous?.LastBucketKey, bucket.Key, StringComparison.Ordinal);
             if (sameBucket && previous is not null &&
