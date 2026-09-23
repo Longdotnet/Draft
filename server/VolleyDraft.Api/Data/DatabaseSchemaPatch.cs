@@ -1374,6 +1374,14 @@ public static class DatabaseSchemaPatch
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMembers_Connection_Group_Current" ON "ZaloGroupMembers" ("ZaloConnectionId", "GroupId", "IsCurrentMember");""");
         await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloMembershipPeriods_Join" ON "ZaloGroupMembershipPeriods" ("ZaloConnectionId", "GroupId", "JoinedAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloMembershipPeriods_Current" ON "ZaloGroupMembershipPeriods" ("ZaloConnectionId", "GroupId", "ZaloUserId", "IsCurrentPeriod");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMembershipPeriods_SourceEvent" ON "ZaloGroupMembershipPeriods" ("ZaloConnectionId", "GroupId", "SourceEventId") WHERE "SourceEventId" IS NOT NULL;""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMembershipCoverages_Group" ON "ZaloMembershipCoverages" ("ZaloConnectionId", "GroupId");""");
+        await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloPollSnapshots_Connection_Group_Poll" ON "ZaloPollSnapshots" ("ZaloConnectionId", "GroupId", "PollId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloPollSnapshots_Connection_Group_Created" ON "ZaloPollSnapshots" ("ZaloConnectionId", "GroupId", "CreatedAtFromZalo");""");
