@@ -23,6 +23,26 @@ public sealed partial class ZaloMemberIntelligenceBotService(
     AiAssistantService ai,
     ILogger<ZaloMemberIntelligenceBotService> logger)
 {
+    public ZaloMemberIntelligenceBotService(
+        VolleyDraftDbContext db,
+        ZaloMemberActivityService activity,
+        ZaloActivityBackfillCoordinator backfill,
+        ZaloIntegrationService zaloIntegration,
+        AiAssistantService ai,
+        ILogger<ZaloMemberIntelligenceBotService> logger)
+        : this(
+            db,
+            activity,
+            new ZaloMembershipHistoryService(
+                db,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<ZaloMembershipHistoryService>.Instance),
+            backfill,
+            zaloIntegration,
+            ai,
+            logger)
+    {
+    }
+
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private static readonly HashSet<ZaloBotIntent> ActivityIntents =
     [
