@@ -4,7 +4,7 @@
 
 Draft is an open-source organizer for real weekly volleyball groups. It imports attendance from Zalo polls, keeps session state authoritative in the backend, automates reminders, and runs a one-phone captain draft at the court.
 
-[**Live demo**](https://volley-draft.onrender.com/) · [Vietnamese guide](docs/USER_GUIDE_VI.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+[**Product tour**](#see-the-real-workflow) · [Real-world feedback](https://github.com/Longdotnet/Draft/issues/419) · [Vietnamese guide](docs/USER_GUIDE_VI.md) · [Contributing](CONTRIBUTING.md) · [MIT License](LICENSE)
 
 ![MIT License](https://img.shields.io/badge/license-MIT-2ea44f) ![.NET](https://img.shields.io/badge/backend-.NET-512BD4?logo=dotnet) ![React](https://img.shields.io/badge/frontend-React-61DAFB?logo=react&logoColor=111) ![PostgreSQL](https://img.shields.io/badge/database-PostgreSQL-4169E1?logo=postgresql&logoColor=white)
 
@@ -26,6 +26,14 @@ Draft is an open-source organizer for real weekly volleyball groups. It imports 
     </td>
   </tr>
 </table>
+
+### 3. See the outcome
+
+**Three balanced teams are the end product — not another admin dashboard.**
+
+[🖼️ Final three-team result — screenshot placeholder (replace with a sanitized real result later)](docs/USER_GUIDE_VI.md#kết-quả-cuối)
+
+After the last reveal, Draft produces the final team rosters so the organizer can copy or share them back to the group. The screenshot is intentionally deferred until a clean public example is available; the product flow is already documented in the Vietnamese guide.
 
 ## Why Draft exists
 
@@ -138,6 +146,8 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). For a larger behavior change, ope
 ## Project status
 
 Draft is actively maintained and still evolving. The current package version is **0.1.0**. The focus is practical reliability for real group sessions rather than turning every workflow into AI.
+
+Public usage feedback is collected in [issue #419](https://github.com/Longdotnet/Draft/issues/419). Reports should describe real use only and must not include private group data or credentials.
 
 ---
 
