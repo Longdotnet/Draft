@@ -152,6 +152,25 @@ public sealed class ZaloScheduledDraftService(
         {
             try
             {
+                var pendingResultRuns = await db.ZaloScheduledDraftRuns
+                    .Include(run => run.Session)
+                    .ThenInclude(session => session.ZaloConnection)
+                    .Where(run =>
+                        run.State == ZaloScheduledDraftRunState.Drafted &&
+                        run.ResultMessageSentAt == null &&
+                        run.Session.ZaloConnectionId == policy.ZaloConnectionId &&
+                        run.Session.ZaloGroupId == policy.GroupId)
+                    .ToListAsync(cancellationToken);
+                foreach (var pendingResultRun in pendingResultRuns)
+                {
+                    var sent = await TrySendDraftedResultAsync(
+                        pendingResultRun.Session,
+                        policy,
+                        pendingResultRun,
+                        cancellationToken);
+                    if (!sent) failed += 1;
+                }
+
                 var sessions = await db.MatchSessions
                     .Include(session => session.ZaloConnection)
                     .Where(session =>
