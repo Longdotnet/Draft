@@ -111,6 +111,16 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         if (!ActivityIntents.Contains(decision))
             return null;
 
+        if (decision == ZaloBotIntent.ListRecentlyJoinedMembers &&
+            TryReadRecentJoinDays(question, out var requestedDays) &&
+            requestedDays is not (>= 1 and <= 3650))
+        {
+            return new ZaloMemberBotAnswer(
+                "Số ngày phải là số nguyên dương từ 1 đến 3650; tui không tự sửa số bạn nhập.",
+                decision,
+                aiCalled);
+        }
+
         var period = decision == ZaloBotIntent.ListRecentlyJoinedMembers
             ? BuildRecentJoinPeriod(question)
             : BuildPeriod(question, classification?.TimeRange);
@@ -995,14 +1005,21 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
+    private static bool TryReadRecentJoinDays(string question, out int days)
+    {
+        days = 0;
+        var match = Regex.Match(
+            ZaloBotIntelligence.Normalize(question),
+            @"\b(?<days>\d{1,6})\s*ngay\b",
+            RegexOptions.CultureInvariant);
+        return match.Success &&
+               int.TryParse(match.Groups["days"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out days);
+    }
+
     private static ZaloActivityPeriod BuildRecentJoinPeriod(string question)
     {
         var normalized = ZaloBotIntelligence.Normalize(question);
-        var match = Regex.Match(normalized, @"\b(?<days>\d{1,4})\s*ngay\b", RegexOptions.CultureInvariant);
-        var days = match.Success && int.TryParse(match.Groups["days"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
-            ? parsed
-            : 30;
-        days = Math.Clamp(days, 1, 3650);
+        var days = TryReadRecentJoinDays(normalized, out var parsed) ? parsed : 30;
         var end = DateTimeOffset.UtcNow;
         return new ZaloActivityPeriod(end.AddDays(-days), end, $"{days} ngày gần đây");
     }
