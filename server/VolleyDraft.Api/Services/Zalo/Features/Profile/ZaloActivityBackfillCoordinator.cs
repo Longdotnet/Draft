@@ -12,6 +12,7 @@ public sealed class ZaloActivityBackfillCoordinator(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     ZaloCredentialProtector credentialProtector,
+    ZaloMembershipHistoryService membershipHistory,
     IConfiguration configuration,
     ILogger<ZaloActivityBackfillCoordinator> logger)
 {
@@ -892,6 +893,13 @@ public sealed class ZaloActivityBackfillCoordinator(
             }
         }
 
+        await membershipHistory.ObserveDirectoryAsync(
+            job.ZaloConnectionId,
+            job.GroupId,
+            returnedIds,
+            directory.IsComplete,
+            now,
+            cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation(
