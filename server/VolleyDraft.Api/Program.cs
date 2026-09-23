@@ -72,6 +72,7 @@ builder.Services.AddScoped<ZaloInboundCoordinator>();
 builder.Services.AddScoped<SessionWaitlistService>();
 builder.Services.AddScoped<ZaloBotActionHistoryService>();
 builder.Services.AddScoped<ZaloActivityBackfillCoordinator>();
+builder.Services.AddScoped<ZaloMembershipHistoryService>();
 builder.Services.AddScoped<ZaloMemberActivityService>();
 builder.Services.AddScoped<ZaloMemberIntelligenceBotService>();
 builder.Services.AddMemoryCache();
@@ -213,6 +214,22 @@ app.MapPost("/api/internal/zalo/poll-events", (
     if (httpContext.Request.Headers["x-zalo-bridge-key"] != expectedKey)
         return Results.Unauthorized();
     return Results.Accepted(value: new { accepted = queue.TryEnqueue(incoming) });
+});
+
+app.MapPost("/api/internal/zalo/membership-events", async (
+    HttpContext httpContext,
+    ZaloMembershipChangedEvent incoming,
+    ZaloMembershipHistoryService membership,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var expectedKey = configuration["Zalo:WebhookKey"]
+        ?? configuration["Zalo:BridgeInternalKey"]
+        ?? "development-zalo-bridge-key";
+    if (httpContext.Request.Headers["x-zalo-bridge-key"] != expectedKey)
+        return Results.Unauthorized();
+    await membership.ApplyEventAsync(incoming, cancellationToken);
+    return Results.Accepted(value: new { accepted = true });
 });
 
 var zalo = app.MapGroup("/api/zalo").RequireAuthorization();
