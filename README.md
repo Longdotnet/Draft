@@ -6,7 +6,7 @@ Draft is an open-source organizer for real weekly volleyball groups. It imports 
 
 [**Product tour**](#see-the-real-workflow) · [Real-world feedback](https://github.com/Longdotnet/Draft/issues/419) · [Vietnamese guide](docs/USER_GUIDE_VI.md) · [Contributing](CONTRIBUTING.md) · [MIT License](LICENSE)
 
-![MIT License](https://img.shields.io/badge/license-MIT-2ea44f) ![.NET](https://img.shields.io/badge/backend-.NET-512BD4?logo=dotnet) ![React](https://img.shields.io/badge/frontend-React-61DAFB?logo=react&logoColor=111) ![PostgreSQL](https://img.shields.io/badge/database-PostgreSQL-4169E1?logo=postgresql&logoColor=white)
+[![CI](https://github.com/Longdotnet/Draft/actions/workflows/ci.yml/badge.svg)](https://github.com/Longdotnet/Draft/actions/workflows/ci.yml) ![MIT License](https://img.shields.io/badge/license-MIT-2ea44f) ![.NET](https://img.shields.io/badge/backend-.NET-512BD4?logo=dotnet) ![React](https://img.shields.io/badge/frontend-React-61DAFB?logo=react&logoColor=111) ![PostgreSQL](https://img.shields.io/badge/database-PostgreSQL-4169E1?logo=postgresql&logoColor=white)
 
 ## See the real workflow
 
@@ -46,6 +46,16 @@ A weekly volleyball session sounds simple until the organizer is juggling a chat
 | Balance teams from memory | Use role, level and gender-aware drafting |
 | Rebuild everything after a change | Keep authoritative session state in the backend |
 | Pass phones around with ad-hoc notes | Run the live draft in one focused mobile flow |
+
+## Real-world footprint
+
+Draft is built around a recurring community-volleyball workflow, not only synthetic demo data. The repository screenshots show:
+
+- a linked Zalo poll view with **33** and **39** voters;
+- an **18-effective-slot** weekly session in the Match Autopilot flow;
+- production scheduler/incident handling that opens GitHub issues when verification fails.
+
+These are examples of one real operating workflow, **not a claim of broad adoption**. Public, privacy-safe usage reports are collected in [#419](https://github.com/Longdotnet/Draft/issues/419).
 
 ## What makes the project interesting
 
