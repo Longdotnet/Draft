@@ -310,6 +310,19 @@ public sealed record ZaloPollBoardEvent(
     string? BoardId,
     long OccurredAtUnixMs);
 
+public sealed record ZaloMembershipChangedMember(
+    string ZaloUserId,
+    string DisplayName,
+    string? AvatarUrl);
+
+public sealed record ZaloMembershipChangedEvent(
+    string AccountId,
+    string GroupId,
+    string EventType,
+    string? ActorId,
+    long OccurredAtUnixMs,
+    IReadOnlyList<ZaloMembershipChangedMember> Members);
+
 public sealed record SessionWaitlistEntryResponse(
     string Id,
     string SessionId,
