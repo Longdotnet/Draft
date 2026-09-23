@@ -64,6 +64,30 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken)
     {
+        if (serviceProvider?.GetService<ZaloScheduledDraftService>() is { } scheduledDraft)
+        {
+            var scheduledCommand = await scheduledDraft.TryApplyCommandAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                incoming.Content,
+                cancellationToken);
+            if (scheduledCommand.Handled)
+            {
+                await SendDraftReplyAsync(
+                    connectionId,
+                    accountId,
+                    botName,
+                    groupId,
+                    incoming,
+                    scheduledCommand.Reply ?? "Đã cập nhật lịch tự draft.",
+                    [],
+                    "scheduled_draft_policy_updated",
+                    cancellationToken);
+                return true;
+            }
+        }
+
         var settings = DraftAutopilotSettings.FromConfiguration(configuration);
         if (!settings.Enabled) return false;
 
