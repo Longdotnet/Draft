@@ -34,6 +34,9 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<ZaloPollOptionSnapshot> ZaloPollOptionSnapshots => Set<ZaloPollOptionSnapshot>();
     public DbSet<ZaloPollVoteActivity> ZaloPollVoteActivities => Set<ZaloPollVoteActivity>();
     public DbSet<ZaloActivityBackfillJob> ZaloActivityBackfillJobs => Set<ZaloActivityBackfillJob>();
+    public DbSet<ZaloScheduledDraftPolicy> ZaloScheduledDraftPolicies => Set<ZaloScheduledDraftPolicy>();
+    public DbSet<ZaloScheduledDraftDecision> ZaloScheduledDraftDecisions => Set<ZaloScheduledDraftDecision>();
+    public DbSet<ZaloScheduledDraftRun> ZaloScheduledDraftRuns => Set<ZaloScheduledDraftRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -250,6 +253,42 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.HasOne(job => job.ZaloConnection)
                 .WithMany(connection => connection.ActivityBackfillJobs)
                 .HasForeignKey(job => job.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloScheduledDraftPolicy>(entity =>
+        {
+            entity.Property(policy => policy.GroupId).HasMaxLength(100);
+            entity.Property(policy => policy.TimeZoneId).HasMaxLength(80);
+            entity.Property(policy => policy.EnabledByZaloUserId).HasMaxLength(100);
+            entity.HasIndex(policy => new { policy.ZaloConnectionId, policy.GroupId }).IsUnique();
+            entity.HasOne(policy => policy.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(policy => policy.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloScheduledDraftDecision>(entity =>
+        {
+            entity.Property(decision => decision.ChangedByZaloUserId).HasMaxLength(100);
+            entity.HasIndex(decision => decision.SessionId).IsUnique();
+            entity.HasOne(decision => decision.Session)
+                .WithMany()
+                .HasForeignKey(decision => decision.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloScheduledDraftRun>(entity =>
+        {
+            entity.Property(run => run.State).HasConversion<string>();
+            entity.Property(run => run.RosterFingerprint).HasMaxLength(128);
+            entity.Property(run => run.LeaseToken).HasMaxLength(80);
+            entity.Property(run => run.LastError).HasMaxLength(1000);
+            entity.HasIndex(run => run.SessionId).IsUnique();
+            entity.HasIndex(run => new { run.State, run.DraftDueAt });
+            entity.HasOne(run => run.Session)
+                .WithMany()
+                .HasForeignKey(run => run.SessionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
