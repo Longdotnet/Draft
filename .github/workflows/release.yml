@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer without v prefix (example: 0.1.0)"
+        required: true
+        default: "0.1.0"
+      notes_path:
+        description: "Release notes file committed in the repository"
+        required: true
+        default: "docs/RELEASE_0.1.0.md"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Validate and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact main head
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate requested version
+        shell: bash
+        run: |
+          set -euo pipefail
+          requested="${{ inputs.version }}"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if [[ "$requested" != "$package_version" ]]; then
+            echo "Requested version $requested does not match package.json $package_version."
+            exit 1
+          fi
+
+          if [[ ! "$requested" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Version is not valid SemVer: $requested"
+            exit 1
+          fi
+
+          if [[ ! -f "${{ inputs.notes_path }}" ]]; then
+            echo "Release notes file not found: ${{ inputs.notes_path }}"
+            exit 1
+          fi
+
+          tag="v$requested"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag already exists: $tag"
+            exit 1
+          fi
+
+      - name: Run release confidence checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          dotnet test server/VolleyDraft.Api.Tests/VolleyDraft.Api.Tests.csproj -c Release
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${{ inputs.version }}"
+          gh release create "$tag" \
+            --target "${{ github.sha }}" \
+            --title "Draft $tag" \
+            --notes-file "${{ inputs.notes_path }}"
