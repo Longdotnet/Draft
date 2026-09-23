@@ -659,6 +659,13 @@ public sealed class ZaloActivityBackfillCoordinator(
                 job,
                 directory,
                 cancellationToken);
+            await new ZaloMembershipHistoryService(db).ObserveDirectoryAsync(
+                job.ZaloConnectionId,
+                job.GroupId,
+                directory.Members,
+                directory.IsComplete,
+                now,
+                cancellationToken);
             if (!directory.IsComplete)
                 limitations.Add(
                     $"Danh sách thành viên Zalo chưa đầy đủ ({directory.Members.Count}/{directory.ExpectedMemberCount}).");
