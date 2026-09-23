@@ -141,36 +141,34 @@ public sealed class ZaloScheduledDraftService(
         CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow;
-        var policies = await db.ZaloScheduledDraftPolicies.AsNoTracking()
-            .Where(policy => policy.Enabled)
-            .ToListAsync(cancellationToken);
         var drafted = 0;
         var failed = 0;
         var skipped = 0;
+
+        var pendingResultRuns = await db.ZaloScheduledDraftRuns
+            .Include(run => run.Session)
+            .ThenInclude(session => session.ZaloConnection)
+            .Where(run =>
+                run.State == ZaloScheduledDraftRunState.Drafted &&
+                run.ResultMessageSentAt == null)
+            .ToListAsync(cancellationToken);
+        foreach (var pendingResultRun in pendingResultRuns)
+        {
+            if (!await TrySendDraftedResultAsync(
+                    pendingResultRun.Session,
+                    pendingResultRun,
+                    cancellationToken))
+                failed += 1;
+        }
+
+        var policies = await db.ZaloScheduledDraftPolicies.AsNoTracking()
+            .Where(policy => policy.Enabled)
+            .ToListAsync(cancellationToken);
 
         foreach (var policy in policies)
         {
             try
             {
-                var pendingResultRuns = await db.ZaloScheduledDraftRuns
-                    .Include(run => run.Session)
-                    .ThenInclude(session => session.ZaloConnection)
-                    .Where(run =>
-                        run.State == ZaloScheduledDraftRunState.Drafted &&
-                        run.ResultMessageSentAt == null &&
-                        run.Session.ZaloConnectionId == policy.ZaloConnectionId &&
-                        run.Session.ZaloGroupId == policy.GroupId)
-                    .ToListAsync(cancellationToken);
-                foreach (var pendingResultRun in pendingResultRuns)
-                {
-                    var sent = await TrySendDraftedResultAsync(
-                        pendingResultRun.Session,
-                        policy,
-                        pendingResultRun,
-                        cancellationToken);
-                    if (!sent) failed += 1;
-                }
-
                 var sessions = await db.MatchSessions
                     .Include(session => session.ZaloConnection)
                     .Where(session =>
@@ -268,7 +266,7 @@ public sealed class ZaloScheduledDraftService(
                     if (run.State == ZaloScheduledDraftRunState.Drafted &&
                         run.ResultMessageSentAt is null)
                     {
-                        var resent = await TrySendDraftedResultAsync(session, policy, run, cancellationToken);
+                        var resent = await TrySendDraftedResultAsync(session, run, cancellationToken);
                         if (!resent) failed += 1;
                         continue;
                     }
@@ -410,7 +408,6 @@ public sealed class ZaloScheduledDraftService(
 
     private async Task<bool> TrySendDraftedResultAsync(
         MatchSession session,
-        ZaloScheduledDraftPolicy policy,
         ZaloScheduledDraftRun run,
         CancellationToken cancellationToken)
     {
@@ -423,7 +420,7 @@ public sealed class ZaloScheduledDraftService(
         {
             var send = await bridge.SendGroupMessageAsync(
                 session.ZaloConnection.AccountZaloId,
-                policy.GroupId,
+                session.ZaloGroupId!,
                 $"Đã tự draft xong buổi {session.Name} theo lịch đã được trưởng/phó bật trước đó.",
                 [],
                 idempotencyKey: $"scheduled-draft-result:{session.Id}:{run.PolicyVersion}");
