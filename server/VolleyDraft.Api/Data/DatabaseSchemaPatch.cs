@@ -61,6 +61,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloReminderScheduleTables(db);
             await EnsureSqliteWaitlistAndActionHistoryTables(db);
             await EnsureSqliteMemberIntelligenceTables(db);
+            await EnsureSqliteScheduledDraftTables(db);
             await EnsureSqliteColumn(db, "ZaloActivityBackfillJobs", "IsFullBackfill", "\"IsFullBackfill\" INTEGER NOT NULL DEFAULT 1");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" INTEGER NOT NULL DEFAULT 0");
@@ -151,6 +152,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloReminderScheduleTables(db);
             await EnsurePostgresWaitlistAndActionHistoryTables(db);
             await EnsurePostgresMemberIntelligenceTables(db);
+            await EnsurePostgresScheduledDraftTables(db);
             await EnsurePostgresColumn(db, "ZaloActivityBackfillJobs", "IsFullBackfill", "\"IsFullBackfill\" boolean NOT NULL DEFAULT TRUE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" boolean NOT NULL DEFAULT FALSE");
