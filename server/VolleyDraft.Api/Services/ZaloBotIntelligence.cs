@@ -66,6 +66,8 @@ public enum ZaloBotIntent
     ListAtRiskMembers,
     SyncMemberActivity,
     GetActivitySyncStatus,
+    ListRecentlyJoinedMembers,
+    GetMemberJoinDate,
     GeneralChat
 }
 
@@ -481,6 +483,15 @@ public static class ZaloBotIntelligence
         }
         if (Regex.IsMatch(q, @"^(help|tro giup|huong dan|menu|lenh)$", RegexOptions.CultureInvariant))
             return new(ZaloBotIntent.Help, 1, null, false, null, "exact_help");
+        if (Has(q, "vao nhom", "gia nhap nhom", "tham gia nhom") &&
+            Has(q, "ngay nao", "khi nao", "luc nao", "tu bao gio") &&
+            Has(q, "tui", "toi", "minh", "em", "ban than", "chinh minh"))
+            return new(ZaloBotIntent.GetMemberJoinDate, .995, q, false, null, "self_group_join_date");
+        if (Has(q, "vao nhom", "gia nhap nhom", "tham gia nhom", "moi vao") &&
+            (Has(q, "ai", "nhung ai", "nguoi nao", "thanh vien moi", "bao nhieu", "moi vao") ||
+             Regex.IsMatch(q, @"\b\d{1,4}\s*ngay\b", RegexOptions.CultureInvariant)) &&
+            Has(q, "gan day", "vua", "moi", "do lai", "do tro lai", "tro lai", "qua", "trong"))
+            return new(ZaloBotIntent.ListRecentlyJoinedMembers, .995, q, false, null, "recent_group_joins");
         if (Has(q, "dong bo du lieu cu", "dong bo lai du lieu cu", "dong bo hoat dong", "quet lai du lieu zalo", "sync member activity", "sync hoat dong"))
             return new(ZaloBotIntent.SyncMemberActivity, .99, q, false, null, "member_activity_sync");
         if (Has(q, "dong bo toi dau", "tien do dong bo", "trang thai dong bo", "quet du lieu toi dau"))
