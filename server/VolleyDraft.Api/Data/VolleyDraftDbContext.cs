@@ -32,6 +32,10 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<ZaloPollOptionSnapshot> ZaloPollOptionSnapshots => Set<ZaloPollOptionSnapshot>();
     public DbSet<ZaloPollVoteActivity> ZaloPollVoteActivities => Set<ZaloPollVoteActivity>();
     public DbSet<ZaloActivityBackfillJob> ZaloActivityBackfillJobs => Set<ZaloActivityBackfillJob>();
+    public DbSet<ZaloGroupMembershipPeriod> ZaloGroupMembershipPeriods => Set<ZaloGroupMembershipPeriod>();
+    public DbSet<ZaloMembershipCoverage> ZaloMembershipCoverages => Set<ZaloMembershipCoverage>();
+    public DbSet<ZaloScheduledDraftPolicy> ZaloScheduledDraftPolicies => Set<ZaloScheduledDraftPolicy>();
+    public DbSet<ZaloScheduledDraftRun> ZaloScheduledDraftRuns => Set<ZaloScheduledDraftRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -163,6 +167,50 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
                 .WithMany(connection => connection.GroupMembers)
                 .HasForeignKey(member => member.ZaloConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloGroupMembershipPeriod>(entity =>
+        {
+            entity.Property(item => item.GroupId).HasMaxLength(100);
+            entity.Property(item => item.ZaloUserId).HasMaxLength(100);
+            entity.Property(item => item.DisplayNameSnapshot).HasMaxLength(160);
+            entity.Property(item => item.JoinEvidenceSource).HasMaxLength(80);
+            entity.Property(item => item.JoinEventId).HasMaxLength(240);
+            entity.Property(item => item.LeaveEvidenceSource).HasMaxLength(80);
+            entity.Property(item => item.LeaveEventId).HasMaxLength(240);
+            entity.HasIndex(item => new { item.ZaloConnectionId, item.GroupId, item.ZaloUserId, item.IsCurrentPeriod });
+            entity.HasIndex(item => new { item.ZaloConnectionId, item.GroupId, item.JoinedAt });
+            entity.HasIndex(item => item.JoinEventId).IsUnique();
+            entity.HasIndex(item => item.LeaveEventId).IsUnique();
+        });
+
+        modelBuilder.Entity<ZaloMembershipCoverage>(entity =>
+        {
+            entity.Property(item => item.GroupId).HasMaxLength(100);
+            entity.HasIndex(item => new { item.ZaloConnectionId, item.GroupId }).IsUnique();
+        });
+
+        modelBuilder.Entity<ZaloScheduledDraftPolicy>(entity =>
+        {
+            entity.Property(item => item.GroupId).HasMaxLength(100);
+            entity.Property(item => item.TimeZoneId).HasMaxLength(80);
+            entity.Property(item => item.EnabledByZaloUserId).HasMaxLength(100);
+            entity.HasIndex(item => new { item.ZaloConnectionId, item.GroupId }).IsUnique();
+        });
+
+        modelBuilder.Entity<ZaloScheduledDraftRun>(entity =>
+        {
+            entity.Property(item => item.GroupId).HasMaxLength(100);
+            entity.Property(item => item.SessionId).HasMaxLength(80);
+            entity.Property(item => item.State).HasConversion<string>();
+            entity.Property(item => item.OverrideKind).HasConversion<string>();
+            entity.Property(item => item.OverrideByZaloUserId).HasMaxLength(100);
+            entity.Property(item => item.ReminderMessageId).HasMaxLength(160);
+            entity.Property(item => item.RosterFingerprint).HasMaxLength(256);
+            entity.Property(item => item.LeaseToken).HasMaxLength(80);
+            entity.Property(item => item.LastError).HasMaxLength(1000);
+            entity.HasIndex(item => new { item.ZaloConnectionId, item.GroupId, item.SessionId }).IsUnique();
+            entity.HasIndex(item => new { item.State, item.ScheduledFor });
         });
 
         modelBuilder.Entity<ZaloPollSnapshot>(entity =>
