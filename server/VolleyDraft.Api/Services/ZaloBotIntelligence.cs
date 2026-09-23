@@ -487,7 +487,8 @@ public static class ZaloBotIntelligence
             Has(q, "ngay nao", "khi nao", "luc nao", "tu bao gio") &&
             Has(q, "tui", "toi", "minh", "em", "ban than", "chinh minh"))
             return new(ZaloBotIntent.GetMemberJoinDate, .995, q, false, null, "self_group_join_date");
-        if (Has(q, "vao nhom", "gia nhap nhom", "tham gia nhom", "moi vao") &&
+        if ((Has(q, "vao nhom", "gia nhap nhom", "tham gia nhom", "moi vao") ||
+             (Has(q, "thanh vien moi") && Regex.IsMatch(q, @"\b\d{1,4}\s*ngay\b", RegexOptions.CultureInvariant))) &&
             (Has(q, "ai", "nhung ai", "nguoi nao", "thanh vien moi", "bao nhieu", "moi vao") ||
              Regex.IsMatch(q, @"\b\d{1,4}\s*ngay\b", RegexOptions.CultureInvariant)) &&
             Has(q, "gan day", "vua", "moi", "do lai", "do tro lai", "tro lai", "qua", "trong"))
