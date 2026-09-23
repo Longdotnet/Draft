@@ -961,6 +961,39 @@ public static class DatabaseSchemaPatch
             );
             """);
         await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloGroupMembershipPeriods" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloGroupMembershipPeriods" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "ZaloUserId" TEXT NOT NULL,
+                "JoinedAt" TEXT NULL,
+                "LeftAt" TEXT NULL,
+                "FirstObservedAt" TEXT NOT NULL,
+                "LastObservedAt" TEXT NOT NULL,
+                "EvidenceKind" TEXT NOT NULL DEFAULT 'ObservedOnly',
+                "SourceEventId" TEXT NULL,
+                "IsCurrentPeriod" INTEGER NOT NULL DEFAULT 1,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloGroupMembershipPeriods_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloMembershipCoverages" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloMembershipCoverages" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "CoveredFrom" TEXT NULL,
+                "CoveredThrough" TEXT NOT NULL,
+                "HasCompleteHistoricalJoinEvents" INTEGER NOT NULL DEFAULT 0,
+                "Source" TEXT NOT NULL DEFAULT 'RealtimeListener',
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloMembershipCoverages_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "ZaloPollSnapshots" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloPollSnapshots" PRIMARY KEY,
                 "ZaloConnectionId" TEXT NOT NULL,
@@ -1078,6 +1111,39 @@ public static class DatabaseSchemaPatch
                 "CreatedAt" timestamp with time zone NOT NULL,
                 "UpdatedAt" timestamp with time zone NOT NULL,
                 CONSTRAINT "FK_ZaloGroupMembers_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloGroupMembershipPeriods" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloGroupMembershipPeriods" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "ZaloUserId" text NOT NULL,
+                "JoinedAt" timestamp with time zone NULL,
+                "LeftAt" timestamp with time zone NULL,
+                "FirstObservedAt" timestamp with time zone NOT NULL,
+                "LastObservedAt" timestamp with time zone NOT NULL,
+                "EvidenceKind" text NOT NULL DEFAULT 'ObservedOnly',
+                "SourceEventId" text NULL,
+                "IsCurrentPeriod" boolean NOT NULL DEFAULT TRUE,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloGroupMembershipPeriods_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloMembershipCoverages" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloMembershipCoverages" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "CoveredFrom" timestamp with time zone NULL,
+                "CoveredThrough" timestamp with time zone NOT NULL,
+                "HasCompleteHistoricalJoinEvents" boolean NOT NULL DEFAULT FALSE,
+                "Source" text NOT NULL DEFAULT 'RealtimeListener',
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloMembershipCoverages_ZaloConnections_ZaloConnectionId"
                     FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
             );
             """);
