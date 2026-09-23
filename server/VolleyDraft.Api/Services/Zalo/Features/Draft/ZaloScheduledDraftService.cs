@@ -158,7 +158,7 @@ public sealed class ZaloScheduledDraftService(
                         session.ZaloConnectionId == policy.ZaloConnectionId &&
                         session.ZaloGroupId == policy.GroupId &&
                         session.BotEnabled &&
-                        session.Status != SessionStatus.Cancelled &&
+                        (session.Status == SessionStatus.Setup || session.Status == SessionStatus.CaptainSelection) &&
                         session.StartTime != null &&
                         session.StartTime > now)
                     .OrderBy(session => session.StartTime)
@@ -244,6 +244,14 @@ public sealed class ZaloScheduledDraftService(
                         run.State = ZaloScheduledDraftRunState.ReminderSent;
                         run.UpdatedAt = DateTimeOffset.UtcNow;
                         await db.SaveChangesAsync(cancellationToken);
+                    }
+
+                    if (run.State == ZaloScheduledDraftRunState.Drafted &&
+                        run.ResultMessageSentAt is null)
+                    {
+                        var resent = await TrySendDraftedResultAsync(session, policy, run, cancellationToken);
+                        if (!resent) failed += 1;
+                        continue;
                     }
 
                     if (run.ReminderSentAt is null || DateTimeOffset.UtcNow < run.DraftDueAt)
@@ -377,19 +385,44 @@ public sealed class ZaloScheduledDraftService(
             before,
             cancellationToken);
 
-        var send = await bridge.SendGroupMessageAsync(
-            session.ZaloConnection!.AccountZaloId,
-            policy.GroupId,
-            $"Đã tự draft xong buổi {session.Name} theo lịch đã được trưởng/phó bật trước đó.",
-            [],
-            idempotencyKey: $"scheduled-draft-result:{session.Id}:{policy.Version}");
-        if (send.Sent)
+        await TrySendDraftedResultAsync(session, policy, run, cancellationToken);
+        return run.State;
+    }
+
+    private async Task<bool> TrySendDraftedResultAsync(
+        MatchSession session,
+        ZaloScheduledDraftPolicy policy,
+        ZaloScheduledDraftRun run,
+        CancellationToken cancellationToken)
+    {
+        if (run.State != ZaloScheduledDraftRunState.Drafted ||
+            run.ResultMessageSentAt is not null ||
+            session.ZaloConnection is null)
+            return run.ResultMessageSentAt is not null;
+
+        try
         {
+            var send = await bridge.SendGroupMessageAsync(
+                session.ZaloConnection.AccountZaloId,
+                policy.GroupId,
+                $"Đã tự draft xong buổi {session.Name} theo lịch đã được trưởng/phó bật trước đó.",
+                [],
+                idempotencyKey: $"scheduled-draft-result:{session.Id}:{run.PolicyVersion}");
+            if (!send.Sent) return false;
+
             run.ResultMessageSentAt = DateTimeOffset.UtcNow;
             run.UpdatedAt = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(cancellationToken);
+            return true;
         }
-        return run.State;
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not send scheduled draft result Session={SessionId}; draft will not be repeated",
+                session.Id);
+            return false;
+        }
     }
 
     private async Task SendBlockedAsync(
