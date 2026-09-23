@@ -67,6 +67,8 @@ builder.Services.AddScoped<ZaloTeamCardService>();
 builder.Services.AddScoped<Npc11CardService>();
 builder.Services.AddScoped<ZaloListenerCoordinator>();
 builder.Services.AddScoped<ZaloReminderService>();
+builder.Services.AddScoped<ZaloDraftReadinessService>();
+builder.Services.AddScoped<ZaloScheduledDraftService>();
 builder.Services.AddScoped<ZaloOverbookService>();
 builder.Services.AddScoped<ZaloInboundCoordinator>();
 builder.Services.AddScoped<SessionWaitlistService>();
