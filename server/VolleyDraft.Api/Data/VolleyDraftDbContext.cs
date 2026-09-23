@@ -28,6 +28,8 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<SessionWaitlistEntry> SessionWaitlistEntries => Set<SessionWaitlistEntry>();
     public DbSet<ZaloBotActionHistory> ZaloBotActionHistory => Set<ZaloBotActionHistory>();
     public DbSet<ZaloGroupMember> ZaloGroupMembers => Set<ZaloGroupMember>();
+    public DbSet<ZaloGroupMembershipPeriod> ZaloGroupMembershipPeriods => Set<ZaloGroupMembershipPeriod>();
+    public DbSet<ZaloMembershipCoverage> ZaloMembershipCoverages => Set<ZaloMembershipCoverage>();
     public DbSet<ZaloPollSnapshot> ZaloPollSnapshots => Set<ZaloPollSnapshot>();
     public DbSet<ZaloPollOptionSnapshot> ZaloPollOptionSnapshots => Set<ZaloPollOptionSnapshot>();
     public DbSet<ZaloPollVoteActivity> ZaloPollVoteActivities => Set<ZaloPollVoteActivity>();
@@ -162,6 +164,32 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.HasOne(member => member.ZaloConnection)
                 .WithMany(connection => connection.GroupMembers)
                 .HasForeignKey(member => member.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloGroupMembershipPeriod>(entity =>
+        {
+            entity.Property(period => period.GroupId).HasMaxLength(100);
+            entity.Property(period => period.ZaloUserId).HasMaxLength(100);
+            entity.Property(period => period.EvidenceKind).HasConversion<string>();
+            entity.Property(period => period.SourceEventId).HasMaxLength(200);
+            entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.ZaloUserId, period.IsCurrentPeriod });
+            entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.JoinedAt });
+            entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.SourceEventId }).IsUnique();
+            entity.HasOne(period => period.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(period => period.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloMembershipCoverage>(entity =>
+        {
+            entity.Property(coverage => coverage.GroupId).HasMaxLength(100);
+            entity.Property(coverage => coverage.Source).HasMaxLength(80);
+            entity.HasIndex(coverage => new { coverage.ZaloConnectionId, coverage.GroupId }).IsUnique();
+            entity.HasOne(coverage => coverage.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(coverage => coverage.ZaloConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
