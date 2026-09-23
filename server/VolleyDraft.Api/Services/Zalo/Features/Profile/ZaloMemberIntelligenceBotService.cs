@@ -17,6 +17,7 @@ public sealed record ZaloMemberBotAnswer(
 public sealed partial class ZaloMemberIntelligenceBotService(
     VolleyDraftDbContext db,
     ZaloMemberActivityService activity,
+    ZaloMembershipHistoryService membershipHistory,
     ZaloActivityBackfillCoordinator backfill,
     ZaloIntegrationService zaloIntegration,
     AiAssistantService ai,
@@ -36,7 +37,9 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         ZaloBotIntent.ListMostInactiveMembers,
         ZaloBotIntent.ListAtRiskMembers,
         ZaloBotIntent.SyncMemberActivity,
-        ZaloBotIntent.GetActivitySyncStatus
+        ZaloBotIntent.GetActivitySyncStatus,
+        ZaloBotIntent.ListRecentlyJoinedMembers,
+        ZaloBotIntent.GetMemberJoinDate
     ];
     private const string PendingCount = "MemberActivity:Count";
     private const string PendingMember = "MemberActivity:Member";
@@ -88,7 +91,9 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 ActivityIntents.Contains(classification.Intent))
                 decision = classification.Intent;
         }
-        else if (ActivityIntents.Contains(decision) && ai.IsConfigured &&
+        else if (ActivityIntents.Contains(decision) &&
+                 decision is not (ZaloBotIntent.ListRecentlyJoinedMembers or ZaloBotIntent.GetMemberJoinDate) &&
+                 ai.IsConfigured &&
                  !ZaloBotIntelligence.TryGetExactCommand(question, out _))
         {
             // AI only extracts optional person/time/limit. The deterministic route
@@ -106,7 +111,9 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         if (!ActivityIntents.Contains(decision))
             return null;
 
-        var period = BuildPeriod(question, classification?.TimeRange);
+        var period = decision == ZaloBotIntent.ListRecentlyJoinedMembers
+            ? BuildRecentJoinPeriod(question)
+            : BuildPeriod(question, classification?.TimeRange);
         var limit = classification?.Limit;
         if (decision == ZaloBotIntent.ListMostInactiveMembers &&
             ZaloBotIntelligence.TryGetExactCommand(question, out var command) &&
@@ -272,6 +279,13 @@ public sealed partial class ZaloMemberIntelligenceBotService(
     {
         if (intent == ZaloBotIntent.GetActivitySyncStatus)
             return await GetSyncStatusAsync(connectionId, groupId, incoming.SenderId, intent, aiCalled, cancellationToken);
+        if (intent == ZaloBotIntent.GetMemberJoinDate)
+            return await ExecuteJoinDateAsync(
+                connectionId,
+                groupId,
+                incoming,
+                aiCalled,
+                cancellationToken);
         if (intent == ZaloBotIntent.SyncMemberActivity)
         {
             var denial = await GetOperatorDenialAsync(
@@ -293,7 +307,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         if (readiness is not null)
             return readiness with { Intent = intent, AiCalled = aiCalled };
 
-        if (intent is ZaloBotIntent.ListMembersWithoutRecentVote or
+        if (intent is ZaloBotIntent.ListRecentlyJoinedMembers or
+            ZaloBotIntent.ListMembersWithoutRecentVote or
             ZaloBotIntent.ListMembersWithoutRecentMessage or
             ZaloBotIntent.ListMostInactiveMembers or
             ZaloBotIntent.ListAtRiskMembers)
@@ -378,6 +393,17 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         bool aiCalled,
         CancellationToken cancellationToken)
     {
+        if (intent == ZaloBotIntent.ListRecentlyJoinedMembers)
+            return await ExecuteRecentJoinListAsync(
+                connectionId,
+                groupId,
+                incoming,
+                period,
+                page,
+                pageSize,
+                aiCalled,
+                cancellationToken);
+
         var denial = await GetOperatorDenialAsync(
             connectionId,
             groupId,
@@ -463,6 +489,119 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             intent,
             aiCalled,
             BuildProtectedTerms(items, result.Coverage));
+    }
+
+    private async Task<ZaloMemberBotAnswer> ExecuteRecentJoinListAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        ZaloActivityPeriod period,
+        int page,
+        int pageSize,
+        bool aiCalled,
+        CancellationToken cancellationToken)
+    {
+        var denial = await GetOperatorDenialAsync(
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            ZaloBotIntent.ListRecentlyJoinedMembers,
+            cancellationToken);
+        if (denial is not null) return denial;
+
+        var days = Math.Clamp((int)Math.Ceiling((period.End - period.Start).TotalDays), 1, 3650);
+        var result = await membershipHistory.QueryRecentAsync(
+            connectionId,
+            groupId,
+            days,
+            period.End,
+            cancellationToken);
+        pageSize = Math.Clamp(pageSize, 1, 10);
+        var totalPages = Math.Max(1, (int)Math.Ceiling(result.Members.Count / (double)pageSize));
+        page = Math.Clamp(page, 1, totalPages);
+        var items = result.Members.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+
+        string text;
+        if (result.Members.Count == 0)
+        {
+            text = result.UnknownCurrentMemberCount > 0 || !result.CoverageIsComplete
+                ? $"Mình chưa có dữ liệu ngày vào nhóm đủ để kết luận có ai vào trong {days} ngày gần đây. Ngày đồng bộ thành viên không phải ngày tham gia."
+                : $"Không có thành viên hiện tại nào có lần tham gia đã xác minh trong {days} ngày gần đây.";
+        }
+        else
+        {
+            var firstOrdinal = (page - 1) * pageSize + 1;
+            var lines = items.Select((item, index) =>
+                $"{firstOrdinal + index}. {item.DisplayName} — {(item.IsRejoin ? "vào lại" : "vào nhóm")} {FormatDateTime(item.JoinedAt)}");
+            text =
+                $"Mình xác định được {result.Members.Count} thành viên hiện còn trong nhóm đã vào trong {days} ngày gần đây:\n" +
+                string.Join("\n", lines);
+            if (page < totalPages)
+                text += "\n\nGõ `@bot tiếp` để xem trang sau.";
+        }
+
+        if (result.UnknownCurrentMemberCount > 0 || !result.CoverageIsComplete)
+            text += $"\n\nLưu ý dữ liệu: {result.UnknownCurrentMemberCount} thành viên hiện tại chưa có ngày tham gia được xác minh hoặc lịch sử membership chưa phủ đủ khoảng hỏi, nên danh sách có thể chưa đầy đủ.";
+
+        if (totalPages > 1)
+        {
+            await SaveStateAsync(
+                connectionId,
+                groupId,
+                NormalizeId(incoming.SenderId),
+                PendingPagination,
+                new MemberActivityPendingPayload(
+                    ZaloBotIntent.ListRecentlyJoinedMembers,
+                    period.Start,
+                    period.End,
+                    period.Description,
+                    null,
+                    null,
+                    page,
+                    pageSize,
+                    null,
+                    totalPages),
+                cancellationToken);
+        }
+
+        return new ZaloMemberBotAnswer(
+            text,
+            ZaloBotIntent.ListRecentlyJoinedMembers,
+            aiCalled,
+            items.Select(item => item.DisplayName).ToList());
+    }
+
+    private async Task<ZaloMemberBotAnswer> ExecuteJoinDateAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        bool aiCalled,
+        CancellationToken cancellationToken)
+    {
+        var senderId = NormalizeId(incoming.SenderId);
+        var result = await membershipHistory.GetJoinDateAsync(
+            connectionId,
+            groupId,
+            senderId,
+            cancellationToken);
+        if (result is null)
+            return new ZaloMemberBotAnswer(
+                "Mình chưa thấy bạn trong danh sách thành viên hiện tại đã đồng bộ của nhóm.",
+                ZaloBotIntent.GetMemberJoinDate,
+                aiCalled);
+
+        if (!result.HasVerifiedEvidence || result.JoinedAt is null)
+            return new ZaloMemberBotAnswer(
+                $"Mình chưa xác định được ngày {result.DisplayName} vào nhóm. Ngày bot nhìn thấy thành viên lần đầu không được dùng thay cho ngày tham gia.",
+                ZaloBotIntent.GetMemberJoinDate,
+                aiCalled,
+                [result.DisplayName]);
+
+        return new ZaloMemberBotAnswer(
+            $"{result.DisplayName} {(result.IsRejoin ? "vào lại nhóm" : "vào nhóm")} ngày {FormatDateTime(result.JoinedAt.Value)}.",
+            ZaloBotIntent.GetMemberJoinDate,
+            aiCalled,
+            [result.DisplayName]);
     }
 
     private async Task<ZaloMemberBotAnswer> ExecuteForMemberAsync(
@@ -854,6 +993,18 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         state.ExpiresAt = now.AddMinutes(15);
         state.UpdatedAt = now;
         await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static ZaloActivityPeriod BuildRecentJoinPeriod(string question)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(question);
+        var match = Regex.Match(normalized, @"\b(?<days>\d{1,4})\s*ngay\b", RegexOptions.CultureInvariant);
+        var days = match.Success && int.TryParse(match.Groups["days"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : 30;
+        days = Math.Clamp(days, 1, 3650);
+        var end = DateTimeOffset.UtcNow;
+        return new ZaloActivityPeriod(end.AddDays(-days), end, $"{days} ngày gần đây");
     }
 
     private static ZaloActivityPeriod BuildPeriod(
