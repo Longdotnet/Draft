@@ -402,7 +402,7 @@ public sealed class ZaloScheduledDraftService(
             before,
             cancellationToken);
 
-        await TrySendDraftedResultAsync(session, policy, run, cancellationToken);
+        await TrySendDraftedResultAsync(session, run, cancellationToken);
         return run.State;
     }
 
