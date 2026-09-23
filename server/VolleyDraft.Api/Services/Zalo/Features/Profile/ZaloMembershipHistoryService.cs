@@ -242,10 +242,9 @@ public sealed class ZaloMembershipHistoryService(
         var coverage = await db.ZaloMembershipCoverages.AsNoTracking().SingleOrDefaultAsync(
             item => item.ZaloConnectionId == connectionId && item.GroupId == groupId,
             cancellationToken);
-        var complete = coverage?.HasCompleteHistoricalJoinEvents == true ||
-                       (coverage?.CoveredFrom is not null &&
-                        coverage.CoveredFrom <= windowStart &&
-                        coverage.CoveredThrough >= snapshotAt);
+        // Realtime observation alone does not prove there were no listener gaps.
+        // Only an explicitly verified historical source may claim complete membership coverage.
+        var complete = coverage?.HasCompleteHistoricalJoinEvents == true;
 
         return new ZaloRecentJoinResult(members, unknownCount, windowStart, snapshotAt, complete);
     }
