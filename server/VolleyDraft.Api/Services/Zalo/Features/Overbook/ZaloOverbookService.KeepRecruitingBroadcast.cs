@@ -55,7 +55,10 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
         int activeSlotRiskCount = 0,
         bool guestSignupOpen = true)
     {
-        if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRiskCount <= 0)
+        // Recruitment is driven only by authoritative roster capacity. Pass-slot
+        // ledger state is a separate handoff concern and must never keep @all alive
+        // after another player has already filled the vacated poll slot.
+        if (readiness.EffectiveSlotCount >= readiness.Capacity)
             return null;
 
         var playerSummary = readiness.PresentPlayerCount == readiness.EffectiveSlotCount
@@ -65,18 +68,12 @@ internal static class ZaloKeepRecruitingBroadcastPolicy
             ? " Có kéo bạn ngoài nhóm thì reply thẳng tin này `+1` hoặc `+2`; bạn đó không cần ở trong nhóm Zalo."
             : string.Empty;
 
-        if (activeSlotRiskCount > 0 && readiness.EffectiveSlotCount >= readiness.Capacity)
-        {
-            var riskLabel = activeSlotRiskCount == 1 ? "1 chỗ" : $"{activeSlotRiskCount} chỗ";
-            return $"@all Kèo {readiness.SessionName} đang {playerSummary} nhưng có {riskLabel} đang nhường/huỷ và cần người thay 👋 Ai chưa vote hoặc giờ sắp xếp vào được thì mở bình chọn và chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; khi không còn chỗ đang nhường/chờ nhận thì bot tự ngưng nhắc.";
-        }
-
         var missing = Math.Max(1, readiness.Capacity - readiness.EffectiveSlotCount);
         var missingLabel = missing == 1 ? "1 chỗ" : $"{missing} chỗ";
         var riskNote = activeSlotRiskCount > 0
             ? $"; đồng thời còn {activeSlotRiskCount} chỗ đang nhường/huỷ chưa xử lý xong"
             : string.Empty;
-        return $"@all Kèo {readiness.SessionName} đang {playerSummary}, còn thiếu {missingLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì mở bình chọn và chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người và không còn chỗ đang nhường/chờ nhận thì bot tự ngưng nhắc.";
+        return $"@all Kèo {readiness.SessionName} đang {playerSummary}, còn thiếu {missingLabel}{riskNote} 👋 Ai chưa vote hoặc giờ sắp xếp chơi được thì mở bình chọn và chốt giúp nha.{guestHint} Trưởng/phó đang chọn tiếp tục kiếm thêm; đủ người thì bot tự ngưng nhắc.";
     }
 }
 
@@ -182,10 +179,10 @@ public sealed partial class ZaloOverbookService
             var activeSlotRisks = await CountActiveSlotRisksAsync(session, cancellationToken);
 
             // Keep the organizer's direction durable when the roster becomes full.
-            // A full clean roster suppresses messages, but if somebody later passes a
-            // slot the same KeepRecruiting decision can resume without forcing the
-            // organizer to repeat themselves.
-            if (readiness.EffectiveSlotCount >= readiness.Capacity && activeSlotRisks == 0)
+            // A full authoritative roster suppresses recruitment even if an old pass
+            // handoff is still open in the ledger. If the roster later drops below
+            // capacity, the same KeepRecruiting decision resumes automatically.
+            if (readiness.EffectiveSlotCount >= readiness.Capacity)
                 continue;
 
             ZaloKeepRecruitingBroadcastResult result;
