@@ -357,15 +357,23 @@ function handleMembershipEvent(accountId: string, listener: ActiveListener, even
   const groupId = normalizeId(event.threadId);
   if (!groupId || !listener.groupIds.has(groupId)) return;
 
-  const memberIds = [...new Set((event.data?.updateMembers ?? [])
-    .map((member) => normalizeMemberId(String(member.id ?? "")))
+  const rawMembers = event.data?.updateMembers;
+  if (!Array.isArray(rawMembers)) return;
+  const memberIds = [...new Set(rawMembers
+    .map((member) => normalizeMemberId(String(member?.id ?? "")))
     .filter(Boolean))].sort();
   if (memberIds.length === 0) return;
 
-  const rawTimestamp = Number(event.data?.time ?? Date.now());
-  const occurredAtUnixMs = Number.isFinite(rawTimestamp)
-    ? rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
-    : Date.now();
+  // Only a provider-supplied timestamp proves when membership changed. Falling
+  // back to Date.now() would mislabel observation time as an actual join date.
+  const rawTimestamp = Number(event.data?.time);
+  if (event.data?.time == null || !Number.isFinite(rawTimestamp) || rawTimestamp <= 0) {
+    console.warn(`[Zalo listener ${accountId}] Ignored membership event without provider timestamp`);
+    return;
+  }
+  const occurredAtUnixMs = rawTimestamp < 10_000_000_000
+    ? rawTimestamp * 1000
+    : rawTimestamp;
   const actorId = normalizeMemberId(String(event.data?.sourceId ?? event.data?.creatorId ?? "")) || null;
   const eventId = createHash("sha256")
     .update([accountId, groupId, event.type, String(occurredAtUnixMs), ...memberIds].join(":"))

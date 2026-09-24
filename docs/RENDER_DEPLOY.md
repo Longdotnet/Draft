@@ -24,7 +24,7 @@ This repo includes:
 
 The Zalo bridge pings the API health endpoint every 8 minutes while at least one listener is active. The API already reconciles its active bridge listeners, so the two Render services recover each other and the API reminder worker can keep checking due schedules. This is enabled by default in production and can be controlled with `ZALO_BRIDGE_API_KEEP_ALIVE` and `ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES` on the bridge.
 
-GitHub Actions remains a second wake-up path. Its workflow runs at minutes `01`, `16`, `31`, and `46` in the `Asia/Ho_Chi_Minh` timezone. Each run wakes both services and queues one scheduler cycle. GitHub documents scheduled workflows as best-effort: a schedule can be delayed or dropped before a runner is created. A due reminder may use one AI call to make its wording natural when `ZaloBot__AiStyleEnabled=true`; provider failure falls back to the factual template.
+GitHub Actions remains a second wake-up path. Its workflow is scheduled at minutes `00`, `15`, `30`, and `45` (also the same minutes in `Asia/Ho_Chi_Minh`, because Vietnam has a whole-hour UTC offset), so it can request a wake at the 17:00 scheduled-draft warning and 17:30 draft boundaries. Each run wakes both services and queues one scheduler cycle. GitHub documents scheduled workflows as best-effort: a schedule can be delayed or dropped before a runner is created; the live service's scheduler and bridge keep-alive provide additional wake paths. Therefore 17:00/17:30 are target times, subject to actual hosting availability and confirmed warning delivery. A due reminder may use one AI call to make its wording natural when `ZaloBot__AiStyleEnabled=true`; provider failure falls back to the factual template.
 
 ### 1. Configure Render API
 

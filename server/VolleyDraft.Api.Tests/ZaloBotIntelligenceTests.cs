@@ -1,4 +1,10 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Contracts;
+using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -509,5 +515,282 @@ public sealed class ZaloBotIntelligenceTests
     public void Ai_style_rewrite_remains_available_for_low_risk_information(ZaloBotIntent intent)
     {
         Assert.True(ZaloBotIntelligence.CanUseAiStyleRewrite(intent));
+    }
+}
+
+public sealed class ZaloMembershipHistoryEventTests
+{
+    [Fact]
+    public async Task Provider_events_update_existing_member_presence_without_changing_first_seen()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var now = DateTimeOffset.UtcNow;
+        var firstSeen = now.AddDays(-15);
+        fixture.Db.ZaloGroupMembers.Add(new ZaloGroupMember
+        {
+            ZaloConnectionId = "connection-a", GroupId = "group-1", ZaloUserId = "member-a",
+            DisplayName = "An", FirstSeenAt = firstSeen, LastSeenAt = firstSeen,
+            LastSyncedAt = firstSeen, IsCurrentMember = true
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "joined", now.AddDays(-10)));
+        Assert.True(await fixture.RecordAsync("bot-a", "leave", "member-a", "left", now.AddDays(-5)));
+        var member = await fixture.Db.ZaloGroupMembers.SingleAsync();
+        Assert.False(member.IsCurrentMember);
+        Assert.Equal(now.AddDays(-5).ToUnixTimeMilliseconds(), member.LeftAt!.Value.ToUnixTimeMilliseconds());
+        Assert.Equal(firstSeen, member.FirstSeenAt);
+        Assert.Equal(0, (await fixture.Service.QueryRecentAsync("connection-a", "group-1", 30, now)).UnknownCurrentMemberCount);
+
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "rejoined", now.AddMinutes(-1)));
+        Assert.True(member.IsCurrentMember);
+        Assert.Null(member.LeftAt);
+        Assert.Equal(firstSeen, member.FirstSeenAt);
+    }
+
+    [Fact]
+    public async Task Delayed_provider_event_cannot_overwrite_newer_directory_presence()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var now = DateTimeOffset.UtcNow;
+        fixture.Db.ZaloGroupMembers.Add(new ZaloGroupMember
+        {
+            ZaloConnectionId = "connection-a", GroupId = "group-1", ZaloUserId = "member-a",
+            DisplayName = "An", FirstSeenAt = now.AddDays(-20), LastSeenAt = now,
+            LastSyncedAt = now.AddMinutes(-2), IsCurrentMember = true
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.True(await fixture.RecordAsync("bot-a", "leave", "member-a", "old-leave", now.AddHours(-1)));
+        Assert.True((await fixture.Db.ZaloGroupMembers.SingleAsync()).IsCurrentMember);
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_started_before_a_leave_cannot_recreate_a_departed_member()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var now = DateTimeOffset.UtcNow;
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "start", now.AddDays(-4)));
+        var directoryRequestedAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        Assert.True(await fixture.RecordAsync("bot-a", "leave", "member-a", "leave", now.AddHours(-1)));
+
+        var newer = await fixture.Service.ObserveDirectoryAsync(
+            "connection-a", "group-1", ["member-a"], true,
+            DateTimeOffset.UtcNow, directoryRequestedAt: directoryRequestedAt);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.Contains("member-a", newer);
+        Assert.Empty(await fixture.Db.ZaloGroupMembershipPeriods.Where(period => period.IsCurrentPeriod).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Complete_directory_started_before_a_join_cannot_close_the_newer_join()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var directoryRequestedAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var joinedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "join", joinedAt));
+
+        var newer = await fixture.Service.ObserveDirectoryAsync(
+            "connection-a", "group-1", [], true, DateTimeOffset.UtcNow,
+            directoryRequestedAt: directoryRequestedAt);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.Contains("member-a", newer);
+        var period = Assert.Single(await fixture.Db.ZaloGroupMembershipPeriods.ToListAsync());
+        Assert.True(period.IsCurrentPeriod);
+        Assert.Null(period.LeftAt);
+        Assert.Equal(joinedAt.ToUnixTimeMilliseconds(), period.JoinedAt!.Value.ToUnixTimeMilliseconds());
+    }
+
+    [Fact]
+    public async Task Unprivileged_recent_join_request_is_denied_before_it_can_queue_a_backfill()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var bot = new ZaloMemberIntelligenceBotService(
+            fixture.Db,
+            null!,
+            fixture.Service,
+            null!,
+            null!,
+            new AiAssistantService(new HttpClient(), new ConfigurationBuilder().Build(),
+                NullLogger<AiAssistantService>.Instance),
+            NullLogger<ZaloMemberIntelligenceBotService>.Instance);
+        var question = "Có bao nhiêu thành viên mới trong 30 ngày?";
+
+        var answer = await bot.TryHandleAsync("connection-a", "group-1",
+            new ZaloIncomingMessageEvent("bot-a", "bot-a", "group-1", "msg-1", "member-a",
+                "An", question, [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
+            question,
+            CancellationToken.None);
+
+        Assert.NotNull(answer);
+        Assert.Equal(ZaloBotIntent.ListRecentlyJoinedMembers, answer.Intent);
+        Assert.Contains("trưởng nhóm", answer.Text);
+        Assert.Empty(await fixture.Db.ZaloActivityBackfillJobs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Tracked_group_without_a_bot_session_accepts_real_events_and_isolates_accounts()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        await fixture.TrackAsync("connection-b", "group-1");
+        var joinedAt = DateTimeOffset.UtcNow.AddDays(-3);
+
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "join-1", joinedAt));
+        Assert.False(await fixture.RecordAsync("bot-c", "join", "member-a", "join-2", joinedAt));
+
+        var current = await fixture.Service.QueryRecentAsync("connection-a", "group-1", 7, DateTimeOffset.UtcNow);
+        var member = Assert.Single(current.Members);
+        Assert.Equal("member-a", member.ZaloUserId);
+        Assert.Equal(joinedAt.ToUnixTimeMilliseconds(), member.JoinedAt.ToUnixTimeMilliseconds());
+        Assert.False(member.IsRejoin);
+        Assert.False(current.CoverageIsComplete);
+        Assert.Empty((await fixture.Service.QueryRecentAsync("connection-b", "group-1", 7, DateTimeOffset.UtcNow)).Members);
+    }
+
+    [Fact]
+    public async Task Missing_or_future_provider_timestamp_never_becomes_a_verified_join()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+
+        Assert.False(await fixture.Service.RecordProviderEventAsync(
+            new ZaloMembershipChangedEvent("bot-a", "group-1", "join", null,
+                ["member-a"], "missing-time", 0)));
+        Assert.False(await fixture.RecordAsync("bot-a", "join", "member-a", "future-time",
+            DateTimeOffset.UtcNow.AddDays(1)));
+
+        Assert.Empty(await fixture.Db.ZaloGroupMembershipPeriods.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Replayed_and_late_membership_events_do_not_resurrect_or_close_a_newer_period()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var now = DateTimeOffset.UtcNow;
+        var firstJoin = now.AddDays(-30);
+        var firstLeave = now.AddDays(-20);
+        var rejoin = now.AddDays(-5);
+
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "first-join", firstJoin));
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "first-join", firstJoin));
+        Assert.True(await fixture.RecordAsync("bot-a", "leave", "member-a", "first-leave", firstLeave));
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "rejoin", rejoin));
+        Assert.True(await fixture.RecordAsync("bot-a", "remove_member", "member-a", "late-leave",
+            now.AddDays(-25)));
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "late-join",
+            now.AddDays(-29)));
+
+        var periods = await fixture.Db.ZaloGroupMembershipPeriods
+            .OrderBy(period => period.JoinedAt)
+            .ToListAsync();
+        Assert.Equal(2, periods.Count);
+        Assert.Equal(firstLeave.ToUnixTimeMilliseconds(), periods[0].LeftAt!.Value.ToUnixTimeMilliseconds());
+        Assert.True(periods[1].IsCurrentPeriod);
+        Assert.Equal(ZaloMembershipEvidenceKind.ProviderRejoinEvent, periods[1].EvidenceKind);
+        Assert.Equal(rejoin.ToUnixTimeMilliseconds(), periods[1].JoinedAt!.Value.ToUnixTimeMilliseconds());
+        var recent = await fixture.Service.QueryRecentAsync("connection-a", "group-1", 7, now);
+        Assert.True(Assert.Single(recent.Members).IsRejoin);
+    }
+
+    [Fact]
+    public async Task Late_join_after_departure_and_old_leave_after_directory_observation_are_ignored()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var now = DateTimeOffset.UtcNow;
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "join-1", now.AddDays(-10)));
+        Assert.True(await fixture.RecordAsync("bot-a", "leave", "member-a", "leave-1", now.AddDays(-5)));
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "delayed-join", now.AddDays(-8)));
+        Assert.Empty((await fixture.Service.QueryRecentAsync("connection-a", "group-1", 30, now)).Members);
+
+        // This directory snapshot is requested after the earlier provider events
+        // have been processed. Reusing a synthetic earlier observation time would
+        // incorrectly describe an in-flight snapshot from before their delivery.
+        var directoryObservedAt = DateTimeOffset.UtcNow;
+        await fixture.Service.ObserveDirectoryAsync("connection-a", "group-1", ["member-a"], true,
+            directoryObservedAt);
+        await fixture.Db.SaveChangesAsync();
+        Assert.True(await fixture.RecordAsync("bot-a", "leave", "member-a", "delayed-leave",
+            now.AddDays(-3)));
+        var observed = await fixture.Db.ZaloGroupMembershipPeriods.SingleAsync(period => period.IsCurrentPeriod);
+        Assert.Equal(ZaloMembershipEvidenceKind.ObservedOnly, observed.EvidenceKind);
+        Assert.Null(observed.JoinedAt);
+    }
+
+    [Fact]
+    public async Task First_seen_is_observation_only_but_an_earlier_real_join_can_verify_it()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var observedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        await fixture.Service.ObserveDirectoryAsync("connection-a", "group-1", ["member-a"], true, observedAt);
+        fixture.Db.ZaloGroupMembers.Add(new ZaloGroupMember
+        {
+            ZaloConnectionId = "connection-a", GroupId = "group-1", ZaloUserId = "member-a",
+            DisplayName = "An", FirstSeenAt = observedAt, LastSeenAt = observedAt,
+            LastSyncedAt = observedAt
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var before = await fixture.Service.GetJoinDateAsync("connection-a", "group-1", "member-a");
+        Assert.NotNull(before);
+        Assert.False(before.HasVerifiedEvidence);
+        Assert.Null(before.JoinedAt);
+
+        var actualJoin = observedAt.AddDays(-4);
+        Assert.True(await fixture.RecordAsync("bot-a", "join", "member-a", "provider-join", actualJoin));
+        var after = await fixture.Service.GetJoinDateAsync("connection-a", "group-1", "member-a");
+        Assert.True(after!.HasVerifiedEvidence);
+        Assert.Equal(actualJoin.ToUnixTimeMilliseconds(), after.JoinedAt!.Value.ToUnixTimeMilliseconds());
+        Assert.Equal("An", after.DisplayName);
+        Assert.Equal(observedAt, (await fixture.Db.ZaloGroupMembers.SingleAsync()).FirstSeenAt);
+    }
+
+    private sealed class MembershipFixture(SqliteConnection connection, VolleyDraftDbContext db) : IAsyncDisposable
+    {
+        public VolleyDraftDbContext Db { get; } = db;
+        public ZaloMembershipHistoryService Service { get; } = new(db, NullLogger<ZaloMembershipHistoryService>.Instance);
+
+        public static async Task<MembershipFixture> CreateAsync()
+        {
+            var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            var options = new DbContextOptionsBuilder<VolleyDraftDbContext>().UseSqlite(connection).Options;
+            var db = new VolleyDraftDbContext(options);
+            await db.Database.EnsureCreatedAsync();
+            await DatabaseSchemaPatch.EnsureLatestAsync(db);
+            db.Users.Add(new User { Id = "admin", DisplayName = "Admin", Email = "admin@membership.test", PasswordHash = "hash" });
+            db.ZaloConnections.AddRange(
+                new ZaloConnection { Id = "connection-a", AdminUserId = "admin", AccountZaloId = "bot-a", Status = ZaloConnectionStatus.Connected },
+                new ZaloConnection { Id = "connection-b", AdminUserId = "admin", AccountZaloId = "bot-b", Status = ZaloConnectionStatus.Connected });
+            await db.SaveChangesAsync();
+            return new MembershipFixture(connection, db);
+        }
+
+        public async Task TrackAsync(string connectionId, string groupId) =>
+            _ = await new ZaloAutoSessionSettingsStore(Db).InsertIfMissingAsync(new ZaloTrackedGroupData
+            {
+                AdminUserId = "admin", ZaloConnectionId = connectionId,
+                GroupId = groupId, GroupName = "Test group"
+            });
+
+        public Task<bool> RecordAsync(string accountId, string type, string memberId, string eventId, DateTimeOffset at) =>
+            Service.RecordProviderEventAsync(new ZaloMembershipChangedEvent(accountId, "group-1", type,
+                null, [memberId], eventId, at.ToUnixTimeMilliseconds()));
+
+        public async ValueTask DisposeAsync()
+        {
+            await Db.DisposeAsync();
+            await connection.DisposeAsync();
+        }
     }
 }

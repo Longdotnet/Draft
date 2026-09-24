@@ -36,26 +36,52 @@ public sealed class ZaloMembershipHistoryService(
         if (incoming.EventType is not ("join" or "leave" or "remove_member"))
             return false;
 
-        var groupId = incoming.GroupId.Trim();
-        var accountId = incoming.AccountId.Trim();
-        var memberIds = incoming.MemberIds
+        var groupId = NormalizeId(incoming.GroupId);
+        var accountId = NormalizeId(incoming.AccountId);
+        var memberIds = (incoming.MemberIds ?? [])
             .Select(NormalizeId)
             .Where(id => id.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .Take(200)
             .ToList();
-        if (groupId.Length == 0 || accountId.Length == 0 || memberIds.Count == 0)
+        var occurredAt = FromUnixMs(incoming.OccurredAtUnixMs) ?? DateTimeOffset.MinValue;
+        var now = DateTimeOffset.UtcNow;
+        if (groupId.Length == 0 || accountId.Length == 0 || memberIds.Count == 0 ||
+            string.IsNullOrWhiteSpace(incoming.EventId) ||
+            occurredAt == DateTimeOffset.MinValue || occurredAt > now.AddMinutes(5))
+        {
+            // Missing provider event time cannot be substituted with observation time:
+            // it would make an unverified member appear to have joined today.
+            logger.LogWarning("Ignored membership event with missing identity or untrusted event timestamp Account={AccountId} Group={GroupId}", accountId, groupId);
             return false;
+        }
 
-        var connectionIds = await db.ZaloConnections
+        var accountConnectionIds = await db.ZaloConnections
             .AsNoTracking()
-            .Where(connection =>
-                connection.AccountZaloId == accountId &&
-                connection.MatchSessions.Any(session =>
-                    session.ZaloGroupId == groupId && session.BotEnabled))
+            .Where(connection => connection.AccountZaloId == accountId &&
+                                 connection.Status == ZaloConnectionStatus.Connected)
             .Select(connection => connection.Id)
-            .Distinct()
             .ToListAsync(cancellationToken);
+        // Durable tracked groups own membership observations even if every linked
+        // session is finished, deleted, or has its bot temporarily disabled.
+        var trackedGroups = await new ZaloAutoSessionSettingsStore(db).GetAllAsync(cancellationToken);
+        var connectionIds = trackedGroups
+            .Where(group => group.GroupId == groupId && accountConnectionIds.Contains(group.ZaloConnectionId))
+            .Select(group => group.ZaloConnectionId)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (connectionIds.Count == 0)
+        {
+            // Older installations may not have seeded ZaloTrackedGroups yet.
+            connectionIds = await db.MatchSessions
+                .AsNoTracking()
+                .Where(session => session.ZaloGroupId == groupId && session.BotEnabled &&
+                                  session.ZaloConnectionId != null &&
+                                  accountConnectionIds.Contains(session.ZaloConnectionId))
+                .Select(session => session.ZaloConnectionId!)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+        }
         if (connectionIds.Count != 1)
         {
             logger.LogWarning(
@@ -67,12 +93,12 @@ public sealed class ZaloMembershipHistoryService(
         }
 
         var connectionId = connectionIds[0];
-        var occurredAt = FromUnixMs(incoming.OccurredAtUnixMs) ?? DateTimeOffset.UtcNow;
-        var now = DateTimeOffset.UtcNow;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
         foreach (var memberId in memberIds)
         {
+            var sourceEventId = $"{incoming.EventId}:{memberId}";
+            var membershipChanged = false;
             var current = await db.ZaloGroupMembershipPeriods
                 .Where(period =>
                     period.ZaloConnectionId == connectionId &&
@@ -82,9 +108,19 @@ public sealed class ZaloMembershipHistoryService(
                 .OrderByDescending(period => period.UpdatedAt)
                 .FirstOrDefaultAsync(cancellationToken);
 
+            // Compare source event timestamps across closed periods before applying
+            // a delayed webhook. A late leave cannot close a newer rejoin, and a
+            // late join cannot resurrect a member after a later departure.
+            var previousLeftAt = await db.ZaloGroupMembershipPeriods
+                .AsNoTracking()
+                .Where(period => period.ZaloConnectionId == connectionId &&
+                                 period.GroupId == groupId &&
+                                 period.ZaloUserId == memberId &&
+                                 period.LeftAt != null)
+                .MaxAsync(period => period.LeftAt, cancellationToken);
+
             if (incoming.EventType == "join")
             {
-                var sourceEventId = $"{incoming.EventId}:{memberId}";
                 var duplicate = await db.ZaloGroupMembershipPeriods
                     .AsNoTracking()
                     .AnyAsync(period =>
@@ -92,7 +128,7 @@ public sealed class ZaloMembershipHistoryService(
                         period.GroupId == groupId &&
                         period.SourceEventId == sourceEventId,
                         cancellationToken);
-                if (duplicate)
+                if (duplicate || (previousLeftAt is not null && occurredAt <= previousLeftAt))
                     continue;
 
                 if (current is not null && current.EvidenceKind == ZaloMembershipEvidenceKind.ObservedOnly)
@@ -112,6 +148,7 @@ public sealed class ZaloMembershipHistoryService(
                     current.SourceEventId = sourceEventId;
                     current.LastObservedAt = now;
                     current.UpdatedAt = now;
+                    membershipChanged = true;
                 }
                 else if (current is null)
                 {
@@ -138,6 +175,7 @@ public sealed class ZaloMembershipHistoryService(
                         CreatedAt = now,
                         UpdatedAt = now
                     });
+                    membershipChanged = true;
                 }
                 else
                 {
@@ -161,7 +199,11 @@ public sealed class ZaloMembershipHistoryService(
                         period.ZaloUserId == memberId &&
                         period.LeftAt == occurredAt,
                         cancellationToken);
-                if (duplicateLeave)
+                if (duplicateLeave ||
+                    (previousLeftAt is not null && occurredAt <= previousLeftAt) ||
+                    (current?.JoinedAt is { } joinedAt && occurredAt <= joinedAt) ||
+                    (current is { EvidenceKind: ZaloMembershipEvidenceKind.ObservedOnly } &&
+                     occurredAt < current.FirstObservedAt))
                     continue;
 
                 if (current is null)
@@ -176,10 +218,12 @@ public sealed class ZaloMembershipHistoryService(
                         FirstObservedAt = now,
                         LastObservedAt = now,
                         EvidenceKind = ZaloMembershipEvidenceKind.ObservedOnly,
+                        SourceEventId = sourceEventId,
                         IsCurrentPeriod = false,
                         CreatedAt = now,
                         UpdatedAt = now
                     });
+                    membershipChanged = true;
                 }
                 else
                 {
@@ -187,6 +231,24 @@ public sealed class ZaloMembershipHistoryService(
                     current.IsCurrentPeriod = false;
                     current.LastObservedAt = now;
                     current.UpdatedAt = now;
+                    membershipChanged = true;
+                }
+            }
+
+            // The directory and event ledger share current-member semantics. Update
+            // an existing profile only when the source event is at least as fresh
+            // as its last directory snapshot, so delayed events cannot regress it.
+            if (membershipChanged)
+            {
+                var profile = await db.ZaloGroupMembers.SingleOrDefaultAsync(member =>
+                    member.ZaloConnectionId == connectionId && member.GroupId == groupId &&
+                    member.ZaloUserId == memberId, cancellationToken);
+                if (profile is not null && occurredAt >= profile.LastSyncedAt)
+                {
+                    profile.IsCurrentMember = incoming.EventType == "join";
+                    profile.LeftAt = incoming.EventType == "join" ? null : occurredAt;
+                    if (incoming.EventType == "join") profile.LastSeenAt = now;
+                    profile.UpdatedAt = now;
                 }
             }
         }
@@ -204,7 +266,8 @@ public sealed class ZaloMembershipHistoryService(
         DateTimeOffset snapshotAt,
         CancellationToken cancellationToken = default)
     {
-        days = Math.Clamp(days, 1, 3650);
+        if (days is < 1 or > 3650)
+            throw new ArgumentOutOfRangeException(nameof(days), days, "Recent-join window must be between 1 and 3650 days.");
         var windowStart = snapshotAt.AddDays(-days);
 
         var periods = await db.ZaloGroupMembershipPeriods
@@ -261,8 +324,6 @@ public sealed class ZaloMembershipHistoryService(
                     item.GroupId == groupId &&
                     item.ZaloUserId == zaloUserId,
             cancellationToken);
-        if (member is null) return null;
-
         var period = await db.ZaloGroupMembershipPeriods.AsNoTracking()
             .Where(item =>
                 item.ZaloConnectionId == connectionId &&
@@ -271,39 +332,51 @@ public sealed class ZaloMembershipHistoryService(
                 item.IsCurrentPeriod)
             .OrderByDescending(item => item.UpdatedAt)
             .FirstOrDefaultAsync(cancellationToken);
+        if (member is null && period is null) return null;
         var verified = period?.JoinedAt is not null &&
                        period.EvidenceKind != ZaloMembershipEvidenceKind.ObservedOnly;
         return new ZaloMemberJoinDateResult(
             zaloUserId,
-            member.DisplayName,
+            member?.DisplayName ?? $"Zalo {zaloUserId}",
             verified ? period!.JoinedAt : null,
             verified && period!.EvidenceKind == ZaloMembershipEvidenceKind.ProviderRejoinEvent,
             verified);
     }
 
-    internal async Task ObserveDirectoryAsync(
+    internal async Task<IReadOnlySet<string>> ObserveDirectoryAsync(
         string connectionId,
         string groupId,
         IReadOnlyCollection<string> returnedMemberIds,
         bool directoryIsComplete,
         DateTimeOffset observedAt,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? directoryRequestedAt = null)
     {
         var normalizedIds = returnedMemberIds.Select(NormalizeId).Where(id => id.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
-        var openPeriods = await db.ZaloGroupMembershipPeriods
+        var periods = await db.ZaloGroupMembershipPeriods
             .Where(period =>
                 period.ZaloConnectionId == connectionId &&
-                period.GroupId == groupId &&
-                period.IsCurrentPeriod)
+                period.GroupId == groupId)
             .ToListAsync(cancellationToken);
+        // The provider can publish a join/leave while its directory request is
+        // in flight. Such a newer observation wins even if the directory is
+        // processed later, because that directory may reflect an older snapshot.
+        var requestedAt = directoryRequestedAt ?? observedAt;
+        var newerMemberIds = periods
+            .Where(period => period.LastObservedAt > requestedAt)
+            .Select(period => period.ZaloUserId)
+            .ToHashSet(StringComparer.Ordinal);
+        var openPeriods = periods.Where(period => period.IsCurrentPeriod).ToList();
         var byMember = openPeriods.GroupBy(period => period.ZaloUserId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.UpdatedAt).First(), StringComparer.Ordinal);
 
         foreach (var memberId in normalizedIds)
         {
+            if (newerMemberIds.Contains(memberId)) continue;
             if (byMember.TryGetValue(memberId, out var period))
             {
+                if (observedAt < period.LastObservedAt) continue;
                 period.LastObservedAt = observedAt;
                 period.UpdatedAt = observedAt;
                 continue;
@@ -326,7 +399,11 @@ public sealed class ZaloMembershipHistoryService(
 
         if (directoryIsComplete)
         {
-            foreach (var period in openPeriods.Where(period => !normalizedIds.Contains(period.ZaloUserId)))
+            foreach (var period in openPeriods.Where(period =>
+                         !normalizedIds.Contains(period.ZaloUserId) &&
+                         !newerMemberIds.Contains(period.ZaloUserId) &&
+                         observedAt >= period.LastObservedAt &&
+                         (period.JoinedAt is null || period.JoinedAt <= observedAt)))
             {
                 period.LeftAt ??= observedAt;
                 period.IsCurrentPeriod = false;
@@ -336,6 +413,7 @@ public sealed class ZaloMembershipHistoryService(
         }
 
         await TouchCoverageAsync(connectionId, groupId, observedAt, observedAt, cancellationToken);
+        return newerMemberIds;
     }
 
     private async Task TouchCoverageAsync(

@@ -1,6 +1,8 @@
 # Draft Preparation Reminder — Decision Matrix
 
-Status: design gate for PR #83. Do not treat numeric shortage as a cancellation decision.
+Status: historical design matrix for PR #83, updated for the current readiness implementation. Do not treat numeric shortage as a cancellation decision.
+
+Current implementation note: open pass-slot handoffs appear in readiness telemetry but do not independently block draft. The authoritative roster, profile checks, configured capacity and session state remain the draft requirements. Drafting an authoritative roster does not cancel any in-progress pass-slot handoff; transfers follow the existing post-draft flow.
 
 ## Core rule
 
@@ -73,7 +75,7 @@ Example for 15/18:
    - linked poll fresh-sync succeeds,
    - fingerprint still identical,
    - effective slot count is still the approved count,
-   - no unresolved pass/open-slot state invalidates the roster,
+   - outstanding pass-slot handoffs are recorded for context while the authoritative roster fingerprint remains valid,
    - profiles are complete,
    - slot count is supported by the draft engine.
 6. Only then execute draft.
@@ -84,7 +86,7 @@ A direct `draft đi` on an undecided 15/18 roster must not silently imply `PlayC
 
 ### Full and clean
 
-Example: 18/18, no unresolved pass slot, profiles complete.
+Example: 18/18 with profiles complete; any outstanding pass-slot handoff is informational.
 
 - Can invite the authorized recipient to `draft đi`.
 - Final execution still fresh-syncs and checks fingerprint.
@@ -117,10 +119,10 @@ Examples: 16/18 or 17/18 effective slots.
 
 If a member says `pass slot` / `huỷ slot` but still exists in the linked poll:
 
-- roster is considered at-risk,
-- do not invite draft,
-- poll remains source of truth,
-- wait for replacement / poll update / offer resolution.
+- the pass/share-slot handoff is recorded as context and shown separately from readiness;
+- the authoritative roster and linked poll remain the draft source of truth;
+- a full valid roster may be drafted, while the outstanding handoff continues through the existing post-draft transfer flow;
+- if a roster change affects its fingerprint or configured capacity, the normal readiness and final draft rechecks still apply.
 
 ### Match-level cancellation language
 

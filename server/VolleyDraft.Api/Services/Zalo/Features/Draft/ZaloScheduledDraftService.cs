@@ -29,6 +29,9 @@ public sealed class ZaloScheduledDraftService(
     ILogger<ZaloScheduledDraftService> logger)
 {
     private static readonly TimeSpan FallbackVietnamOffset = TimeSpan.FromHours(7);
+    private const string LateReminderRescheduledReason = "late_reminder_safe_window";
+    private const string ReminderDeliveryAttemptedReason = "reminder_delivery_attempted";
+    private const string ScheduledOutcomeUnconfirmedReason = "scheduled_execution_outcome_unconfirmed";
 
     public async Task<(bool Handled, string? Reply)> TryApplyCommandAsync(
         string connectionId,
@@ -106,30 +109,88 @@ public sealed class ZaloScheduledDraftService(
 
             case ZaloScheduledDraftCommandKind.SkipSession:
             {
+                if (!policy.Enabled)
+                    return (true, "Nhóm chưa bật tự draft nên chưa có lịch tự draft để bỏ qua.");
+                var activeRun = await db.ZaloScheduledDraftRuns.AsNoTracking()
+                    .SingleOrDefaultAsync(item => item.SessionId == session.Id, cancellationToken);
+                if (activeRun?.LeaseUntil > now)
+                    return (true, "Buổi này đang thực hiện tự draft; không thể bỏ qua khi quá trình đã bắt đầu.");
+                await using var commandTransaction = await db.Database.BeginTransactionAsync(cancellationToken);
                 var decision = await GetOrCreateDecisionAsync(session.Id, policy.Version, senderZaloUserId, now, cancellationToken);
                 decision.Skip = true;
                 decision.DeferredUntil = null;
+                decision.PolicyVersion = policy.Version;
                 decision.ChangedAt = now;
                 decision.ChangedByZaloUserId = senderZaloUserId;
+                if (activeRun is not null &&
+                    activeRun.State is not (ZaloScheduledDraftRunState.Drafted or ZaloScheduledDraftRunState.AlreadyDrafted))
+                {
+                    var updated = await db.ZaloScheduledDraftRuns
+                        .Where(item => item.Id == activeRun.Id &&
+                                       (item.LeaseUntil == null || item.LeaseUntil <= now) &&
+                                       item.State != ZaloScheduledDraftRunState.Drafted &&
+                                       item.State != ZaloScheduledDraftRunState.AlreadyDrafted)
+                        .ExecuteUpdateAsync(updates => updates
+                            .SetProperty(item => item.State, ZaloScheduledDraftRunState.Skipped)
+                            .SetProperty(item => item.LastError, "session_skipped_by_authorized_operator")
+                            .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+                    if (updated == 0)
+                        return (true, "Buổi này vừa bắt đầu draft; không thể xác nhận bỏ qua.");
+                }
                 await db.SaveChangesAsync(cancellationToken);
+                await commandTransaction.CommitAsync(cancellationToken);
                 return (true, $"Ok, buổi {session.Name} sẽ không tự draft.");
             }
 
             case ZaloScheduledDraftCommandKind.DeferSession:
             {
+                if (!policy.Enabled)
+                    return (true, "Nhóm chưa bật tự draft nên chưa có lịch tự draft để hoãn.");
                 var minute = command.LocalMinuteOfDay ?? policy.LocalDraftMinuteOfDay;
                 var deferred = ResolveLocalTimeForSession(session.StartTime!.Value, minute, policy.TimeZoneId);
+                var activeRun = await db.ZaloScheduledDraftRuns.AsNoTracking()
+                    .SingleOrDefaultAsync(item => item.SessionId == session.Id, cancellationToken);
+                if (activeRun?.LeaseUntil > now)
+                    return (true, "Buổi này đang thực hiện tự draft; không thể hoãn khi quá trình đã bắt đầu.");
                 if (deferred <= now)
                     return (true, "Giờ hoãn phải nằm sau thời điểm hiện tại.");
                 if (deferred >= session.StartTime)
                     return (true, "Giờ hoãn phải trước giờ bắt đầu buổi chơi.");
+                var currentDue = activeRun?.DraftDueAt ??
+                    ResolveLocalTimeForSession(session.StartTime.Value, policy.LocalDraftMinuteOfDay, policy.TimeZoneId);
+                if (deferred <= currentDue)
+                    return (true, "Giờ hoãn phải muộn hơn lịch tự draft hiện tại.");
 
+                await using var commandTransaction = await db.Database.BeginTransactionAsync(cancellationToken);
                 var decision = await GetOrCreateDecisionAsync(session.Id, policy.Version, senderZaloUserId, now, cancellationToken);
                 decision.Skip = false;
                 decision.DeferredUntil = deferred;
+                decision.PolicyVersion = policy.Version;
                 decision.ChangedAt = now;
                 decision.ChangedByZaloUserId = senderZaloUserId;
+                if (activeRun is not null &&
+                    activeRun.State is not (ZaloScheduledDraftRunState.Drafted or ZaloScheduledDraftRunState.AlreadyDrafted))
+                {
+                    var updated = await db.ZaloScheduledDraftRuns
+                        .Where(item => item.Id == activeRun.Id &&
+                                       (item.LeaseUntil == null || item.LeaseUntil <= now) &&
+                                       item.State != ZaloScheduledDraftRunState.Drafted &&
+                                       item.State != ZaloScheduledDraftRunState.AlreadyDrafted)
+                        .ExecuteUpdateAsync(updates => updates
+                            .SetProperty(item => item.DraftDueAt, deferred)
+                            .SetProperty(item => item.ReminderDueAt, deferred.AddMinutes(-policy.ReminderMinutes))
+                            .SetProperty(item => item.ReminderSentAt, activeRun.ReminderSentAt)
+                            .SetProperty(item => item.State,
+                                activeRun.ReminderSentAt == null
+                                    ? ZaloScheduledDraftRunState.Pending
+                                    : ZaloScheduledDraftRunState.ReminderSent)
+                            .SetProperty(item => item.LastError, (string?)null)
+                            .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+                    if (updated == 0)
+                        return (true, "Buổi này vừa bắt đầu draft; không thể xác nhận hoãn.");
+                }
                 await db.SaveChangesAsync(cancellationToken);
+                await commandTransaction.CommitAsync(cancellationToken);
                 return (true, $"Ok, buổi {session.Name} sẽ hoãn tự draft đến {FormatLocalMinute(minute)}.");
             }
             default:
@@ -149,7 +210,9 @@ public sealed class ZaloScheduledDraftService(
             .Include(run => run.Session)
             .ThenInclude(session => session.ZaloConnection)
             .Where(run =>
-                run.State == ZaloScheduledDraftRunState.Drafted &&
+                (run.State == ZaloScheduledDraftRunState.Drafted ||
+                 (run.State == ZaloScheduledDraftRunState.AlreadyDrafted &&
+                  run.LastError == ScheduledOutcomeUnconfirmedReason)) &&
                 run.ResultMessageSentAt == null)
             .ToListAsync(cancellationToken);
         foreach (var pendingResultRun in pendingResultRuns)
@@ -159,6 +222,48 @@ public sealed class ZaloScheduledDraftService(
                     pendingResultRun,
                     cancellationToken))
                 failed += 1;
+        }
+
+        // An interrupted process can leave its durable attempt marker on a pending
+        // run after the draft engine committed teams and before completion was saved.
+        // Reconcile those sessions independently of the active-session query, which
+        // intentionally excludes Finished sessions.
+        var interruptedRuns = await db.ZaloScheduledDraftRuns
+            .Include(run => run.Session)
+            .ThenInclude(session => session.ZaloConnection)
+            .Where(run =>
+                (run.State == ZaloScheduledDraftRunState.Pending ||
+                 run.State == ZaloScheduledDraftRunState.ReminderSent) &&
+                run.RosterFingerprint != null &&
+                run.ReminderSentAt != null &&
+                (run.LeaseUntil == null || run.LeaseUntil <= now) &&
+                run.Session.Status == SessionStatus.Finished)
+            .ToListAsync(cancellationToken);
+        foreach (var interruptedRun in interruptedRuns)
+        {
+            try
+            {
+                var snapshot = await readiness.BuildAsync(interruptedRun.SessionId, now, cancellationToken);
+                if (snapshot?.State != ZaloDraftReadinessState.AlreadyDrafted)
+                    continue;
+                // Another actor may have finished this session after our attempt
+                // marker. Report the observed outcome without claiming authorship.
+                interruptedRun.State = ZaloScheduledDraftRunState.AlreadyDrafted;
+                interruptedRun.DraftedAt = now;
+                interruptedRun.LastError = ScheduledOutcomeUnconfirmedReason;
+                interruptedRun.UpdatedAt = now;
+                await db.SaveChangesAsync(cancellationToken);
+                if (!await TrySendDraftedResultAsync(
+                        interruptedRun.Session, interruptedRun, cancellationToken))
+                    failed += 1;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                failed += 1;
+                logger.LogError(exception,
+                    "Scheduled draft interrupted-outcome reconciliation failed Session={SessionId}",
+                    interruptedRun.SessionId);
+            }
         }
 
         var policies = await db.ZaloScheduledDraftPolicies.AsNoTracking()
@@ -190,19 +295,22 @@ public sealed class ZaloScheduledDraftService(
                         policy.TimeZoneId);
                     if (nominalDraftDue >= session.StartTime)
                         continue;
-                    var nominalReminderDue = nominalDraftDue.AddMinutes(-policy.ReminderMinutes);
-                    if (now < nominalReminderDue)
+                    var decision = await db.ZaloScheduledDraftDecisions.AsNoTracking()
+                        .SingleOrDefaultAsync(item => item.SessionId == session.Id, cancellationToken);
+                    var scheduledDraftDue = decision?.DeferredUntil ?? nominalDraftDue;
+                    var scheduledReminderDue = scheduledDraftDue.AddMinutes(-policy.ReminderMinutes);
+                    if (scheduledDraftDue >= session.StartTime || now < scheduledReminderDue)
                         continue;
 
                     var run = await GetOrCreateRunAsync(
                         session.Id,
                         policy.Version,
-                        nominalReminderDue,
-                        nominalDraftDue,
+                        scheduledReminderDue,
+                        scheduledDraftDue,
                         now,
                         cancellationToken);
-                    var decision = await db.ZaloScheduledDraftDecisions.AsNoTracking()
-                        .SingleOrDefaultAsync(item => item.SessionId == session.Id, cancellationToken);
+                    if (run.PolicyVersion != policy.Version)
+                        continue;
                     if (decision?.Skip == true)
                     {
                         if (run.State is not (ZaloScheduledDraftRunState.Drafted or ZaloScheduledDraftRunState.AlreadyDrafted))
@@ -216,16 +324,31 @@ public sealed class ZaloScheduledDraftService(
                         continue;
                     }
 
-                    if (decision?.DeferredUntil is { } deferred)
-                    {
-                        run.DraftDueAt = deferred;
-                        run.ReminderDueAt = deferred.AddMinutes(-policy.ReminderMinutes);
-                    }
+                    if (run.State is ZaloScheduledDraftRunState.Drafted or
+                        ZaloScheduledDraftRunState.AlreadyDrafted or
+                        ZaloScheduledDraftRunState.Blocked or
+                        ZaloScheduledDraftRunState.Skipped)
+                        continue;
 
                     if (run.ReminderSentAt is null && now >= run.ReminderDueAt)
                     {
+                        if (run.LastError is LateReminderRescheduledReason or ReminderDeliveryAttemptedReason &&
+                            now > run.ReminderDueAt.AddMinutes(2))
+                        {
+                            // An earlier send might have reached Zalo even if its acknowledgement
+                            // was lost. Retrying after the safe lead window would advertise a
+                            // deadline that is now too close. Require organizer intervention.
+                            run.State = ZaloScheduledDraftRunState.Skipped;
+                            run.LastError = "reminder_delivery_unconfirmed_no_safe_window";
+                            run.UpdatedAt = now;
+                            await db.SaveChangesAsync(cancellationToken);
+                            skipped += 1;
+                            continue;
+                        }
                         var effectiveDraftDue = run.DraftDueAt;
-                        if (now > run.ReminderDueAt.AddMinutes(2))
+                        // Persist the first late adjustment so retries after a bridge failure
+                        // reuse the exact same reminder payload/idempotency key.
+                        if (ShouldShiftLateReminder(run, scheduledDraftDue, now))
                         {
                             effectiveDraftDue = now.AddMinutes(policy.ReminderMinutes);
                             if (effectiveDraftDue >= session.StartTime)
@@ -239,28 +362,62 @@ public sealed class ZaloScheduledDraftService(
                             }
                             run.DraftDueAt = effectiveDraftDue;
                             run.ReminderDueAt = now;
+                            run.LastError = LateReminderRescheduledReason;
+                            run.UpdatedAt = now;
+                            await db.SaveChangesAsync(cancellationToken);
                         }
 
+                        var freshPolicy = await db.ZaloScheduledDraftPolicies.AsNoTracking()
+                            .AnyAsync(item => item.Id == policy.Id &&
+                                              item.Enabled &&
+                                              item.Version == run.PolicyVersion, cancellationToken);
+                        if (!freshPolicy)
+                            continue;
+                        if (run.LastError is null)
+                        {
+                            run.LastError = ReminderDeliveryAttemptedReason;
+                            run.UpdatedAt = now;
+                            await db.SaveChangesAsync(cancellationToken);
+                        }
                         var localDue = ToLocal(effectiveDraftDue, policy.TimeZoneId);
                         var reminderText =
-                            $"{localDue:HH:mm} tui sẽ tự draft cho buổi {session.Name} nếu trưởng/phó chưa cho chạy trước đó và danh sách đủ điều kiện. " +
+                            $"Dự kiến từ {localDue:HH:mm}, và luôn ít nhất {policy.ReminderMinutes} phút sau khi tin này được gửi thành công, tui sẽ tự draft cho buổi {session.Name} nếu trưởng/phó chưa cho chạy trước đó và danh sách đủ điều kiện. " +
                             "Muốn đổi giờ hoặc bỏ qua, trưởng/phó nhắn “hoãn draft đến …” hoặc “hôm nay không tự draft” nha.";
                         var send = await bridge.SendGroupMessageAsync(
                             session.ZaloConnection!.AccountZaloId,
                             policy.GroupId,
                             reminderText,
                             [],
-                            idempotencyKey: $"scheduled-draft-reminder:{session.Id}:{policy.Version}");
+                            idempotencyKey: ReminderIdempotencyKey(run));
                         if (!send.Sent)
                         {
                             failed += 1;
                             continue;
                         }
 
-                        run.ReminderSentAt = DateTimeOffset.UtcNow;
-                        run.State = ZaloScheduledDraftRunState.ReminderSent;
-                        run.UpdatedAt = DateTimeOffset.UtcNow;
-                        await db.SaveChangesAsync(cancellationToken);
+                        var sentAt = DateTimeOffset.UtcNow;
+                        // The bridge can acknowledge a 17:00 warning at 17:01. Persist
+                        // its actual delivery-based floor, otherwise the nominal 17:30
+                        // execution would violate the promised 30-minute notice.
+                        var confirmedDraftDue = ResolveConfirmedDraftDue(
+                            effectiveDraftDue, sentAt, policy.ReminderMinutes);
+                        var stamped = await db.ZaloScheduledDraftRuns
+                            .Where(item => item.Id == run.Id &&
+                                           item.PolicyVersion == run.PolicyVersion &&
+                                           item.State == ZaloScheduledDraftRunState.Pending &&
+                                           item.ReminderSentAt == null &&
+                                           item.DraftDueAt == effectiveDraftDue)
+                            .ExecuteUpdateAsync(updates => updates
+                                .SetProperty(item => item.ReminderSentAt, sentAt)
+                                .SetProperty(item => item.DraftDueAt, confirmedDraftDue)
+                                .SetProperty(item => item.State, ZaloScheduledDraftRunState.ReminderSent)
+                                .SetProperty(item => item.LastError, (string?)null)
+                                .SetProperty(item => item.UpdatedAt, sentAt), cancellationToken);
+                        db.Entry(run).State = EntityState.Detached;
+                        if (stamped != 1)
+                            continue; // The organizer changed this run while the bridge sent.
+                        run = await db.ZaloScheduledDraftRuns.SingleAsync(
+                            item => item.Id == run.Id, cancellationToken);
                     }
 
                     if (run.State == ZaloScheduledDraftRunState.Drafted &&
@@ -271,7 +428,9 @@ public sealed class ZaloScheduledDraftService(
                         continue;
                     }
 
-                    if (run.ReminderSentAt is null || DateTimeOffset.UtcNow < run.DraftDueAt)
+                    if (run.ReminderSentAt is null ||
+                        DateTimeOffset.UtcNow < ResolveConfirmedDraftDue(
+                            run.DraftDueAt, run.ReminderSentAt.Value, policy.ReminderMinutes))
                         continue;
                     if (run.State is ZaloScheduledDraftRunState.Drafted or
                         ZaloScheduledDraftRunState.AlreadyDrafted or
@@ -299,6 +458,82 @@ public sealed class ZaloScheduledDraftService(
     }
 
     private async Task<ZaloScheduledDraftRunState> TryExecuteDraftAsync(
+        string sessionId,
+        ZaloScheduledDraftPolicy policy,
+        ZaloScheduledDraftRun run,
+        CancellationToken cancellationToken)
+    {
+        var leaseToken = Guid.NewGuid().ToString("n");
+        var now = DateTimeOffset.UtcNow;
+        if (!await TryClaimExecutionAsync(
+                db, run.Id, policy.Version, policy.ReminderMinutes, leaseToken, now, cancellationToken))
+            return run.State;
+
+        // ExecuteUpdate bypasses this context's tracked entity snapshots.
+        db.Entry(run).State = EntityState.Detached;
+        run = await db.ZaloScheduledDraftRuns.SingleAsync(item => item.Id == run.Id, cancellationToken);
+        try
+        {
+            return await ExecuteClaimedDraftAsync(sessionId, policy, run, cancellationToken);
+        }
+        finally
+        {
+            // AutoRunDraftAsync clears its DbContext's change tracker while picking.
+            // A scoped ExecuteUpdate also releases a detached run reliably.
+            await db.ZaloScheduledDraftRuns
+                .Where(item => item.Id == run.Id && item.LeaseToken == leaseToken)
+                .ExecuteUpdateAsync(updates => updates
+                    .SetProperty(item => item.LeaseToken, (string?)null)
+                    .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null), CancellationToken.None);
+        }
+    }
+
+    internal static bool ShouldShiftLateReminder(
+        ZaloScheduledDraftRun run,
+        DateTimeOffset configuredDraftDue,
+        DateTimeOffset now) =>
+        run.ReminderSentAt is null &&
+        run.DraftDueAt == configuredDraftDue &&
+        run.LastError is null &&
+        now > run.ReminderDueAt.AddMinutes(2);
+
+    internal static string ReminderIdempotencyKey(ZaloScheduledDraftRun run) =>
+        $"scheduled-draft-reminder:{run.SessionId}:{run.PolicyVersion}:{run.DraftDueAt.UtcTicks}";
+
+    internal static DateTimeOffset ResolveConfirmedDraftDue(
+        DateTimeOffset plannedDraftDue,
+        DateTimeOffset confirmedReminderSentAt,
+        int reminderMinutes)
+    {
+        var earliestSafeDraft = confirmedReminderSentAt.AddMinutes(reminderMinutes);
+        return plannedDraftDue >= earliestSafeDraft ? plannedDraftDue : earliestSafeDraft;
+    }
+
+    internal static async Task<bool> TryClaimExecutionAsync(
+        VolleyDraftDbContext db,
+        string runId,
+        int policyVersion,
+        int reminderMinutes,
+        string token,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        return await db.ZaloScheduledDraftRuns
+            .Where(run => run.Id == runId &&
+                          run.PolicyVersion == policyVersion &&
+                          run.ReminderSentAt != null &&
+                          run.ReminderSentAt <= now.AddMinutes(-reminderMinutes) &&
+                          run.DraftDueAt <= now &&
+                          (run.State == ZaloScheduledDraftRunState.Pending ||
+                           run.State == ZaloScheduledDraftRunState.ReminderSent) &&
+                          (run.LeaseUntil == null || run.LeaseUntil <= now))
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(run => run.LeaseToken, token)
+                .SetProperty(run => run.LeaseUntil, now.AddMinutes(15))
+                .SetProperty(run => run.UpdatedAt, now), cancellationToken) == 1;
+    }
+
+    private async Task<ZaloScheduledDraftRunState> ExecuteClaimedDraftAsync(
         string sessionId,
         ZaloScheduledDraftPolicy policy,
         ZaloScheduledDraftRun run,
@@ -358,6 +593,29 @@ public sealed class ZaloScheduledDraftService(
             return await BlockAsync(run, "roster_changed_before_draft", cancellationToken);
         }
 
+        // Organizer decisions can arrive while the poll is synchronizing. Re-read
+        // immediately before entering the authoritative session draft service.
+        var finalPolicy = await db.ZaloScheduledDraftPolicies.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == policy.Id, cancellationToken);
+        var finalDecision = await db.ZaloScheduledDraftDecisions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+        if (finalPolicy is null || !finalPolicy.Enabled || finalPolicy.Version != run.PolicyVersion ||
+            finalDecision?.Skip == true)
+            return await BlockAsync(run, "policy_or_organizer_changed_before_draft", cancellationToken);
+        if (finalDecision?.DeferredUntil is { } deferred && deferred > DateTimeOffset.UtcNow)
+        {
+            // A concurrently committed organizer defer must retain the run. The
+            // scheduler will revisit it at the later, explicitly authorized time.
+            run.DraftDueAt = deferred;
+            run.ReminderDueAt = deferred.AddMinutes(-freshPolicy.ReminderMinutes);
+            run.ReminderSentAt = null;
+            run.State = ZaloScheduledDraftRunState.Pending;
+            run.LastError = null;
+            run.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            return run.State;
+        }
+
         var history = new ZaloBotActionHistoryService(
             db,
             loggerFactory.CreateLogger<ZaloBotActionHistoryService>());
@@ -370,16 +628,24 @@ public sealed class ZaloScheduledDraftService(
             session.AdminUserId,
             session.Id,
             false);
+        // SessionDraftService clears the entire shared tracker between draft picks.
+        // Reload before storing the outcome, including the ambiguous/failure paths.
+        run = await db.ZaloScheduledDraftRuns.SingleAsync(item => item.Id == run.Id, cancellationToken);
+        session = await db.MatchSessions.Include(item => item.ZaloConnection)
+            .SingleAsync(item => item.Id == sessionId, cancellationToken);
         if (!drafted.IsSuccess || drafted.Value is null)
         {
             var finalReadiness = await readiness.BuildAsync(sessionId, DateTimeOffset.UtcNow, cancellationToken);
             if (finalReadiness?.State == ZaloDraftReadinessState.AlreadyDrafted)
             {
+                // Draft may have finished just as the engine returned a conflict.
+                // Keep the notice neutral because ownership cannot be proven.
                 run.State = ZaloScheduledDraftRunState.AlreadyDrafted;
                 run.DraftedAt = DateTimeOffset.UtcNow;
-                run.LastError = null;
+                run.LastError = ScheduledOutcomeUnconfirmedReason;
                 run.UpdatedAt = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync(cancellationToken);
+                await TrySendDraftedResultAsync(session, run, cancellationToken);
                 return run.State;
             }
             return await BlockAsync(run, $"draft_failed:{drafted.Error}", cancellationToken);
@@ -411,19 +677,25 @@ public sealed class ZaloScheduledDraftService(
         ZaloScheduledDraftRun run,
         CancellationToken cancellationToken)
     {
-        if (run.State != ZaloScheduledDraftRunState.Drafted ||
+        if (run.State != ZaloScheduledDraftRunState.Drafted &&
+            !IsUnconfirmedScheduledOutcome(run) ||
             run.ResultMessageSentAt is not null ||
             session.ZaloConnection is null)
             return run.ResultMessageSentAt is not null;
 
         try
         {
+            var unconfirmed = IsUnconfirmedScheduledOutcome(run);
             var send = await bridge.SendGroupMessageAsync(
                 session.ZaloConnection.AccountZaloId,
                 session.ZaloGroupId!,
-                $"Đã tự draft xong buổi {session.Name} theo lịch đã được trưởng/phó bật trước đó.",
+                unconfirmed
+                    ? $"Buổi {session.Name} hiện đã có đội hình. Lượt tự draft theo lịch bị gián đoạn nên tui chưa xác định được thao tác nào hoàn tất việc chia đội. Trưởng/phó kiểm tra lại đội hình nha."
+                    : $"Đã tự draft xong buổi {session.Name} theo lịch đã được trưởng/phó bật trước đó.",
                 [],
-                idempotencyKey: $"scheduled-draft-result:{session.Id}:{run.PolicyVersion}");
+                idempotencyKey: unconfirmed
+                    ? $"scheduled-draft-result-unconfirmed:{session.Id}:{run.PolicyVersion}"
+                    : $"scheduled-draft-result:{session.Id}:{run.PolicyVersion}");
             if (!send.Sent) return false;
 
             run.ResultMessageSentAt = DateTimeOffset.UtcNow;
@@ -507,7 +779,66 @@ public sealed class ZaloScheduledDraftService(
     {
         var run = await db.ZaloScheduledDraftRuns.SingleOrDefaultAsync(
             item => item.SessionId == sessionId, cancellationToken);
-        if (run is not null) return run;
+        if (run is not null)
+        {
+            // One durable row exists per session. A later policy version must never
+            // inherit the old version's warning, due time, or terminal failure.
+            // Compare-and-swap prevents policy edits from resetting an execution lease
+            // that another scheduler acquired after this row was read.
+            if (run.PolicyVersion != policyVersion &&
+                (run.LeaseUntil is null || run.LeaseUntil <= now))
+            {
+                var oldVersion = run.PolicyVersion;
+                if (ResetForPolicy(run, policyVersion, reminderDue, draftDue, now))
+                {
+                    await db.ZaloScheduledDraftRuns
+                        .Where(item => item.Id == run.Id &&
+                                       item.PolicyVersion == oldVersion &&
+                                       (item.LeaseUntil == null || item.LeaseUntil <= now) &&
+                                       item.State != ZaloScheduledDraftRunState.Drafted &&
+                                       item.State != ZaloScheduledDraftRunState.AlreadyDrafted)
+                        .ExecuteUpdateAsync(updates => updates
+                            .SetProperty(item => item.PolicyVersion, policyVersion)
+                            .SetProperty(item => item.ReminderDueAt, reminderDue)
+                            .SetProperty(item => item.DraftDueAt, draftDue)
+                            .SetProperty(item => item.ReminderSentAt, (DateTimeOffset?)null)
+                            .SetProperty(item => item.DraftedAt, (DateTimeOffset?)null)
+                            .SetProperty(item => item.ResultMessageSentAt, (DateTimeOffset?)null)
+                            .SetProperty(item => item.State, ZaloScheduledDraftRunState.Pending)
+                            .SetProperty(item => item.RosterFingerprint, (string?)null)
+                            .SetProperty(item => item.LastError, (string?)null)
+                            .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+                    db.Entry(run).State = EntityState.Detached;
+                    return await db.ZaloScheduledDraftRuns.SingleAsync(
+                        item => item.SessionId == sessionId, cancellationToken);
+                }
+            }
+            else if (run.PolicyVersion == policyVersion &&
+                     run.ReminderSentAt is null &&
+                     run.State == ZaloScheduledDraftRunState.Pending &&
+                     (run.LeaseUntil is null || run.LeaseUntil <= now) &&
+                     draftDue > run.DraftDueAt)
+            {
+                // A defer can commit while another scheduler is creating this row.
+                // Reconcile the newer, later organizer deadline before any warning.
+                await db.ZaloScheduledDraftRuns
+                    .Where(item => item.Id == run.Id &&
+                                   item.PolicyVersion == policyVersion &&
+                                   item.State == ZaloScheduledDraftRunState.Pending &&
+                                   item.ReminderSentAt == null &&
+                                   item.DraftDueAt == run.DraftDueAt &&
+                                   (item.LeaseUntil == null || item.LeaseUntil <= now))
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(item => item.ReminderDueAt, reminderDue)
+                        .SetProperty(item => item.DraftDueAt, draftDue)
+                        .SetProperty(item => item.LastError, (string?)null)
+                        .SetProperty(item => item.UpdatedAt, now), cancellationToken);
+                db.Entry(run).State = EntityState.Detached;
+                return await db.ZaloScheduledDraftRuns.SingleAsync(
+                    item => item.SessionId == sessionId, cancellationToken);
+            }
+            return run;
+        }
 
         run = new ZaloScheduledDraftRun
         {
@@ -532,6 +863,35 @@ public sealed class ZaloScheduledDraftService(
         }
     }
 
+    internal static bool IsUnconfirmedScheduledOutcome(ZaloScheduledDraftRun run) =>
+        run.State == ZaloScheduledDraftRunState.AlreadyDrafted &&
+        run.LastError == ScheduledOutcomeUnconfirmedReason &&
+        !string.IsNullOrWhiteSpace(run.RosterFingerprint);
+
+    internal static bool ResetForPolicy(
+        ZaloScheduledDraftRun run,
+        int policyVersion,
+        DateTimeOffset reminderDue,
+        DateTimeOffset draftDue,
+        DateTimeOffset now)
+    {
+        if (run.PolicyVersion == policyVersion ||
+            run.State is ZaloScheduledDraftRunState.Drafted or ZaloScheduledDraftRunState.AlreadyDrafted)
+            return false;
+
+        run.PolicyVersion = policyVersion;
+        run.ReminderDueAt = reminderDue;
+        run.DraftDueAt = draftDue;
+        run.ReminderSentAt = null;
+        run.DraftedAt = null;
+        run.ResultMessageSentAt = null;
+        run.State = ZaloScheduledDraftRunState.Pending;
+        run.RosterFingerprint = null;
+        run.LastError = null;
+        run.UpdatedAt = now;
+        return true;
+    }
+
     internal static bool TryParseCommand(string content, out ZaloScheduledDraftCommand command)
     {
         command = new ZaloScheduledDraftCommand(ZaloScheduledDraftCommandKind.Enable);
@@ -544,7 +904,7 @@ public sealed class ZaloScheduledDraftService(
 
         var defer = Regex.Match(
             q,
-            @"\b(?:hoan|doi)\s+(?:tu\s+)?draft\s+den\s+(?<hour>\d{1,2})(?:(?:h|:)(?<minute>\d{1,2}))?\b",
+            @"\b(?:hoan|doi)\s+(?:tu\s+)?draft\s+den\s+(?<hour>\d{1,2})(?:h(?<minute>\d{1,2})?|:(?<minute>\d{1,2}))?\b",
             RegexOptions.CultureInvariant);
         if (defer.Success && TryMinuteOfDay(defer, out var deferMinute))
         {
@@ -560,7 +920,7 @@ public sealed class ZaloScheduledDraftService(
 
         var enable = Regex.Match(
             q,
-            @"\b(?:bat|enable)\s+(?:che do\s+)?tu\s+draft(?:\s+(?:luc|vao)?\s*(?<hour>\d{1,2})(?:(?:h|:)(?<minute>\d{1,2}))?)?",
+            @"\b(?:bat|enable)\s+(?:che do\s+)?tu\s+draft(?:\s+(?:luc|vao)?\s*(?<hour>\d{1,2})(?:h(?<minute>\d{1,2})?|:(?<minute>\d{1,2}))?\b)?",
             RegexOptions.CultureInvariant);
         if (enable.Success)
         {

@@ -1378,6 +1378,8 @@ public static class DatabaseSchemaPatch
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloMembershipPeriods_Current" ON "ZaloGroupMembershipPeriods" ("ZaloConnectionId", "GroupId", "ZaloUserId", "IsCurrentPeriod");""");
         await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMembershipPeriods_OneCurrent" ON "ZaloGroupMembershipPeriods" ("ZaloConnectionId", "GroupId", "ZaloUserId") WHERE "IsCurrentPeriod";""");
+        await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMembershipPeriods_SourceEvent" ON "ZaloGroupMembershipPeriods" ("ZaloConnectionId", "GroupId", "SourceEventId") WHERE "SourceEventId" IS NOT NULL;""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMembershipCoverages_Group" ON "ZaloMembershipCoverages" ("ZaloConnectionId", "GroupId");""");

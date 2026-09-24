@@ -333,6 +333,20 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 [job.Id[..8]]);
         }
 
+        // Verify group-wide read permissions before EnsureReadyAsync can expose
+        // synchronization status or queue a background scan for an untrusted sender.
+        if (intent is ZaloBotIntent.ListRecentlyJoinedMembers or
+            ZaloBotIntent.ListMembersWithoutRecentVote or
+            ZaloBotIntent.ListMembersWithoutRecentMessage or
+            ZaloBotIntent.ListMostInactiveMembers or
+            ZaloBotIntent.ListAtRiskMembers or
+            ZaloBotIntent.AnalyzeGroupEngagement)
+        {
+            var denial = await GetOperatorDenialAsync(
+                connectionId, groupId, incoming.SenderId, intent, cancellationToken);
+            if (denial is not null) return denial;
+        }
+
         var readiness = await EnsureReadyAsync(connectionId, groupId, cancellationToken);
         if (readiness is not null)
             return readiness with { Intent = intent, AiCalled = aiCalled };
@@ -1025,15 +1039,22 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static bool TryReadRecentJoinDays(string question, out int days)
+    internal static bool TryReadRecentJoinDays(string question, out int days)
     {
         days = 0;
         var match = Regex.Match(
             ZaloBotIntelligence.Normalize(question),
-            @"\b(?<days>\d{1,6})\s*ngay\b",
+            @"(?:^|\s)(?<days>[+-]?\d+)\s*ngay\b",
             RegexOptions.CultureInvariant);
-        return match.Success &&
-               int.TryParse(match.Groups["days"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out days);
+        if (!match.Success)
+            return false;
+
+        // An overflow is an invalid number, never a reason to silently use the
+        // default 30 days. The caller reports the permitted range to the user.
+        if (!int.TryParse(match.Groups["days"].Value, NumberStyles.AllowLeadingSign,
+                CultureInfo.InvariantCulture, out days))
+            days = int.MaxValue;
+        return true;
     }
 
     private static ZaloActivityPeriod BuildRecentJoinPeriod(string question)

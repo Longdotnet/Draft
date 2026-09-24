@@ -57,7 +57,13 @@ Mỗi lượt sync:
 - chỉ đánh dấu người vắng mặt là former khi Zalo xác nhận directory trả về đầy đủ;
 - không xóa lịch sử vote/message của người đã rời nhóm.
 
-Báo cáo inactive mặc định chỉ dùng thành viên hiện tại. Người mới được gắn trạng thái `New`, không bị coi là inactive chỉ vì chưa kịp vote/chat.
+Báo cáo inactive mặc định chỉ dùng thành viên hiện tại. Người mới được gắn trạng thái `New` theo mốc quan sát để phân loại hoạt động, không bị coi là inactive chỉ vì chưa kịp vote/chat. Trạng thái `New` này **không chứng minh ngày người đó thực sự gia nhập nhóm**.
+
+### Truy vấn thành viên vừa tham gia có bằng chứng
+
+`ZaloGroupMembershipPeriods` lưu từng lần vào/rời nhóm theo UID; `ZaloMembershipCoverages` lưu riêng bằng chứng và độ bao phủ của lịch sử tham gia. Chỉ sự kiện `join` có timestamp hợp lệ từ provider mới có thể xác minh `JoinedAt`. Một người xuất hiện ở lần đồng bộ directory đầu tiên chỉ có bằng chứng **ObservedOnly**, ngay cả khi `FirstSeenAt` mới đây. Người rời rồi vào lại có một period mới, được phân biệt với lần vào đầu. Sự kiện join/leave nhận trễ phải được đối chiếu thời gian để không thay đổi nhầm lượt tham gia hiện tại.
+
+Câu hỏi như “7 ngày qua có ai mới vào?”, “những ai vào nhóm 45 ngày đổ lại?” và “tui vào nhóm ngày nào?” dùng deterministic routing và truy vấn backend. Danh sách mặc định chỉ kể người hiện còn trong nhóm có ngày vào của lượt hiện tại được xác minh; kết quả phải cảnh báo khi còn người chưa rõ ngày hoặc lịch sử sự kiện chưa đầy đủ. Danh sách toàn nhóm giữ quyền operator/trưởng/phó; thành viên thường chỉ được hỏi ngày của chính mình. Xem chi tiết tại [Scheduled draft and verified membership history](ZALO_SCHEDULED_DRAFT_AND_MEMBERSHIP_HISTORY.md).
 
 ## Đồng bộ board và poll
 
@@ -152,6 +158,8 @@ Các intent mới:
 - `ListAtRiskMembers`;
 - `SyncMemberActivity`;
 - `GetActivitySyncStatus`.
+- `ListRecentlyJoinedMembers`;
+- `GetMemberJoinDate`.
 
 `@bot 12` hỏi số lượng từ 1–30 rồi hiển thị danh sách kèm bằng chứng gần nhất. Danh sách mặc định 10 người/trang và hỗ trợ `tiếp`, `xem thêm`, `trang 2`, `trang trước`, `đầu`, `cuối`. State được scope theo connection + group + sender UID.
 

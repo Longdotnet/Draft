@@ -488,9 +488,9 @@ public static class ZaloBotIntelligence
             Has(q, "tui", "toi", "minh", "em", "ban than", "chinh minh"))
             return new(ZaloBotIntent.GetMemberJoinDate, .995, q, false, null, "self_group_join_date");
         if ((Has(q, "vao nhom", "gia nhap nhom", "tham gia nhom", "moi vao") ||
-             (Has(q, "thanh vien moi") && Regex.IsMatch(q, @"\b\d{1,4}\s*ngay\b", RegexOptions.CultureInvariant))) &&
+             (Has(q, "thanh vien moi") && Regex.IsMatch(q, @"\b\d+\s*ngay\b", RegexOptions.CultureInvariant))) &&
             (Has(q, "ai", "nhung ai", "nguoi nao", "thanh vien moi", "bao nhieu", "moi vao") ||
-             Regex.IsMatch(q, @"\b\d{1,4}\s*ngay\b", RegexOptions.CultureInvariant)) &&
+             Regex.IsMatch(q, @"\b\d+\s*ngay\b", RegexOptions.CultureInvariant)) &&
             Has(q, "gan day", "vua", "moi", "do lai", "do tro lai", "tro lai", "qua", "trong"))
             return new(ZaloBotIntent.ListRecentlyJoinedMembers, .995, q, false, null, "recent_group_joins");
         if (Has(q, "dong bo du lieu cu", "dong bo lai du lieu cu", "dong bo hoat dong", "quet lai du lieu zalo", "sync member activity", "sync hoat dong"))

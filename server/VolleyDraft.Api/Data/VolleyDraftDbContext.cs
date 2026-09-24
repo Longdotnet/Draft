@@ -177,6 +177,10 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(period => period.EvidenceKind).HasConversion<string>();
             entity.Property(period => period.SourceEventId).HasMaxLength(200);
             entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.ZaloUserId, period.IsCurrentPeriod });
+            entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.ZaloUserId })
+                .IsUnique()
+                .HasFilter("\"IsCurrentPeriod\"")
+                .HasDatabaseName("IX_ZaloMembershipPeriods_OneCurrent");
             entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.JoinedAt });
             entity.HasIndex(period => new { period.ZaloConnectionId, period.GroupId, period.SourceEventId }).IsUnique();
             entity.HasOne(period => period.ZaloConnection)

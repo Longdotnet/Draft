@@ -669,14 +669,18 @@ public sealed class ZaloActivityBackfillCoordinator(
             job.LastErrorSummary = null;
             await SaveStageAsync(job, ZaloActivityBackfillStage.SyncingMembers, cancellationToken);
 
+            var directoryRequestedAt = DateTimeOffset.UtcNow;
             var directory = await WithRetryAsync(
                 () => bridge.GetGroupMemberDirectoryAsync(credentials, job.GroupId, cancellationToken),
                 "group members",
                 cancellationToken);
+            var directoryReceivedAt = DateTimeOffset.UtcNow;
             job.GroupCreatedAtFromZalo = FromUnixMs(directory.GroupCreatedAtUnixMs);
             job.MembersSynchronized = await SynchronizeMembersAsync(
                 job,
                 directory,
+                directoryRequestedAt,
+                directoryReceivedAt,
                 cancellationToken);
             if (!directory.IsComplete)
                 limitations.Add(
@@ -850,9 +854,11 @@ public sealed class ZaloActivityBackfillCoordinator(
     private async Task<int> SynchronizeMembersAsync(
         ZaloActivityBackfillJob job,
         BridgeGroupMemberDirectory directory,
+        DateTimeOffset directoryRequestedAt,
+        DateTimeOffset directoryReceivedAt,
         CancellationToken cancellationToken)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = directoryReceivedAt;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var existing = await db.ZaloGroupMembers
             .Where(member =>
@@ -860,10 +866,21 @@ public sealed class ZaloActivityBackfillCoordinator(
                 member.GroupId == job.GroupId)
             .ToDictionaryAsync(member => member.ZaloUserId, StringComparer.Ordinal, cancellationToken);
         var returnedIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var source in directory.Members.Where(member => !string.IsNullOrWhiteSpace(member.ZaloUserId)))
+            returnedIds.Add(source.ZaloUserId);
+
+        var newerMemberIds = await membershipHistory.ObserveDirectoryAsync(
+            job.ZaloConnectionId,
+            job.GroupId,
+            returnedIds,
+            directory.IsComplete,
+            now,
+            cancellationToken,
+            directoryRequestedAt);
 
         foreach (var source in directory.Members.Where(member => !string.IsNullOrWhiteSpace(member.ZaloUserId)))
         {
-            returnedIds.Add(source.ZaloUserId);
+            if (newerMemberIds.Contains(source.ZaloUserId)) continue;
             var displayName = string.IsNullOrWhiteSpace(source.DisplayName)
                 ? source.ZaloName ?? source.ZaloUserId
                 : source.DisplayName;
@@ -902,7 +919,9 @@ public sealed class ZaloActivityBackfillCoordinator(
         if (directory.IsComplete)
         {
             foreach (var member in existing.Values.Where(member =>
-                         member.IsCurrentMember && !returnedIds.Contains(member.ZaloUserId)))
+                         member.IsCurrentMember &&
+                         !returnedIds.Contains(member.ZaloUserId) &&
+                         !newerMemberIds.Contains(member.ZaloUserId)))
             {
                 member.IsCurrentMember = false;
                 member.LeftAt = now;
@@ -911,13 +930,6 @@ public sealed class ZaloActivityBackfillCoordinator(
             }
         }
 
-        await membershipHistory.ObserveDirectoryAsync(
-            job.ZaloConnectionId,
-            job.GroupId,
-            returnedIds,
-            directory.IsComplete,
-            now,
-            cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation(

@@ -2,7 +2,8 @@ name: Reminder scheduler
 
 on:
   schedule:
-    - cron: "1/15 * * * *"
+    # Align best-effort wake attempts with scheduled-draft :00 reminders and :30 drafts.
+    - cron: "0,15,30,45 * * * *"
   workflow_dispatch:
 
 concurrency:
