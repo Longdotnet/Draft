@@ -143,7 +143,6 @@ public sealed class ZaloSchedulerTriggerTests
     public async Task RunWithLeaseHeartbeat_cancels_stage_and_fails_closed_when_renewal_loses_ownership()
     {
         var renewalObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseRenewal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var stageCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var run = ZaloSchedulerWorker.RunWithLeaseHeartbeatAsync(
@@ -160,22 +159,21 @@ public sealed class ZaloSchedulerTriggerTests
                     throw;
                 }
             },
-            async cancellationToken =>
+            _ =>
             {
                 renewalObserved.TrySetResult();
-                await releaseRenewal.Task.WaitAsync(cancellationToken);
-                return false;
+                // Model a provider-confirmed lease loss immediately. Holding a renewal
+                // while asserting run.IsCompleted races the 20 ms renewal timeout on
+                // loaded CI runners and tests timing rather than fail-closed behavior.
+                return Task.FromResult(false);
             },
             TimeSpan.FromMilliseconds(60),
             CancellationToken.None);
 
         await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.False(run.IsCompleted);
-        releaseRenewal.TrySetResult();
-
         await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
-            await run.WaitAsync(TimeSpan.FromSeconds(1)));
-        await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await run.WaitAsync(TimeSpan.FromSeconds(5)));
+        await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [Fact]
