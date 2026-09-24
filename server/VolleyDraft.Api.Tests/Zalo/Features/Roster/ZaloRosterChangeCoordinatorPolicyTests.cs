@@ -137,12 +137,16 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
         };
         var transition = ZaloRosterChangeCoordinatorPolicy.Observe(
             previous, "s1", 18, 18, "fp18", start, TimeSpan.FromMinutes(2));
-        var ready = ReadySnapshot() with { ActivePassSlotRiskCount = 0 };
+        var ready = ReadySnapshot();
 
         Assert.True(ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
             previous,
             transition,
             ready));
+        Assert.True(ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
+            previous,
+            transition,
+            ready with { ActivePassSlotRiskCount = 3 }));
         Assert.False(ZaloRosterChangeCoordinatorPolicy.ShouldAnnounceRecoveredReady(
             previous with { LastDropNotifiedAt = null },
             transition,
@@ -152,8 +156,9 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
             transition,
             ready with
             {
-                State = ZaloDraftReadinessState.UnresolvedPassSlots,
-                ActivePassSlotRiskCount = 1,
+                State = ZaloDraftReadinessState.MissingProfiles,
+                MissingProfileCount = 1,
+                MissingProfileNames = ["A"],
                 IsRosterReady = false,
                 CanEscalate = false
             }));
@@ -168,8 +173,9 @@ public sealed class ZaloRosterChangeCoordinatorPolicyTests
             18);
 
         Assert.Contains("đủ lại 18/18", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Không còn chỗ đang nhường/chờ nhận", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("ngưng gọi thêm", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pass/nhường chưa chốt", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("không cần @all", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("draft đi", message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("đọc lại vote lần cuối", message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("effective slot", message, StringComparison.OrdinalIgnoreCase);

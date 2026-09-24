@@ -187,8 +187,7 @@ internal static class ZaloRosterChangeCoordinatorPolicy
         transition.Kind == ZaloRosterObservationTransitionKind.Recovered &&
         previous.LastDropNotifiedAt is not null &&
         readiness.State == ZaloDraftReadinessState.Ready &&
-        readiness.EffectiveSlotCount == readiness.Capacity &&
-        readiness.ActivePassSlotRiskCount == 0;
+        readiness.EffectiveSlotCount == readiness.Capacity;
 
     internal static string BuildIncidentIdempotencyKey(
         string lane,
@@ -203,7 +202,7 @@ internal static class ZaloRosterChangeCoordinatorPolicy
         int from,
         int to) =>
         $"Kèo {readiness.SessionName} vừa đủ lại {to}/{readiness.Capacity} chỗ rồi ✅ " +
-        "Không còn chỗ đang nhường/chờ nhận. Tui ngưng gọi thêm người. " +
+        "Tui ngưng gọi thêm người. Nếu còn pass/nhường chưa chốt thì xử lý riêng, không cần @all. " +
         "Trưởng/phó muốn chia đội thì nói `draft đi`; tui sẽ đọc lại vote lần cuối trước khi chạy.";
 
     internal static string BuildSoftUpdate(

@@ -64,19 +64,14 @@ public sealed class ZaloKeepRecruitingBroadcastPolicyTests
     }
 
     [Fact]
-    public void FullVoteWithPassRisk_StillCallsForAReplacementInPlainLanguage()
+    public void FullVoteWithPassRisk_DoesNotBroadcastRecruitment()
     {
-        var message = ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+        Assert.Null(ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
             Snapshot(18, 18, 18),
-            activeSlotRiskCount: 1);
-
-        Assert.NotNull(message);
-        Assert.Contains("18/18 chỗ", message!);
-        Assert.Contains("1 chỗ", message);
-        Assert.Contains("đang nhường/huỷ", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("người thay", message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("tự ngưng nhắc", message, StringComparison.OrdinalIgnoreCase);
-        AssertBeginnerLanguage(message);
+            activeSlotRiskCount: 1));
+        Assert.Null(ZaloKeepRecruitingBroadcastPolicy.BuildMessage(
+            Snapshot(18, 18, 18),
+            activeSlotRiskCount: 3));
     }
 
     [Fact]
