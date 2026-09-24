@@ -132,11 +132,11 @@ public sealed class ZaloSchedulerTriggerTests
             TimeSpan.FromMilliseconds(60),
             CancellationToken.None);
 
-        await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await renewalObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(run.IsCompleted);
 
         finishStage.TrySetResult();
-        Assert.Equal(42, await run.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(42, await run.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]

@@ -5,6 +5,10 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 
 public sealed class ZaloSchedulerRenewalStallFuzzTests
 {
+    // Deadlock guard only; correctness is checked by stage/renewal cancellation
+    // and the propagated lease-loss exception, not runner scheduling speed.
+    private static readonly TimeSpan HarnessGuard = TimeSpan.FromSeconds(15);
+
     [Fact]
     public async Task Stalled_lease_renewal_must_cancel_stage_without_waiting_for_stalled_call()
     {
@@ -47,12 +51,12 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                     leaseDuration,
                     CancellationToken.None);
 
-                await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                await renewalStarted.Task.WaitAsync(HarnessGuard);
                 await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 Assert.False(releaseRenewal.Task.IsCompleted);
 
                 await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
-                    await run.WaitAsync(TimeSpan.FromSeconds(1)));
+                    await run.WaitAsync(HarnessGuard));
             }
             finally
             {
@@ -105,7 +109,7 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
                 leaseDuration,
                 CancellationToken.None);
 
-            await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await renewalStarted.Task.WaitAsync(HarnessGuard);
 
             // The safety oracle is semantic: the renewal authority and stage authority must both be
             // revoked by the heartbeat timeout. A generous harness timeout detects hangs without
@@ -113,7 +117,7 @@ public sealed class ZaloSchedulerRenewalStallFuzzTests
             await renewalCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await stageCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.ThrowsAsync<ZaloSchedulerLeaseLostException>(async () =>
-                await run.WaitAsync(TimeSpan.FromSeconds(1)));
+                await run.WaitAsync(HarnessGuard));
         }
     }
 }

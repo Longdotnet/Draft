@@ -5,6 +5,10 @@ namespace VolleyDraft.Api.Tests.Fuzzing.Targets;
 
 public sealed class ZaloSchedulerCancellationDrainFuzzTests
 {
+    // Only a deadlock guard, never the correctness oracle: a loaded CI runner
+    // can take longer than one second to schedule continuations for 2,000+ tests.
+    private static readonly TimeSpan HarnessGuard = TimeSpan.FromSeconds(15);
+
     [Fact]
     public async Task Cycle_cancellation_cannot_return_before_stage_cleanup_finishes()
     {
@@ -40,22 +44,30 @@ public sealed class ZaloSchedulerCancellationDrainFuzzTests
                 TimeSpan.FromMilliseconds(30 + random.NextInt(30)),
                 cycleCancellation.Token);
 
-            await stageStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await stageStarted.Task.WaitAsync(HarnessGuard);
             cycleCancellation.Cancel();
-            await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            try
+            {
+                await cancellationObserved.Task.WaitAsync(HarnessGuard);
 
-            // Give the heartbeat wrapper a deterministic opportunity to return incorrectly before
-            // the cancelled stage has finished unwinding its scoped work.
-            await Task.Delay(10 + random.NextInt(20));
-            var returnedBeforeCleanup = run.IsCompleted;
+                // While cleanup is held behind a gate, even a heavily loaded runner must
+                // never observe the wrapper returning. The short fuzz delay is only a
+                // scheduling opportunity, not a timeout or a pass condition.
+                await Task.Delay(10 + random.NextInt(20));
+                Assert.False(run.IsCompleted,
+                    "scheduler-cancellation:wrapper-returned-before-stage-drain");
+            }
+            finally
+            {
+                // Always release the stage, including when an assertion fails.
+                releaseCleanup.TrySetResult();
+            }
 
-            releaseCleanup.TrySetResult();
+            // Await the real result with a generous deadlock guard. A one-second
+            // WaitAsync can throw its own TimeoutException on busy Linux CI even
+            // when the scheduler correctly propagates OperationCanceledException.
             await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-                await run.WaitAsync(TimeSpan.FromSeconds(1)));
-
-            Assert.False(
-                returnedBeforeCleanup,
-                "scheduler-cancellation:wrapper-returned-before-stage-drain");
+                await run.WaitAsync(HarnessGuard));
         }
     }
 }
