@@ -96,7 +96,9 @@ public sealed class ZaloDraftReminderDeliveryStateContractTests
             root,
             "server", "VolleyDraft.Api", "Services", "Zalo", "Features", "Draft",
             "ZaloOverbookService.DraftPreparationRemindersV2.cs");
-        return File.ReadAllText(path);
+        // The structural assertions use LF snippets; Windows checkouts may have
+        // CRLF working files even though the committed source uses LF.
+        return File.ReadAllText(path).Replace("\r\n", "\n", StringComparison.Ordinal);
     }
 
     private static string ExtractBlock(string source, string startMarker, string endMarker)
