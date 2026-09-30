@@ -37,7 +37,10 @@ internal sealed class ZaloMissingProfilePromptStore(VolleyDraftDbContext db)
 {
     private bool ensured;
 
-    public async Task EnsureAsync(CancellationToken cancellationToken = default)
+    public Task EnsureAsync(CancellationToken cancellationToken = default)
+        => PostgresSchemaInitialization.EnsureAsync(db, nameof(ZaloMissingProfilePromptStore), EnsureCoreAsync, cancellationToken);
+
+    private async Task EnsureCoreAsync(CancellationToken cancellationToken)
     {
         if (ensured) return;
         const string sql = """
