@@ -18,6 +18,14 @@ internal sealed class ZaloAutoSessionConversationService(
     ILogger<ZaloAutoSessionConversationService> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+
+    internal enum ConversationShortcut
+    {
+        None,
+        ShowOptions,
+        CreateTomorrow
+    }
 
     public static ZaloAutoSessionConversationService Create(IServiceProvider services)
     {
@@ -170,12 +178,32 @@ internal sealed class ZaloAutoSessionConversationService(
 
         var draft = DeserializeDraft(conversation.DraftJson);
         var stateBefore = conversation.State;
-        var interpretation = await interpreter.InterpretAsync(
-            incoming.Content,
-            draft,
-            conversation.State,
-            conversation.LastQuestionType,
-            cancellationToken);
+        var shortcut = ParseConversationShortcut(incoming.Content);
+        var interpretation = shortcut == ConversationShortcut.None
+            ? await interpreter.InterpretAsync(
+                incoming.Content,
+                draft,
+                conversation.State,
+                conversation.LastQuestionType,
+                cancellationToken)
+            : new ZaloAutoSessionConversationInterpretation(
+                shortcut == ConversationShortcut.CreateTomorrow
+                    ? ZaloAutoSessionConversationIntent.ModifyDraft
+                    : ZaloAutoSessionConversationIntent.None,
+                [],
+                ZaloAutoSessionSelectionMode.None,
+                new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
+                null,
+                null,
+                false,
+                false,
+                null,
+                null,
+                1,
+                "shortcut");
+        var turnIntent = shortcut == ConversationShortcut.None
+            ? interpretation.Intent.ToString()
+            : shortcut.ToString();
 
         await conversations.AddTurnAsync(
             conversation.Id,
@@ -184,14 +212,14 @@ internal sealed class ZaloAutoSessionConversationService(
             senderId,
             incoming.SenderName,
             incoming.Content,
-            interpretation.Intent.ToString(),
+            turnIntent,
             interpretation.Interpreter,
             interpretation.Confidence,
             cancellationToken);
 
         conversation.ActiveOrganizerId = senderId;
         conversation.LastOrganizerMessageAt = DateTimeOffset.UtcNow;
-        conversation.LastIntent = interpretation.Intent.ToString();
+        conversation.LastIntent = turnIntent;
         // A real organizer response restarts the silence clock. This prevents an old
         // reminder from causing an immediate takeover escalation after the organizer
         // has already resumed the conversation.
@@ -215,6 +243,67 @@ internal sealed class ZaloAutoSessionConversationService(
                     draft,
                     tracked,
                     "Ok, từ giờ tui giữ poll này cho bạn xử lý. Bản nháp hiện tại như dưới đây."),
+                cancellationToken);
+            return true;
+        }
+
+        if (shortcut == ConversationShortcut.ShowOptions)
+        {
+            await conversations.SaveAsync(conversation, cancellationToken);
+            await SendConversationTextAsync(
+                conversation,
+                incoming.SenderId,
+                incoming.SenderName,
+                BuildOptionSummary(draft, tracked),
+                cancellationToken);
+            return true;
+        }
+
+        if (shortcut == ConversationShortcut.CreateTomorrow)
+        {
+            var tomorrowOptions = GetTomorrowOptions(draft, DateTimeOffset.UtcNow);
+            if (tomorrowOptions.Count == 0)
+            {
+                conversation.State = ZaloAutoSessionConversationState.Clarifying;
+                conversation.LastQuestionType = "tomorrow-selection";
+                await conversations.SaveAsync(conversation, cancellationToken);
+                await SendConversationTextAsync(
+                    conversation,
+                    incoming.SenderId,
+                    incoming.SenderName,
+                    "Bản nháp Auto Session hiện tại không có option nào rơi vào ngày mai. Tui chưa tạo website từ câu này; hãy kiểm tra lại poll/preview hoặc chọn một lịch đang có.",
+                    cancellationToken);
+                return true;
+            }
+
+            if (tomorrowOptions.Count > 1)
+            {
+                conversation.State = ZaloAutoSessionConversationState.Clarifying;
+                conversation.LastQuestionType = "tomorrow-selection";
+                await conversations.SaveAsync(conversation, cancellationToken);
+                await SendConversationTextAsync(
+                    conversation,
+                    incoming.SenderId,
+                    incoming.SenderName,
+                    BuildTomorrowAmbiguity(tomorrowOptions),
+                    cancellationToken);
+                return true;
+            }
+
+            var selected = tomorrowOptions[0];
+            draft = SelectOnlyOption(draft, selected.OptionId);
+            conversation.DraftJson = JsonSerializer.Serialize(draft, JsonOptions);
+            conversation.State = ZaloAutoSessionConversationState.ReadyToConfirm;
+            conversation.LastQuestionType = null;
+            await conversations.SaveAsync(conversation, cancellationToken);
+            await SendConversationTextAsync(
+                conversation,
+                incoming.SenderId,
+                incoming.SenderName,
+                BuildDraftSummary(
+                    draft,
+                    tracked,
+                    $"Tui đã chọn đúng option ngày mai từ poll: “{selected.OptionContent}”."),
                 cancellationToken);
             return true;
         }
@@ -1063,6 +1152,106 @@ internal sealed class ZaloAutoSessionConversationService(
                $"• Địa điểm: {location}\n\n" +
                "Website CHƯA được tạo.\n" +
                "Nếu đúng, bấm Trả lời tin bot này rồi nói “tạo đi”. Muốn sửa thì cứ nói tiếp tự nhiên.";
+    }
+
+    internal static ConversationShortcut ParseConversationShortcut(string? content)
+    {
+        var normalized = ZaloPollScheduleParser.NormalizeText(content);
+        if (normalized.Length == 0 || normalized.Length > 160)
+            return ConversationShortcut.None;
+
+        if (IsShowOptionsCommand(normalized))
+            return ConversationShortcut.ShowOptions;
+
+        if (IsCreateTomorrowCommand(normalized))
+            return ConversationShortcut.CreateTomorrow;
+
+        return ConversationShortcut.None;
+    }
+
+    internal static bool IsShowOptionsCommand(string? content)
+    {
+        var normalized = ZaloPollScheduleParser.NormalizeText(content);
+        if (normalized.Length == 0 || normalized.Length > 100 ||
+            !Regex.IsMatch(normalized, @"(?<![a-z0-9])options?(?![a-z0-9])", RegexOptions.CultureInvariant))
+            return false;
+
+        return normalized is "option" or "options" ||
+               Regex.IsMatch(
+                   normalized,
+                   @"(?<![a-z0-9])(xem|lay|liet ke|cho (?:tui|toi|minh) xem)(?![a-z0-9])",
+                   RegexOptions.CultureInvariant) ||
+               normalized.Contains("hien tai", StringComparison.Ordinal) ||
+               normalized.Contains("dang co", StringComparison.Ordinal);
+    }
+
+    internal static bool IsCreateTomorrowCommand(string? content)
+    {
+        var normalized = ZaloPollScheduleParser.NormalizeText(content);
+        if (normalized.Length == 0 || normalized.Length > 120)
+            return false;
+        if (Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(khong tao|dung tao|khoi tao)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+            return false;
+        if (!normalized.Contains("ngay mai", StringComparison.Ordinal) &&
+            !normalized.Contains("mai nay", StringComparison.Ordinal))
+            return false;
+
+        return Regex.IsMatch(
+            normalized,
+            @"(?<![a-z0-9])tao(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+    }
+
+    internal static IReadOnlyList<ZaloAutoSessionConversationDraftItem> GetTomorrowOptions(
+        ZaloAutoSessionConversationDraft draft,
+        DateTimeOffset now)
+    {
+        var tomorrow = now.ToOffset(VietnamOffset).Date.AddDays(1);
+        return draft.Items
+            .Where(item => item.StartTime.ToOffset(VietnamOffset).Date == tomorrow)
+            .OrderBy(item => item.StartTime)
+            .ToList();
+    }
+
+    internal static ZaloAutoSessionConversationDraft SelectOnlyOption(
+        ZaloAutoSessionConversationDraft draft,
+        string optionId) =>
+        draft with
+        {
+            Items = draft.Items
+                .Select(item => item with
+                {
+                    Selected = string.Equals(item.OptionId, optionId, StringComparison.Ordinal)
+                })
+                .ToList()
+        };
+
+    private static string BuildOptionSummary(
+        ZaloAutoSessionConversationDraft draft,
+        ZaloTrackedGroupData tracked)
+    {
+        var capacity = Math.Max(1, tracked.DefaultTeamCount) * Math.Max(2, draft.TeamSize);
+        var lines = draft.Items
+            .OrderBy(item => item.StartTime)
+            .Select(item =>
+                $"• {(item.Selected ? "✅" : "▫️")} {item.OptionContent} → {item.DayKey} {item.StartTime.ToOffset(VietnamOffset):dd/MM HH:mm} — hiện {item.VoteCount}/{capacity} người");
+
+        return "Các option trong bản nháp Auto Session hiện tại:\n" +
+               string.Join("\n", lines) +
+               "\n\n✅ = đang được chọn. Đây là bản nháp đang chờ xử lý; website chưa được tạo.";
+    }
+
+    private static string BuildTomorrowAmbiguity(
+        IReadOnlyList<ZaloAutoSessionConversationDraftItem> options)
+    {
+        var lines = options.Select(item =>
+            $"• {item.OptionContent} → {item.DayKey} {item.StartTime.ToOffset(VietnamOffset):dd/MM HH:mm}");
+        return "Poll đang có nhiều hơn một option rơi vào ngày mai nên tui chưa tự chọn để tránh tạo nhầm:\n" +
+               string.Join("\n", lines) +
+               "\n\nHãy kiểm tra lại preview/poll và chọn rõ một option trước. Website chưa được tạo.";
     }
 
     private async Task<ZaloConnection?> GetConnectionAsync(
