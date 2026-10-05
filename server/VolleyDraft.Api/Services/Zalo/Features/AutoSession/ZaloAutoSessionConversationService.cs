@@ -1201,7 +1201,7 @@ internal sealed class ZaloAutoSessionConversationService(
 
         return Regex.IsMatch(
             normalized,
-            @"(?<![a-z0-9])tao(?![a-z0-9])",
+            @"(?<![a-z0-9])tao\s+(?:tran|lich|website)(?![a-z0-9]).*(?<![a-z0-9])(?:ngay\s+mai|mai\s+nay)(?![a-z0-9])",
             RegexOptions.CultureInvariant);
     }
 

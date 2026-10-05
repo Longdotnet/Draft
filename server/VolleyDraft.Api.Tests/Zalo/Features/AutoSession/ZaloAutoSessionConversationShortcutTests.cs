@@ -39,6 +39,14 @@ public sealed class ZaloAutoSessionConversationShortcutTests
     }
 
     [Fact]
+    public void TomorrowPronounChatter_DoesNotBecomeCreateShortcut()
+    {
+        Assert.Equal(
+            ZaloAutoSessionConversationService.ConversationShortcut.None,
+            ZaloAutoSessionConversationService.ParseConversationShortcut("ngày mai tao đi"));
+    }
+
+    [Fact]
     public void TomorrowOptions_UseExactVietnamCalendarDate()
     {
         var now = new DateTimeOffset(2026, 10, 5, 23, 30, 0, VietnamOffset);
