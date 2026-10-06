@@ -24,6 +24,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<DraftTurn> DraftTurns => Set<DraftTurn>();
     public DbSet<TeamPreferenceGroup> TeamPreferenceGroups => Set<TeamPreferenceGroup>();
     public DbSet<TeamPreferenceGroupPlayer> TeamPreferenceGroupPlayers => Set<TeamPreferenceGroupPlayer>();
+    public DbSet<TeamSeparationConstraint> TeamSeparationConstraints => Set<TeamSeparationConstraint>();
     public DbSet<ZaloReminderSchedule> ZaloReminderSchedules => Set<ZaloReminderSchedule>();
     public DbSet<SessionWaitlistEntry> SessionWaitlistEntries => Set<SessionWaitlistEntry>();
     public DbSet<ZaloBotActionHistory> ZaloBotActionHistory => Set<ZaloBotActionHistory>();
@@ -557,6 +558,23 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.HasOne(groupPlayer => groupPlayer.SessionPlayer)
                 .WithMany(player => player.TeamPreferenceGroupPlayers)
                 .HasForeignKey(groupPlayer => groupPlayer.SessionPlayerId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<TeamSeparationConstraint>(entity =>
+        {
+            entity.HasIndex(item => new { item.SessionId, item.FirstSessionPlayerId, item.SecondSessionPlayerId }).IsUnique();
+            entity.HasOne(item => item.Session)
+                .WithMany(session => session.TeamSeparationConstraints)
+                .HasForeignKey(item => item.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(item => item.FirstSessionPlayer)
+                .WithMany(player => player.TeamSeparationsAsFirst)
+                .HasForeignKey(item => item.FirstSessionPlayerId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(item => item.SecondSessionPlayer)
+                .WithMany(player => player.TeamSeparationsAsSecond)
+                .HasForeignKey(item => item.SecondSessionPlayerId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
     }

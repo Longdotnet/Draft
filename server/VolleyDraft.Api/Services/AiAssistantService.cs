@@ -55,7 +55,7 @@ public sealed class AiAssistantService(
             Schema bắt buộc:
             {"intent":"GeneralChat","confidence":0.0,"sessionReference":null,"needsClarification":false,"clarificationQuestion":null,"reason":"short_reason"}
 
-            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, TeamPreference, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, ListMembersWithoutRecentVote, ListMembersWithoutRecentMessage, GetMemberLastActivity, GetMemberLastVote, GetMemberLastMessage, AnalyzeMemberVoteActivity, AnalyzeMemberMessageActivity, AnalyzeGroupEngagement, ListMostInactiveMembers, ListAtRiskMembers, SyncMemberActivity, GetActivitySyncStatus, GeneralChat.
+            intent chỉ được là một trong: SessionSchedule, SelfMembership, LocationParking, MissingSlots, UpcomingSessions, PaymentQr, Roster, WeeklySessionCount, ModelInfo, TeamLineup, SyncPoll, AutoDraft, Redraft, RebalanceTeams, SwapTeamPlayers, IncompleteProfiles, UpdatePlayerProfile, AddGuestPlayer, TeamPreference, TeamSeparation, ShareSlot, RepairShareSlot, TeamImage, ScheduleReminder, ReminderStatus, CancelReminder, WaitlistJoin, WaitlistLeave, WaitlistStatus, WaitlistAccept, WaitlistDecline, SlotTransfer, ActionHistory, UndoAction, ListMembersWithoutRecentVote, ListMembersWithoutRecentMessage, GetMemberLastActivity, GetMemberLastVote, GetMemberLastMessage, AnalyzeMemberVoteActivity, AnalyzeMemberMessageActivity, AnalyzeGroupEngagement, ListMostInactiveMembers, ListAtRiskMembers, SyncMemberActivity, GetActivitySyncStatus, GeneralChat.
             Phân biệt kỹ:
             - "1 tuần đánh mấy lần" là WeeklySessionCount, KHÔNG phải lệnh số 1.
             - Câu hỏi danh sách người tham gia là Roster; hỏi chính người gửi có tên không là SelfMembership.
@@ -70,6 +70,9 @@ public sealed class AiAssistantService(
             - Muốn cập nhật giới tính/vị trí/trình độ người chơi là UpdatePlayerProfile.
             - Muốn +1/thêm khách không thể vote Zalo là AddGuestPlayer.
             - Muốn hai người ở cùng team/cùng đội/chơi chung với nhau là TeamPreference. Câu “A muốn chơi chung với B” mặc định là TeamPreference.
+            - Muốn hai người KHÔNG ở cùng team, tách/né nhau, ở khác đội/different teams/keep apart, hoặc ý tương đương bằng tiếng Anh, Hàn, slang, teencode/code-switching là TeamSeparation.
+            - Muốn bỏ/hủy yêu cầu né/khác team trước đó (ví dụ “thôi khỏi né A”, “remove the avoid rule”) vẫn là TeamSeparation; semantic extractor phía sau sẽ quyết định operation=Clear.
+            - Phân biệt phủ định theo NGHĨA, không chỉ keyword: “đừng tách tui với A” là muốn chung team, còn “đừng ghép tui với A” là muốn khác team. Nếu double-negation/mỉa mai/ý định không đủ chắc thì needsClarification=true thay vì đoán.
             - Chỉ dùng ShareSlot khi người dùng nói rõ share/chung một slot, một suất, thay phiên, +1 hoặc +2 vào slot. “Chơi chung/cùng team” không phải ShareSlot.
             - Muốn sửa một share slot đã ghép nhầm sau khi draft là RepairShareSlot. Đây là thao tác thay đổi đội hình và cần bot hỏi xác nhận trước.
             - Muốn hẹn bot tag nhóm sau/mỗi một số giờ hoặc nhắc ngay là ScheduleReminder.
@@ -499,6 +502,103 @@ public sealed class AiAssistantService(
         catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             logger.LogWarning(exception, "AI team-preference extraction returned invalid JSON: {Output}", Truncate(content, 500));
+            return null;
+        }
+    }
+
+    public async Task<ZaloTeamRelationshipCommand?> ParseTeamRelationshipCommandAsync(
+        ZaloNaturalTeamPreferenceContext context,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured) return null;
+        var prompt = """
+            Bạn là bộ hiểu NGHĨA quan hệ team cho bot bóng chuyền đa ngôn ngữ.
+            Input có thể là tiếng Việt, English, 한국어, không dấu, teencode, GenZ slang, typo hoặc code-switch nhiều ngôn ngữ trong cùng câu.
+            KHÔNG dịch rồi match keyword máy móc. Hãy hiểu speech act và ý nghĩa thật.
+            Chỉ trả đúng một JSON object, không markdown:
+            {"relation":"Together|Apart|Unknown","operation":"Set|Clear|Change|Query","players":["SELF","Tên"],"sessionReference":null,"confidence":0.0,"needsClarification":false,"reason":"short_reason"}
+
+            relation:
+            - Together: muốn được xếp chung team/cùng đội/cùng phe.
+            - Apart: muốn không chung team, tách team, né nhau trong draft.
+            - Unknown: không đủ chắc.
+
+            operation:
+            - Set: tạo yêu cầu.
+            - Clear: bỏ/hủy một yêu cầu relation đang có.
+            - Change: đổi từ relation đối nghịch sang relation mới.
+            - Query: chỉ hỏi khả năng/thông tin, KHÔNG yêu cầu thay đổi dữ liệu.
+
+            Ví dụ nghĩa tương đương Apart:
+            “đừng ghép tui chung team với @A”, “né A dùm”, “A team nào tui team khác”,
+            “don't put me on the same team as A”, “keep me separate from A”,
+            “A랑 같은 팀으로 하지 마”, “A랑 다른 팀으로 해줘”, “오늘 tui don't wanna same team với A”.
+            Ví dụ Together:
+            “cho tui chung team A”, “put me with A”, “A랑 같은 팀으로 해줘”, “đừng tách tui với A”.
+
+            Cẩn thận:
+            - “can I avoid A?” / “có thể né A không?” thường là Query nếu chỉ hỏi khả năng.
+            - “I don't mind playing with A” không phải Set Together.
+            - double negation, sarcasm, câu thiếu target hoặc ý nghĩa mơ hồ => Unknown hoặc needsClarification=true.
+            - share/chung một slot, thay phiên, +1/+2 KHÔNG phải TeamRelationship.
+
+            Grounding:
+            - SELF dùng cho chính SenderName khi câu nói “tui/tôi/mình/em/I/me/myself/나/저” hoặc tương đương.
+            - Nếu MentionedUsers có target thì giữ đúng display name từ MentionedUsers; không bịa người khác.
+            - players phải có ít nhất 2 phần tử cho mutation Set/Change/Clear. Không đủ target => needsClarification=true.
+            - sessionReference chỉ lấy ngày/thứ/tên trận thật có trong câu, không tự đoán.
+            - Đây chỉ là semantic extraction; backend mới resolve stable IDs, quyền, conflict và confirm.
+            """;
+        var payload = new
+        {
+            model = configuration["Ai:Model"],
+            temperature = 0,
+            max_tokens = 320,
+            messages = new object[]
+            {
+                new { role = "system", content = prompt },
+                new { role = "user", content = JsonSerializer.Serialize(context, JsonOptions) }
+            }
+        };
+        var content = await SendForContentAsync(
+            configuration["Ai:Endpoint"]!,
+            configuration["Ai:ApiKey"]!,
+            payload,
+            "team_relationship_extraction",
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(content)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(StripCodeFence(content));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !Enum.TryParse<ZaloTeamRelationshipRelation>(ReadJsonString(root, "relation"), true, out var relation) ||
+                !Enum.TryParse<ZaloTeamRelationshipOperation>(ReadJsonString(root, "operation"), true, out var operation))
+                return null;
+            var players = root.TryGetProperty("players", out var playersNode) && playersNode.ValueKind == JsonValueKind.Array
+                ? playersNode.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+                    .Select(item => item.GetString()!.Trim().TrimStart('@'))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(12)
+                    .ToList()
+                : [];
+            var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var confidenceValue)
+                ? Math.Clamp(confidenceValue, 0, 1)
+                : 0;
+            var needsClarification = root.TryGetProperty("needsClarification", out var clarificationNode) && clarificationNode.ValueKind == JsonValueKind.True;
+            return new ZaloTeamRelationshipCommand(
+                relation,
+                operation,
+                players,
+                SessionReference: ReadJsonString(root, "sessionReference")?.Trim(),
+                Confidence: confidence,
+                NeedsClarification: needsClarification,
+                Reason: ReadJsonString(root, "reason")?.Trim());
+        }
+        catch (JsonException exception)
+        {
+            logger.LogWarning(exception, "AI team-relationship extraction returned invalid JSON: {Output}", Truncate(content, 500));
             return null;
         }
     }

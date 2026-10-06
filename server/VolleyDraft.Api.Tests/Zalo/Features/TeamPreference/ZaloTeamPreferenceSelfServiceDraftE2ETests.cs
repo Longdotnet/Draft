@@ -16,6 +16,108 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloTeamPreferenceSelfServiceDraftE2ETests
 {
     [Fact]
+    public async Task Direct_self_service_apart_request_reaches_pending_without_mutation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        await fixture.Bot.HandleIncomingAsync(fixture.SeparationRequest("team-sep-request"));
+
+        fixture.Db.ChangeTracker.Clear();
+        var pending = await fixture.Db.ZaloBotConversationStates
+            .AsNoTracking()
+            .SingleAsync(item =>
+                item.ZaloConnectionId == Fixture.ConnectionId &&
+                item.GroupId == Fixture.GroupId &&
+                item.SenderZaloUserId == Fixture.LongZaloId);
+        Assert.Equal(ZaloBotIntent.TeamSeparationConfirm.ToString(), pending.PendingIntent);
+        using var payload = JsonDocument.Parse(pending.PendingPayloadJson);
+        Assert.True(payload.RootElement.GetProperty("SelfService").GetBoolean());
+        Assert.False(payload.RootElement.GetProperty("Remove").GetBoolean());
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Confirmed_apart_request_is_hard_constraint_during_auto_draft()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        await fixture.Bot.HandleIncomingAsync(fixture.SeparationRequest("team-sep-draft-request"));
+        await fixture.Bot.HandleIncomingAsync(fixture.DirectConfirmation("team-sep-draft-confirm"));
+
+        fixture.Db.ChangeTracker.Clear();
+        var constraint = await fixture.Db.TeamSeparationConstraints.AsNoTracking().SingleAsync();
+        Assert.Equal(
+            new[] { fixture.LongPlayerId, fixture.ToAnPlayerId }.OrderBy(id => id),
+            new[] { constraint.FirstSessionPlayerId, constraint.SecondSessionPlayerId }.OrderBy(id => id));
+
+        var drafted = await new SessionDraftService(fixture.Db)
+            .AutoRunDraftAsync(Fixture.AdminId, fixture.SessionId);
+
+        Assert.True(drafted.IsSuccess, drafted.Error);
+        fixture.Db.ChangeTracker.Clear();
+        var teamIds = await fixture.Db.DraftSlotPlayers.AsNoTracking()
+            .Where(link =>
+                (link.SessionPlayerId == fixture.LongPlayerId || link.SessionPlayerId == fixture.ToAnPlayerId) &&
+                link.DraftSlot.SessionId == fixture.SessionId)
+            .Select(link => link.DraftSlot.AssignedTeamId)
+            .Distinct()
+            .ToListAsync();
+        Assert.Equal(2, teamIds.Count);
+        Assert.All(teamIds, teamId => Assert.False(string.IsNullOrWhiteSpace(teamId)));
+    }
+
+    [Fact]
+    public async Task Opposite_relationship_requests_replace_each_other_only_after_confirmation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        await fixture.Bot.HandleIncomingAsync(fixture.PreferenceRequest("pref-first"));
+        await fixture.Bot.HandleIncomingAsync(fixture.DirectConfirmation("pref-first-confirm"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Single(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+
+        await fixture.Bot.HandleIncomingAsync(fixture.SeparationRequest("sep-replace"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Single(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+        await fixture.Bot.HandleIncomingAsync(fixture.DirectConfirmation("sep-replace-confirm"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+        Assert.Single(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+
+        await fixture.Bot.HandleIncomingAsync(fixture.PreferenceRequest("pref-return"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Single(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+        await fixture.Bot.HandleIncomingAsync(fixture.DirectConfirmation("pref-return-confirm"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+        Assert.Single(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Clear_apart_request_removes_constraint_only_after_confirmation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        await fixture.Bot.HandleIncomingAsync(fixture.SeparationRequest("sep-before-clear"));
+        await fixture.Bot.HandleIncomingAsync(fixture.DirectConfirmation("sep-before-clear-confirm"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Single(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+
+        await fixture.Bot.HandleIncomingAsync(fixture.SeparationClearRequest("sep-clear"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Single(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+        var pending = await fixture.Db.ZaloBotConversationStates.AsNoTracking().SingleAsync();
+        using (var payload = JsonDocument.Parse(pending.PendingPayloadJson))
+            Assert.True(payload.RootElement.GetProperty("Remove").GetBoolean());
+
+        await fixture.Bot.HandleIncomingAsync(fixture.DirectConfirmation("sep-clear-confirm"));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task Direct_self_service_non_operator_request_reaches_pending_on_sqlite()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -312,14 +414,14 @@ public sealed class ZaloTeamPreferenceSelfServiceDraftE2ETests
                 toAnPlayerId);
         }
 
-        public ZaloIncomingMessageEvent PreferenceRequest()
+        public ZaloIncomingMessageEvent PreferenceRequest(string messageId = "team-pref-request")
         {
             const string content = "@Npc xếp tui chung team với @To An ở T6 đi";
             return new ZaloIncomingMessageEvent(
                 accountId: "bot-account",
                 botId: "bot-account",
                 groupId: GroupId,
-                messageId: "team-pref-request",
+                messageId: messageId,
                 senderId: LongZaloId,
                 senderName: "Long",
                 content: content,
@@ -331,6 +433,68 @@ public sealed class ZaloTeamPreferenceSelfServiceDraftE2ETests
                         content.IndexOf("@To An", StringComparison.Ordinal),
                         "@To An".Length)
                 ],
+                mentionedBot: true,
+                sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+
+        public ZaloIncomingMessageEvent SeparationRequest(string messageId)
+        {
+            const string content = "@Npc lát đừng ghép tui chung team với @To An nhen";
+            return new ZaloIncomingMessageEvent(
+                accountId: "bot-account",
+                botId: "bot-account",
+                groupId: GroupId,
+                messageId: messageId,
+                senderId: LongZaloId,
+                senderName: "Long",
+                content: content,
+                mentions:
+                [
+                    new ZaloBridgeMention("bot-account", 0, "@Npc".Length),
+                    new ZaloBridgeMention(
+                        ToAnZaloId,
+                        content.IndexOf("@To An", StringComparison.Ordinal),
+                        "@To An".Length)
+                ],
+                mentionedBot: true,
+                sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+
+        public ZaloIncomingMessageEvent SeparationClearRequest(string messageId)
+        {
+            const string content = "@Npc thôi khỏi né @To An nữa";
+            return new ZaloIncomingMessageEvent(
+                accountId: "bot-account",
+                botId: "bot-account",
+                groupId: GroupId,
+                messageId: messageId,
+                senderId: LongZaloId,
+                senderName: "Long",
+                content: content,
+                mentions:
+                [
+                    new ZaloBridgeMention("bot-account", 0, "@Npc".Length),
+                    new ZaloBridgeMention(
+                        ToAnZaloId,
+                        content.IndexOf("@To An", StringComparison.Ordinal),
+                        "@To An".Length)
+                ],
+                mentionedBot: true,
+                sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+
+        public ZaloIncomingMessageEvent DirectConfirmation(string messageId)
+        {
+            const string content = "@Npc xác nhận";
+            return new ZaloIncomingMessageEvent(
+                accountId: "bot-account",
+                botId: "bot-account",
+                groupId: GroupId,
+                messageId: messageId,
+                senderId: LongZaloId,
+                senderName: "Long",
+                content: content,
+                mentions: [new ZaloBridgeMention("bot-account", 0, "@Npc".Length)],
                 mentionedBot: true,
                 sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
