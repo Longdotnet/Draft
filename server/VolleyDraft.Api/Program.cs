@@ -126,7 +126,11 @@ builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+var renderGitCommit = Environment.GetEnvironmentVariable("RENDER_GIT_COMMIT");
+var deploymentRevision = string.IsNullOrWhiteSpace(renderGitCommit)
+    ? null
+    : renderGitCommit[..Math.Min(7, renderGitCommit.Length)];
+app.MapGet("/health", () => Results.Ok(new { status = "ok", revision = deploymentRevision }));
 app.MapZaloSchedulerHealth();
 app.MapPost("/api/internal/scheduler/tick", (
     HttpContext httpContext,
