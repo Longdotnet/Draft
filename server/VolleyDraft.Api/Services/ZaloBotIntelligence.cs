@@ -33,6 +33,8 @@ public enum ZaloBotIntent
     AddGuestPlayer,
     TeamPreference,
     TeamPreferenceConfirm,
+    TeamSeparation,
+    TeamSeparationConfirm,
     ShareSlot,
     ShareSlotConfirm,
     UnshareSlot,
@@ -113,6 +115,31 @@ public sealed record ZaloTeamPreferenceCommand(
     IReadOnlyList<string> PlayerReferences,
     IReadOnlyList<string>? PlayerZaloUserIds = null,
     string? SessionReference = null);
+
+public enum ZaloTeamRelationshipRelation
+{
+    Unknown,
+    Together,
+    Apart
+}
+
+public enum ZaloTeamRelationshipOperation
+{
+    Set,
+    Clear,
+    Change,
+    Query
+}
+
+public sealed record ZaloTeamRelationshipCommand(
+    ZaloTeamRelationshipRelation Relation,
+    ZaloTeamRelationshipOperation Operation,
+    IReadOnlyList<string> PlayerReferences,
+    IReadOnlyList<string>? PlayerZaloUserIds = null,
+    string? SessionReference = null,
+    double Confidence = 1,
+    bool NeedsClarification = false,
+    string? Reason = null);
 
 public sealed record ZaloSlotTransferCommand(
     string FromPlayer,
@@ -523,6 +550,8 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
         if (IsShareSlotAnnouncement(value))
             return new(ZaloBotIntent.GeneralChat, .99, q, false, null, "share_slot_announcement");
+        if (ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(value))
+            return new(ZaloBotIntent.TeamSeparation, .99, q, false, null, "team_separation_phrase");
         if (ZaloNaturalCommandParser.TryParseTeamPreference(value, out _))
             return new(ZaloBotIntent.TeamPreference, .99, q, false, null, "team_preference_phrase");
         if (ZaloNaturalCommandParser.TryParseShareSlot(value, out _))
@@ -591,7 +620,7 @@ public static class ZaloBotIntelligence
             var root = document.RootElement;
             if (!root.TryGetProperty("intent", out var intentNode) ||
                 !Enum.TryParse<ZaloBotIntent>(intentNode.GetString(), true, out var intent) ||
-                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.TeamPreferenceConfirm or ZaloBotIntent.ShareSlotConfirm or ZaloBotIntent.UnshareSlotConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
+                intent is ZaloBotIntent.Unknown or ZaloBotIntent.Help or ZaloBotIntent.AutoDraftConfirm or ZaloBotIntent.RedraftConfirm or ZaloBotIntent.RebalanceTeamsConfirm or ZaloBotIntent.TeamPreferenceConfirm or ZaloBotIntent.TeamSeparationConfirm or ZaloBotIntent.ShareSlotConfirm or ZaloBotIntent.UnshareSlotConfirm or ZaloBotIntent.RepairShareSlotConfirm or ZaloBotIntent.SlotTransferConfirm or ZaloBotIntent.UndoActionConfirm) return false;
             var confidence = root.TryGetProperty("confidence", out var confidenceNode) && confidenceNode.TryGetDouble(out var parsed)
                 ? Math.Clamp(parsed, 0, 1)
                 : 0;

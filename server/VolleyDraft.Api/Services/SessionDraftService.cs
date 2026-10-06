@@ -704,6 +704,9 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 .Where(id => players.Any(player => player.Id == id && player.IsPresent))
                 .ToHashSet(StringComparer.Ordinal);
             connectedIds.UnionWith(proposedExistingIds);
+            var separationConflict = await FindSeparationConflictAsync(sessionId, connectedIds, cancellationToken);
+            if (separationConflict is not null)
+                return BadRequest<ShareSlotPreview>($"Share slot conflicts with separate-team rule: {separationConflict}.");
             var connectedUnits = connectedIds
                 .Select(id => id == anchorPlayer.Id || newPartners.Any(item => item.Player?.Id == id)
                     ? "proposed-share"
@@ -971,6 +974,16 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             addedPlayers.Add(partner);
         }
 
+        var forcedTogetherIds = (currentSlot?.Players
+                .Select(link => link.SessionPlayerId)
+                .ToList() ?? [anchor.Id])
+            .Concat(addedPlayers.Select(player => player.Id))
+            .ToHashSet(StringComparer.Ordinal);
+        var forcedTogetherConflict = await FindForcedTogetherSeparationConflictAsync(sessionId, forcedTogetherIds);
+        if (forcedTogetherConflict is not null)
+            return BadRequest<PreDraftSharedSlotResult>(
+                $"Không thể tạo share slot vì {forcedTogetherConflict} đang có yêu cầu KHÁC TEAM.");
+
         var slot = currentSlot ?? new DraftSlot
         {
             SessionId = sessionId,
@@ -1122,6 +1135,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         if (!request.IsPresent && player.IsPresent)
         {
             await DetachPlayerFromTeamPreferenceGroupsAsync(sessionId, player.Id);
+            await DetachPlayerFromTeamSeparationConstraintsAsync(sessionId, player.Id);
         }
 
         player.DisplayName = request.DisplayName.Trim();
@@ -1206,6 +1220,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
 
         await DetachPlayerFromTeamPreferenceGroupsAsync(sessionId, player.Id);
+        await DetachPlayerFromTeamSeparationConstraintsAsync(sessionId, player.Id);
 
         var captainTeam = session.Teams.SingleOrDefault(team => team.CaptainSessionPlayerId == player.Id);
         if (captainTeam is not null)
@@ -1494,6 +1509,141 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         return await ApplyTeamPreferencePreviewAsync(adminUserId, preview.Value);
     }
 
+    public async Task<ServiceResult<TeamSeparationPreview>> PreviewTeamSeparationFromBotAsync(
+        string adminUserId,
+        string sessionId,
+        IReadOnlyList<ShareSlotParticipantInput> participantInputs)
+    {
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).SingleOrDefaultAsync();
+        if (session is null)
+            return NotFound<TeamSeparationPreview>("Không tìm thấy session.");
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
+            return BadRequest<TeamSeparationPreview>("Đội hình đã bắt đầu draft nên chưa thể thêm yêu cầu khác team cho trận này.");
+        if (session.StartTime is not null && session.StartTime <= DateTimeOffset.UtcNow)
+            return BadRequest<TeamSeparationPreview>("Trận đã bắt đầu hoặc đã qua giờ nên không thể thêm yêu cầu khác team.");
+
+        var inputs = participantInputs
+            .Where(input => !string.IsNullOrWhiteSpace(input.DisplayName) || !string.IsNullOrWhiteSpace(input.ZaloUserId))
+            .Take(3)
+            .ToList();
+        if (inputs.Count != 2)
+            return BadRequest<TeamSeparationPreview>("Yêu cầu khác team cần xác định đúng hai người. Nếu muốn né nhiều người, hãy gửi từng người để bot xác nhận rõ từng cặp.");
+
+        var players = await db.SessionPlayers
+            .Include(player => player.PlayerProfile)
+            .Where(player => player.SessionId == sessionId && player.IsPresent)
+            .ToListAsync();
+        var resolvedPlayers = new List<SessionPlayer>();
+        foreach (var input in inputs)
+        {
+            var resolved = !string.IsNullOrWhiteSpace(input.ZaloUserId)
+                ? ResolveProfilePlayer(players, input.DisplayName, input.ZaloUserId, null)
+                : ResolveSessionPlayer(players, input.DisplayName);
+            if (resolved.Player is null)
+                return BadRequest<TeamSeparationPreview>(resolved.Error!);
+            if (resolvedPlayers.All(player => player.Id != resolved.Player.Id))
+                resolvedPlayers.Add(resolved.Player);
+        }
+        if (resolvedPlayers.Count != 2)
+            return BadRequest<TeamSeparationPreview>("Hai người cần tách team phải là hai thành viên khác nhau.");
+
+        return await BuildTeamSeparationPreviewAsync(
+            adminUserId,
+            sessionId,
+            resolvedPlayers[0].Id,
+            resolvedPlayers[1].Id);
+    }
+
+    public async Task<ServiceResult<TeamSeparationResult>> ApplyTeamSeparationPreviewAsync(
+        string adminUserId,
+        TeamSeparationPreview preview)
+    {
+        var refreshed = await BuildTeamSeparationPreviewAsync(
+            adminUserId,
+            preview.SessionId,
+            preview.FirstSessionPlayerId,
+            preview.SecondSessionPlayerId);
+        if (!refreshed.IsSuccess || refreshed.Value is null)
+            return ServiceResult<TeamSeparationResult>.Failure(refreshed.StatusCode, refreshed.Error!);
+        if (!refreshed.Value.IsFeasible)
+            return BadRequest<TeamSeparationResult>(refreshed.Value.BlockingReason ?? "Cặp này chưa thể đặt khác team.");
+        if (!string.Equals(refreshed.Value.StateToken, preview.StateToken, StringComparison.Ordinal))
+            return Conflict<TeamSeparationResult>("Danh sách hoặc yêu cầu team đã thay đổi sau lúc xem trước. Hãy gửi lại yêu cầu để bot tính lại.");
+
+        var current = refreshed.Value;
+        if (current.AlreadySeparated)
+        {
+            return ServiceResult<TeamSeparationResult>.Success(new TeamSeparationResult(
+                current.ExistingConstraintId!,
+                current.SessionId,
+                current.FirstSessionPlayerId,
+                current.SecondSessionPlayerId,
+                current.PlayerNames,
+                false));
+        }
+
+        var replacedTogether = false;
+        if (!string.IsNullOrWhiteSpace(current.ReplacesTogetherGroupId))
+        {
+            var group = await db.TeamPreferenceGroups
+                .Include(item => item.Players)
+                .SingleOrDefaultAsync(item => item.Id == current.ReplacesTogetherGroupId && item.SessionId == current.SessionId);
+            if (group is null || group.Players.Count != 2)
+                return Conflict<TeamSeparationResult>("Nhóm chung team đã thay đổi. Hãy gửi lại yêu cầu để bot xác nhận lại.");
+            db.TeamPreferenceGroupPlayers.RemoveRange(group.Players);
+            db.TeamPreferenceGroups.Remove(group);
+            replacedTogether = true;
+        }
+
+        var (firstId, secondId) = CanonicalPair(current.FirstSessionPlayerId, current.SecondSessionPlayerId);
+        var constraint = new TeamSeparationConstraint
+        {
+            SessionId = current.SessionId,
+            FirstSessionPlayerId = firstId,
+            SecondSessionPlayerId = secondId
+        };
+        db.TeamSeparationConstraints.Add(constraint);
+        await db.SaveChangesAsync();
+        return ServiceResult<TeamSeparationResult>.Created(new TeamSeparationResult(
+            constraint.Id,
+            current.SessionId,
+            firstId,
+            secondId,
+            current.PlayerNames,
+            replacedTogether));
+    }
+
+    public async Task<ServiceResult<TeamSeparationResult>> RemoveTeamSeparationPreviewAsync(
+        string adminUserId,
+        TeamSeparationPreview preview)
+    {
+        var refreshed = await BuildTeamSeparationPreviewAsync(
+            adminUserId,
+            preview.SessionId,
+            preview.FirstSessionPlayerId,
+            preview.SecondSessionPlayerId);
+        if (!refreshed.IsSuccess || refreshed.Value is null)
+            return ServiceResult<TeamSeparationResult>.Failure(refreshed.StatusCode, refreshed.Error!);
+        if (!string.Equals(refreshed.Value.StateToken, preview.StateToken, StringComparison.Ordinal))
+            return Conflict<TeamSeparationResult>("Danh sách hoặc yêu cầu team đã thay đổi sau lúc xem trước. Hãy gửi lại yêu cầu để bot tính lại.");
+        if (!refreshed.Value.AlreadySeparated || string.IsNullOrWhiteSpace(refreshed.Value.ExistingConstraintId))
+            return NotFound<TeamSeparationResult>("Cặp này hiện không có yêu cầu khác team để gỡ.");
+
+        var constraint = await db.TeamSeparationConstraints.SingleOrDefaultAsync(item =>
+            item.Id == refreshed.Value.ExistingConstraintId && item.SessionId == refreshed.Value.SessionId);
+        if (constraint is null)
+            return Conflict<TeamSeparationResult>("Yêu cầu khác team đã thay đổi. Hãy gửi lại yêu cầu.");
+        db.TeamSeparationConstraints.Remove(constraint);
+        await db.SaveChangesAsync();
+        return ServiceResult<TeamSeparationResult>.Success(new TeamSeparationResult(
+            constraint.Id,
+            refreshed.Value.SessionId,
+            refreshed.Value.FirstSessionPlayerId,
+            refreshed.Value.SecondSessionPlayerId,
+            refreshed.Value.PlayerNames,
+            false));
+    }
+
     public async Task<ServiceResult<TeamPreferenceGroupResponse>> ApplyTeamPreferencePreviewAsync(
         string adminUserId,
         TeamPreferencePreview preview)
@@ -1507,6 +1657,14 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         {
             return Conflict<TeamPreferenceGroupResponse>(
                 "Danh sách, share slot hoặc nhóm chung team đã thay đổi sau lúc xem trước. Hãy gửi lại yêu cầu để bot tính phương án mới.");
+        }
+
+        if (refreshed.Value.ConflictingSeparationIds is { Count: > 0 })
+        {
+            var conflicts = await db.TeamSeparationConstraints
+                .Where(item => item.SessionId == preview.SessionId && refreshed.Value.ConflictingSeparationIds.Contains(item.Id))
+                .ToListAsync();
+            db.TeamSeparationConstraints.RemoveRange(conflicts);
         }
         if (refreshed.Value.AlreadyGrouped && refreshed.Value.ExistingGroupIds.Count == 1)
         {
@@ -1802,6 +1960,13 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var secondTeamId = second.Match.Slot.AssignedTeamId!;
             var firstTeamName = first.Match.Slot.AssignedTeam!.Name;
             var secondTeamName = second.Match.Slot.AssignedTeam!.Name;
+            var swapOverrides = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [first.Match.Slot.Id] = secondTeamId,
+                [second.Match.Slot.Id] = firstTeamId
+            };
+            if (await WouldViolateTeamSeparationsAsync(sessionId, slots, swapOverrides))
+                return BadRequest<SwapDraftPlayersResult>("Đổi chỗ này sẽ vi phạm một yêu cầu KHÁC TEAM đã được xác nhận.");
             first.Match.Slot.AssignedTeamId = secondTeamId;
             second.Match.Slot.AssignedTeamId = firstTeamId;
             await db.SaveChangesAsync();
@@ -2044,6 +2209,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 .ToDictionary(item => item.SlotId, StringComparer.Ordinal);
             var selectedTeamIds = new[] { plan.FirstTeamId, plan.SecondTeamId };
             var slots = await db.DraftSlots
+                .Include(slot => slot.Players)
                 .Where(slot => slot.SessionId == plan.SessionId &&
                                (expectedBySlot.Keys.Contains(slot.Id) ||
                                 slot.AssignedTeamId != null && selectedTeamIds.Contains(slot.AssignedTeamId)))
@@ -2066,6 +2232,13 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 return BadRequest<TeamRebalanceResult>("Phương án cân bằng không hợp lệ.");
             if (slots.Where(slot => movesBySlot.ContainsKey(slot.Id)).Any(slot => slot.IsCaptainSlot))
                 return BadRequest<TeamRebalanceResult>("Phương án có thay đổi đội trưởng nên đã bị từ chối.");
+
+            var rebalanceOverrides = movesBySlot.ToDictionary(
+                item => item.Key,
+                item => item.Value.ToTeamId,
+                StringComparer.Ordinal);
+            if (await WouldViolateTeamSeparationsAsync(plan.SessionId, slots, rebalanceOverrides, cancellationToken))
+                return BadRequest<TeamRebalanceResult>("Phương án cân bằng này sẽ vi phạm một yêu cầu KHÁC TEAM đã được xác nhận.");
 
             foreach (var slot in slots.Where(slot => movesBySlot.ContainsKey(slot.Id)))
             {
@@ -2338,6 +2511,15 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             var anchorSlot = anchor.Match.Slot;
             if (anchorSlot.Players.Count >= 3)
                 return BadRequest<PostDraftSharedSlotResult>("Một share slot chỉ gồm người chính và tối đa 2 người chơi chung.");
+            var anchorTeamPlayerIds = slots
+                .Where(slot => slot.AssignedTeamId == anchorSlot.AssignedTeamId)
+                .SelectMany(slot => slot.Players.Select(link => link.SessionPlayerId))
+                .Append(partner.Id)
+                .ToHashSet(StringComparer.Ordinal);
+            var postDraftSeparationConflict = await FindSeparationConflictAsync(sessionId, anchorTeamPlayerIds);
+            if (postDraftSeparationConflict is not null)
+                return BadRequest<PostDraftSharedSlotResult>(
+                    $"Không thể chuyển share slot vì {postDraftSeparationConflict} phải ở KHÁC TEAM.");
             var previousPartnerTeamId = previousPartnerSlot?.AssignedTeamId;
             if (previousPartnerSlot is not null)
             {
@@ -2826,6 +3008,11 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         if (preferenceError is not null)
         {
             return BadRequest<DraftStateResponse>(preferenceError);
+        }
+        var separationError = await ValidateTeamSeparationConstraintsAsync(sessionId);
+        if (separationError is not null)
+        {
+            return BadRequest<DraftStateResponse>(separationError);
         }
         var sharedSlotError = await ValidateCaptainSharedSlotsAsync(sessionId, teamIdByCaptainId);
         if (sharedSlotError is not null)
@@ -3702,6 +3889,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .ToListAsync())
             .OrderBy(group => group.CreatedAt)
             .ToList();
+        var separationConstraints = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .ToListAsync();
         var sharedSlots = await db.DraftSlots.AsNoTracking()
             .Include(slot => slot.Players)
             .Where(slot => slot.SessionId == sessionId && slot.Type == DraftSlotType.Shared)
@@ -3795,6 +3986,12 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             blockingReason = $"Nhóm có nhiều đội trưởng ({string.Join(", ", selectedCaptainNames)}), nên không thể xếp chung một team.";
 
         var warnings = new List<string>();
+        var conflictingSeparationIds = separationConstraints
+            .Where(item => selectedIds.Contains(item.FirstSessionPlayerId) && selectedIds.Contains(item.SecondSessionPlayerId))
+            .Select(item => item.Id)
+            .ToList();
+        if (conflictingSeparationIds.Count > 0)
+            warnings.Add($"Yêu cầu chung team này sẽ thay thế {conflictingSeparationIds.Count} yêu cầu khác team đang có sau khi bạn xác nhận.");
         if (selectedGroupIds.Count > 1)
             warnings.Add($"Yêu cầu này sẽ gộp {selectedGroupIds.Count} nhóm chung team đang có thành một nhóm.");
         if (effectiveSlots == teamSize)
@@ -3839,7 +4036,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             players,
             groups,
             sharedSlots,
-            captainIds);
+            captainIds,
+            separationConstraints);
         var requiresConfirmation = !alreadyGrouped && blockingReason is null &&
             (selectedGroupIds.Count > 1 ||
              effectiveSlots >= Math.Max(3, (int)Math.Ceiling(teamSize / 2d)) ||
@@ -3861,6 +4059,96 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             alreadyGrouped,
             blockingReason is null,
             requiresConfirmation,
+            warnings,
+            blockingReason,
+            stateToken,
+            conflictingSeparationIds));
+    }
+
+    private async Task<ServiceResult<TeamSeparationPreview>> BuildTeamSeparationPreviewAsync(
+        string adminUserId,
+        string sessionId,
+        string firstPlayerId,
+        string secondPlayerId)
+    {
+        var session = await LoadSessionForAdmin(adminUserId, sessionId).AsNoTracking().SingleOrDefaultAsync();
+        if (session is null)
+            return NotFound<TeamSeparationPreview>("Không tìm thấy session.");
+        if (session.Status is SessionStatus.Drafting or SessionStatus.Finished or SessionStatus.Cancelled)
+            return BadRequest<TeamSeparationPreview>("Không thể thay đổi yêu cầu khác team sau khi draft đã bắt đầu.");
+
+        var ids = new[] { firstPlayerId, secondPlayerId }.Distinct(StringComparer.Ordinal).ToList();
+        if (ids.Count != 2)
+            return BadRequest<TeamSeparationPreview>("Hai người cần tách team phải khác nhau.");
+        var players = await db.SessionPlayers.AsNoTracking()
+            .Where(item => item.SessionId == sessionId && ids.Contains(item.Id))
+            .ToListAsync();
+        if (players.Count != 2 || players.Any(item => !item.IsPresent))
+            return BadRequest<TeamSeparationPreview>("Một hoặc nhiều người không thuộc danh sách đang tham gia của buổi này.");
+
+        var (firstId, secondId) = CanonicalPair(ids[0], ids[1]);
+        var existing = await db.TeamSeparationConstraints.AsNoTracking()
+            .SingleOrDefaultAsync(item =>
+                item.SessionId == sessionId &&
+                item.FirstSessionPlayerId == firstId &&
+                item.SecondSessionPlayerId == secondId);
+        var togetherGroup = await db.TeamPreferenceGroups.AsNoTracking()
+            .Include(item => item.Players)
+            .Where(item => item.SessionId == sessionId)
+            .FirstOrDefaultAsync(item =>
+                item.Players.Any(link => link.SessionPlayerId == firstId) &&
+                item.Players.Any(link => link.SessionPlayerId == secondId));
+        var sharedTogether = await db.DraftSlots.AsNoTracking()
+            .Include(slot => slot.Players)
+            .AnyAsync(slot =>
+                slot.SessionId == sessionId &&
+                slot.Type == DraftSlotType.Shared &&
+                slot.Players.Any(link => link.SessionPlayerId == firstId) &&
+                slot.Players.Any(link => link.SessionPlayerId == secondId));
+
+        string? blockingReason = null;
+        string? replacesTogetherGroupId = null;
+        var warnings = new List<string>();
+        if (sharedTogether)
+            blockingReason = "Hai người đang share cùng một slot nên không thể bắt buộc khác team. Hãy bỏ share slot trước.";
+        else if (togetherGroup is not null && togetherGroup.Players.Count > 2)
+            blockingReason = "Hai người đang nằm trong một nhóm chung team có từ 3 người trở lên. Bot không tự tách nhóm lớn vì có thể làm thay đổi yêu cầu của người khác; hãy sửa nhóm chung team trước.";
+        else if (togetherGroup is not null)
+        {
+            replacesTogetherGroupId = togetherGroup.Id;
+            warnings.Add("Cặp này đang có yêu cầu chung team. Xác nhận sẽ đổi từ CHUNG TEAM sang KHÁC TEAM.");
+        }
+
+        var allSeparations = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .ToListAsync();
+        var allGroups = await db.TeamPreferenceGroups.AsNoTracking()
+            .Include(item => item.Players)
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .ToListAsync();
+        var value = new StringBuilder()
+            .Append(session.Id).Append('|').Append(session.Status).Append('|');
+        foreach (var player in players.OrderBy(item => item.Id))
+            value.Append(player.Id).Append(':').Append(player.IsPresent).Append(';');
+        foreach (var group in allGroups)
+            value.Append("g:").Append(group.Id).Append(':').AppendJoin(',', group.Players.OrderBy(link => link.RotationOrder).Select(link => link.SessionPlayerId)).Append(';');
+        foreach (var separation in allSeparations)
+            value.Append("a:").Append(separation.Id).Append(':').Append(separation.FirstSessionPlayerId).Append(':').Append(separation.SecondSessionPlayerId).Append(';');
+        var stateToken = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToString()))).ToLowerInvariant();
+        var orderedPlayers = new[] { firstId, secondId }
+            .Select(id => players.Single(player => player.Id == id).DisplayName)
+            .ToList();
+        return ServiceResult<TeamSeparationPreview>.Success(new TeamSeparationPreview(
+            sessionId,
+            firstId,
+            secondId,
+            orderedPlayers,
+            existing?.Id,
+            existing is not null,
+            blockingReason is null,
+            replacesTogetherGroupId,
             warnings,
             blockingReason,
             stateToken));
@@ -3924,7 +4212,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         IReadOnlyList<SessionPlayer> players,
         IReadOnlyList<TeamPreferenceGroup> groups,
         IReadOnlyList<DraftSlot> sharedSlots,
-        IReadOnlyList<string> captainIds)
+        IReadOnlyList<string> captainIds,
+        IReadOnlyList<TeamSeparationConstraint> separationConstraints)
     {
         var value = new StringBuilder()
             .Append(session.Id).Append('|').Append(session.Status).Append('|')
@@ -3935,8 +4224,100 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             value.Append("g:").Append(group.Id).Append(':').AppendJoin(',', group.Players.OrderBy(link => link.RotationOrder).Select(link => link.SessionPlayerId)).Append(';');
         foreach (var slot in sharedSlots.OrderBy(slot => slot.Id))
             value.Append("s:").Append(slot.Id).Append(':').AppendJoin(',', slot.Players.OrderBy(link => link.RotationOrder).Select(link => link.SessionPlayerId)).Append(';');
+        foreach (var separation in separationConstraints.OrderBy(item => item.Id))
+            value.Append("a:").Append(separation.Id).Append(':').Append(separation.FirstSessionPlayerId).Append(':').Append(separation.SecondSessionPlayerId).Append(';');
         value.Append("c:").AppendJoin(',', captainIds.OrderBy(id => id));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value.ToString()))).ToLowerInvariant();
+    }
+
+    private static (string First, string Second) CanonicalPair(string left, string right) =>
+        string.CompareOrdinal(left, right) <= 0 ? (left, right) : (right, left);
+
+    private async Task<string?> FindSeparationConflictAsync(
+        string sessionId,
+        IReadOnlyCollection<string> playerIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (playerIds.Count < 2) return null;
+        var ids = playerIds.ToHashSet(StringComparer.Ordinal);
+        var constraints = await db.TeamSeparationConstraints.AsNoTracking()
+            .Include(item => item.FirstSessionPlayer)
+            .Include(item => item.SecondSessionPlayer)
+            .Where(item => item.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        var conflict = constraints.FirstOrDefault(item =>
+            ids.Contains(item.FirstSessionPlayerId) && ids.Contains(item.SecondSessionPlayerId));
+        return conflict is null
+            ? null
+            : $"{conflict.FirstSessionPlayer.DisplayName} và {conflict.SecondSessionPlayer.DisplayName}";
+    }
+
+    private async Task<string?> FindForcedTogetherSeparationConflictAsync(
+        string sessionId,
+        IReadOnlyCollection<string> seedPlayerIds,
+        CancellationToken cancellationToken = default)
+    {
+        var connected = seedPlayerIds.ToHashSet(StringComparer.Ordinal);
+        if (connected.Count < 2) return null;
+
+        var groups = await db.TeamPreferenceGroups.AsNoTracking()
+            .Include(group => group.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(group => group.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        var sharedSlots = await db.DraftSlots.AsNoTracking()
+            .Include(slot => slot.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .Where(slot => slot.SessionId == sessionId && slot.Type == DraftSlotType.Shared)
+            .ToListAsync(cancellationToken);
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var group in groups.Where(group =>
+                         group.Players.Any(link => link.SessionPlayer.IsPresent && connected.Contains(link.SessionPlayerId))))
+            {
+                foreach (var link in group.Players.Where(link => link.SessionPlayer.IsPresent))
+                    if (connected.Add(link.SessionPlayerId)) changed = true;
+            }
+            foreach (var slot in sharedSlots.Where(slot =>
+                         slot.Players.Any(link => link.SessionPlayer.IsPresent && connected.Contains(link.SessionPlayerId))))
+            {
+                foreach (var link in slot.Players.Where(link => link.SessionPlayer.IsPresent))
+                    if (connected.Add(link.SessionPlayerId)) changed = true;
+            }
+        }
+
+        return await FindSeparationConflictAsync(sessionId, connected, cancellationToken);
+    }
+
+    private async Task<bool> WouldViolateTeamSeparationsAsync(
+        string sessionId,
+        IReadOnlyCollection<DraftSlot> slots,
+        IReadOnlyDictionary<string, string>? assignmentOverrides = null,
+        CancellationToken cancellationToken = default)
+    {
+        var constraints = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        if (constraints.Count == 0) return false;
+
+        var teamByPlayerId = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var slot in slots)
+        {
+            var teamId = assignmentOverrides is not null && assignmentOverrides.TryGetValue(slot.Id, out var overriddenTeamId)
+                ? overriddenTeamId
+                : slot.AssignedTeamId;
+            if (string.IsNullOrWhiteSpace(teamId)) continue;
+            foreach (var link in slot.Players)
+                teamByPlayerId[link.SessionPlayerId] = teamId;
+        }
+
+        return constraints.Any(item =>
+            teamByPlayerId.TryGetValue(item.FirstSessionPlayerId, out var firstTeamId) &&
+            teamByPlayerId.TryGetValue(item.SecondSessionPlayerId, out var secondTeamId) &&
+            string.Equals(firstTeamId, secondTeamId, StringComparison.Ordinal));
     }
 
     private async Task<string?> GetSessionAdminUserId(string sessionId)
@@ -4051,6 +4432,51 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         }
 
         await db.SaveChangesAsync();
+    }
+
+    private async Task DetachPlayerFromTeamSeparationConstraintsAsync(string sessionId, string playerId)
+    {
+        var constraints = await db.TeamSeparationConstraints
+            .Where(item =>
+                item.SessionId == sessionId &&
+                (item.FirstSessionPlayerId == playerId || item.SecondSessionPlayerId == playerId))
+            .ToListAsync();
+        if (constraints.Count == 0) return;
+        db.TeamSeparationConstraints.RemoveRange(constraints);
+        await db.SaveChangesAsync();
+    }
+
+    private async Task<string?> ValidateTeamSeparationConstraintsAsync(string sessionId)
+    {
+        var constraints = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .ToListAsync();
+        if (constraints.Count == 0) return null;
+
+        var preferenceGroups = await db.TeamPreferenceGroups.AsNoTracking()
+            .Include(group => group.Players)
+            .Where(group => group.SessionId == sessionId)
+            .ToListAsync();
+        foreach (var constraint in constraints)
+        {
+            if (preferenceGroups.Any(group =>
+                    group.Players.Any(link => link.SessionPlayerId == constraint.FirstSessionPlayerId) &&
+                    group.Players.Any(link => link.SessionPlayerId == constraint.SecondSessionPlayerId)))
+                return "Có yêu cầu CHUNG TEAM và KHÁC TEAM đang xung đột trên cùng một cặp người. Hãy xử lý conflict trước khi draft.";
+        }
+
+        var sharedSlots = await db.DraftSlots.AsNoTracking()
+            .Include(slot => slot.Players)
+            .Where(slot => slot.SessionId == sessionId && slot.Type == DraftSlotType.Shared)
+            .ToListAsync();
+        foreach (var constraint in constraints)
+        {
+            if (sharedSlots.Any(slot =>
+                    slot.Players.Any(link => link.SessionPlayerId == constraint.FirstSessionPlayerId) &&
+                    slot.Players.Any(link => link.SessionPlayerId == constraint.SecondSessionPlayerId)))
+                return "Có hai người vừa share cùng slot vừa được yêu cầu KHÁC TEAM. Hãy bỏ một trong hai constraint trước khi draft.";
+        }
+        return null;
     }
 
     private async Task ClearDraftRunArtifacts(string sessionId)
@@ -4438,13 +4864,8 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 {
                     groupPlayer.TeamPreferenceGroupId,
                     groupPlayer.SessionPlayerId
-                })
+            })
             .ToListAsync();
-
-        if (groupPlayers.Count == 0)
-        {
-            return await PickBalancedSlotForTeamAsync(session, teamId, unassignedSlots);
-        }
 
         var groupIdByPlayerId = groupPlayers.ToDictionary(
             item => item.SessionPlayerId,
@@ -4480,6 +4901,28 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 .Distinct()
                 .ToList());
 
+        var separationConstraints = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == session.Id)
+            .ToListAsync();
+        var assignedPlayerIds = allSlots
+            .Where(slot => slot.AssignedTeamId == teamId)
+            .SelectMany(slot => slot.Players.Select(link => link.SessionPlayerId))
+            .ToHashSet(StringComparer.Ordinal);
+
+        bool SatisfiesSeparationConstraints(DraftSlot slot)
+        {
+            if (separationConstraints.Count == 0) return true;
+            var prospectivePlayerIds = assignedPlayerIds.ToHashSet(StringComparer.Ordinal);
+            foreach (var playerId in slot.Players.Select(link => link.SessionPlayerId))
+                prospectivePlayerIds.Add(playerId);
+            foreach (var groupId in GetGroupIdsForSlot(slot))
+                foreach (var playerId in playerIdsByGroupId[groupId])
+                    prospectivePlayerIds.Add(playerId);
+            return separationConstraints.All(item =>
+                !(prospectivePlayerIds.Contains(item.FirstSessionPlayerId) &&
+                  prospectivePlayerIds.Contains(item.SecondSessionPlayerId)));
+        }
+
         var groupsReservedForCurrentTeam = groupTeamAssignments
             .Where(item => item.Value.Contains(teamId))
             .Select(item => item.Key)
@@ -4490,7 +4933,10 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
             .ToList();
         if (requiredGroupSlots.Count > 0)
         {
-            return await PickBalancedSlotForTeamAsync(session, teamId, requiredGroupSlots);
+            var validRequiredGroupSlots = requiredGroupSlots.Where(SatisfiesSeparationConstraints).ToList();
+            return validRequiredGroupSlots.Count == 0
+                ? null
+                : await PickBalancedSlotForTeamAsync(session, teamId, validRequiredGroupSlots);
         }
 
         // A persisted same-team preference is a hard allocation constraint, not just a
@@ -4514,6 +4960,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                     GetGroupIdsForSlot(candidate).Overlaps(slotGroupIds));
                 return requiredSlotCount > 1 && requiredSlotCount <= remainingCapacity;
             })
+            .Where(SatisfiesSeparationConstraints)
             .ToList();
         if (unresolvedPreferenceSlots.Count > 0)
         {
@@ -4523,6 +4970,7 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
         var validSlots = unassignedSlots
             .Where(slot =>
             {
+                if (!SatisfiesSeparationConstraints(slot)) return false;
                 var slotGroupIds = GetGroupIdsForSlot(slot);
                 if (slotGroupIds.Count == 0)
                 {
@@ -4598,6 +5046,24 @@ public sealed class SessionDraftService(VolleyDraftDbContext db)
                 slot.AssignedTeamId == null &&
                 slot.Players.Any(slotPlayer => groupedPlayerIds.Contains(slotPlayer.SessionPlayerId)))
             .ToListAsync();
+
+        var currentTeamPlayerIds = await db.DraftSlotPlayers
+            .Where(link => link.DraftSlot.SessionId == session.Id && link.DraftSlot.AssignedTeamId == teamId)
+            .Select(link => link.SessionPlayerId)
+            .Distinct()
+            .ToListAsync();
+        var prospectivePlayerIds = currentTeamPlayerIds
+            .Concat(linkedSlots.SelectMany(slot => slot.Players.Select(link => link.SessionPlayerId)))
+            .ToHashSet(StringComparer.Ordinal);
+        var separationConflict = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == session.Id)
+            .AnyAsync(item =>
+                prospectivePlayerIds.Contains(item.FirstSessionPlayerId) &&
+                prospectivePlayerIds.Contains(item.SecondSessionPlayerId));
+        if (separationConflict)
+        {
+            return TeamPreferenceAssignmentResult.Failure("Lượt draft này sẽ vi phạm yêu cầu KHÁC TEAM đã được xác nhận.");
+        }
 
         if (linkedSlots.Count == 0)
         {
@@ -5201,7 +5667,29 @@ public sealed record TeamPreferencePreview(
     bool RequiresConfirmation,
     IReadOnlyList<string> Warnings,
     string? BlockingReason,
+    string StateToken,
+    IReadOnlyList<string>? ConflictingSeparationIds = null);
+
+public sealed record TeamSeparationPreview(
+    string SessionId,
+    string FirstSessionPlayerId,
+    string SecondSessionPlayerId,
+    IReadOnlyList<string> PlayerNames,
+    string? ExistingConstraintId,
+    bool AlreadySeparated,
+    bool IsFeasible,
+    string? ReplacesTogetherGroupId,
+    IReadOnlyList<string> Warnings,
+    string? BlockingReason,
     string StateToken);
+
+public sealed record TeamSeparationResult(
+    string ConstraintId,
+    string SessionId,
+    string FirstSessionPlayerId,
+    string SecondSessionPlayerId,
+    IReadOnlyList<string> PlayerNames,
+    bool ReplacedTogetherGroup);
 
 public sealed record PreDraftSharedSlotResult(
     string AnchorPlayerName,

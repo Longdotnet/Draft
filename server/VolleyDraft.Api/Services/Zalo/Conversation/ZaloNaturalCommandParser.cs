@@ -198,6 +198,60 @@ public static class ZaloNaturalCommandParser
             RegexOptions.CultureInvariant);
     }
 
+    public static bool IsExplicitTeamSeparationRequest(string? question)
+    {
+        if (string.IsNullOrWhiteSpace(question)) return false;
+        var raw = question.Trim();
+        var normalized = ZaloBotIntelligence.Normalize(raw);
+
+        if (IsExplicitTeamSeparationClearRequest(question)) return true;
+
+        // Negative separation means the user wants Together, not Apart.
+        if (Regex.IsMatch(
+                normalized,
+                @"(?:^|\s)(?:dung|khong|ko|k|hong)\s+(?:co\s+)?(?:tach|chia|ne)(?:\s|$)|(?:^|\s)(?:don'?t|do\s+not|never)\s+(?:separate|split|keep\s+us\s+apart)(?:\s|$)",
+                RegexOptions.CultureInvariant))
+            return false;
+
+        if (IsNegatedTeamPreference(question)) return true;
+
+        var vietnamese = Regex.IsMatch(
+            normalized,
+            @"(?:^|\s)(?:dung|khoi|khong|ko|k|hong|hok|hông|dg|đg)\s+.*(?:ghep|xep|choi|danh|o)\s+.*(?:chung|cung)(?:\s+(?:team|doi))?|(?:^|\s)(?:khac|tach)\s+(?:team|doi)(?:\s|$)|(?:team|doi)\s+(?:khac|rieng)(?:\s|$)|team\s+nao.+team\s+khac|ben\s+nao.+(?:tui|toi|minh).+ben\s+(?:kia|khac)|(?:^|\s)(?:tach|ne)\s+(?:tui|toi|minh|em|anh|chi)\s+(?:voi|va)\s+.+|(?:^|\s)ne\s+.+\s+(?:dum|giup)\s+(?:tui|toi|minh)(?:\s|$)|(?:^|\s)(?:tui|toi|minh|em|anh|chi)\s+.*(?:ne|tach)\s+.+|(?:^|\s)(?:khoi|dung)\s+.*dinh\s+(?:team|doi)\s+.+",
+            RegexOptions.CultureInvariant);
+        if (vietnamese) return true;
+
+        var english = Regex.IsMatch(
+            normalized,
+            @"(?:don'?t|do\s+not|never)\s+.*(?:same\s+team|team\s+with|put\s+.*\s+with)|(?:different|separate)\s+team|keep\s+(?:me|us|them|him|her|.+?)\s+(?:apart|separate)(?:\s+from\s+.+)?|avoid\s+.*(?:same\s+team|team)",
+            RegexOptions.CultureInvariant);
+        if (english) return true;
+
+        // Keep Korean checks on raw text so Hangul is not lost by Latin normalization helpers.
+        if (raw.Contains("다른 팀", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("따로 팀", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("같은 팀으로 하지 마", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("같은 팀 하지 마", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("같은 팀 싫", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    public static bool IsExplicitTeamSeparationClearRequest(string? question)
+    {
+        if (string.IsNullOrWhiteSpace(question)) return false;
+        var normalized = ZaloBotIntelligence.Normalize(question);
+        return Regex.IsMatch(
+                   normalized,
+                   @"(?:^|\s)(?:thoi\s+)?(?:bo|huy|xoa|khoi)\s+(?:yeu\s+cau\s+)?(?:ne|tach|khac\s+(?:team|doi))(?:\s|$)",
+                   RegexOptions.CultureInvariant) ||
+               Regex.IsMatch(
+                   normalized,
+                   @"(?:^|\s)(?:cancel|remove|clear)\s+.*(?:avoid|apart|separate|different\s+team)(?:\s|$)",
+                   RegexOptions.CultureInvariant);
+    }
+
     public static bool TryParseTeamPreference(string question, out ZaloTeamPreferenceCommand command)
     {
         command = new ZaloTeamPreferenceCommand([]);
@@ -294,7 +348,7 @@ public static class ZaloNaturalCommandParser
 
         var references = currentCommand.PlayerReferences.ToList();
         references[matchingIndexes[0]] = mentionName;
-        var ids = Enumerable.Repeat<string?>(null, references.Count).ToList();
+        var ids = Enumerable.Repeat(string.Empty, references.Count).ToList();
         if (currentCommand.PlayerZaloUserIds is { Count: > 0 })
         {
             for (var index = 0; index < Math.Min(ids.Count, currentCommand.PlayerZaloUserIds.Count); index += 1)

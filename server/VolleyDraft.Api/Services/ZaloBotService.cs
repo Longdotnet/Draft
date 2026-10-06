@@ -26,6 +26,11 @@ public sealed partial class ZaloBotService(
     ILogger<ZaloBotService> logger)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
+    private static readonly string[] TeamRelationshipSelfAliases =
+    [
+        "self", "tui", "toi", "minh", "em", "anh", "chi", "ban than",
+        "i", "me", "myself", "나", "저", "내", "저요"
+    ];
 
     public async Task<ServiceResult<ZaloBotSettingsResponse>> GetSettingsAsync(string adminUserId, string sessionId)
     {
@@ -570,6 +575,18 @@ public sealed partial class ZaloBotService(
                 false,
                 cancellationToken);
         }
+        if (pending.TeamSeparationPlan is not null && pending.Session is not null)
+        {
+            return await ApplyTeamSeparationPlanAsync(
+                pending.Session,
+                pending.TeamSeparationPlan,
+                incoming,
+                ZaloBotIntent.TeamSeparationConfirm,
+                pending.TeamSeparationSelfService,
+                pending.TeamSeparationRemove,
+                false,
+                cancellationToken);
+        }
         if (pending.ShareSlotPlan is not null && pending.Session is not null)
         {
             return await ApplyShareSlotPlanAsync(
@@ -690,6 +707,19 @@ public sealed partial class ZaloBotService(
         if (earlyDecision.Intent == ZaloBotIntent.TeamPreference)
         {
             return await HandleTeamPreferenceAsync(
+                earlyDecision,
+                sessions,
+                normalizedQuestion,
+                question,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false);
+        }
+        if (earlyDecision.Intent == ZaloBotIntent.TeamSeparation)
+        {
+            return await HandleTeamSeparationAsync(
                 earlyDecision,
                 sessions,
                 normalizedQuestion,
@@ -874,6 +904,18 @@ public sealed partial class ZaloBotService(
 
         if (decision.Intent == ZaloBotIntent.TeamPreference)
             return await HandleTeamPreferenceAsync(
+                decision,
+                sessions,
+                normalizedQuestion,
+                question,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                false);
+
+        if (decision.Intent == ZaloBotIntent.TeamSeparation)
+            return await HandleTeamSeparationAsync(
                 decision,
                 sessions,
                 normalizedQuestion,
@@ -1291,6 +1333,40 @@ public sealed partial class ZaloBotService(
                 null,
                 null,
                 "Mình đang chờ xác nhận nhóm muốn chung team. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ; dữ liệu vẫn chưa đổi.");
+        }
+        if (state.PendingIntent == ZaloBotIntent.TeamSeparationConfirm.ToString())
+        {
+            TeamSeparationConfirmationPayload? payload;
+            try { payload = JsonSerializer.Deserialize<TeamSeparationConfirmationPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            var actionSession = payload is null ? null : sessions.SingleOrDefault(session => session.Id == payload.SessionId);
+            if (payload is not null && actionSession is not null && ZaloBotIntelligence.IsConfirmation(normalizedQuestion))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.TeamSeparationConfirm,
+                    actionSession,
+                    null,
+                    TeamSeparationPlan: payload.Plan,
+                    TeamSeparationSelfService: payload.SelfService,
+                    TeamSeparationRemove: payload.Remove);
+            }
+            var newIntent = ZaloBotIntelligence.ClassifyDeterministically(normalizedQuestion).Intent;
+            if (newIntent is not (ZaloBotIntent.Unknown or ZaloBotIntent.Help))
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+            return new PendingResolution(
+                false,
+                null,
+                null,
+                payload?.Remove == true
+                    ? "Mình đang chờ xác nhận gỡ yêu cầu khác team. Gõ @bot xác nhận để gỡ hoặc @bot huỷ; dữ liệu vẫn chưa đổi."
+                    : "Mình đang chờ xác nhận yêu cầu khác team. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ; dữ liệu vẫn chưa đổi.");
         }
         if (state.PendingIntent == ZaloBotIntent.ShareSlotConfirm.ToString())
         {
@@ -1792,6 +1868,41 @@ public sealed partial class ZaloBotService(
         state.PendingIntent = ZaloBotIntent.TeamPreferenceConfirm.ToString();
         state.PendingPayloadJson = JsonSerializer.Serialize(new TeamPreferenceConfirmationPayload(sessionId, plan, selfService));
         state.PreviousCommand = ZaloBotIntent.TeamPreference.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveTeamSeparationConfirmationAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string sessionId,
+        TeamSeparationPreview plan,
+        bool selfService,
+        bool remove,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+        state.PendingIntent = ZaloBotIntent.TeamSeparationConfirm.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new TeamSeparationConfirmationPayload(sessionId, plan, selfService, remove));
+        state.PreviousCommand = ZaloBotIntent.TeamSeparation.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
@@ -2536,6 +2647,106 @@ public sealed partial class ZaloBotService(
         return $"{cleanBase} #{Guid.NewGuid():N}"[..Math.Min(160, cleanBase.Length + 10)];
     }
 
+    private static ZaloNaturalTeamPreferenceContext BuildTeamRelationshipContext(
+        string question,
+        ZaloIncomingMessageEvent incoming,
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers,
+        IReadOnlyList<SessionSnapshot> sessions) =>
+        new(
+            question,
+            incoming.SenderName,
+            mentionedUsers,
+            sessions.Take(10).Select(session =>
+                new ZaloAiSessionReference(session.Id, session.Name, session.StartTime)).ToList());
+
+    private static bool IsTeamRelationshipSelfReference(string? value)
+    {
+        var normalized = NormalizeText(value ?? string.Empty);
+        return TeamRelationshipSelfAliases.Contains(normalized, StringComparer.OrdinalIgnoreCase) ||
+               string.Equals(value?.Trim(), "SELF", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ZaloTeamRelationshipCommand GroundTeamRelationshipCommand(
+        ZaloTeamRelationshipCommand command,
+        IReadOnlyList<ZaloMentionedUser> mentionedUsers,
+        ZaloIncomingMessageEvent incoming)
+    {
+        var references = command.PlayerReferences
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim().TrimStart('@'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(12)
+            .ToList();
+
+        if (references.Count < 2)
+        {
+            if (mentionedUsers.Count == 1)
+                references = ["SELF", mentionedUsers[0].DisplayName];
+            else if (mentionedUsers.Count >= 2)
+                references = mentionedUsers.Take(2).Select(user => user.DisplayName).ToList();
+        }
+
+        var ids = new List<string>(references.Count);
+        var groundedReferences = new List<string>(references.Count);
+        foreach (var reference in references)
+        {
+            if (IsTeamRelationshipSelfReference(reference) ||
+                NormalizeText(reference) == NormalizeText(incoming.SenderName))
+            {
+                groundedReferences.Add("SELF");
+                ids.Add(incoming.SenderId);
+                continue;
+            }
+
+            var mention = FindMentionedUser(reference, mentionedUsers);
+            if (mention is not null)
+            {
+                groundedReferences.Add(mention.DisplayName);
+                ids.Add(mention.ZaloUserId);
+                continue;
+            }
+
+            groundedReferences.Add(reference);
+            ids.Add(string.Empty);
+        }
+
+        return command with
+        {
+            PlayerReferences = groundedReferences,
+            PlayerZaloUserIds = ids
+        };
+    }
+
+    private static BotAnswer BuildTeamRelationshipClarification(ZaloBotIntent intent, bool aiCalled) =>
+        new(
+            "Mình hiểu bạn đang nói về cách xếp team nhưng chưa đủ chắc để đổi dữ liệu. Bạn có thể nói tự nhiên theo một trong 3 ý:\n" +
+            "1. “cho tui chung team với @Tên”\n" +
+            "2. “đừng xếp tui chung team với @Tên”\n" +
+            "3. “bỏ yêu cầu né @Tên”\n" +
+            "Mình sẽ nhắc lại ý hiểu và hỏi xác nhận trước khi áp dụng.",
+            null,
+            intent,
+            aiCalled);
+
+    private static BotAnswer BuildTeamRelationshipQueryAnswer(
+        ZaloTeamRelationshipCommand command,
+        ZaloBotIntent intent,
+        bool aiCalled)
+    {
+        var relation = command.Relation switch
+        {
+            ZaloTeamRelationshipRelation.Together => "CHUNG TEAM",
+            ZaloTeamRelationshipRelation.Apart => "KHÁC TEAM",
+            _ => "cách xếp team"
+        };
+        return new BotAnswer(
+            $"Được. Mình hiểu bạn đang hỏi về yêu cầu {relation}. Câu này chỉ là câu hỏi nên mình chưa thay đổi dữ liệu. " +
+            "Nếu muốn áp dụng, cứ nói trực tiếp như “cho tui chung team với @Tên” hoặc “đừng xếp tui chung team với @Tên”.",
+            null,
+            intent,
+            aiCalled);
+    }
+
     private async Task<BotAnswer> HandleTeamPreferenceAsync(
         ZaloIntentDecision decision,
         IReadOnlyList<SessionSnapshot> sessions,
@@ -2545,28 +2756,55 @@ public sealed partial class ZaloBotService(
         string groupId,
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken,
-        bool aiCalled)
+        bool aiCalled,
+        ZaloTeamRelationshipCommand? semanticCommand = null)
     {
         ZaloTeamPreferenceCommand? command = null;
         if (ZaloNaturalCommandParser.TryParseTeamPreference(originalQuestion, out var parsed))
             command = parsed;
         var mentionedUsers = ExtractMentionedUsers(incoming);
-        if (command is null && mentionedUsers.Count < 2 && ai.IsConfigured)
+        if ((command is null || command.PlayerReferences.Count < 2) && ai.IsConfigured)
         {
-            var extracted = await ai.ParseTeamPreferenceCommandAsync(
-                new ZaloNaturalTeamPreferenceContext(
-                    originalQuestion,
-                    incoming.SenderName,
-                    mentionedUsers,
-                    sessions.Take(10).Select(session =>
-                        new ZaloAiSessionReference(session.Id, session.Name, session.StartTime)).ToList()),
+            semanticCommand ??= await ai.ParseTeamRelationshipCommandAsync(
+                BuildTeamRelationshipContext(originalQuestion, incoming, mentionedUsers, sessions),
                 cancellationToken);
-            if (extracted is not null)
+            if (semanticCommand is not null)
             {
-                command = extracted;
                 aiCalled = true;
+                if (semanticCommand.Relation == ZaloTeamRelationshipRelation.Apart &&
+                    semanticCommand.Operation is not ZaloTeamRelationshipOperation.Query)
+                {
+                    return await HandleTeamSeparationAsync(
+                        decision with { Intent = ZaloBotIntent.TeamSeparation },
+                        sessions,
+                        normalizedQuestion,
+                        originalQuestion,
+                        connectionId,
+                        groupId,
+                        incoming,
+                        cancellationToken,
+                        true,
+                        semanticCommand);
+                }
+                if (semanticCommand.Operation == ZaloTeamRelationshipOperation.Query)
+                    return BuildTeamRelationshipQueryAnswer(semanticCommand, decision.Intent, true);
+                if (semanticCommand.Relation == ZaloTeamRelationshipRelation.Together &&
+                    semanticCommand.Confidence >= .78 &&
+                    !semanticCommand.NeedsClarification &&
+                    semanticCommand.Operation is ZaloTeamRelationshipOperation.Set or ZaloTeamRelationshipOperation.Change)
+                {
+                    var grounded = GroundTeamRelationshipCommand(semanticCommand, mentionedUsers, incoming);
+                    command = new ZaloTeamPreferenceCommand(
+                        grounded.PlayerReferences,
+                        grounded.PlayerZaloUserIds,
+                        grounded.SessionReference);
+                }
             }
         }
+        if (semanticCommand is { NeedsClarification: true } ||
+            semanticCommand is { Relation: ZaloTeamRelationshipRelation.Unknown } ||
+            semanticCommand is { Confidence: < .78 } && command is null)
+            return BuildTeamRelationshipClarification(decision.Intent, aiCalled);
         command = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(mentionedUsers, command) ?? command;
         if (command is null || command.PlayerReferences.Count < 2)
         {
@@ -2587,7 +2825,7 @@ public sealed partial class ZaloBotService(
         if (selected.Clarification is not null)
             return new BotAnswer(selected.Clarification + " Hãy gửi lại yêu cầu chung team kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
         var session = selected.Session!;
-        var selfAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than" };
+        var selfAliases = TeamRelationshipSelfAliases;
         var normalizedSenderId = NormalizeId(incoming.SenderId);
         var inputs = command.PlayerReferences.Select((name, index) =>
         {
@@ -2655,6 +2893,208 @@ public sealed partial class ZaloBotService(
                 .Append(session.Name)
                 .Concat(["@bot xác nhận", "@bot huỷ"])
                 .ToList());
+    }
+
+    private async Task<BotAnswer> HandleTeamSeparationAsync(
+        ZaloIntentDecision decision,
+        IReadOnlyList<SessionSnapshot> sessions,
+        string normalizedQuestion,
+        string originalQuestion,
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken,
+        bool aiCalled,
+        ZaloTeamRelationshipCommand? semanticCommand = null)
+    {
+        var mentionedUsers = ExtractMentionedUsers(incoming);
+        if (semanticCommand is null && ai.IsConfigured)
+        {
+            semanticCommand = await ai.ParseTeamRelationshipCommandAsync(
+                BuildTeamRelationshipContext(originalQuestion, incoming, mentionedUsers, sessions),
+                cancellationToken);
+            if (semanticCommand is not null) aiCalled = true;
+        }
+
+        if (semanticCommand is null && ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(originalQuestion))
+        {
+            var deterministicOperation = ZaloNaturalCommandParser.IsExplicitTeamSeparationClearRequest(originalQuestion)
+                ? ZaloTeamRelationshipOperation.Clear
+                : ZaloTeamRelationshipOperation.Set;
+            if (mentionedUsers.Count == 1)
+            {
+                semanticCommand = new ZaloTeamRelationshipCommand(
+                    ZaloTeamRelationshipRelation.Apart,
+                    deterministicOperation,
+                    ["SELF", mentionedUsers[0].DisplayName],
+                    [incoming.SenderId, mentionedUsers[0].ZaloUserId],
+                    decision.SessionReference,
+                    1,
+                    false,
+                    "deterministic_apart_with_single_mention");
+            }
+            else if (mentionedUsers.Count == 2)
+            {
+                semanticCommand = new ZaloTeamRelationshipCommand(
+                    ZaloTeamRelationshipRelation.Apart,
+                    deterministicOperation,
+                    mentionedUsers.Select(item => item.DisplayName).ToList(),
+                    mentionedUsers.Select(item => item.ZaloUserId).ToList(),
+                    decision.SessionReference,
+                    1,
+                    false,
+                    "deterministic_apart_with_two_mentions");
+            }
+        }
+
+        if (semanticCommand is null || semanticCommand.NeedsClarification ||
+            semanticCommand.Relation == ZaloTeamRelationshipRelation.Unknown || semanticCommand.Confidence < .78)
+            return BuildTeamRelationshipClarification(decision.Intent, aiCalled);
+
+        if (semanticCommand.Relation == ZaloTeamRelationshipRelation.Together &&
+            semanticCommand.Operation is not ZaloTeamRelationshipOperation.Query)
+        {
+            return await HandleTeamPreferenceAsync(
+                decision with { Intent = ZaloBotIntent.TeamPreference },
+                sessions,
+                normalizedQuestion,
+                originalQuestion,
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                aiCalled,
+                semanticCommand);
+        }
+        if (semanticCommand.Operation == ZaloTeamRelationshipOperation.Query)
+            return BuildTeamRelationshipQueryAnswer(semanticCommand, decision.Intent, aiCalled);
+        if (semanticCommand.Relation != ZaloTeamRelationshipRelation.Apart)
+            return BuildTeamRelationshipClarification(decision.Intent, aiCalled);
+
+        semanticCommand = GroundTeamRelationshipCommand(semanticCommand, mentionedUsers, incoming);
+        if (semanticCommand.PlayerReferences.Count != 2)
+        {
+            return new BotAnswer(
+                "Mình hiểu bạn đang nói về KHÁC TEAM nhưng chưa xác định đúng hai người. Hãy @mention người còn lại, ví dụ: @Bott đừng xếp tui chung team với @Tên.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+
+        var selector = NormalizeText(string.Join(' ', new[]
+        {
+            normalizedQuestion,
+            semanticCommand.SessionReference,
+            decision.SessionReference
+        }.Where(value => !string.IsNullOrWhiteSpace(value))));
+        var selected = SelectSession(sessions, selector);
+        if (selected.Clarification is not null)
+            return new BotAnswer(selected.Clarification + " Hãy chọn trận cần áp dụng yêu cầu khác team.", null, decision.Intent, aiCalled);
+        var session = selected.Session!;
+        var normalizedSenderId = NormalizeId(incoming.SenderId);
+        var inputs = semanticCommand.PlayerReferences.Select((name, index) =>
+        {
+            var cleanName = name.Trim().TrimStart('@');
+            var commandUid = semanticCommand.PlayerZaloUserIds is { Count: > 0 } && index < semanticCommand.PlayerZaloUserIds.Count
+                ? semanticCommand.PlayerZaloUserIds[index]
+                : null;
+            var isSelfReference = IsTeamRelationshipSelfReference(cleanName) ||
+                                  NormalizeText(cleanName) == NormalizeText(incoming.SenderName) ||
+                                  (!string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                                   NormalizeText(cleanName) == NormalizeText(session.SenderPlayerName)) ||
+                                  NormalizeId(commandUid ?? string.Empty) == normalizedSenderId;
+            if (isSelfReference && session.SenderIsListed && !string.IsNullOrWhiteSpace(session.SenderPlayerName))
+                return new ShareSlotParticipantInput(session.SenderPlayerName, incoming.SenderId);
+            var mention = FindMentionedUser(cleanName, mentionedUsers);
+            return new ShareSlotParticipantInput(cleanName, commandUid ?? mention?.ZaloUserId);
+        }).ToList();
+        var selfService = session.SenderIsListed && !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                          inputs.Any(input =>
+                              NormalizeId(input.ZaloUserId ?? string.Empty) == normalizedSenderId ||
+                              NormalizeText(input.DisplayName) == NormalizeText(session.SenderPlayerName));
+        if (!selfService)
+        {
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
+            if (denial is not null) return denial;
+        }
+
+        var preview = await draftService.PreviewTeamSeparationFromBotAsync(session.AdminUserId, session.Id, inputs);
+        if (!preview.IsSuccess || preview.Value is null)
+            return new BotAnswer(preview.Error ?? "Chưa tính được yêu cầu khác team.", null, decision.Intent, aiCalled);
+        var remove = semanticCommand.Operation == ZaloTeamRelationshipOperation.Clear;
+        if (remove && !preview.Value.AlreadySeparated)
+            return new BotAnswer($"{string.Join(" và ", preview.Value.PlayerNames)} hiện không có yêu cầu KHÁC TEAM trong {session.Name}; mình không đổi dữ liệu.", null, decision.Intent, aiCalled);
+        if (!remove && preview.Value.AlreadySeparated)
+            return new BotAnswer($"{string.Join(" và ", preview.Value.PlayerNames)} đã được đặt KHÁC TEAM trong {session.Name}; mình không tạo dữ liệu trùng.", null, decision.Intent, aiCalled);
+        if (!remove && !preview.Value.IsFeasible)
+            return new BotAnswer(preview.Value.BlockingReason ?? "Cặp này chưa thể đặt khác team.", null, decision.Intent, aiCalled,
+                ProtectedTerms: preview.Value.PlayerNames.Append(session.Name).ToList());
+
+        await SaveTeamSeparationConfirmationAsync(
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            session.Id,
+            preview.Value,
+            selfService,
+            remove,
+            cancellationToken);
+        var warningText = preview.Value.Warnings.Count == 0
+            ? string.Empty
+            : "\n- " + string.Join("\n- ", preview.Value.Warnings);
+        var actionText = remove ? "GỠ yêu cầu KHÁC TEAM" : "giữ KHÁC TEAM";
+        return new BotAnswer(
+            $"Mình hiểu: {string.Join(" và ", preview.Value.PlayerNames)} sẽ {actionText} trong {session.Name}.{warningText}\n\nMình chưa đổi dữ liệu. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ.",
+            null,
+            decision.Intent,
+            aiCalled,
+            ProtectedTerms: preview.Value.PlayerNames.Append(session.Name).Concat(["@bot xác nhận", "@bot huỷ"]).ToList());
+    }
+
+    private async Task<BotAnswer> ApplyTeamSeparationPlanAsync(
+        SessionSnapshot session,
+        TeamSeparationPreview plan,
+        ZaloIncomingMessageEvent incoming,
+        ZaloBotIntent intent,
+        bool selfService,
+        bool remove,
+        bool aiCalled,
+        CancellationToken cancellationToken)
+    {
+        var selfStillValid = selfService && session.SenderIsListed &&
+                             !string.IsNullOrWhiteSpace(session.SenderPlayerName) &&
+                             plan.PlayerNames.Any(name => NormalizeText(name) == NormalizeText(session.SenderPlayerName));
+        if (!selfStillValid)
+        {
+            var denial = await GetOperatorDenialAsync(session, incoming.SenderId, intent, aiCalled);
+            if (denial is not null) return denial;
+        }
+
+        var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
+        var applied = remove
+            ? await draftService.RemoveTeamSeparationPreviewAsync(session.AdminUserId, plan)
+            : await draftService.ApplyTeamSeparationPreviewAsync(session.AdminUserId, plan);
+        if (!applied.IsSuccess || applied.Value is null)
+            return new BotAnswer(applied.Error ?? "Không thể cập nhật yêu cầu khác team.", null, intent, aiCalled);
+
+        await actionHistory.RecordAsync(
+            session.Id,
+            incoming.SenderId,
+            incoming.SenderName,
+            remove ? "RemoveTeamSeparation" : "TeamSeparation",
+            remove
+                ? $"Gỡ yêu cầu khác team của {string.Join(", ", applied.Value.PlayerNames)} trong {session.Name}"
+                : $"Ghi nhận {string.Join(", ", applied.Value.PlayerNames)} phải khác team trong {session.Name}",
+            before,
+            cancellationToken);
+        return new BotAnswer(
+            remove
+                ? $"Đã gỡ yêu cầu KHÁC TEAM giữa {string.Join(" và ", applied.Value.PlayerNames)} trong {session.Name}."
+                : $"Đã ghi nhận {string.Join(" và ", applied.Value.PlayerNames)} phải ở KHÁC TEAM trong {session.Name}. Bot sẽ coi đây là hard constraint khi draft.",
+            null,
+            intent,
+            aiCalled,
+            ProtectedTerms: applied.Value.PlayerNames.Append(session.Name).ToList());
     }
 
     private async Task<BotAnswer> ApplyTeamPreferencePlanAsync(
@@ -4856,6 +5296,17 @@ public sealed partial class ZaloBotService(
                 incoming,
                 cancellationToken,
                 true);
+        if (decision.Intent == ZaloBotIntent.TeamSeparation)
+            return await HandleTeamSeparationAsync(
+                decision,
+                sessions,
+                selector,
+                ExtractQuestion(incoming),
+                connectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                true);
         if (decision.Intent == ZaloBotIntent.ShareSlot)
             return await ShareSlotAsync(decision, sessions, selector, ExtractQuestion(incoming), connectionId, groupId, incoming, cancellationToken, true);
         if (decision.Intent == ZaloBotIntent.UnshareSlot)
@@ -5627,6 +6078,9 @@ public sealed partial class ZaloBotService(
         ZaloAddGuestCommand? GuestCommand = null,
         TeamPreferencePreview? TeamPreferencePlan = null,
         bool TeamPreferenceSelfService = false,
+        TeamSeparationPreview? TeamSeparationPlan = null,
+        bool TeamSeparationSelfService = false,
+        bool TeamSeparationRemove = false,
         ShareSlotConfirmationPlan? ShareSlotPlan = null,
         ZaloShareSlotCommand? ShareCommand = null,
         string? UnshareSlotId = null)
@@ -5662,6 +6116,11 @@ public sealed partial class ZaloBotService(
         string SessionId,
         TeamPreferencePreview Plan,
         bool SelfService);
+    private sealed record TeamSeparationConfirmationPayload(
+        string SessionId,
+        TeamSeparationPreview Plan,
+        bool SelfService,
+        bool Remove);
     private sealed record ShareSlotConfirmationPlan(
         string SessionId,
         string AnchorPlayerName,

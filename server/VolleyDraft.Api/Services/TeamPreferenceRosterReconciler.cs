@@ -4,8 +4,8 @@ using VolleyDraft.Api.Data;
 namespace VolleyDraft.Api.Services;
 
 /// <summary>
-/// Keeps durable same-team preferences aligned with the authoritative current roster.
-/// A preference is only meaningful while at least two of its members are still present.
+/// Keeps durable team relationship constraints aligned with the authoritative current roster.
+/// Together groups need at least two active members; apart pairs need both members active.
 /// </summary>
 internal sealed class TeamPreferenceRosterReconciler(VolleyDraftDbContext db)
 {
@@ -43,6 +43,14 @@ internal sealed class TeamPreferenceRosterReconciler(VolleyDraftDbContext db)
             for (var index = 0; index < activeLinks.Count; index += 1)
                 activeLinks[index].RotationOrder = index + 1;
         }
+
+        var separations = await db.TeamSeparationConstraints
+            .Include(item => item.FirstSessionPlayer)
+            .Include(item => item.SecondSessionPlayer)
+            .Where(item => item.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        db.TeamSeparationConstraints.RemoveRange(separations.Where(item =>
+            !item.FirstSessionPlayer.IsPresent || !item.SecondSessionPlayer.IsPresent));
 
         await db.SaveChangesAsync(cancellationToken);
     }

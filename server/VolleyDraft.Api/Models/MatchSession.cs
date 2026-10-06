@@ -52,6 +52,7 @@ public sealed class MatchSession
     public List<BlindBag> BlindBags { get; set; } = [];
     public List<DraftTurn> DraftTurns { get; set; } = [];
     public List<TeamPreferenceGroup> TeamPreferenceGroups { get; set; } = [];
+    public List<TeamSeparationConstraint> TeamSeparationConstraints { get; set; } = [];
     public List<PollImport> PollImports { get; set; } = [];
     public List<ZaloReminderSchedule> ReminderSchedules { get; set; } = [];
     public List<SessionWaitlistEntry> WaitlistEntries { get; set; } = [];

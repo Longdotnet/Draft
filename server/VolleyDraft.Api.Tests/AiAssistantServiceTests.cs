@@ -64,6 +64,27 @@ public sealed class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task Team_relationship_extraction_reads_multilingual_canonical_contract()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"relation\":\"Apart\",\"operation\":\"Change\",\"players\":[\"SELF\",\"Đặng Thế Nguyễn\"],\"sessionReference\":\"T6\",\"confidence\":0.96,\"needsClarification\":false,\"reason\":\"same_team_negated\"}"}}]}""");
+
+        var result = await service.ParseTeamRelationshipCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "오늘 tui don't wanna same team với @Đặng Thế Nguyễn T6",
+            "Long",
+            [new ZaloMentionedUser("nguyen-id", "Đặng Thế Nguyễn")],
+            [new ZaloAiSessionReference("s1", "T6", new DateTimeOffset(2026, 10, 9, 18, 0, 0, TimeSpan.FromHours(7)))]));
+
+        Assert.NotNull(result);
+        Assert.Equal(ZaloTeamRelationshipRelation.Apart, result!.Relation);
+        Assert.Equal(ZaloTeamRelationshipOperation.Change, result.Operation);
+        Assert.Equal(["SELF", "Đặng Thế Nguyễn"], result.PlayerReferences);
+        Assert.Equal("T6", result.SessionReference);
+        Assert.Equal(.96, result.Confidence, 2);
+        Assert.False(result.NeedsClarification);
+    }
+
+    [Fact]
     public async Task Factual_answer_can_be_rewritten_without_losing_protected_facts()
     {
         var service = CreateService(HttpStatusCode.OK,
