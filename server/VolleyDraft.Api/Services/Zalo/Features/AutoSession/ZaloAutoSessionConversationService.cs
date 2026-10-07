@@ -478,6 +478,209 @@ internal sealed class ZaloAutoSessionConversationService(
         return true;
     }
 
+    public async Task HandleCreateSelectionEntryAsync(
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken = default)
+    {
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        if (!incoming.MentionedBot || !IsCreateSelectionCommand(question))
+            return;
+
+        var accountId = NormalizeId(incoming.AccountId);
+        var groupId = NormalizeId(incoming.GroupId);
+        var senderId = NormalizeId(incoming.SenderId);
+        var messageId = NormalizeId(incoming.MessageId);
+        if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0 || messageId.Length == 0)
+            return;
+
+        if (!configuration.GetValue("AutoSession:ConversationV3Enabled", true))
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Auto Session conversation đang tắt nên tui chưa mở bản nháp tạo trận từ lệnh này. Website chưa được tạo.",
+                "conversation-disabled",
+                cancellationToken);
+            return;
+        }
+
+        var runtime = await runtimeStore.GetRuntimeAsync(cancellationToken);
+        if (!runtime.GlobalEnabled)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Auto Session đang tắt ở hệ thống nên tui chưa mở bản nháp tạo trận. Website chưa được tạo.",
+                "runtime-disabled",
+                cancellationToken);
+            return;
+        }
+
+        var trackedGroups = await autoSessions.GetActiveTrackedGroupsForAccountAsync(
+            accountId,
+            groupId,
+            cancellationToken);
+        if (trackedGroups.Count == 0)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Nhóm này chưa bật Auto Session nên tui chưa có poll nguồn để tạo trận. Website chưa được tạo.",
+                "group-not-tracked",
+                cancellationToken);
+            return;
+        }
+
+        var matches = new List<CreateSelectionPollMatch>();
+        var available = new List<CreateSelectionAvailableOption>();
+        var hasLiveGroup = false;
+        var senderAuthorized = false;
+        var providerFailed = false;
+        var scheduleConflict = false;
+        var now = DateTimeOffset.UtcNow;
+        var maxAgeDays = Math.Clamp(configuration.GetValue("AutoSession:PollMaxAgeDays", 21), 3, 90);
+        var oldestPoll = now.AddDays(-maxAgeDays).ToUnixTimeMilliseconds();
+
+        foreach (var tracked in trackedGroups)
+        {
+            if (await runtimeStore.GetRolloutModeAsync(tracked.Id, cancellationToken) != ZaloAutoSessionRolloutMode.Live)
+                continue;
+            hasLiveGroup = true;
+
+            var connection = await GetConnectionAsync(tracked.ZaloConnectionId, accountId, cancellationToken);
+            if (connection is null)
+                continue;
+
+            try
+            {
+                using var document = JsonDocument.Parse(protector.Unprotect(connection.EncryptedCredentials));
+                var credentials = document.RootElement.Clone();
+                var roles = await bridge.GetGroupRolesAsync(credentials, tracked.GroupId);
+                var organizers = GetOrganizerIds(roles);
+                if (!organizers.Contains(senderId, StringComparer.Ordinal))
+                    continue;
+                senderAuthorized = true;
+
+                var learnedRules = await runtimeStore.GetApprovedDayTimeRulesAsync(tracked.Id, cancellationToken);
+                var polls = await bridge.GetPollsAsync(credentials, tracked.GroupId);
+                foreach (var poll in polls
+                             .Where(item => !item.IsClosed && !item.IsAnonymous)
+                             .Where(item => item.CreatedAtUnixMs <= 0 || item.CreatedAtUnixMs >= oldestPoll)
+                             .OrderByDescending(item => item.UpdatedAtUnixMs))
+                {
+                    if (!organizers.Contains(NormalizeId(poll.CreatorId), StringComparer.Ordinal))
+                        continue;
+
+                    var extraction = ZaloPollScheduleParser.ExtractSchedule(poll, tracked, now);
+                    if (extraction.Issues.Count > 0)
+                    {
+                        scheduleConflict = true;
+                        continue;
+                    }
+
+                    var candidates = ZaloAutoSessionV2Service.ApplyLearnedDayDefaults(
+                            extraction.Candidates,
+                            learnedRules)
+                        .Select(item => item with { StartTime = item.StartTime.ToUniversalTime() })
+                        .ToList();
+                    var usable = new List<ZaloAutoSessionCandidate>();
+                    foreach (var candidate in candidates)
+                    {
+                        if (await autoSessions.GetLinkAsync(tracked.Id, poll.Id, candidate.OptionId, cancellationToken) is not null)
+                            continue;
+                        if (await HasMatchingSessionAsync(tracked, candidate, cancellationToken))
+                            continue;
+                        usable.Add(candidate);
+                    }
+                    if (usable.Count == 0)
+                        continue;
+
+                    available.AddRange(usable.Select(item => new CreateSelectionAvailableOption(
+                        poll.Id,
+                        item)));
+                    var draft = BuildCreateSelectionDraft(tracked, poll.Question, usable);
+                    var resolution = ResolveDraftSelection(question, draft, now);
+                    var resolved = GetResolvedOptions(draft, resolution);
+                    if (resolved.Count == 0)
+                        continue;
+
+                    matches.Add(new CreateSelectionPollMatch(
+                        tracked,
+                        poll,
+                        usable,
+                        resolved));
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+            {
+                providerFailed = true;
+                logger.LogWarning(
+                    exception,
+                    "Could not resolve Auto Session create-selection entry Group={GroupId}",
+                    tracked.GroupId);
+            }
+        }
+
+        if (!hasLiveGroup)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Auto Session của nhóm chưa ở chế độ Live nên tui chưa mở luồng tạo website từ lệnh này. Website chưa được tạo.",
+                "rollout-not-live",
+                cancellationToken);
+            return;
+        }
+
+        if (!senderAuthorized)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                providerFailed
+                    ? "Tui chưa đọc được quyền/poll nguồn của nhóm lúc này nên chưa mở bản nháp tạo trận. Hãy thử lại sau một chút; website chưa được tạo."
+                    : "Lệnh tạo trận từ poll này cần quyền trưởng/phó của nhóm. Website chưa được tạo.",
+                providerFailed ? "provider-failed-before-auth" : "organizer-required",
+                cancellationToken);
+            return;
+        }
+
+        var distinctMatches = matches
+            .GroupBy(item => item.Poll.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        if (distinctMatches.Count == 0)
+        {
+            var detail = providerFailed
+                ? "Tui chưa đọc ổn định được poll nguồn của nhóm lúc này. Hãy thử lại sau một chút; website chưa được tạo."
+                : BuildCreateSelectionNoMatchMessage(available, scheduleConflict);
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                detail,
+                providerFailed ? "provider-failed" : "no-match",
+                cancellationToken);
+            return;
+        }
+
+        if (distinctMatches.Count > 1)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                BuildCreateSelectionCrossPollAmbiguity(distinctMatches),
+                "multiple-polls",
+                cancellationToken);
+            return;
+        }
+
+        var match = distinctMatches[0];
+        if (!await BootstrapCreateSelectionConversationAsync(match, incoming, cancellationToken))
+            return;
+
+        if (!await TryHandleIncomingAsync(incoming, cancellationToken))
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Tui đã đọc được poll nhưng chưa mở được bản nháp an toàn cho lệnh này. Website chưa được tạo; hãy thử lại hoặc reply trực tiếp preview Auto Session mới nhất.",
+                "bootstrap-not-active",
+                cancellationToken);
+        }
+    }
+
     private async Task EnsurePendingConversationsAsync(CancellationToken cancellationToken)
     {
         await conversations.EnsureAsync(cancellationToken);
@@ -1335,6 +1538,318 @@ internal sealed class ZaloAutoSessionConversationService(
                string.Join("\n", lines) +
                "\n\nHãy reply rõ ngày + giờ, ví dụ “09/10 18h”. Website chưa được tạo.";
     }
+
+    private async Task<bool> BootstrapCreateSelectionConversationAsync(
+        CreateSelectionPollMatch match,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var currentHash = ZaloPollScheduleParser.ComputeStructureHash(match.Poll);
+        var existingProposal = await autoSessions.GetProposalAsync(
+            match.Tracked.Id,
+            match.Poll.Id,
+            cancellationToken);
+
+        if (existingProposal?.Status == ZaloPollSessionProposalStatus.Rejected)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Poll này đã được trưởng/phó dừng trước đó nên tui không tự mở lại từ một lệnh mới. Hãy dùng poll mới hoặc preview Auto Session mới. Website chưa được tạo.",
+                "proposal-rejected",
+                cancellationToken);
+            return false;
+        }
+
+        if (existingProposal?.Status == ZaloPollSessionProposalStatus.Created)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Poll này đã có dữ liệu Auto Session được tạo trước đó nên tui không mở thêm một bản nháp trùng. Hãy kiểm tra trận hiện có.",
+                "proposal-created",
+                cancellationToken);
+            return false;
+        }
+
+        if (existingProposal?.Status == ZaloPollSessionProposalStatus.Approved)
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Poll này đang ở bước xử lý đã duyệt nên tui không mở thêm một luồng tạo song song. Hãy kiểm tra tin Auto Session mới nhất.",
+                "proposal-approved",
+                cancellationToken);
+            return false;
+        }
+
+        var existingConversation = existingProposal is null
+            ? null
+            : await conversations.GetByProposalAsync(existingProposal.Id, cancellationToken);
+        if (existingConversation is not null)
+        {
+            if (IsActiveConversationState(existingConversation.State))
+                return true;
+
+            if (existingConversation.State == ZaloAutoSessionConversationState.Cancelled)
+            {
+                await SendCreateSelectionEntryMessageAsync(
+                    incoming,
+                    "Bản nháp của poll này đã bị hủy trước đó nên tui không tự mở lại. Hãy dùng poll mới hoặc preview Auto Session mới. Website chưa được tạo.",
+                    "conversation-cancelled",
+                    cancellationToken);
+                return false;
+            }
+
+            if (existingConversation.State is ZaloAutoSessionConversationState.Created or
+                ZaloAutoSessionConversationState.HandedOff or
+                ZaloAutoSessionConversationState.Executing)
+            {
+                await SendCreateSelectionEntryMessageAsync(
+                    incoming,
+                    "Poll này đã hoặc đang được xử lý nên tui không mở thêm một bản nháp tạo trận song song.",
+                    "conversation-terminal",
+                    cancellationToken);
+                return false;
+            }
+
+            var sameSource = existingProposal is not null &&
+                             string.Equals(existingProposal.PollStructureHash, currentHash, StringComparison.Ordinal) &&
+                             HasSameCreateSelectionOptionIdentity(
+                                 DeserializeDraft(existingConversation.InitialDraftJson),
+                                 match.Candidates);
+            if (!sameSource)
+            {
+                await SendCreateSelectionEntryMessageAsync(
+                    incoming,
+                    "Poll đã đổi cấu trúc sau bản nháp cũ nên tui chưa tự mở lại để tránh tạo sai lịch. Hãy đợi/khởi tạo preview Auto Session mới từ poll hiện tại. Website chưa được tạo.",
+                    "source-changed",
+                    cancellationToken);
+                return false;
+            }
+        }
+
+        var proposal = existingProposal ?? new ZaloPollSessionProposalData
+        {
+            Id = Guid.NewGuid().ToString("n"),
+            TrackedGroupId = match.Tracked.Id,
+            PollId = match.Poll.Id,
+            CreatedAt = now
+        };
+        proposal.PollQuestion = match.Poll.Question;
+        proposal.PollCreatorId = NormalizeId(match.Poll.CreatorId);
+        proposal.PollUpdatedAtUnixMs = match.Poll.UpdatedAtUnixMs;
+        proposal.PollStructureHash = currentHash;
+        proposal.CandidatesJson = JsonSerializer.Serialize(match.Candidates, JsonOptions);
+        proposal.ClassifierConfidence = 1;
+        proposal.ClassifierReason = "addressed_create_selection";
+        proposal.Status = ZaloPollSessionProposalStatus.AwaitingApproval;
+        proposal.ProposalMessageId = null;
+        proposal.ApprovedByZaloUserId = null;
+        proposal.ApprovedAt = null;
+        proposal.LastError = null;
+        proposal = await autoSessions.UpsertProposalAsync(proposal, cancellationToken);
+
+        var draft = BuildCreateSelectionDraft(match.Tracked, match.Poll.Question, match.Candidates);
+        var draftJson = JsonSerializer.Serialize(draft, JsonOptions);
+        var expiryHours = Math.Clamp(
+            configuration.GetValue("AutoSession:ConversationExpiryHours", 24),
+            3,
+            72);
+        var bootstrapMessageId = $"entry:{NormalizeId(incoming.MessageId)}";
+
+        ZaloAutoSessionConversationData conversation;
+        if (existingConversation is null)
+        {
+            conversation = await conversations.CreateIfMissingAsync(
+                new ZaloAutoSessionConversationData
+                {
+                    ProposalId = proposal.Id,
+                    TrackedGroupId = match.Tracked.Id,
+                    PollId = match.Poll.Id,
+                    GroupId = match.Tracked.GroupId,
+                    OriginalOrganizerId = NormalizeId(match.Poll.CreatorId),
+                    ActiveOrganizerId = NormalizeId(incoming.SenderId),
+                    State = ZaloAutoSessionConversationState.PreviewSent,
+                    InitialDraftJson = draftJson,
+                    DraftJson = draftJson,
+                    PreviewMessageId = bootstrapMessageId,
+                    CurrentBotMessageId = bootstrapMessageId,
+                    Version = 0,
+                    ReminderCount = 0,
+                    LastBotMessageAt = null,
+                    NextFollowUpAt = now.AddMinutes(GetFirstReminderMinutes()),
+                    ExpiresAt = now.AddHours(expiryHours),
+                    CreatedAt = now,
+                    UpdatedAt = now
+                },
+                cancellationToken);
+        }
+        else
+        {
+            existingConversation.ActiveOrganizerId = NormalizeId(incoming.SenderId);
+            existingConversation.State = ZaloAutoSessionConversationState.PreviewSent;
+            existingConversation.DraftJson = draftJson;
+            existingConversation.CurrentBotMessageId = bootstrapMessageId;
+            existingConversation.LastQuestionType = null;
+            existingConversation.LastIntent = null;
+            existingConversation.Version += 1;
+            existingConversation.ReminderCount = 0;
+            existingConversation.LastOrganizerMessageAt = null;
+            existingConversation.LastBotMessageAt = null;
+            existingConversation.NextFollowUpAt = now.AddMinutes(GetFirstReminderMinutes());
+            existingConversation.ExpiresAt = now.AddHours(expiryHours);
+            existingConversation.LastError = null;
+            conversation = await conversations.SaveAsync(existingConversation, cancellationToken);
+        }
+
+        if (!IsActiveConversationState(conversation.State))
+        {
+            await SendCreateSelectionEntryMessageAsync(
+                incoming,
+                "Poll đã được đọc nhưng trạng thái bản nháp vừa thay đổi bởi luồng khác. Tui chưa tạo website; hãy kiểm tra tin Auto Session mới nhất rồi thử lại.",
+                "bootstrap-race",
+                cancellationToken);
+            return false;
+        }
+
+        return true;
+    }
+
+    private async Task<bool> HasMatchingSessionAsync(
+        ZaloTrackedGroupData tracked,
+        ZaloAutoSessionCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        var start = candidate.StartTime.AddMinutes(-75);
+        var end = candidate.StartTime.AddMinutes(75);
+        return await db.MatchSessions
+            .AsNoTracking()
+            .AnyAsync(session =>
+                session.ZaloConnectionId == tracked.ZaloConnectionId &&
+                session.ZaloGroupId == tracked.GroupId &&
+                session.Status != SessionStatus.Cancelled &&
+                session.StartTime != null &&
+                session.StartTime >= start &&
+                session.StartTime <= end,
+                cancellationToken);
+    }
+
+    private async Task SendCreateSelectionEntryMessageAsync(
+        ZaloIncomingMessageEvent incoming,
+        string text,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var accountId = NormalizeId(incoming.AccountId);
+        var groupId = NormalizeId(incoming.GroupId);
+        var senderId = NormalizeId(incoming.SenderId);
+        var messageId = NormalizeId(incoming.MessageId);
+        if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0 || messageId.Length == 0)
+            return;
+
+        var names = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [senderId] = incoming.SenderName
+        };
+        var outgoing = BuildMentionMessage([senderId], names, text);
+        try
+        {
+            await bridge.SendGroupMessageAsync(
+                accountId,
+                groupId,
+                outgoing.Message,
+                outgoing.Mentions,
+                idempotencyKey: $"auto-session-entry:{groupId}:{messageId}:{reason}");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not send Auto Session create-selection entry response Group={GroupId} Reason={Reason}",
+                groupId,
+                reason);
+        }
+    }
+
+    private static ZaloAutoSessionConversationDraft BuildCreateSelectionDraft(
+        ZaloTrackedGroupData tracked,
+        string pollQuestion,
+        IReadOnlyList<ZaloAutoSessionCandidate> candidates)
+    {
+        var capacity = ZaloAutoSessionCapacityPolicyV5.Resolve(pollQuestion);
+        var teamSize = capacity.HasExplicitCapacity && capacity.IsValid
+            ? capacity.TeamSize
+            : Math.Max(2, tracked.DefaultTeamSize);
+        return new ZaloAutoSessionConversationDraft(
+            candidates.Select(item => new ZaloAutoSessionConversationDraftItem(
+                item.OptionId,
+                item.OptionContent,
+                item.DayKey,
+                item.StartTime,
+                item.VoteCount,
+                true)).ToList(),
+            tracked.DefaultLocation,
+            teamSize);
+    }
+
+    private static bool HasSameCreateSelectionOptionIdentity(
+        ZaloAutoSessionConversationDraft draft,
+        IReadOnlyList<ZaloAutoSessionCandidate> candidates)
+    {
+        var current = candidates.Select(item => item.OptionId).OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        var previous = draft.Items.Select(item => item.OptionId).OrderBy(id => id, StringComparer.Ordinal).ToArray();
+        return current.SequenceEqual(previous, StringComparer.Ordinal);
+    }
+
+    private static bool IsActiveConversationState(ZaloAutoSessionConversationState state) =>
+        state is ZaloAutoSessionConversationState.PreviewSent or
+            ZaloAutoSessionConversationState.Discussing or
+            ZaloAutoSessionConversationState.Clarifying or
+            ZaloAutoSessionConversationState.ReadyToConfirm;
+
+    private static string BuildCreateSelectionNoMatchMessage(
+        IReadOnlyList<CreateSelectionAvailableOption> available,
+        bool scheduleConflict)
+    {
+        if (available.Count == 0)
+        {
+            return scheduleConflict
+                ? "Tui có thấy poll lịch nhưng một hoặc nhiều option đang mâu thuẫn ngày/giờ nên chưa thể dùng làm nguồn tạo trận an toàn. Hãy sửa poll rồi thử lại; website chưa được tạo."
+                : "Tui chưa tìm thấy option chưa tạo nào trong poll đang mở khớp ngày/lịch bạn yêu cầu. Website chưa được tạo.";
+        }
+
+        var lines = available
+            .GroupBy(item => $"{item.PollId}:{item.Candidate.OptionId}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(item => item.Candidate.StartTime)
+            .Take(12)
+            .Select(item =>
+                $"• {item.Candidate.DayKey} {item.Candidate.StartTime.ToOffset(VietnamOffset):dd/MM HH:mm} — {item.Candidate.OptionContent}");
+        return "Tui không tìm thấy option nào khớp đúng ngày/lịch bạn vừa yêu cầu. Các option chưa tạo đang có:\n" +
+               string.Join("\n", lines) +
+               "\n\nWebsite chưa được tạo.";
+    }
+
+    private static string BuildCreateSelectionCrossPollAmbiguity(
+        IReadOnlyList<CreateSelectionPollMatch> matches)
+    {
+        var lines = matches
+            .SelectMany(match => match.ResolvedOptions.Select(item =>
+                $"• {item.DayKey} {item.StartTime.ToOffset(VietnamOffset):dd/MM HH:mm} — {item.OptionContent} (poll: {Truncate(match.Poll.Question, 70)})"))
+            .Take(12);
+        return "Tui thấy nhiều poll đang mở cùng khớp yêu cầu nên chưa chọn để tránh tạo nhầm:\n" +
+               string.Join("\n", lines) +
+               "\n\nHãy @Bott tạo trận lại kèm ngày + giờ thật rõ hoặc reply trực tiếp preview của poll muốn dùng. Website chưa được tạo.";
+    }
+
+    private sealed record CreateSelectionPollMatch(
+        ZaloTrackedGroupData Tracked,
+        BridgePoll Poll,
+        IReadOnlyList<ZaloAutoSessionCandidate> Candidates,
+        IReadOnlyList<ZaloAutoSessionConversationDraftItem> ResolvedOptions);
+
+    private sealed record CreateSelectionAvailableOption(
+        string PollId,
+        ZaloAutoSessionCandidate Candidate);
 
     private async Task<ZaloConnection?> GetConnectionAsync(
         string connectionId,
