@@ -42,6 +42,72 @@ public sealed class ZaloAutoSessionPreRouteOwnershipTests
             hasActiveLegacyPending: false));
     }
 
+    [Theory]
+    [InlineData("@Npc tạo trận ngày mai")]
+    [InlineData("@Npc tạo trận thứ 4 7/10")]
+    [InlineData("@Npc tạo lịch T6")]
+    public void Addressed_create_selection_can_prime_auto_session_without_active_conversation(string content)
+    {
+        var incoming = Explicit(content);
+        var bypass = ZaloAutoSessionPreRouteOwnership.ShouldBypassAutoSession(
+            incoming,
+            hasActiveLegacyPending: false);
+
+        Assert.False(bypass);
+        Assert.True(ZaloAutoSessionPreRouteOwnership.ShouldPrimeCreateSelectionConversation(
+            incoming,
+            bypass));
+    }
+
+    [Fact]
+    public void Create_selection_does_not_prime_when_another_route_owns_the_turn()
+    {
+        var incoming = Explicit("@Npc tạo trận ngày mai");
+        var bypass = ZaloAutoSessionPreRouteOwnership.ShouldBypassAutoSession(
+            incoming,
+            hasActiveLegacyPending: true);
+
+        Assert.True(bypass);
+        Assert.False(ZaloAutoSessionPreRouteOwnership.ShouldPrimeCreateSelectionConversation(
+            incoming,
+            bypass));
+    }
+
+    [Theory]
+    [InlineData("@Npc không tạo trận ngày mai")]
+    [InlineData("@Npc tạo đi")]
+    public void Non_create_selection_language_does_not_prime_auto_session(string content)
+    {
+        var incoming = Explicit(content);
+        var bypass = ZaloAutoSessionPreRouteOwnership.ShouldBypassAutoSession(
+            incoming,
+            hasActiveLegacyPending: false);
+
+        Assert.False(ZaloAutoSessionPreRouteOwnership.ShouldPrimeCreateSelectionConversation(
+            incoming,
+            bypass));
+    }
+
+    [Fact]
+    public void Unaddressed_create_selection_does_not_open_a_new_conversation()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "m-unaddressed-create",
+            senderId: "user-long",
+            senderName: "Thanh Long",
+            content: "tạo trận ngày mai",
+            mentions: [],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Assert.False(ZaloAutoSessionPreRouteOwnership.ShouldPrimeCreateSelectionConversation(
+            incoming,
+            bypassAutoSession: false));
+    }
+
     [Fact]
     public void Unaddressed_turn_is_not_taken_away_from_auto_session_implicit_context()
     {

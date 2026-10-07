@@ -28,4 +28,15 @@ internal static class ZaloAutoSessionPreRouteOwnership
         var decision = ZaloBotIntelligence.ClassifyDeterministically(question);
         return decision.Intent != ZaloBotIntent.Unknown;
     }
+
+    internal static bool ShouldPrimeCreateSelectionConversation(
+        ZaloIncomingMessageEvent incoming,
+        bool bypassAutoSession)
+    {
+        if (bypassAutoSession || !incoming.MentionedBot)
+            return false;
+
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        return ZaloAutoSessionConversationService.IsCreateSelectionCommand(question);
+    }
 }

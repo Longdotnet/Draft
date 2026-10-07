@@ -128,11 +128,20 @@ public sealed partial class ZaloOverbookService
             incoming,
             hasActiveLegacyPending);
 
-        if (!bypassAutoSession &&
-            serviceProvider is not null &&
-            await ZaloAutoSessionConversationService.Create(serviceProvider)
-                .TryHandleIncomingAsync(incoming, cancellationToken))
-            return true;
+        if (!bypassAutoSession && serviceProvider is not null)
+        {
+            var conversationService = ZaloAutoSessionConversationService.Create(serviceProvider);
+            if (await conversationService.TryHandleIncomingAsync(incoming, cancellationToken))
+                return true;
+
+            if (ZaloAutoSessionPreRouteOwnership.ShouldPrimeCreateSelectionConversation(
+                    incoming,
+                    bypassAutoSession))
+            {
+                await conversationService.HandleCreateSelectionEntryAsync(incoming, cancellationToken);
+                return true;
+            }
+        }
 
         var draftAccountId = routeAccountId;
         var draftGroupId = routeGroupId;
