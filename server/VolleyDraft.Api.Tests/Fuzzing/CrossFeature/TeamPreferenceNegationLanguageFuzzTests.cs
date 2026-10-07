@@ -20,7 +20,25 @@ public sealed class TeamPreferenceNegationLanguageFuzzTests
     [InlineData("tui không muốn chơi chung team với @Thanh Long")]
     [InlineData("đừng xếp tui chung team với @To An")]
     [InlineData("khỏi xếp tui chung đội với @Thanh Long")]
-    public void Permanent_reproducer_negated_same_team_is_owned_but_not_executable(string question)
+    public void Explicit_negated_same_team_request_becomes_apart_not_positive_together(string question)
+    {
+        Assert.True(ZaloNaturalCommandParser.IsNegatedTeamPreference(question));
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var parsed));
+        Assert.Equal(ZaloTeamRelationshipKind.Apart, parsed.Relation);
+        Assert.Equal(2, parsed.PlayerReferences.Count);
+
+        var bound = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(ExplicitMentions, parsed);
+
+        Assert.NotNull(bound);
+        Assert.Equal(ZaloTeamRelationshipKind.Apart, bound!.Relation);
+        Assert.Equal(2, bound.PlayerReferences.Count);
+    }
+
+    [Theory]
+    [InlineData("tui không chơi chung team với @To An")]
+    [InlineData("tui không chung team với @To An")]
+    [InlineData("tui không phải không muốn chung team với @To An")]
+    public void Ambiguous_or_double_negated_same_team_language_stays_non_executable(string question)
     {
         Assert.True(ZaloNaturalCommandParser.IsNegatedTeamPreference(question));
         Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var parsed));
@@ -99,6 +117,7 @@ public sealed class TeamPreferenceNegationLanguageFuzzTests
         public LanguageAction? LastAction { get; set; }
         public bool Parsed { get; set; }
         public int PlayerReferenceCount { get; set; }
+        public ZaloTeamRelationshipKind Relation { get; set; } = ZaloTeamRelationshipKind.Unknown;
     }
 
     internal sealed class TeamPreferenceNegationTarget : IStatefulFuzzTarget<LanguageState, LanguageAction>
@@ -118,12 +137,14 @@ public sealed class TeamPreferenceNegationLanguageFuzzTests
             if (!state.Parsed)
             {
                 state.PlayerReferenceCount = 0;
+                state.Relation = ZaloTeamRelationshipKind.Unknown;
                 return ValueTask.CompletedTask;
             }
 
             var mentions = ExplicitMentions.Take(action.MentionCount).ToArray();
             var bound = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(mentions, parsed);
             state.PlayerReferenceCount = bound?.PlayerReferences.Count ?? 0;
+            state.Relation = bound?.Relation ?? parsed.Relation;
             return ValueTask.CompletedTask;
         }
 
@@ -133,17 +154,17 @@ public sealed class TeamPreferenceNegationLanguageFuzzTests
                 yield break;
 
             if (state.LastAction.IsNegated &&
-                (!state.Parsed || state.PlayerReferenceCount >= 2))
+                (!state.Parsed || state.Relation != ZaloTeamRelationshipKind.Apart || state.PlayerReferenceCount < 2))
             {
                 yield return new StatefulInvariantViolation(
                     "conversation-ownership",
-                    "negated-team-preference-promoted-to-positive",
-                    $"Negated same-team language became an executable positive command: {state.LastAction.Text}",
-                    "conversation-ownership:team-preference-negation-promoted-to-positive");
+                    "negated-team-preference-not-apart",
+                    $"Explicit negated same-team request did not remain an APART command: {state.LastAction.Text}",
+                    "conversation-ownership:team-preference-negation-not-apart");
             }
 
             if (!state.LastAction.IsNegated &&
-                (!state.Parsed || state.PlayerReferenceCount < 2))
+                (!state.Parsed || state.Relation != ZaloTeamRelationshipKind.Together || state.PlayerReferenceCount < 2))
             {
                 yield return new StatefulInvariantViolation(
                     "conversation-ownership",

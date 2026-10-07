@@ -70,6 +70,17 @@ public sealed partial class ZaloOverbookService
             pending = null;
         }
 
+        var explicitApartRequest = ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(incoming.Content);
+        if (pending is not null && IsTeamPreferenceExitState(pending.PendingIntent) && explicitApartRequest)
+        {
+            // A fresh explicit APART request is a topic switch, not confirmation of an
+            // older same-team exit preview. Revoke the stale exit authority and let the
+            // relationship lane build a new preview from current roster/state.
+            db.ZaloBotConversationStates.Remove(pending);
+            await db.SaveChangesAsync(cancellationToken);
+            pending = null;
+        }
+
         if (pending is not null && IsTeamPreferenceExitState(pending.PendingIntent))
         {
             if (await TryContinueTeamPreferenceExitAsync(
@@ -91,6 +102,9 @@ public sealed partial class ZaloOverbookService
                 return false;
             }
         }
+
+        if (explicitApartRequest)
+            return false;
 
         if (!ZaloTeamPreferenceExitSemanticInterpreter.LooksPotentialExitLanguage(incoming.Content))
             return false;

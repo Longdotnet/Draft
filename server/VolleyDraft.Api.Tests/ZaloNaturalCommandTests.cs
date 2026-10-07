@@ -274,6 +274,7 @@ public sealed class ZaloNaturalCommandTests
         Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
         Assert.Equal(ZaloTeamRelationshipKind.Apart, command.Relation);
         Assert.Equal(2, command.PlayerReferences.Count);
+        Assert.True(ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(question));
     }
 
     [Theory]
@@ -285,6 +286,7 @@ public sealed class ZaloNaturalCommandTests
         Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
         Assert.Equal(ZaloTeamRelationshipKind.Together, command.Relation);
         Assert.Equal(2, command.PlayerReferences.Count);
+        Assert.False(ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(question));
     }
 
     [Theory]
@@ -301,9 +303,11 @@ public sealed class ZaloNaturalCommandTests
     [InlineData("tui không chơi chung team với To An T6")]
     [InlineData("tui không chung team với To An")]
     [InlineData("tui không phải không muốn chung team với To An")]
-    public void Bare_or_double_negated_statements_do_not_become_deterministic_apart_mutations(string question)
+    public void Bare_or_double_negated_statements_remain_owned_but_non_executable(string question)
     {
-        Assert.False(ZaloNaturalCommandParser.TryParseTeamPreference(question, out _));
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.True(command.PlayerReferences.Count < 2);
+        Assert.False(ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(question));
     }
 
     [Fact]

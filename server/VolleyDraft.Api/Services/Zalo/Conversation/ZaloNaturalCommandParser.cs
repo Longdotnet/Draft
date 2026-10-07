@@ -198,6 +198,16 @@ public static class ZaloNaturalCommandParser
             RegexOptions.CultureInvariant);
     }
 
+    public static bool IsExplicitTeamSeparationRequest(string? question)
+    {
+        if (string.IsNullOrWhiteSpace(question)) return false;
+        return TryParseTeamPreference(question, out var command) &&
+               command.Relation == ZaloTeamRelationshipKind.Apart &&
+               command.SpeechAct == ZaloTeamRelationshipSpeechAct.Request &&
+               !command.NeedsClarification &&
+               command.PlayerReferences.Count == 2;
+    }
+
     public static bool TryParseTeamPreference(string question, out ZaloTeamPreferenceCommand command)
     {
         command = new ZaloTeamPreferenceCommand([]);
@@ -209,11 +219,6 @@ public static class ZaloNaturalCommandParser
                 RegexOptions.CultureInvariant))
         {
             return false;
-        }
-        if (IsNegatedTeamPreference(normalized))
-        {
-            command = new ZaloTeamPreferenceCommand([BlockedNegatedTeamPreference]);
-            return true;
         }
 
         if (LooksLikeTeamRelationshipQuestion(value, normalized))
@@ -228,7 +233,8 @@ public static class ZaloNaturalCommandParser
                 @"(?<![a-z0-9])(?:chung|cung)(?![a-z0-9])",
                 RegexOptions.CultureInvariant))
         {
-            return false;
+            command = new ZaloTeamPreferenceCommand([BlockedNegatedTeamPreference]);
+            return true;
         }
 
         // Keep deterministic parsing deliberately narrow. It is a high-confidence
@@ -242,7 +248,7 @@ public static class ZaloNaturalCommandParser
         {
             relationshipMatch = Regex.Match(
                 value,
-                @"^(?:đừng|dung)(?:\s+có|\s+co)?\s+(?:xếp|xep|cho)\s+(?<first>.+?)\s+(?:(?:chung|cùng|cung)\s+)?(?:(?:team|đội|doi)\s+)?(?:với|voi)\s+(?<second>.+)$",
+                @"^(?:đừng|dung|khỏi|khoi)(?:\s+có|\s+co)?\s+(?:xếp|xep|cho)\s+(?<first>.+?)\s+(?:(?:chung|cùng|cung)\s+)?(?:(?:team|đội|doi)\s+)?(?:với|voi)\s+(?<second>.+)$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
         if (!relationshipMatch.Success)
@@ -314,16 +320,14 @@ public static class ZaloNaturalCommandParser
             }
         }
 
-        // Remaining negated same-team wording is intentionally not interpreted by the
-        // deterministic mutation parser. Explicit preference/request forms such as
-        // "không muốn ... chung team" were handled above; bare statements and double
-        // negation need semantic speech-act/negation analysis instead of guessing.
-        if (Regex.IsMatch(
-                normalized,
-                @"(?<![a-z0-9])(?:khong|ko|k|hong)(?![a-z0-9]).*(?<![a-z0-9])(?:chung|cung)(?![a-z0-9])",
-                RegexOptions.CultureInvariant))
+        // Keep residual negated same-team language deterministically owned but
+        // non-executable. Explicit APART requests were handled above; ambiguous bare
+        // negation remains blocked so semantic AI/mention binding cannot promote it
+        // into a positive Together mutation.
+        if (IsNegatedTeamPreference(normalized))
         {
-            return false;
+            command = new ZaloTeamPreferenceCommand([BlockedNegatedTeamPreference]);
+            return true;
         }
 
         Match match = Regex.Match(
