@@ -11,6 +11,98 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloDraftTeamPreferenceFinalReconcileTests
 {
     [Fact]
+    public async Task Draft_rejects_transitive_together_share_component_that_contains_apart_pair()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new VolleyDraftDbContext(new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options);
+        await db.Database.EnsureCreatedAsync();
+
+        var admin = new User
+        {
+            Id = "admin-pref-apart-final",
+            DisplayName = "Admin",
+            Email = "admin-pref-apart-final@example.test",
+            PasswordHash = "test"
+        };
+        db.Users.Add(admin);
+        await db.SaveChangesAsync();
+
+        var service = new SessionDraftService(db);
+        var created = await service.CreateSessionAsync(admin.Id, new CreateSessionRequest("T6", 3, 2));
+        Assert.True(created.IsSuccess);
+        var sessionId = created.Value!.Id;
+        var playerIds = new List<string>();
+        for (var i = 1; i <= 8; i++)
+        {
+            var added = await service.AddPlayerAsync(
+                admin.Id,
+                sessionId,
+                new AddPlayerRequest($"P{i}", PlayerRole.New, PlayerLevel.New, PlayerGender.Male));
+            Assert.True(added.IsSuccess);
+            playerIds.Add(added.Value!.Id);
+        }
+
+        var captains = await service.SetManualCaptainsAsync(
+            admin.Id,
+            sessionId,
+            new ManualCaptainsRequest(playerIds.Take(3).ToList()));
+        Assert.True(captains.IsSuccess);
+
+        var group = new TeamPreferenceGroup { SessionId = sessionId };
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = playerIds[0],
+            RotationOrder = 1
+        });
+        group.Players.Add(new TeamPreferenceGroupPlayer
+        {
+            TeamPreferenceGroupId = group.Id,
+            SessionPlayerId = playerIds[3],
+            RotationOrder = 2
+        });
+        var sharedSlot = new DraftSlot
+        {
+            SessionId = sessionId,
+            Type = DraftSlotType.Shared,
+            DisplayName = "P4 / P5"
+        };
+        sharedSlot.Players.Add(new DraftSlotPlayer
+        {
+            DraftSlotId = sharedSlot.Id,
+            SessionPlayerId = playerIds[3],
+            RotationOrder = 1
+        });
+        sharedSlot.Players.Add(new DraftSlotPlayer
+        {
+            DraftSlotId = sharedSlot.Id,
+            SessionPlayerId = playerIds[4],
+            RotationOrder = 2
+        });
+        db.TeamPreferenceGroups.Add(group);
+        db.DraftSlots.Add(sharedSlot);
+        db.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = sessionId,
+            FirstSessionPlayerId = playerIds[0],
+            SecondSessionPlayerId = playerIds[4]
+        });
+        await db.SaveChangesAsync();
+
+        var started = await service.StartDraftAsync(admin.Id, sessionId);
+
+        Assert.False(started.IsSuccess);
+        Assert.Contains("khác team", started.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEqual(SessionStatus.Drafting, await db.MatchSessions
+            .Where(item => item.Id == sessionId)
+            .Select(item => item.Status)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Draft_reconciles_historical_stale_preference_before_consuming_constraints()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

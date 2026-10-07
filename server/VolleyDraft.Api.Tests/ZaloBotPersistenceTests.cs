@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -453,6 +454,34 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Finished_draft_swap_rejects_apart_pair_that_would_land_on_same_team()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "thanh-tuyen",
+            SecondSessionPlayerId = "captain-b"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).SwapDraftPlayersAsync(
+            "admin",
+            session.Id,
+            "Thanh Tuyền",
+            "Nick Tran");
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("khác team", result.Error, StringComparison.OrdinalIgnoreCase);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("team-a", await fixture.Db.DraftSlots
+            .Where(slot => slot.Id == "thanh-tuyen-slot")
+            .Select(slot => slot.AssignedTeamId)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Finished_draft_can_preview_and_confirm_two_team_rebalance_without_touching_other_team_or_splitting_share()
     {
         await using var fixture = await DbFixture.CreateAsync();
@@ -502,6 +531,12 @@ public sealed class ZaloBotPersistenceTests
             SessionPlayer = players[4],
             RotationOrder = 1
         });
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "rb-high",
+            SecondSessionPlayerId = "rc-low"
+        });
         fixture.Db.MatchSessions.Add(session);
         await fixture.Db.SaveChangesAsync();
         var service = new SessionDraftService(fixture.Db);
@@ -533,6 +568,11 @@ public sealed class ZaloBotPersistenceTests
         Assert.Equal(3, await fixture.Db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == "rebalance-b"));
         Assert.Equal(3, await fixture.Db.DraftSlots.CountAsync(slot => slot.AssignedTeamId == "rebalance-c"));
         Assert.Equal(2, await fixture.Db.DraftSlotPlayers.CountAsync(link => link.DraftSlotId == "rb-high-slot"));
+        Assert.NotEqual(
+            await fixture.Db.DraftSlots.Where(slot => slot.Players.Any(link => link.SessionPlayerId == "rb-high"))
+                .Select(slot => slot.AssignedTeamId).SingleAsync(),
+            await fixture.Db.DraftSlots.Where(slot => slot.Players.Any(link => link.SessionPlayerId == "rc-low"))
+                .Select(slot => slot.AssignedTeamId).SingleAsync());
         var teamBScore = await fixture.Db.Teams.Where(team => team.Id == "rebalance-b").Select(team => team.TotalAverageScore).SingleAsync();
         var teamCScore = await fixture.Db.Teams.Where(team => team.Id == "rebalance-c").Select(team => team.TotalAverageScore).SingleAsync();
         Assert.Equal(preview.Value.FirstAfterScore, teamBScore, 6);
@@ -881,6 +921,75 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Direct_pre_draft_shared_slot_rejects_apart_pair()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("direct-share-apart", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "a",
+            SecondSessionPlayerId = "b"
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).CreateSharedSlotAsync(
+            "admin",
+            session.Id,
+            new CreateSharedSlotRequest(["a", "b"], PlayerRole.Attack));
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("khác team", result.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await fixture.Db.DraftSlots.Where(slot => slot.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Deleting_player_removes_apart_constraints_before_restricted_fk_delete()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("delete-player-apart", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "a",
+            SecondSessionPlayerId = "b"
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).DeletePlayerAsync("admin", session.Id, "a");
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(await fixture.Db.SessionPlayers.AnyAsync(player => player.Id == "a"));
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.Where(item => item.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Deleting_session_removes_apart_constraints_before_restricted_player_delete()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("delete-session-apart", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "a",
+            SecondSessionPlayerId = "b"
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).DeleteSessionAsync("admin", session.Id);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.False(await fixture.Db.MatchSessions.AnyAsync(item => item.Id == session.Id));
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.Where(item => item.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
     public async Task Redraft_uses_shared_slot_membership_and_never_duplicates_anchor_or_drops_player()
     {
         await using var fixture = await DbFixture.CreateAsync();
@@ -1076,6 +1185,114 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Post_draft_share_rejects_apart_pair_on_target_team()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "thanh-tuyen",
+            SecondSessionPlayerId = "captain-b"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var service = new SessionDraftService(fixture.Db);
+        var preview = await service.PreviewShareSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            [new ShareSlotParticipantInput("Thanh Tuyền")]);
+        var applied = await service.SharePostDraftSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            "Thanh Tuyền");
+
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("khác team", preview.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.False(applied.IsSuccess);
+        Assert.Contains("khác team", applied.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Post_draft_transfer_rejects_receiver_apart_from_target_team_member()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        session.Players.Add(PlayerForSession("reserve-b", "Reserve B", 2, session.Id));
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "reserve-b",
+            SecondSessionPlayerId = "captain-b"
+        });
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewPostDraftSlotTransferAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            new ShareSlotParticipantInput("Reserve B"));
+        var applied = await service.TransferPostDraftSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            new ShareSlotParticipantInput("Reserve B"));
+
+        Assert.False(preview.IsSuccess);
+        Assert.Contains("khác team", preview.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.False(applied.IsSuccess);
+        Assert.Contains("khác team", applied.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Post_draft_share_repair_rejects_moving_partner_beside_apart_player()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        var thanhSlot = await fixture.Db.DraftSlots
+            .Include(slot => slot.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .SingleAsync(slot => slot.Id == "thanh-tuyen-slot");
+        var nickSlot = await fixture.Db.DraftSlots
+            .Include(slot => slot.Players)
+            .ThenInclude(link => link.SessionPlayer)
+            .SingleAsync(slot => slot.Id == "nick-tran-slot");
+        var thanhLink = thanhSlot.Players.Single();
+        thanhSlot.Players.Remove(thanhLink);
+        fixture.Db.DraftSlotPlayers.Remove(thanhLink);
+        thanhSlot.AssignedTeamId = null;
+        nickSlot.Type = DraftSlotType.Shared;
+        nickSlot.Players.Add(new DraftSlotPlayer
+        {
+            DraftSlotId = nickSlot.Id,
+            SessionPlayerId = thanhLink.SessionPlayerId,
+            SessionPlayer = thanhLink.SessionPlayer,
+            RotationOrder = 2
+        });
+        thanhLink.SessionPlayer.IsInsideSharedSlot = true;
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "thanh-tuyen",
+            SecondSessionPlayerId = "captain-a"
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).RepairPostDraftSharedSlotAsync(
+            "admin",
+            session.Id,
+            "Nick Tran",
+            "Thanh Tuyền",
+            "Captain A");
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("khác team", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Captain_can_transfer_slot_and_receiver_becomes_new_captain()
     {
         await using var fixture = await DbFixture.CreateAsync();
@@ -1137,6 +1354,47 @@ public sealed class ZaloBotPersistenceTests
         var actions = await fixture.Db.ZaloBotActionHistory.Where(action => action.ActionType == "ManualDraftBoardEdit").ToListAsync();
         Assert.Single(actions);
         Assert.True(actions[0].IsUndoable);
+    }
+
+    [Fact]
+    public async Task Manual_board_edit_rejects_apart_constraint_violation()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "thanh-tuyen",
+            SecondSessionPlayerId = "captain-b"
+        });
+        await fixture.Db.SaveChangesAsync();
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var draft = new SessionDraftService(fixture.Db);
+        var board = new DraftBoardService(fixture.Db, draft, history);
+        var state = await draft.GetDraftStateAsync("admin", session.Id);
+        Assert.True(state.IsSuccess, state.Error);
+        var assignments = state.Value!.TeamPreview.SelectMany(team => team.Slots.Select(slot =>
+            new DraftBoardAssignmentRequest(
+                slot.Id,
+                team.TeamId,
+                slot.Id == "thanh-tuyen-slot" ? "team-b" :
+                slot.Id == "nick-tran-slot" ? "team-a" : team.TeamId)))
+            .ToList();
+
+        var result = await board.UpdateAsync(
+            "admin",
+            session.Id,
+            new UpdateDraftBoardRequest(state.Value.StateToken, assignments));
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("khác team", result.Error, StringComparison.OrdinalIgnoreCase);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("team-a", await fixture.Db.DraftSlots
+            .Where(slot => slot.Id == "thanh-tuyen-slot")
+            .Select(slot => slot.AssignedTeamId)
+            .SingleAsync());
     }
 
     [Fact]
@@ -1400,6 +1658,224 @@ public sealed class ZaloBotPersistenceTests
             .ToList();
         Assert.Contains(restoredGroups, players => players.SequenceEqual(["a", "b"]));
         Assert.Contains(restoredGroups, players => players.SequenceEqual(["c", "d"]));
+    }
+
+    [Fact]
+    public async Task Team_relationship_change_from_together_to_apart_is_atomic_and_canonical()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("change-to-apart", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        Assert.True((await service.CreateTeamPreferenceGroupAsync(
+            "admin", session.Id, new(["a", "b"]))).IsSuccess);
+
+        var preview = await service.PreviewTeamRelationshipFromBotAsync(
+            "admin",
+            session.Id,
+            [new ShareSlotParticipantInput("A"), new ShareSlotParticipantInput("B")],
+            ZaloTeamRelationshipKind.Apart,
+            ZaloTeamRelationshipOperation.Change);
+        Assert.True(preview.IsSuccess, preview.Error);
+
+        var applied = await service.ApplyTeamRelationshipPreviewAsync("admin", preview.Value!);
+
+        Assert.True(applied.IsSuccess, applied.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+        var separation = await fixture.Db.TeamSeparationConstraints.SingleAsync(item => item.SessionId == session.Id);
+        Assert.Equal("a", separation.FirstSessionPlayerId);
+        Assert.Equal("b", separation.SecondSessionPlayerId);
+    }
+
+    [Fact]
+    public async Task Team_relationship_change_from_apart_to_together_removes_old_constraint_in_same_transaction()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("change-to-together", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        session.TeamSeparationConstraints.Add(new TeamSeparationConstraint
+        {
+            SessionId = session.Id,
+            FirstSessionPlayerId = "a",
+            SecondSessionPlayerId = "b"
+        });
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamRelationshipFromBotAsync(
+            "admin",
+            session.Id,
+            [new ShareSlotParticipantInput("A"), new ShareSlotParticipantInput("B")],
+            ZaloTeamRelationshipKind.Together,
+            ZaloTeamRelationshipOperation.Change);
+        Assert.True(preview.IsSuccess, preview.Error);
+
+        var applied = await service.ApplyTeamRelationshipPreviewAsync("admin", preview.Value!);
+
+        Assert.True(applied.IsSuccess, applied.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.Where(item => item.SessionId == session.Id).ToListAsync());
+        var links = await fixture.Db.TeamPreferenceGroupPlayers
+            .Where(link => link.TeamPreferenceGroup.SessionId == session.Id)
+            .Select(link => link.SessionPlayerId)
+            .OrderBy(id => id)
+            .ToListAsync();
+        Assert.Equal(["a", "b"], links);
+    }
+
+    [Fact]
+    public async Task Team_relationship_clear_apart_removes_only_the_requested_pair()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("clear-apart", 6,
+            ("a", "A", 2d), ("b", "B", 2d), ("c", "C", 2d));
+        session.TeamSeparationConstraints.AddRange([
+            new TeamSeparationConstraint
+            {
+                SessionId = session.Id,
+                FirstSessionPlayerId = "a",
+                SecondSessionPlayerId = "b"
+            },
+            new TeamSeparationConstraint
+            {
+                SessionId = session.Id,
+                FirstSessionPlayerId = "a",
+                SecondSessionPlayerId = "c"
+            }
+        ]);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamRelationshipFromBotAsync(
+            "admin",
+            session.Id,
+            [new ShareSlotParticipantInput("A"), new ShareSlotParticipantInput("B")],
+            ZaloTeamRelationshipKind.Apart,
+            ZaloTeamRelationshipOperation.Clear);
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.True((await service.ApplyTeamRelationshipPreviewAsync("admin", preview.Value!)).IsSuccess);
+
+        fixture.Db.ChangeTracker.Clear();
+        var remaining = await fixture.Db.TeamSeparationConstraints
+            .Where(item => item.SessionId == session.Id)
+            .Select(item => new { item.FirstSessionPlayerId, item.SecondSessionPlayerId })
+            .ToListAsync();
+        Assert.Single(remaining);
+        Assert.Equal("a", remaining[0].FirstSessionPlayerId);
+        Assert.Equal("c", remaining[0].SecondSessionPlayerId);
+    }
+
+    [Fact]
+    public async Task Team_relationship_clear_together_removes_exact_pair_group()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("clear-together", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+        Assert.True((await service.CreateTeamPreferenceGroupAsync(
+            "admin", session.Id, new(["a", "b"]))).IsSuccess);
+
+        var preview = await service.PreviewTeamRelationshipFromBotAsync(
+            "admin",
+            session.Id,
+            [new ShareSlotParticipantInput("A"), new ShareSlotParticipantInput("B")],
+            ZaloTeamRelationshipKind.Together,
+            ZaloTeamRelationshipOperation.Clear);
+        Assert.True(preview.IsSuccess, preview.Error);
+        Assert.True((await service.ApplyTeamRelationshipPreviewAsync("admin", preview.Value!)).IsSuccess);
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Direct_team_preference_create_rejects_cancelled_session()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("cancelled-team-preference", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        session.Status = SessionStatus.Cancelled;
+        session.StartTime = DateTimeOffset.UtcNow.AddHours(1);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await new SessionDraftService(fixture.Db).CreateTeamPreferenceGroupAsync(
+            "admin",
+            session.Id,
+            new CreateTeamPreferenceGroupRequest(["a", "b"]));
+
+        Assert.False(result.IsSuccess);
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+    }
+
+    [Theory]
+    [InlineData(ZaloTeamRelationshipKind.Together)]
+    [InlineData(ZaloTeamRelationshipKind.Apart)]
+    public async Task Team_relationship_confirmation_revalidates_start_time_before_mutation(
+        ZaloTeamRelationshipKind relation)
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession($"expired-confirmation-{relation}", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        session.StartTime = DateTimeOffset.UtcNow.AddHours(1);
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var service = new SessionDraftService(fixture.Db);
+
+        var preview = await service.PreviewTeamRelationshipFromBotAsync(
+            "admin",
+            session.Id,
+            [new ShareSlotParticipantInput("A"), new ShareSlotParticipantInput("B")],
+            relation,
+            ZaloTeamRelationshipOperation.Set);
+        Assert.True(preview.IsSuccess, preview.Error);
+
+        session.StartTime = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+
+        var applied = await service.ApplyTeamRelationshipPreviewAsync("admin", preview.Value!);
+
+        Assert.False(applied.IsSuccess);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
+        Assert.Empty(await fixture.Db.TeamSeparationConstraints.Where(item => item.SessionId == session.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Legacy_action_hash_without_separations_field_remains_undoable_when_no_apart_constraint_was_added()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = PreferenceSession("legacy-history", 6,
+            ("a", "A", 2d), ("b", "B", 2d));
+        fixture.Db.MatchSessions.Add(session);
+        await fixture.Db.SaveChangesAsync();
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var before = await history.CaptureAsync(session.Id);
+        Assert.True((await new SessionDraftService(fixture.Db)
+            .CreateTeamPreferenceGroupAsync("admin", session.Id, new(["a", "b"]))).IsSuccess);
+        var action = await history.RecordAsync(
+            session.Id, "operator", "Operator", "TeamPreference", "legacy", before);
+        Assert.NotNull(action);
+
+        var stored = await fixture.Db.ZaloBotActionHistory.SingleAsync(item => item.Id == action!.Id);
+        stored.BeforeStateJson = RemoveTopLevelProperty(stored.BeforeStateJson, "separations");
+        stored.AfterStateJson = RemoveTopLevelProperty(stored.AfterStateJson, "separations");
+        stored.AfterHash = Sha256(stored.AfterStateJson);
+        await fixture.Db.SaveChangesAsync();
+
+        var undone = await history.UndoAsync("admin", session.Id, stored.Id, "operator");
+
+        Assert.True(undone.IsSuccess, undone.Error);
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.Where(group => group.SessionId == session.Id).ToListAsync());
     }
 
     [Fact]
@@ -1673,6 +2149,26 @@ public sealed class ZaloBotPersistenceTests
         });
         return slot;
     }
+
+    private static string RemoveTopLevelProperty(string json, string propertyName)
+    {
+        using var document = JsonDocument.Parse(json);
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.Ordinal)) continue;
+                property.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static string Sha256(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private sealed class PollBridgeHandler(
         BridgePoll poll,

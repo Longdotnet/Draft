@@ -102,15 +102,17 @@ public static class ZaloAmbientParticipationEngine
                              address.SpeechAct == ZaloConversationalSpeechAct.AskCapability;
 
         var parsedTeamPreference = ZaloNaturalCommandParser.TryParseTeamPreference(content, out _);
+        var teamPreferenceTopic = parsedTeamPreference ||
+                                  string.Equals(address.Reason, "team_preference_bot_question", StringComparison.Ordinal);
         var genericFeasibilityTurn = address.Target == ZaloConversationalTarget.Bot &&
                                      address.SpeechAct == ZaloConversationalSpeechAct.AskFeasibility &&
-                                     !parsedTeamPreference;
+                                     !teamPreferenceTopic;
         var shorthandTeamFeasibility = address.Target != ZaloConversationalTarget.AnotherMember &&
-                                       parsedTeamPreference && ConversationalTeamFeasibilityPattern.IsMatch(normalized);
+                                       teamPreferenceTopic && ConversationalTeamFeasibilityPattern.IsMatch(normalized);
         var leaseTeamAdvisor = leaseEligible && parsedTeamPreference;
         var advisorTurn = shorthandTeamFeasibility || leaseTeamAdvisor ||
                           (address.Target == ZaloConversationalTarget.Bot &&
-                           ((address.SpeechAct == ZaloConversationalSpeechAct.AskFeasibility && parsedTeamPreference) ||
+                           ((address.SpeechAct == ZaloConversationalSpeechAct.AskFeasibility && teamPreferenceTopic) ||
                             address.SpeechAct is ZaloConversationalSpeechAct.RequestPreview or
                                 ZaloConversationalSpeechAct.ClarificationAnswer or
                                 ZaloConversationalSpeechAct.Confirm or

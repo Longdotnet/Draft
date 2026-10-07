@@ -63,6 +63,15 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
             .OrderBy(item => item.TeamPreferenceGroupId).ThenBy(item => item.SessionPlayerId)
             .Select(item => new PreferencePlayerState(item.TeamPreferenceGroupId, item.SessionPlayerId, item.RotationOrder))
             .ToListAsync(cancellationToken);
+        var separations = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.Id)
+            .Select(item => new SeparationState(
+                item.Id,
+                item.FirstSessionPlayerId,
+                item.SecondSessionPlayerId,
+                item.CreatedAt))
+            .ToListAsync(cancellationToken);
         var rounds = await db.DraftRounds.AsNoTracking().Where(item => item.SessionId == sessionId)
             .OrderBy(item => item.Id)
             .Select(item => new RoundState(item.Id, item.RoundNumber, item.Label, item.Status, item.CreatedAt))
@@ -108,7 +117,7 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
                 session.LastReminderError, session.Status, session.TeamCount, session.TeamSize,
                 session.TotalSets, session.CurrentRoundNumber, session.CurrentTurnTeamId,
                 session.CurrentTurnCaptainSessionPlayerId, session.UpdatedAt),
-            players, profiles, teams, slots, slotPlayers, preferenceGroups, preferencePlayers,
+            players, profiles, teams, slots, slotPlayers, preferenceGroups, preferencePlayers, separations,
             rounds, bags, turns, reminders, waitlist, imports);
         var json = JsonSerializer.Serialize(snapshot, JsonOptions);
         return new BotSessionStateCapture(json, Hash(json));
@@ -187,6 +196,14 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
                 item.SessionPlayerId,
                 item.RotationOrder))
             .ToListAsync(cancellationToken);
+        var separations = await db.TeamSeparationConstraints.AsNoTracking()
+            .Where(item => item.SessionId == sessionId)
+            .OrderBy(item => item.FirstSessionPlayerId)
+            .ThenBy(item => item.SecondSessionPlayerId)
+            .Select(item => new ShareSeparationState(
+                item.FirstSessionPlayerId,
+                item.SecondSessionPlayerId))
+            .ToListAsync(cancellationToken);
 
         var state = new ShareState(
             session,
@@ -195,7 +212,8 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
             slots,
             slotPlayers,
             preferenceGroups,
-            preferencePlayers);
+            preferencePlayers,
+            separations);
         return Hash(JsonSerializer.Serialize(state, JsonOptions));
     }
 
@@ -461,7 +479,18 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
 
         db.ChangeTracker.Clear();
         var current = await CaptureAsync(sessionId, cancellationToken);
-        if (current.Hash != action.AfterHash)
+        var stateMatches = current.Hash == action.AfterHash;
+        if (!stateMatches &&
+            !HasTopLevelProperty(action.AfterStateJson, "separations") &&
+            !await db.TeamSeparationConstraints.AsNoTracking()
+                .AnyAsync(item => item.SessionId == sessionId, cancellationToken))
+        {
+            stateMatches = string.Equals(
+                HashWithoutTopLevelProperty(current.Json, "separations"),
+                action.AfterHash,
+                StringComparison.Ordinal);
+        }
+        if (!stateMatches)
         {
             const string reason = "Dữ liệu buổi đấu đã thay đổi sau thao tác này. Bot không tự ghi đè thay đổi mới hơn.";
             await db.ZaloBotActionHistory.Where(item => item.Id == actionId)
@@ -559,6 +588,7 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         await db.TeamPreferenceGroupPlayers.Where(item => preferenceIds.Contains(item.TeamPreferenceGroupId))
             .ExecuteDeleteAsync(cancellationToken);
         await db.TeamPreferenceGroups.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        await db.TeamSeparationConstraints.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
         var slotIds = await db.DraftSlots.Where(item => item.SessionId == sessionId)
             .Select(item => item.Id).ToListAsync(cancellationToken);
         await db.DraftSlotPlayers.Where(item => slotIds.Contains(item.DraftSlotId)).ExecuteDeleteAsync(cancellationToken);
@@ -661,6 +691,14 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
             SessionPlayerId = state.SessionPlayerId,
             RotationOrder = state.RotationOrder
         }));
+        db.TeamSeparationConstraints.AddRange((snapshot.Separations ?? []).Select(state => new TeamSeparationConstraint
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            FirstSessionPlayerId = state.FirstSessionPlayerId,
+            SecondSessionPlayerId = state.SecondSessionPlayerId,
+            CreatedAt = state.CreatedAt
+        }));
         db.BlindBags.AddRange(snapshot.Bags.Select(state => new BlindBag
         {
             Id = state.Id,
@@ -731,6 +769,7 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         var preferenceIds = await db.TeamPreferenceGroups.Where(item => item.SessionId == sessionId).Select(item => item.Id).ToListAsync(cancellationToken);
         await db.TeamPreferenceGroupPlayers.Where(item => preferenceIds.Contains(item.TeamPreferenceGroupId)).ExecuteDeleteAsync(cancellationToken);
         await db.TeamPreferenceGroups.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
+        await db.TeamSeparationConstraints.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
         var slotIds = await db.DraftSlots.Where(item => item.SessionId == sessionId).Select(item => item.Id).ToListAsync(cancellationToken);
         await db.DraftSlotPlayers.Where(item => slotIds.Contains(item.DraftSlotId)).ExecuteDeleteAsync(cancellationToken);
         await db.DraftSlots.Where(item => item.SessionId == sessionId).ExecuteDeleteAsync(cancellationToken);
@@ -795,6 +834,14 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         db.TeamPreferenceGroupPlayers.AddRange(snapshot.PreferencePlayers.Select(state => new TeamPreferenceGroupPlayer
         {
             TeamPreferenceGroupId = state.TeamPreferenceGroupId, SessionPlayerId = state.SessionPlayerId, RotationOrder = state.RotationOrder
+        }));
+        db.TeamSeparationConstraints.AddRange((snapshot.Separations ?? []).Select(state => new TeamSeparationConstraint
+        {
+            Id = state.Id,
+            SessionId = sessionId,
+            FirstSessionPlayerId = state.FirstSessionPlayerId,
+            SecondSessionPlayerId = state.SecondSessionPlayerId,
+            CreatedAt = state.CreatedAt
         }));
         db.BlindBags.AddRange(snapshot.Bags.Select(state => new BlindBag
         {
@@ -866,6 +913,37 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
     }
 
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
+    private static bool HasTopLevelProperty(string json, string propertyName)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty(propertyName, out _);
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
+    }
+
+    private static string HashWithoutTopLevelProperty(string json, string propertyName)
+    {
+        using var document = JsonDocument.Parse(json);
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.Ordinal)) continue;
+                property.WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+        return Hash(Encoding.UTF8.GetString(stream.ToArray()));
+    }
     private static string? Clean(string? value, int maxLength)
     {
         var cleaned = value?.Trim();
@@ -889,6 +967,7 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         MatchState Match, IReadOnlyList<PlayerState> Players, IReadOnlyList<ProfileState> Profiles,
         IReadOnlyList<TeamState> Teams, IReadOnlyList<SlotState> Slots, IReadOnlyList<SlotPlayerState> SlotPlayers,
         IReadOnlyList<PreferenceGroupState> PreferenceGroups, IReadOnlyList<PreferencePlayerState> PreferencePlayers,
+        IReadOnlyList<SeparationState>? Separations,
         IReadOnlyList<RoundState> Rounds, IReadOnlyList<BagState> Bags, IReadOnlyList<TurnState> Turns,
         IReadOnlyList<ReminderState> Reminders, IReadOnlyList<WaitlistState> Waitlist,
         IReadOnlyList<PollImportState> PollImports);
@@ -899,7 +978,8 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         IReadOnlyList<ShareSlotState> Slots,
         IReadOnlyList<ShareSlotPlayerState> SlotPlayers,
         IReadOnlyList<string> PreferenceGroups,
-        IReadOnlyList<SharePreferencePlayerState> PreferencePlayers);
+        IReadOnlyList<SharePreferencePlayerState> PreferencePlayers,
+        IReadOnlyList<ShareSeparationState> Separations);
     private sealed record ShareMatchState(
         SessionStatus Status,
         DateTimeOffset? StartTime,
@@ -938,6 +1018,9 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
         string TeamPreferenceGroupId,
         string SessionPlayerId,
         int RotationOrder);
+    private sealed record ShareSeparationState(
+        string FirstSessionPlayerId,
+        string SecondSessionPlayerId);
     private sealed record MatchState(
         string Name, DateTimeOffset? StartTime, string? Location, string? ParkingInstructions,
         string? LocationImageUrl, string? PaymentInstructions, string? PaymentQrImageUrl,
@@ -960,6 +1043,11 @@ public sealed class ZaloBotActionHistoryService(VolleyDraftDbContext db, ILogger
     private sealed record SlotPlayerState(string Id, string DraftSlotId, string SessionPlayerId, int RotationOrder);
     private sealed record PreferenceGroupState(string Id, DateTimeOffset CreatedAt);
     private sealed record PreferencePlayerState(string TeamPreferenceGroupId, string SessionPlayerId, int RotationOrder);
+    private sealed record SeparationState(
+        string Id,
+        string FirstSessionPlayerId,
+        string SecondSessionPlayerId,
+        DateTimeOffset CreatedAt);
     private sealed record RoundState(string Id, int RoundNumber, string Label, DraftRoundStatus Status, DateTimeOffset CreatedAt);
     private sealed record BagState(string Id, string RoundId, string DraftSlotId, string? PreparedDraftSlotId,
         int BagNumber, bool IsOpened, string? OpenedByUserId, string? OpenedForTeamId, DateTimeOffset? OpenedAt);

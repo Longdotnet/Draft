@@ -72,6 +72,7 @@ public sealed class DraftBoardService(
                 .ToListAsync(cancellationToken);
             var teamIds = teams.Select(team => team.Id).ToHashSet(StringComparer.Ordinal);
             var slots = await db.DraftSlots
+                .Include(slot => slot.Players)
                 .Where(slot => slot.SessionId == sessionId && slot.AssignedTeamId != null)
                 .OrderByDescending(slot => slot.IsCaptainSlot)
                 .ThenBy(slot => slot.DisplayName)
@@ -108,6 +109,24 @@ public sealed class DraftBoardService(
             var changed = slots.Where(slot => !string.Equals(slot.AssignedTeamId, assignmentBySlot[slot.Id].TargetTeamId, StringComparison.Ordinal)).ToList();
             if (changed.Count == 0)
                 return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest, "Đội hình chưa có thay đổi để lưu.");
+
+            var relationshipOverrides = slots
+                .SelectMany(slot => slot.Players.Select(link => new
+                {
+                    link.SessionPlayerId,
+                    TeamId = (string?)assignmentBySlot[slot.Id].TargetTeamId
+                }))
+                .ToDictionary(
+                    item => item.SessionPlayerId,
+                    item => item.TeamId,
+                    StringComparer.Ordinal);
+            var relationshipError = await draftService.ValidateAssignedTeamRelationshipsAsync(
+                sessionId,
+                slots,
+                relationshipOverrides,
+                cancellationToken: cancellationToken);
+            if (relationshipError is not null)
+                return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest, relationshipError);
 
             var before = await actionHistory.CaptureAsync(sessionId, cancellationToken);
             foreach (var slot in changed)

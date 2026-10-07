@@ -24,4 +24,6 @@ public sealed class SessionPlayer
     public PlayerProfile? PlayerProfile { get; set; }
     public List<DraftSlotPlayer> DraftSlotPlayers { get; set; } = [];
     public List<TeamPreferenceGroupPlayer> TeamPreferenceGroupPlayers { get; set; } = [];
+    public List<TeamSeparationConstraint> TeamSeparationConstraintsAsFirst { get; set; } = [];
+    public List<TeamSeparationConstraint> TeamSeparationConstraintsAsSecond { get; set; } = [];
 }

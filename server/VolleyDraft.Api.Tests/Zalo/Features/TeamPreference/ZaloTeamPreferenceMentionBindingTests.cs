@@ -56,4 +56,44 @@ public sealed class ZaloTeamPreferenceMentionBindingTests
         Assert.Equal(["long-id", "to-an-id", "anh-duy-id"], command.PlayerZaloUserIds);
         Assert.Equal("T6", command.SessionReference);
     }
+
+    [Fact]
+    public void Duplicate_display_name_mentions_do_not_bind_an_arbitrary_uid()
+    {
+        var original = new ZaloTeamPreferenceCommand(
+            ["tui", "To An"],
+            Relation: ZaloTeamRelationshipKind.Apart);
+
+        var command = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(
+            [
+                new ZaloMentionedUser("to-an-1", "To An"),
+                new ZaloMentionedUser("to-an-2", "To An")
+            ],
+            original);
+
+        Assert.NotNull(command);
+        Assert.Equal(["tui", "To An"], command!.PlayerReferences);
+        Assert.True(command.PlayerZaloUserIds is null || command.PlayerZaloUserIds[1] is null);
+        Assert.True(command.NeedsClarification);
+        Assert.False(string.IsNullOrWhiteSpace(command.ClarificationQuestion));
+    }
+
+    [Fact]
+    public void Repeated_mention_of_the_same_uid_is_not_ambiguous()
+    {
+        var original = new ZaloTeamPreferenceCommand(
+            ["tui", "To An"],
+            Relation: ZaloTeamRelationshipKind.Apart);
+
+        var command = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(
+            [
+                new ZaloMentionedUser("to-an-id", "To An"),
+                new ZaloMentionedUser("to-an-id", "To An")
+            ],
+            original);
+
+        Assert.NotNull(command);
+        Assert.Equal("to-an-id", command!.PlayerZaloUserIds![1]);
+        Assert.False(command.NeedsClarification);
+    }
 }

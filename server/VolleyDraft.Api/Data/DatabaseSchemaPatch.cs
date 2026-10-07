@@ -53,6 +53,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "DraftSlots", "Gender", "\"Gender\" TEXT NOT NULL DEFAULT 'Male'");
             await EnsureSqliteColumn(db, "BlindBags", "PreparedDraftSlotId", "\"PreparedDraftSlotId\" TEXT NULL");
             await EnsureSqliteTeamPreferenceTables(db);
+            await EnsureSqliteTeamSeparationTables(db);
             await EnsureSqliteZaloTables(db);
             await EnsureSqliteZaloBotTables(db);
             await EnsureSqliteZaloBotLearningTables(db);
@@ -144,6 +145,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "DraftSlots", "Gender", "\"Gender\" text NOT NULL DEFAULT 'Male'");
             await EnsurePostgresColumn(db, "BlindBags", "PreparedDraftSlotId", "\"PreparedDraftSlotId\" text NULL");
             await EnsurePostgresTeamPreferenceTables(db);
+            await EnsurePostgresTeamSeparationTables(db);
             await EnsurePostgresZaloTables(db);
             await EnsurePostgresZaloBotTables(db);
             await EnsurePostgresZaloBotLearningTables(db);
@@ -423,6 +425,52 @@ public static class DatabaseSchemaPatch
             """CREATE INDEX IF NOT EXISTS "IX_TeamPreferenceGroups_SessionId" ON "TeamPreferenceGroups" ("SessionId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_TeamPreferenceGroupPlayers_SessionPlayerId" ON "TeamPreferenceGroupPlayers" ("SessionPlayerId");""");
+    }
+
+    private static async Task EnsureSqliteTeamSeparationTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TeamSeparationConstraints" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_TeamSeparationConstraints" PRIMARY KEY,
+                "SessionId" TEXT NOT NULL,
+                "FirstSessionPlayerId" TEXT NOT NULL,
+                "SecondSessionPlayerId" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00',
+                CONSTRAINT "FK_TeamSeparationConstraints_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_TeamSeparationConstraints_SessionPlayers_FirstSessionPlayerId"
+                    FOREIGN KEY ("FirstSessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE RESTRICT,
+                CONSTRAINT "FK_TeamSeparationConstraints_SessionPlayers_SecondSessionPlayerId"
+                    FOREIGN KEY ("SecondSessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE RESTRICT
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_TeamSeparationConstraints_SessionId" ON "TeamSeparationConstraints" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_TeamSeparationConstraints_SessionId_FirstSessionPlayerId_SecondSessionPlayerId" ON "TeamSeparationConstraints" ("SessionId", "FirstSessionPlayerId", "SecondSessionPlayerId");""");
+    }
+
+    private static async Task EnsurePostgresTeamSeparationTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "TeamSeparationConstraints" (
+                "Id" text NOT NULL CONSTRAINT "PK_TeamSeparationConstraints" PRIMARY KEY,
+                "SessionId" text NOT NULL,
+                "FirstSessionPlayerId" text NOT NULL,
+                "SecondSessionPlayerId" text NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT "FK_TeamSeparationConstraints_MatchSessions_SessionId"
+                    FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_TeamSeparationConstraints_SessionPlayers_FirstSessionPlayerId"
+                    FOREIGN KEY ("FirstSessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE RESTRICT,
+                CONSTRAINT "FK_TeamSeparationConstraints_SessionPlayers_SecondSessionPlayerId"
+                    FOREIGN KEY ("SecondSessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE RESTRICT
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_TeamSeparationConstraints_SessionId" ON "TeamSeparationConstraints" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_TeamSeparationConstraints_SessionId_FirstSessionPlayerId_SecondSessionPlayerId" ON "TeamSeparationConstraints" ("SessionId", "FirstSessionPlayerId", "SecondSessionPlayerId");""");
     }
 
     private static async Task EnsureSqliteZaloTables(VolleyDraftDbContext db)

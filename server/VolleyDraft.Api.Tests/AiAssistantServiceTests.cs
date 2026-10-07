@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Models;
@@ -192,6 +193,156 @@ public sealed class AiAssistantServiceTests
             DateTimeOffset.UtcNow));
 
         Assert.Null(result);
+    }
+
+    [Theory]
+    [InlineData("{\"relation\":\"APART\",\"speechAct\":\"REQUEST\",\"players\":[\"Thanh Long\",\"To An\"],\"confidence\":0.99,\"needsClarification\":false}")]
+    [InlineData("{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"proposal\",\"players\":[\"Thanh Long\",\"To An\"],\"confidence\":0.99,\"needsClarification\":false}")]
+    public async Task Team_preference_unknown_operation_or_speech_act_fails_closed(string semanticJson)
+    {
+        var escaped = semanticJson.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var service = CreateService(
+            HttpStatusCode.OK,
+            $"{{\"choices\":[{{\"message\":{{\"content\":\"{escaped}\"}}}}]}}");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "오늘 tui don't wanna be same team với To An",
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.True(result!.NeedsClarification);
+        Assert.True(
+            result.Operation == ZaloTeamRelationshipOperation.Unknown ||
+            result.SpeechAct == ZaloTeamRelationshipSpeechAct.Unknown);
+    }
+
+    [Fact]
+    public async Task Team_preference_code_switch_apart_request_keeps_structured_semantics()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"REQUEST\",\"players\":[\"Thanh Long\",\"To An\"],\"sessionReference\":\"T6\",\"confidence\":0.97,\"needsClarification\":false,\"clarificationQuestion\":null}"}}]}""");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "오늘 tui don't wanna be same team với To An T6",
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.Equal(ZaloTeamRelationshipKind.Apart, result!.Relation);
+        Assert.Equal(ZaloTeamRelationshipOperation.Set, result.Operation);
+        Assert.Equal(ZaloTeamRelationshipSpeechAct.Request, result.SpeechAct);
+        Assert.False(result.NeedsClarification);
+        Assert.Equal(.97, result.Confidence, 2);
+    }
+
+    [Fact]
+    public async Task Team_preference_semantic_output_drops_hallucinated_player_and_fails_closed()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"REQUEST\",\"players\":[\"Thanh Long\",\"Nick Tran\"],\"confidence\":0.99,\"needsClarification\":false}"}}]}""");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "tui muốn khác team với To An",
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.DoesNotContain("Nick Tran", result!.PlayerReferences);
+        Assert.True(result.NeedsClarification);
+        Assert.Single(result.PlayerReferences);
+    }
+
+    [Fact]
+    public async Task Team_preference_semantic_output_drops_hallucinated_session_reference()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"REQUEST\",\"players\":[\"Thanh Long\",\"To An\"],\"sessionReference\":\"CN\",\"confidence\":0.99,\"needsClarification\":false}"}}]}""");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "tui không muốn chung team với To An T6",
+            "Thanh Long",
+            [],
+            [new ZaloAiSessionReference("cn", "CN", null)]));
+
+        Assert.NotNull(result);
+        Assert.Null(result!.SessionReference);
+    }
+
+    [Fact]
+    public async Task Team_preference_query_preserves_non_mutating_question_semantics()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"operation\":\"QUERY\",\"relation\":\"APART\",\"speechAct\":\"QUESTION\",\"players\":[\"Thanh Long\",\"To An\"],\"confidence\":0.95,\"needsClarification\":false}"}}]}""");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "Can I avoid To An?",
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.Equal(ZaloTeamRelationshipOperation.Query, result!.Operation);
+        Assert.Equal(ZaloTeamRelationshipSpeechAct.Question, result.SpeechAct);
+        Assert.Equal(ZaloTeamRelationshipKind.Apart, result.Relation);
+    }
+
+    [Theory]
+    [InlineData("{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"REQUEST\",\"players\":[\"Thanh Long\",\"To An\"],\"confidence\":0.55,\"needsClarification\":false}")]
+    [InlineData("{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"SUGGESTION\",\"players\":[\"Thanh Long\",\"To An\"],\"confidence\":0.95,\"needsClarification\":false}")]
+    [InlineData("{\"operation\":\"SET\",\"relation\":\"APART\",\"speechAct\":\"UNCERTAIN\",\"players\":[\"Thanh Long\",\"To An\"],\"confidence\":0.95,\"needsClarification\":false}")]
+    public async Task Team_preference_low_confidence_suggestion_or_uncertain_fails_closed(string semanticJson)
+    {
+        var escaped = semanticJson.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var service = CreateService(
+            HttpStatusCode.OK,
+            $"{{\"choices\":[{{\"message\":{{\"content\":\"{escaped}\"}}}}]}}");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            "tui muốn khác team với To An",
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.True(result!.NeedsClarification);
+    }
+
+    [Fact]
+    public async Task Team_preference_semantic_output_with_more_than_twelve_targets_fails_closed()
+    {
+        var players = Enumerable.Range(1, 13).Select(index => $"Player {index}").ToArray();
+        var question = $"xếp {string.Join(", ", players)} chung team";
+        var semanticJson = JsonSerializer.Serialize(new
+        {
+            operation = "SET",
+            relation = "TOGETHER",
+            speechAct = "REQUEST",
+            players,
+            confidence = 0.99,
+            needsClarification = false
+        });
+        var escaped = semanticJson.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var service = CreateService(
+            HttpStatusCode.OK,
+            $"{{\"choices\":[{{\"message\":{{\"content\":\"{escaped}\"}}}}]}}");
+
+        var result = await service.ParseTeamPreferenceCommandAsync(new ZaloNaturalTeamPreferenceContext(
+            question,
+            "Thanh Long",
+            [],
+            []));
+
+        Assert.NotNull(result);
+        Assert.True(result!.NeedsClarification);
+        Assert.Equal(12, result.PlayerReferences.Count);
     }
 
     [Fact]

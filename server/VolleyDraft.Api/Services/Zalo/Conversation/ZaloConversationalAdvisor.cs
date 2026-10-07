@@ -79,7 +79,8 @@ public static class ZaloConversationalAddressResolver
         if (AnotherMemberVocative.IsMatch(text))
             return new(ZaloConversationalTarget.AnotherMember, ZaloConversationalSpeechAct.Unknown, .95, "member_vocative");
 
-        var teamPreference = ZaloNaturalCommandParser.TryParseTeamPreference(incoming.Content ?? string.Empty, out _);
+        var teamPreference = ZaloNaturalCommandParser.TryParseTeamPreference(incoming.Content ?? string.Empty, out _) ||
+                             LooksLikeTeamPreferenceTopic(text);
         if (teamPreference && LooksLikeBotFeasibilityQuestion(text))
             return new(ZaloConversationalTarget.Bot, ZaloConversationalSpeechAct.AskFeasibility, .91, "team_preference_bot_question");
 
@@ -101,7 +102,16 @@ public static class ZaloConversationalAddressResolver
     }
 
     private static bool LooksLikeBotFeasibilityQuestion(string text) =>
-        Regex.IsMatch(text, @"(?:ban|bot|npc).*(?:xep|lam).*(?:duoc\s*(?:khong|ko)|duoc\s*k)|(?:xep|lam).*(?:duoc\s*(?:khong|ko)|duoc\s*k)", RegexOptions.CultureInvariant);
+        Regex.IsMatch(
+            text,
+            @"(?:ban|bot|npc).*(?:xep|lam).*(?:(?:duoc|dc)\s*(?:khong|ko|k))|(?:xep|lam).*(?:(?:duoc|dc)\s*(?:khong|ko|k))",
+            RegexOptions.CultureInvariant);
+
+    private static bool LooksLikeTeamPreferenceTopic(string text) =>
+        Regex.IsMatch(
+            text,
+            @"(?:choi|danh|o|xep|cho)?\s*(?:chung|cung)(?:\s+(?:team|doi))?\s+(?:voi|cung)\s+",
+            RegexOptions.CultureInvariant);
 
     private static bool IsProposalFollowUp(string text) =>
         ZaloBotIntelligence.IsConfirmation(text) ||
@@ -360,13 +370,14 @@ public sealed class ZaloConversationalAdvisor(VolleyDraftDbContext db)
         requester = string.Empty;
         partner = string.Empty;
         sessionReference = null;
-        if (!ZaloNaturalCommandParser.TryParseTeamPreference(text, out var parsed) || parsed.PlayerReferences.Count < 2)
-            return false;
-
-        requester = CleanPartner(parsed.PlayerReferences[0]);
-        partner = CleanPartner(parsed.PlayerReferences[1]);
-        sessionReference = parsed.SessionReference;
-        if (IsSelf(requester) && partner.Length > 0) return true;
+        if (ZaloNaturalCommandParser.TryParseTeamPreference(text, out var parsed) &&
+            parsed.PlayerReferences.Count >= 2)
+        {
+            requester = CleanPartner(parsed.PlayerReferences[0]);
+            partner = CleanPartner(parsed.PlayerReferences[1]);
+            sessionReference = parsed.SessionReference;
+            if (IsSelf(requester) && partner.Length > 0) return true;
+        }
 
         // Common conversational form: "tui muốn chơi chung với To An thì bạn xếp được ko".
         var match = Regex.Match(

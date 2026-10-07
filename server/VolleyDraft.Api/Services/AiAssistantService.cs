@@ -69,7 +69,7 @@ public sealed class AiAssistantService(
             - Muốn biết ai còn thiếu/chưa cập nhật giới tính, vị trí hoặc trình độ là IncompleteProfiles; KHÔNG phải Roster hay UpdatePlayerProfile.
             - Muốn cập nhật giới tính/vị trí/trình độ người chơi là UpdatePlayerProfile.
             - Muốn +1/thêm khách không thể vote Zalo là AddGuestPlayer.
-            - Muốn hai người ở cùng team/cùng đội/chơi chung với nhau là TeamPreference. Câu “A muốn chơi chung với B” mặc định là TeamPreference.
+            - TeamPreference là quan hệ xếp đội giữa người chơi: muốn CÙNG team hoặc muốn KHÁC team/tách team. Câu có thể là tiếng Việt, English, 한국어, teencode hoặc trộn nhiều ngôn ngữ. Ví dụ “A muốn chơi chung với B”, “don't put me with B”, “B랑 같은 팀 하지 마” đều là TeamPreference khi đó là yêu cầu xếp đội.
             - Chỉ dùng ShareSlot khi người dùng nói rõ share/chung một slot, một suất, thay phiên, +1 hoặc +2 vào slot. “Chơi chung/cùng team” không phải ShareSlot.
             - Muốn sửa một share slot đã ghép nhầm sau khi draft là RepairShareSlot. Đây là thao tác thay đổi đội hình và cần bot hỏi xác nhận trước.
             - Muốn hẹn bot tag nhóm sau/mỗi một số giờ hoặc nhắc ngay là ScheduleReminder.
@@ -450,57 +450,20 @@ public sealed class AiAssistantService(
         CancellationToken cancellationToken = default)
     {
         if (!IsConfigured) return null;
-        var prompt = """
-            Bạn trích xuất yêu cầu nhiều người muốn được xếp CÙNG TEAM bóng chuyền. Chỉ trả về một JSON object, không markdown.
-            Schema: {"players":["To An","Anh Duy","Nick Tran"],"sessionReference":"T6"}
-
-            Chỉ trích xuất khi câu nói muốn chơi/đánh/ở chung team hoặc chung đội. Nếu câu nói share/chung một slot, thay phiên, +1 hay +2 thì trả JSON null.
-            Nếu MentionedUsers có từ hai người trở lên, giữ đúng toàn bộ tên và thứ tự mention; không thay bằng SenderName và không tự bịa thêm người.
-            Có thể có 2 đến 12 người. Giữ nguyên tên hiển thị từ Question hoặc MentionedUsers.
-            sessionReference chỉ lấy thứ/ngày/tên trận thực sự có trong câu; không tự đoán.
-            Đây chỉ là trích xuất dữ liệu; backend mới quyết định quyền, sức chứa, điểm và xác nhận.
-            """;
-        var payload = new
-        {
-            model = configuration["Ai:Model"],
-            temperature = 0,
-            max_tokens = 260,
-            messages = new object[]
-            {
-                new { role = "system", content = prompt },
-                new { role = "user", content = JsonSerializer.Serialize(context, JsonOptions) }
-            }
-        };
-        var content = await SendForContentAsync(
-            configuration["Ai:Endpoint"]!,
-            configuration["Ai:ApiKey"]!,
-            payload,
-            "team_preference_extraction",
+        return await ZaloTeamPreferenceSemanticExtractor.ParseAsync(
+            context,
+            configuration["Ai:Model"],
+            (payload, operation, ct) => SendForContentAsync(
+                configuration["Ai:Endpoint"]!,
+                configuration["Ai:ApiKey"]!,
+                payload,
+                operation,
+                ct),
+            (exception, output) => logger.LogWarning(
+                exception,
+                "AI team-preference extraction returned invalid JSON: {Output}",
+                Truncate(output, 500)),
             cancellationToken);
-        if (string.IsNullOrWhiteSpace(content)) return null;
-        try
-        {
-            using var document = JsonDocument.Parse(StripCodeFence(content));
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
-            var players = root.TryGetProperty("players", out var playerElement) && playerElement.ValueKind == JsonValueKind.Array
-                ? playerElement.EnumerateArray()
-                    .Where(item => item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
-                    .Select(item => item.GetString()!.Trim().TrimStart('@'))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Take(12)
-                    .ToList()
-                : [];
-            if (players.Count < 2) return null;
-            return new ZaloTeamPreferenceCommand(
-                players,
-                SessionReference: ReadJsonString(root, "sessionReference")?.Trim());
-        }
-        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
-        {
-            logger.LogWarning(exception, "AI team-preference extraction returned invalid JSON: {Output}", Truncate(content, 500));
-            return null;
-        }
     }
 
     private static string? ReadJsonString(JsonElement root, string propertyName)

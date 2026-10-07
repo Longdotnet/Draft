@@ -76,6 +76,23 @@ public sealed partial class VolleyDraftDbContext
             for (var index = 0; index < remaining.Length; index += 1)
                 remaining[index].RotationOrder = index + 1;
         }
+
+        var persistedSeparations = await TeamSeparationConstraints
+            .Where(item =>
+                transitionedPlayerIds.Contains(item.FirstSessionPlayerId) ||
+                transitionedPlayerIds.Contains(item.SecondSessionPlayerId))
+            .ToListAsync(cancellationToken);
+        var trackedSeparations = ChangeTracker.Entries<TeamSeparationConstraint>()
+            .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Unchanged)
+            .Select(entry => entry.Entity)
+            .Where(item =>
+                transitionedPlayerIds.Contains(item.FirstSessionPlayerId) ||
+                transitionedPlayerIds.Contains(item.SecondSessionPlayerId))
+            .ToList();
+        TeamSeparationConstraints.RemoveRange(
+            persistedSeparations
+                .Concat(trackedSeparations)
+                .DistinctBy(item => item.Id, StringComparer.Ordinal));
     }
 
     /// <summary>

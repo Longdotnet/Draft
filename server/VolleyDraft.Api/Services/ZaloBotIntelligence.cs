@@ -109,10 +109,41 @@ public sealed record ZaloAddGuestCommand(
     string? GuestDisplayName = null,
     string? SessionReference = null);
 
+public enum ZaloTeamRelationshipKind
+{
+    Unknown,
+    Together,
+    Apart
+}
+
+public enum ZaloTeamRelationshipOperation
+{
+    Unknown,
+    Set,
+    Clear,
+    Change,
+    Query
+}
+
+public enum ZaloTeamRelationshipSpeechAct
+{
+    Unknown,
+    Request,
+    Question,
+    Suggestion,
+    Uncertain
+}
+
 public sealed record ZaloTeamPreferenceCommand(
     IReadOnlyList<string> PlayerReferences,
-    IReadOnlyList<string>? PlayerZaloUserIds = null,
-    string? SessionReference = null);
+    IReadOnlyList<string?>? PlayerZaloUserIds = null,
+    string? SessionReference = null,
+    ZaloTeamRelationshipKind Relation = ZaloTeamRelationshipKind.Together,
+    ZaloTeamRelationshipOperation Operation = ZaloTeamRelationshipOperation.Set,
+    ZaloTeamRelationshipSpeechAct SpeechAct = ZaloTeamRelationshipSpeechAct.Request,
+    double Confidence = 1,
+    bool NeedsClarification = false,
+    string? ClarificationQuestion = null);
 
 public sealed record ZaloSlotTransferCommand(
     string FromPlayer,
@@ -139,6 +170,8 @@ public sealed record ZaloSessionReference(string Id, string Name, DateTimeOffset
 
 public static class ZaloBotIntelligence
 {
+    public const double TeamRelationshipMutationConfidenceThreshold = .78;
+
     private static readonly Regex ExactCommandRegex = new("^(?:[1-9]|10|12)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> StopWords = new(StringComparer.Ordinal)
     {

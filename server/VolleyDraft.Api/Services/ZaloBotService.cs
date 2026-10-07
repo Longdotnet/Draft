@@ -2551,7 +2551,7 @@ public sealed partial class ZaloBotService(
         if (ZaloNaturalCommandParser.TryParseTeamPreference(originalQuestion, out var parsed))
             command = parsed;
         var mentionedUsers = ExtractMentionedUsers(incoming);
-        if (command is null && mentionedUsers.Count < 2 && ai.IsConfigured)
+        if (command is null && ai.IsConfigured)
         {
             var extracted = await ai.ParseTeamPreferenceCommandAsync(
                 new ZaloNaturalTeamPreferenceContext(
@@ -2571,7 +2571,37 @@ public sealed partial class ZaloBotService(
         if (command is null || command.PlayerReferences.Count < 2)
         {
             return new BotAnswer(
-                "Mình chưa xác định đủ người muốn ở cùng team. Hãy @mention từ hai người trở lên, ví dụ: @bot @To An, @Anh Duy và @Nick Tran muốn chung team thứ 6.",
+                "Mình chưa xác định chắc quan hệ team và những người liên quan. Bạn có thể nói tự nhiên kiểu “đừng xếp tui với @Nguyễn T6”, “put me with @Nguyễn” hoặc @mention rõ những người cần xếp.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+        if (command.Operation == ZaloTeamRelationshipOperation.Query &&
+            command.Relation != ZaloTeamRelationshipKind.Unknown &&
+            !command.NeedsClarification &&
+            command.Confidence >= ZaloBotIntelligence.TeamRelationshipMutationConfidenceThreshold)
+        {
+            var relationText = command.Relation == ZaloTeamRelationshipKind.Apart ? "khác team" : "chung team";
+            return new BotAnswer(
+                $"Mình hiểu đây là câu hỏi về việc {string.Join(" và ", command.PlayerReferences)} có {relationText} hay không. Mình chưa đổi dữ liệu; nếu bạn muốn đặt ràng buộc, hãy nói rõ “xếp ... {relationText}”.",
+                null,
+                decision.Intent,
+                aiCalled);
+        }
+        if (command.Relation == ZaloTeamRelationshipKind.Unknown ||
+            command.SpeechAct != ZaloTeamRelationshipSpeechAct.Request ||
+            command.NeedsClarification ||
+            command.Confidence < ZaloBotIntelligence.TeamRelationshipMutationConfidenceThreshold)
+        {
+            var clarification = string.IsNullOrWhiteSpace(command.ClarificationQuestion)
+                ? "Mình hiểu câu này đang nói về quan hệ xếp team nhưng chưa đủ chắc để đổi dữ liệu. Bạn muốn: (1) chung team, (2) khác team, hay (3) bỏ yêu cầu cũ?"
+                : command.ClarificationQuestion;
+            return new BotAnswer(clarification!, null, decision.Intent, aiCalled);
+        }
+        if (command.Relation == ZaloTeamRelationshipKind.Apart && command.PlayerReferences.Count != 2)
+        {
+            return new BotAnswer(
+                "Yêu cầu khác team cần đúng hai người để tránh bot tự suy ra nhiều cặp ngoài ý bạn. Hãy nêu hoặc @mention đúng hai người.",
                 null,
                 decision.Intent,
                 aiCalled);
@@ -2585,9 +2615,9 @@ public sealed partial class ZaloBotService(
         }.Where(value => !string.IsNullOrWhiteSpace(value))));
         var selected = SelectSession(sessions, selector);
         if (selected.Clarification is not null)
-            return new BotAnswer(selected.Clarification + " Hãy gửi lại yêu cầu chung team kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
+            return new BotAnswer(selected.Clarification + " Hãy gửi lại yêu cầu xếp team kèm ngày hoặc tên trận.", null, decision.Intent, aiCalled);
         var session = selected.Session!;
-        var selfAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than" };
+        var selfAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than", "me", "i", "myself", "저", "나", "내", "제" };
         var normalizedSenderId = NormalizeId(incoming.SenderId);
         var inputs = command.PlayerReferences.Select((name, index) =>
         {
@@ -2614,25 +2644,32 @@ public sealed partial class ZaloBotService(
             var denial = await GetOperatorDenialAsync(session, incoming.SenderId, decision.Intent, aiCalled);
             if (denial is not null) return denial;
         }
-        var preview = await draftService.PreviewTeamPreferenceGroupFromBotAsync(
+        var preview = await draftService.PreviewTeamRelationshipFromBotAsync(
             session.AdminUserId,
             session.Id,
-            inputs);
+            inputs,
+            command.Relation,
+            command.Operation);
         if (!preview.IsSuccess || preview.Value is null)
-            return new BotAnswer(preview.Error ?? "Chưa tính được phương án chung team.", null, decision.Intent, aiCalled);
+            return new BotAnswer(preview.Error ?? "Chưa tính được phương án quan hệ team.", null, decision.Intent, aiCalled);
         if (!preview.Value.IsFeasible)
         {
             return new BotAnswer(
-                preview.Value.BlockingReason ?? "Nhóm này không thể xếp vừa một team.",
+                preview.Value.BlockingReason ?? "Yêu cầu quan hệ team này chưa thể áp dụng.",
                 null,
                 decision.Intent,
                 aiCalled,
                 ProtectedTerms: preview.Value.PlayerNames.Append(session.Name).ToList());
         }
-        if (preview.Value.AlreadyGrouped)
+        if (preview.Value.AlreadyApplied)
         {
+            var desiredState = preview.Value.Operation == ZaloTeamRelationshipOperation.Clear
+                ? "đã không còn ràng buộc này"
+                : preview.Value.Relation == ZaloTeamRelationshipKind.Apart
+                    ? "đã có ràng buộc khác team"
+                    : "đã có ràng buộc chung team";
             return new BotAnswer(
-                $"{string.Join(", ", preview.Value.PlayerNames)} đã nằm trong cùng một nhóm chung team của {session.Name}; mình không tạo dữ liệu trùng.",
+                $"{string.Join(", ", preview.Value.PlayerNames)} {desiredState} trong {session.Name}; mình không tạo dữ liệu trùng.",
                 null,
                 decision.Intent,
                 aiCalled,
@@ -2676,21 +2713,37 @@ public sealed partial class ZaloBotService(
             if (denial is not null) return denial;
         }
         var before = await actionHistory.CaptureAsync(session.Id, cancellationToken);
-        var created = await draftService.ApplyTeamPreferencePreviewAsync(session.AdminUserId, plan);
-        if (!created.IsSuccess || created.Value is null)
-            return new BotAnswer(created.Error ?? "Chưa ghi nhận được yêu cầu chung team.", null, intent, aiCalled);
+        var applied = await draftService.ApplyTeamRelationshipPreviewAsync(session.AdminUserId, plan);
+        if (!applied.IsSuccess || applied.Value is null)
+            return new BotAnswer(applied.Error ?? "Chưa ghi nhận được yêu cầu quan hệ team.", null, intent, aiCalled);
 
-        var names = created.Value.PlayerNames;
+        var names = applied.Value.PlayerNames;
+        var relationText = applied.Value.Relation == ZaloTeamRelationshipKind.Apart ? "khác team" : "chung team";
+        var actionText = applied.Value.Operation switch
+        {
+            ZaloTeamRelationshipOperation.Clear => $"Bỏ yêu cầu {relationText}",
+            ZaloTeamRelationshipOperation.Change => $"Đổi sang yêu cầu {relationText}",
+            _ => $"Ghi nhận yêu cầu {relationText}"
+        };
         await actionHistory.RecordAsync(
             session.Id,
             incoming.SenderId,
             incoming.SenderName,
-            plan.ExistingGroupIds.Count > 0 ? "MergeTeamPreference" : "TeamPreference",
-            $"Ghi nhận {string.Join(", ", names)} muốn chung team trong {session.Name}",
+            applied.Value.Relation == ZaloTeamRelationshipKind.Together &&
+            applied.Value.Operation == ZaloTeamRelationshipOperation.Set &&
+            plan.ExistingGroupIds.Count > 0
+                ? "MergeTeamPreference"
+                : "TeamPreference",
+            $"{actionText}: {string.Join(", ", names)} trong {session.Name}",
             before,
             cancellationToken);
+        var answer = applied.Value.Operation == ZaloTeamRelationshipOperation.Clear
+            ? $"Đã bỏ yêu cầu {relationText} của {string.Join(", ", names)} trong {session.Name}."
+            : applied.Value.Relation == ZaloTeamRelationshipKind.Apart
+                ? $"Đã ghi nhận {string.Join(", ", names)} phải ở khác team trong {session.Name}. Khi draft, bot sẽ không xếp hai bên vào cùng đội, kể cả khi một bên thuộc nhóm chung team khác."
+                : $"Đã ghi nhận {string.Join(", ", names)} muốn ở cùng team trong {session.Name}. Khi draft, bot sẽ giữ cả nhóm cùng đội; mỗi người vẫn dùng một slot riêng, trừ người đã share slot từ trước.";
         return new BotAnswer(
-            $"Đã ghi nhận {string.Join(", ", names)} muốn ở cùng team trong {session.Name}. Khi draft, bot sẽ giữ cả nhóm cùng đội; mỗi người vẫn dùng một slot riêng, trừ người đã share slot từ trước.",
+            answer,
             null,
             intent,
             aiCalled,
@@ -2699,6 +2752,26 @@ public sealed partial class ZaloBotService(
 
     private static string FormatTeamPreferencePreview(string sessionName, TeamPreferencePreview plan)
     {
+        if (plan.Relation == ZaloTeamRelationshipKind.Apart)
+        {
+            var action = plan.Operation switch
+            {
+                ZaloTeamRelationshipOperation.Clear => "bỏ ràng buộc khác team",
+                ZaloTeamRelationshipOperation.Change => "đổi quan hệ hiện tại thành khác team",
+                _ => "giữ hai người ở khác team"
+            };
+            var apartWarnings = plan.Warnings.Count == 0
+                ? string.Empty
+                : "\nĐiểm cần lưu ý:\n- " + string.Join("\n- ", plan.Warnings);
+            return $"Mình hiểu yêu cầu cho {sessionName}: {action}.\n" +
+                   $"- Thành viên: {string.Join(", ", plan.PlayerNames)}{apartWarnings}\n\n" +
+                   "Mình chưa đổi dữ liệu. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ.";
+        }
+        if (plan.Operation == ZaloTeamRelationshipOperation.Clear)
+        {
+            return $"Mình hiểu bạn muốn bỏ yêu cầu chung team của {string.Join(", ", plan.PlayerNames)} trong {sessionName}.\n\n" +
+                   "Mình chưa đổi dữ liệu. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ.";
+        }
         var projected = plan.BestProjectedTeamScore is null
             ? "chưa tính được"
             : $"{plan.BestProjectedTeamScore:0.##} điểm (mục tiêu khoảng {plan.TargetTeamScore:0.##}, lệch {plan.ProjectedDeviation:0.##})";
@@ -2708,7 +2781,10 @@ public sealed partial class ZaloBotService(
         var merge = plan.ExistingGroupIds.Count > 0
             ? " Yêu cầu mới sẽ mở rộng/gộp nhóm đã có."
             : string.Empty;
-        return $"Mình đã tính thử nhóm chung team cho {sessionName}:\n" +
+        var heading = plan.Operation == ZaloTeamRelationshipOperation.Change
+            ? "Mình đã tính thử phương án đổi sang chung team"
+            : "Mình đã tính thử nhóm chung team";
+        return $"{heading} cho {sessionName}:\n" +
                $"- Thành viên: {string.Join(", ", plan.PlayerNames)}\n" +
                $"- Chiếm {plan.EffectiveSlotCount}/{plan.TeamSize} slot; tổng điểm cố định {plan.GroupScore:0.##}, trung bình {plan.GroupAverageScore:0.##}\n" +
                $"- Phương án hoàn thiện tốt nhất: {projected}.{merge}{warnings}\n\n" +

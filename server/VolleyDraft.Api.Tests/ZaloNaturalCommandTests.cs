@@ -263,6 +263,66 @@ public sealed class ZaloNaturalCommandTests
         Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
     }
 
+    [Theory]
+    [InlineData("tui không muốn chơi chung team với To An thứ 6")]
+    [InlineData("đừng xếp tui chung team với To An thứ 6")]
+    [InlineData("tui ko mún chung team với To An T6")]
+    [InlineData("please don't put me on the same team with To An")]
+    [InlineData("저랑 To An 같은 팀으로 하지 마세요")]
+    public void Apart_preference_accepts_vietnamese_teencode_english_and_korean_requests(string question)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(ZaloTeamRelationshipKind.Apart, command.Relation);
+        Assert.Equal(2, command.PlayerReferences.Count);
+    }
+
+    [Theory]
+    [InlineData("đừng tách tui với To An thứ 6")]
+    [InlineData("please don't separate me from To An")]
+    [InlineData("저랑 To An 같은 팀으로 해줘")]
+    public void Negated_separation_means_together_not_apart(string question)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(ZaloTeamRelationshipKind.Together, command.Relation);
+        Assert.Equal(2, command.PlayerReferences.Count);
+    }
+
+    [Theory]
+    [InlineData("tui với To An chung team được không?")]
+    [InlineData("To An với tui có chung đội ko")]
+    [InlineData("Can I avoid To An?")]
+    [InlineData("저랑 To An 같은 팀으로 할까요?")]
+    public void Team_relationship_questions_never_become_deterministic_mutations(string question)
+    {
+        Assert.False(ZaloNaturalCommandParser.TryParseTeamPreference(question, out _));
+    }
+
+    [Theory]
+    [InlineData("tui không chơi chung team với To An T6")]
+    [InlineData("tui không chung team với To An")]
+    [InlineData("tui không phải không muốn chung team với To An")]
+    public void Bare_or_double_negated_statements_do_not_become_deterministic_apart_mutations(string question)
+    {
+        Assert.False(ZaloNaturalCommandParser.TryParseTeamPreference(question, out _));
+    }
+
+    [Fact]
+    public void Extra_mentions_do_not_replace_the_semantic_apart_pair()
+    {
+        var command = ZaloNaturalCommandParser.BindExplicitTeamPreferenceMentions(
+            [
+                new ZaloMentionedUser("to-an-id", "To An"),
+                new ZaloMentionedUser("nick-id", "Nick Tran")
+            ],
+            new ZaloTeamPreferenceCommand(
+                ["tui", "To An"],
+                Relation: ZaloTeamRelationshipKind.Apart));
+
+        Assert.NotNull(command);
+        Assert.Equal(["tui", "To An"], command!.PlayerReferences);
+        Assert.Equal([null, "to-an-id"], command.PlayerZaloUserIds);
+    }
+
     [Fact]
     public void Explicit_same_team_mentions_bind_both_uids_in_order()
     {
@@ -286,6 +346,15 @@ public sealed class ZaloNaturalCommandTests
         Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
         Assert.Equal(["To An", "Anh Duy", "Nick Tran"], command.PlayerReferences);
         Assert.Equal("thứ 6", command.SessionReference, ignoreCase: true);
+    }
+
+    [Fact]
+    public void Same_team_preference_with_more_than_twelve_people_fails_closed()
+    {
+        var players = Enumerable.Range(1, 13).Select(index => $"Player {index}").ToArray();
+        var question = $"{string.Join(", ", players[..^1])} và {players[^1]} muốn chơi chung team thứ 6";
+
+        Assert.False(ZaloNaturalCommandParser.TryParseTeamPreference(question, out _));
     }
 
     [Fact]

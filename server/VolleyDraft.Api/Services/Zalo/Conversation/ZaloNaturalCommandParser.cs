@@ -216,6 +216,116 @@ public static class ZaloNaturalCommandParser
             return true;
         }
 
+        if (LooksLikeTeamRelationshipQuestion(value, normalized))
+            return false;
+
+        var negationCount = Regex.Matches(
+            normalized,
+            @"(?<![a-z0-9])(?:khong|ko|k|hong)(?![a-z0-9])",
+            RegexOptions.CultureInvariant).Count;
+        if (negationCount >= 2 && Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(?:chung|cung)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        // Keep deterministic parsing deliberately narrow. It is a high-confidence
+        // fallback for obvious requests; multilingual slang/code-switching belongs to
+        // the semantic extractor so business logic does not grow a parser per language.
+        var relationshipMatch = Regex.Match(
+            value,
+            @"^(?<first>.+?)\s+(?:không|khong|ko|k|hông|hong)\s+(?:muốn|muon|mún|mun)\s+(?:(?:chơi|choi|đánh|danh|ở|o)\s+)?(?:chung|cùng|cung)(?:\s+(?:team|đội|doi))?\s+(?:với|voi)\s+(?<second>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!relationshipMatch.Success)
+        {
+            relationshipMatch = Regex.Match(
+                value,
+                @"^(?:đừng|dung)(?:\s+có|\s+co)?\s+(?:xếp|xep|cho)\s+(?<first>.+?)\s+(?:(?:chung|cùng|cung)\s+)?(?:(?:team|đội|doi)\s+)?(?:với|voi)\s+(?<second>.+)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!relationshipMatch.Success)
+        {
+            relationshipMatch = Regex.Match(
+                value,
+                @"^(?:please\s+)?(?:don't|dont|do\s+not)\s+(?:put|place|team)\s+(?<first>.+?)\s+(?:(?:on|in)\s+)?(?:the\s+)?same\s+team\s+(?:as|with)\s+(?<second>.+)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!relationshipMatch.Success)
+        {
+            relationshipMatch = Regex.Match(
+                value,
+                @"^(?:please\s+)?keep\s+(?<first>.+?)\s+(?:separate|apart)\s+from\s+(?<second>.+)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!relationshipMatch.Success)
+        {
+            relationshipMatch = Regex.Match(
+                value,
+                @"^(?<first>저|나)(?:랑|하고)\s+(?<second>.+?)\s+같은\s*팀(?:으로)?\s*(?:하지\s*마(?:세요)?|하지마(?:세요)?)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (relationshipMatch.Success)
+        {
+            var first = CleanPerson(relationshipMatch.Groups["first"].Value);
+            var second = RemoveTrailingSessionReference(relationshipMatch.Groups["second"].Value, out var apartSessionReference);
+            if (first.Length > 0 && second.Length > 0 &&
+                !string.Equals(ZaloBotIntelligence.Normalize(first), ZaloBotIntelligence.Normalize(second), StringComparison.Ordinal))
+            {
+                command = new ZaloTeamPreferenceCommand(
+                    [first, second],
+                    SessionReference: apartSessionReference ?? ExtractSessionReference(value),
+                    Relation: ZaloTeamRelationshipKind.Apart);
+                return true;
+            }
+        }
+
+        relationshipMatch = Regex.Match(
+            value,
+            @"^(?:đừng|dung)(?:\s+có|\s+co)?\s+(?:tách|tach)\s+(?<first>.+?)\s+(?:với|voi)\s+(?<second>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!relationshipMatch.Success)
+        {
+            relationshipMatch = Regex.Match(
+                value,
+                @"^(?:please\s+)?(?:don't|dont|do\s+not)\s+(?:separate|split)\s+(?<first>.+?)\s+from\s+(?<second>.+)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (!relationshipMatch.Success)
+        {
+            relationshipMatch = Regex.Match(
+                value,
+                @"^(?<first>저|나)(?:랑|하고)\s+(?<second>.+?)\s+같은\s*팀(?:으로)?\s*(?:해\s*줘|해주세요)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        if (relationshipMatch.Success)
+        {
+            var first = CleanPerson(relationshipMatch.Groups["first"].Value);
+            var second = RemoveTrailingSessionReference(relationshipMatch.Groups["second"].Value, out var togetherSessionReference);
+            if (first.Length > 0 && second.Length > 0 &&
+                !string.Equals(ZaloBotIntelligence.Normalize(first), ZaloBotIntelligence.Normalize(second), StringComparison.Ordinal))
+            {
+                command = new ZaloTeamPreferenceCommand(
+                    [first, second],
+                    SessionReference: togetherSessionReference ?? ExtractSessionReference(value),
+                    Relation: ZaloTeamRelationshipKind.Together);
+                return true;
+            }
+        }
+
+        // Remaining negated same-team wording is intentionally not interpreted by the
+        // deterministic mutation parser. Explicit preference/request forms such as
+        // "không muốn ... chung team" were handled above; bare statements and double
+        // negation need semantic speech-act/negation analysis instead of guessing.
+        if (Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(?:khong|ko|k|hong)(?![a-z0-9]).*(?<![a-z0-9])(?:chung|cung)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
         Match match = Regex.Match(
             value,
             @"^(?<first>.+?)\s+(?:(?:muốn|muon|xin)\s+)?(?:chơi|choi|đánh|danh|ở|o)\s+(?:chung|cùng|cung)(?:\s+(?:team|đội|doi))?\s+(?:với|voi|cùng|cung)\s+(?<second>.+)$",
@@ -243,15 +353,14 @@ public static class ZaloNaturalCommandParser
         }
         if (!match.Success) return false;
 
-        var firstPlayers = SplitPeople(match.Groups["first"].Value);
+        var firstPlayers = SplitPeopleCandidates(match.Groups["first"].Value);
         var secondValue = RemoveTrailingSessionReference(match.Groups["second"].Value, out var sessionReference);
         var playerReferences = firstPlayers
-            .Concat(SplitPeople(secondValue))
+            .Concat(SplitPeopleCandidates(secondValue))
             .Where(player => player.Length >= 2)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(12)
             .ToList();
-        if (playerReferences.Count < 2)
+        if (playerReferences.Count is < 2 or > 12)
         {
             return false;
         }
@@ -271,10 +380,63 @@ public static class ZaloNaturalCommandParser
 
         if (mentionedUsers.Count >= 2)
         {
-            return new ZaloTeamPreferenceCommand(
-                mentionedUsers.Select(user => user.DisplayName.Trim().TrimStart('@')).ToList(),
-                mentionedUsers.Select(user => user.ZaloUserId).ToList(),
-                currentCommand?.SessionReference);
+            if (currentCommand is null) return null;
+            var boundReferences = currentCommand.PlayerReferences.ToList();
+            var boundIds = Enumerable.Repeat<string?>(null, boundReferences.Count).ToList();
+            if (currentCommand.PlayerZaloUserIds is { Count: > 0 })
+            {
+                for (var index = 0; index < Math.Min(boundIds.Count, currentCommand.PlayerZaloUserIds.Count); index += 1)
+                    boundIds[index] = currentCommand.PlayerZaloUserIds[index];
+            }
+
+            var candidateBindings = new Dictionary<int, List<(string Name, string Id)>>();
+            var hasAmbiguousMentionBinding = false;
+            foreach (var candidateMention in mentionedUsers)
+            {
+                var candidateMentionName = candidateMention.DisplayName.Trim().TrimStart('@');
+                if (candidateMentionName.Length == 0 || string.IsNullOrWhiteSpace(candidateMention.ZaloUserId)) continue;
+                var candidateMatchingIndexes = boundReferences
+                    .Select((reference, index) => new { Reference = reference, Index = index })
+                    .Where(item => SamePersonReference(item.Reference, candidateMentionName))
+                    .Select(item => item.Index)
+                    .ToList();
+                if (candidateMatchingIndexes.Count != 1) continue;
+                var matchingIndex = candidateMatchingIndexes[0];
+                if (!candidateBindings.TryGetValue(matchingIndex, out var bindings))
+                {
+                    bindings = [];
+                    candidateBindings[matchingIndex] = bindings;
+                }
+                bindings.Add((candidateMentionName, candidateMention.ZaloUserId.Trim()));
+            }
+
+            foreach (var (matchingIndex, bindings) in candidateBindings)
+            {
+                var distinctIds = bindings
+                    .Select(binding => binding.Id)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                if (distinctIds.Count != 1)
+                {
+                    hasAmbiguousMentionBinding = true;
+                    continue;
+                }
+
+                var binding = bindings.First(candidate => candidate.Id == distinctIds[0]);
+                boundReferences[matchingIndex] = binding.Name;
+                boundIds[matchingIndex] = binding.Id;
+            }
+
+            return currentCommand with
+            {
+                PlayerReferences = boundReferences,
+                PlayerZaloUserIds = boundIds,
+                NeedsClarification = currentCommand.NeedsClarification || hasAmbiguousMentionBinding,
+                ClarificationQuestion = hasAmbiguousMentionBinding &&
+                                        string.IsNullOrWhiteSpace(currentCommand.ClarificationQuestion)
+                    ? "Có nhiều người được @mention cùng tên. Bạn hãy @mention đúng người cần xếp team."
+                    : currentCommand.ClarificationQuestion
+            };
         }
 
         if (currentCommand is null || currentCommand.PlayerReferences.Count < 2)
@@ -536,6 +698,11 @@ public static class ZaloNaturalCommandParser
     }
 
     public static IReadOnlyList<string> SplitPeople(string value)
+        => SplitPeopleCandidates(value)
+            .Take(12)
+            .ToList();
+
+    private static IReadOnlyList<string> SplitPeopleCandidates(string value)
     {
         var cleaned = Regex.Replace(
             value,
@@ -546,7 +713,6 @@ public static class ZaloNaturalCommandParser
             .Select(CleanPerson)
             .Where(item => item.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(12)
             .ToList();
     }
 
@@ -774,6 +940,25 @@ public static class ZaloNaturalCommandParser
 
     private static string CleanPerson(string value) =>
         value.Trim(' ', ',', '.', ':', ';', '@');
+
+    private static bool LooksLikeTeamRelationshipQuestion(string value, string normalized)
+    {
+        if (value.Contains('?', StringComparison.Ordinal)) return true;
+        if (Regex.IsMatch(
+                normalized,
+                @"^(?:can|could|would|should|do|does|did|is|are|am)\b",
+                RegexOptions.CultureInvariant))
+            return true;
+        if (Regex.IsMatch(
+                normalized,
+                @"(?:\b(?:duoc|dc|ok)\s*(?:khong|ko|k|hong)|\bco\s+(?:chung|cung)\s+(?:team|doi).*\b(?:khong|ko|k|hong))\s*$",
+                RegexOptions.CultureInvariant))
+            return true;
+        return Regex.IsMatch(
+            value.Trim(),
+            @"(?:나요|까요|습니까|니)\s*[?.!]*$",
+            RegexOptions.CultureInvariant);
+    }
 
     private static string CleanTransferSource(string value)
     {
