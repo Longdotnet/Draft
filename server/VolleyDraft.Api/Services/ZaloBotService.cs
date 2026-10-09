@@ -4275,12 +4275,8 @@ public sealed partial class ZaloBotService(
         return new DateTimeOffset(localDateTime, VietnamOffset).ToUniversalTime();
     }
 
-    private static string FormatDuration(int minutes)
-    {
-        if (minutes % 60 == 0) return $"{minutes / 60} giờ";
-        if (minutes < 60) return $"{minutes} phút";
-        return $"{minutes / 60} giờ {minutes % 60} phút";
-    }
+    private static string FormatDuration(int minutes) =>
+        Zalo.Features.Reminder.ZaloReminderDurationText.Format(minutes);
 
     private async Task<BotAnswer?> GetOperatorDenialAsync(
         SessionSnapshot session,

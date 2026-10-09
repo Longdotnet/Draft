@@ -204,16 +204,8 @@ public static class ZaloBotIntelligence
         DateTimeOffset? now = null) =>
         ZaloConversationCore.SelectOperationalSessionCandidateIds(value, candidates, now);
 
-    public static bool IsShareSlotAnnouncement(string value)
-    {
-        var q = Normalize(value).Replace("@", string.Empty, StringComparison.Ordinal);
-        if (!Has(q, "share slot", "chung slot", "slot thay phien")) return false;
-        var describesFutureGuidance = Has(q,
-            "lan sau", "ai muon", "neu ai", "nguoi nao muon", "muon share thi", "can share thi");
-        var directsPeopleToBot = Has(q,
-            "noi voi npc", "noi voi bot", "nhan npc", "nhan bot", "tag npc", "tag bot", "bao npc", "bao bot");
-        return describesFutureGuidance && directsPeopleToBot;
-    }
+    public static bool IsShareSlotAnnouncement(string value) =>
+        Zalo.Features.ShareSlot.ZaloShareSlotAnnouncementPolicy.IsAnnouncement(value);
 
     public static bool IsUnshareSlotRequest(string value)
     {
@@ -312,19 +304,8 @@ public static class ZaloBotIntelligence
 
     public static bool IsCancel(string value) => ZaloConversationCore.IsNaturalCancel(value);
 
-    public static bool IsConfirmation(string value)
-    {
-        var normalized = Normalize(value);
-        return normalized is "xac nhan" or "xac nhan draft" or "dong y" or "ok chay" or "chay di" or "thuc hien di" or
-               "duoc" or "ok" or "chot" or "lam di" or "tao di" or "trien khai" or
-               "confirm" or "confirmed" or "yes" or "go ahead" or "do it" or
-               "확인" or "확인해" or "확인 해" or "네" or "응" or "진행해" or "진행 해" ||
-               normalized.StartsWith("chot ", StringComparison.Ordinal) ||
-               normalized.StartsWith("dong y ", StringComparison.Ordinal) ||
-               normalized.StartsWith("xac nhan draft ", StringComparison.Ordinal) ||
-               normalized.StartsWith("confirm ", StringComparison.Ordinal) ||
-               normalized.StartsWith("확인 ", StringComparison.Ordinal);
-    }
+    public static bool IsConfirmation(string value) =>
+        Zalo.Conversation.ZaloConfirmationPolicy.IsConfirmation(value);
 
     public static bool TryParseReminderCommand(string value, out ZaloReminderCommand command)
     {
