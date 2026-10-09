@@ -1,0 +1,45 @@
+{"id":"vi-01","language":"vi","text":"Tui muốn chơi chung team với @To An hôm nay","intent":"TeamPreference","operation":"SET","relation":"TOGETHER","speechAct":"REQUEST","session":"today"}
+{"id":"vi-02","language":"vi","text":"Đừng xếp tui chung đội với @To An tối nay","intent":"TeamPreference","operation":"SET","relation":"APART","speechAct":"REQUEST","session":"today"}
+{"id":"vi-03","language":"vi","text":"Tui có thể chung team với @To An không?","intent":"TeamPreference","operation":"QUERY","relation":"TOGETHER","speechAct":"QUESTION","session":null}
+{"id":"vi-04","language":"vi","text":"Tui không ngại chơi cùng @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"vi-05","language":"vi","text":"Hủy yêu cầu chung team của tui với @To An","intent":"TeamPreference","operation":"CLEAR","relation":"TOGETHER","speechAct":"REQUEST","session":null}
+{"id":"vi-06","language":"vi","text":"Tui muốn share slot với @To An","intent":"ShareSlot","operation":"NONE","relation":"UNKNOWN","speechAct":"REQUEST","session":null}
+{"id":"vi-07","language":"vi","text":"Chào bot khỏe không?","intent":"GeneralChat","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":null}
+{"id":"vi-08","language":"vi","text":"Tui không phải không muốn chung team với @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"en-01","language":"en","text":"I'd like to be on the same team as @To An today","intent":"TeamPreference","operation":"SET","relation":"TOGETHER","speechAct":"REQUEST","session":"today"}
+{"id":"en-02","language":"en","text":"Please don't put me on the same team as @To An tonight","intent":"TeamPreference","operation":"SET","relation":"APART","speechAct":"REQUEST","session":"today"}
+{"id":"en-03","language":"en","text":"Can I be on the same team as @To An?","intent":"TeamPreference","operation":"QUERY","relation":"TOGETHER","speechAct":"QUESTION","session":null}
+{"id":"en-04","language":"en","text":"I wouldn't mind playing alongside @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"en-05","language":"en","text":"Remove my same-team preference with @To An","intent":"TeamPreference","operation":"CLEAR","relation":"TOGETHER","speechAct":"REQUEST","session":null}
+{"id":"en-06","language":"en","text":"I want to share a single slot with @To An","intent":"ShareSlot","operation":"NONE","relation":"UNKNOWN","speechAct":"REQUEST","session":null}
+{"id":"en-07","language":"en","text":"Hello bot, what's up?","intent":"GeneralChat","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":null}
+{"id":"en-08","language":"en","text":"I don't want to not be teamed with @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"ko-01","language":"ko","text":"오늘 저를 @To An 님과 같은 팀으로 배정해 주세요","intent":"TeamPreference","operation":"SET","relation":"TOGETHER","speechAct":"REQUEST","session":"today"}
+{"id":"ko-02","language":"ko","text":"오늘 저랑 @To An 같은 팀으로 하지 마세요","intent":"TeamPreference","operation":"SET","relation":"APART","speechAct":"REQUEST","session":"today"}
+{"id":"ko-03","language":"ko","text":"@To An 님과 같은 팀이 될 수 있을까요?","intent":"TeamPreference","operation":"QUERY","relation":"TOGETHER","speechAct":"QUESTION","session":null}
+{"id":"ko-04","language":"ko","text":"@To An 님과 같이 경기해도 상관없어요","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"ko-05","language":"ko","text":"@To An 님과 같은 팀 배정 요청을 취소해 주세요","intent":"TeamPreference","operation":"CLEAR","relation":"TOGETHER","speechAct":"REQUEST","session":null}
+{"id":"ko-06","language":"ko","text":"@To An 님과 한 슬롯을 나눠 쓰고 싶어요","intent":"ShareSlot","operation":"NONE","relation":"UNKNOWN","speechAct":"REQUEST","session":null}
+{"id":"ko-07","language":"ko","text":"안녕하세요 봇! 잘 지내요?","intent":"GeneralChat","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":null}
+{"id":"ko-08","language":"ko","text":"@To An 님과 같은 팀이 아니어도 괜찮아요","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"zh-01","language":"zh","text":"今天请把我和@To An分在同一队","intent":"TeamPreference","operation":"SET","relation":"TOGETHER","speechAct":"REQUEST","session":"today"}
+{"id":"zh-02","language":"zh","text":"今天不要把我和@To An安排在同一个队","intent":"TeamPreference","operation":"SET","relation":"APART","speechAct":"REQUEST","session":"today"}
+{"id":"zh-03","language":"zh","text":"我可以和@To An在同一个队吗？","intent":"TeamPreference","operation":"QUERY","relation":"TOGETHER","speechAct":"QUESTION","session":null}
+{"id":"zh-04","language":"zh","text":"和@To An同队我也不介意","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"zh-05","language":"zh","text":"取消我和@To An必须同队的要求","intent":"TeamPreference","operation":"CLEAR","relation":"TOGETHER","speechAct":"REQUEST","session":null}
+{"id":"zh-06","language":"zh","text":"我想和@To An共用一个名额","intent":"ShareSlot","operation":"NONE","relation":"UNKNOWN","speechAct":"REQUEST","session":null}
+{"id":"zh-07","language":"zh","text":"你好机器人，最近怎么样？","intent":"GeneralChat","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":null}
+{"id":"zh-08","language":"zh","text":"并不是说我不想和@To An同队","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"fr-01","language":"fr","text":"Je voudrais être dans la même équipe que @To An aujourd'hui","intent":"TeamPreference","operation":"SET","relation":"TOGETHER","speechAct":"REQUEST","session":"today"}
+{"id":"fr-02","language":"fr","text":"Ne me mets pas dans la même équipe que @To An ce soir","intent":"TeamPreference","operation":"SET","relation":"APART","speechAct":"REQUEST","session":"today"}
+{"id":"fr-03","language":"fr","text":"Est-ce que je peux jouer dans la même équipe que @To An ?","intent":"TeamPreference","operation":"QUERY","relation":"TOGETHER","speechAct":"QUESTION","session":null}
+{"id":"fr-04","language":"fr","text":"Ça ne me dérange pas de jouer avec @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"fr-05","language":"fr","text":"Supprime ma préférence d'être avec @To An dans la même équipe","intent":"TeamPreference","operation":"CLEAR","relation":"TOGETHER","speechAct":"REQUEST","session":null}
+{"id":"fr-06","language":"fr","text":"Je veux partager une seule place avec @To An","intent":"ShareSlot","operation":"NONE","relation":"UNKNOWN","speechAct":"REQUEST","session":null}
+{"id":"fr-07","language":"fr","text":"Bonjour bot, comment ça va ?","intent":"GeneralChat","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":null}
+{"id":"fr-08","language":"fr","text":"Je ne dis pas que je refuse d'être avec @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"mix-01","language":"mixed","text":"bro tui muốn cùng team với @To An today","intent":"TeamPreference","operation":"SET","relation":"TOGETHER","speechAct":"REQUEST","session":"today"}
+{"id":"mix-02","language":"mixed","text":"오늘 please don't put me chung team với @To An","intent":"TeamPreference","operation":"SET","relation":"APART","speechAct":"REQUEST","session":"today"}
+{"id":"mix-03","language":"mixed","text":"Bonjour bot, 오늘 trận mấy giờ?","intent":"Other","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":"today"}
+{"id":"mix-04","language":"mixed","text":"我不介意 cùng team với @To An","intent":"TeamPreference","operation":"NONE","relation":"UNKNOWN","speechAct":"UNCERTAIN","session":null}
+{"id":"mix-05","language":"mixed","text":"Could you explain what same-team means, not apply it?","intent":"GeneralChat","operation":"NONE","relation":"UNKNOWN","speechAct":"QUESTION","session":null}

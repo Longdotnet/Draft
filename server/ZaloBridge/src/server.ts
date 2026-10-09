@@ -95,6 +95,29 @@ app.use("/v1", (request, response, next) => {
   next();
 });
 
+// Experimental local-only embedding probe. Uses the same internal-key guard as
+// every /v1 operation; disabled by default and never changes Zalo/ERP state.
+app.post("/v1/nlu/embed", async (request, response) => {
+  if (process.env.ZALO_BRIDGE_NLU_ENABLED !== "true") {
+    response.status(404).json({ error: "nlu_disabled" });
+    return;
+  }
+  try {
+    const { embedNluText, NluEmbeddingError } = await import("./nlu/bridgeMultilingualEmbedding.js");
+    const result = await embedNluText(request.body?.text);
+    response.json(result);
+  } catch (error) {
+    const { NluEmbeddingError } = await import("./nlu/bridgeMultilingualEmbedding.js");
+    if (error instanceof NluEmbeddingError) {
+      response.status(error.status).json({ error: error.code });
+      return;
+    }
+    // Do not log raw request text, protected names, or embeddings.
+    console.error("Bridge NLU probe failed", { type: error instanceof Error ? error.name : "unknown" });
+    response.status(503).json({ error: "nlu_unavailable" });
+  }
+});
+
 app.get("/v1/provider-traffic", (_request, response) => {
   response.json(zaloProviderTrafficGovernor.getDiagnostics());
 });

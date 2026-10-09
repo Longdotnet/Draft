@@ -4,13 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/prepare-nlu-model.mjs --if-enabled",
+    "nlu:prepare": "node scripts/prepare-nlu-model.mjs",
     "start": "node --import ./dist/webhookFetchReliability.js dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
+    "@sctg/sentencepiece-js": "1.3.3",
     "express": "5.1.0",
+    "onnxruntime-node": "1.30.0",
     "zca-js": "2.1.2"
   },
   "devDependencies": {
