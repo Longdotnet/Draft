@@ -320,6 +320,9 @@ public static class ZaloNaturalCommandParser
             }
         }
 
+        if (ZaloEnglishTogetherPreferenceParser.TryParse(value, out command))
+            return true;
+
         // Keep residual negated same-team language deterministically owned but
         // non-executable. Explicit APART requests were handled above; ambiguous bare
         // negation remains blocked so semantic AI/mention binding cannot promote it
@@ -725,7 +728,7 @@ public static class ZaloNaturalCommandParser
         var cleaned = value.Trim(' ', ',', '.', ':', ';', '@');
         var match = Regex.Match(
             cleaned,
-            @"\s+(?:(?:cho|ở|o|trận|tran|buổi|buoi)\s+)?(?<reference>hôm\s+nay|hom\s+nay|bữa\s+nay|bua\s+nay|ngày\s+mai|ngay\s+mai|t[2-7]|cn|thứ\s+(?:[2-7]|hai|ba|tư|tu|năm|nam|sáu|sau|bảy|bay)|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chủ\s+nhật|chu\s+nhat|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)$",
+            @"\s+(?:(?:cho|ở|o|trận|tran|buổi|buoi)\s+)?(?<reference>hôm\s+nay|hom\s+nay|bữa\s+nay|bua\s+nay|ngày\s+mai|ngay\s+mai|today|tomorrow|t[2-7]|cn|thứ\s+(?:[2-7]|hai|ba|tư|tu|năm|nam|sáu|sau|bảy|bay)|thu\s+(?:[2-7]|hai|ba|tu|nam|sau|bay)|chủ\s+nhật|chu\s+nhat|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         if (!match.Success)
         {

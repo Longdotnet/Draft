@@ -5172,8 +5172,8 @@ public sealed partial class ZaloBotService(
         if (session.StartTime is null) return false;
         var local = session.StartTime.Value.ToOffset(VietnamOffset);
         var today = DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date;
-        if (HasAny(question, "hom nay", "bua nay") && local.Date == today) return true;
-        if (HasAny(question, "ngay mai", "mai nay") && local.Date == today.AddDays(1)) return true;
+        if (HasAny(question, "hom nay", "bua nay", "today") && local.Date == today) return true;
+        if (HasAny(question, "ngay mai", "mai nay", "tomorrow") && local.Date == today.AddDays(1)) return true;
         foreach (Match dateMatch in Regex.Matches(question, @"(?<!\d)(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?(?!\d)"))
         {
             if (!int.TryParse(dateMatch.Groups[1].Value, out var day) ||

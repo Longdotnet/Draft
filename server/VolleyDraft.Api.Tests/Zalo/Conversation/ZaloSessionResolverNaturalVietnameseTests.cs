@@ -96,4 +96,37 @@ public sealed class ZaloSessionResolverNaturalVietnameseTests
         Assert.True(result.HasExplicitSelector);
         Assert.Equal(["tomorrow"], result.CandidateIds);
     }
+
+    [Theory]
+    [InlineData("I'd like to be on the same team as @To An today", "today")]
+    [InlineData("I'd like to be on the same team as @To An tomorrow", "tomorrow")]
+    public void English_relative_date_targets_the_matching_match_not_an_arbitrary_session(
+        string text,
+        string expectedId)
+    {
+        var sessions = new List<ZaloSessionReference>
+        {
+            new("today", "Kèo cuối năm", new DateTimeOffset(2026, 12, 31, 20, 0, 0, TimeSpan.FromHours(7))),
+            new("tomorrow", "Kèo đầu năm", new DateTimeOffset(2027, 1, 1, 19, 0, 0, TimeSpan.FromHours(7)))
+        };
+
+        var result = ZaloSessionResolver.Resolve(text, sessions, NewYearsEve);
+
+        Assert.True(result.HasExplicitSelector);
+        Assert.Equal([expectedId], result.CandidateIds);
+    }
+
+    [Fact]
+    public void English_today_without_a_matching_session_fails_closed()
+    {
+        var sessions = new List<ZaloSessionReference>
+        {
+            new("tomorrow", "Kèo đầu năm", new DateTimeOffset(2027, 1, 1, 19, 0, 0, TimeSpan.FromHours(7)))
+        };
+
+        var result = ZaloSessionResolver.Resolve("put me on the same team as To An today", sessions, NewYearsEve);
+
+        Assert.True(result.HasExplicitSelector);
+        Assert.Empty(result.CandidateIds);
+    }
 }

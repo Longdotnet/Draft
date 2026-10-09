@@ -20,7 +20,7 @@ public static class ZaloSessionResolver
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex RelativeDateRegex = new(
-        @"(?<![a-z0-9])(?:hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:hom\s+nay|bua\s+nay|ngay\s+mai|mai\s+nay|today|tomorrow)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     // Vietnamese users commonly shorten "ngày mai" to "mai", but "Mai" is also a
@@ -157,6 +157,7 @@ public static class ZaloSessionResolver
             var targetDate = isBareTomorrow ||
                              QualifiedTomorrowRegex.IsMatch(normalized) ||
                              normalized.Contains("ngay mai", StringComparison.Ordinal) ||
+                             Regex.IsMatch(normalized, @"\btomorrow\b", RegexOptions.CultureInvariant) ||
                              normalized.Contains("mai nay", StringComparison.Ordinal)
                 ? localNow.Date.AddDays(1)
                 : localNow.Date;

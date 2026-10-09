@@ -264,6 +264,33 @@ public sealed class ZaloNaturalCommandTests
     }
 
     [Theory]
+    [InlineData("I'd like to be on the same team as @To An today", "today")]
+    [InlineData("I’d like to be on the same team as @To An today", "today")]
+    [InlineData("I would like to play in the same team with @To An tomorrow", "tomorrow")]
+    [InlineData("I want to be on the same team with @To An today", "today")]
+    [InlineData("Please put me on the same team as @To An today", "today")]
+    public void Affirmative_english_same_team_requests_route_without_ai(string question, string date)
+    {
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreference(question, out var command));
+        Assert.Equal(["me", "To An"], command.PlayerReferences);
+        Assert.Equal(date, command.SessionReference);
+        Assert.Equal(ZaloTeamRelationshipKind.Together, command.Relation);
+        Assert.Equal(ZaloTeamRelationshipSpeechAct.Request, command.SpeechAct);
+        Assert.Equal(ZaloBotIntent.TeamPreference, ZaloBotIntelligence.ClassifyDeterministically(question).Intent);
+        Assert.False(ZaloNaturalCommandParser.TryParseShareSlot(question, out _));
+    }
+
+    [Theory]
+    [InlineData("I don't want to be on the same team as @To An today")]
+    [InlineData("Can I be on the same team as @To An today?")]
+    [InlineData("I might like to be on the same team as @To An today")]
+    [InlineData("I want to share a slot with @To An today")]
+    public void English_same_team_grammar_does_not_promote_uncertain_or_other_intents(string question)
+    {
+        Assert.False(ZaloEnglishTogetherPreferenceParser.TryParse(question, out _));
+    }
+
+    [Theory]
     [InlineData("tui không muốn chơi chung team với To An thứ 6")]
     [InlineData("đừng xếp tui chung team với To An thứ 6")]
     [InlineData("tui ko mún chung team với To An T6")]

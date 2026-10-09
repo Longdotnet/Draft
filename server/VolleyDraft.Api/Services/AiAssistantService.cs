@@ -691,6 +691,7 @@ public sealed class AiAssistantService(
     {
         var scriptLanguage = ZaloReplyLanguageDetector.TryDetectFromScript(question);
         if (scriptLanguage is not null) return scriptLanguage.Value;
+        if (ZaloEnglishTogetherPreferenceParser.TryParse(question, out _)) return ZaloReplyLanguage.English;
         if (!IsConfigured || string.IsNullOrWhiteSpace(question)) return ZaloReplyLanguage.Vietnamese;
 
         var payload = new

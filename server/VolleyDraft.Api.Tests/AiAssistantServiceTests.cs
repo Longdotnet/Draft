@@ -477,6 +477,16 @@ public sealed class AiAssistantServiceTests
         Assert.Equal(expected, result.ToString());
     }
 
+    [Fact]
+    public async Task Explicit_english_team_preference_keeps_english_when_ai_provider_is_unavailable()
+    {
+        var service = CreateService(HttpStatusCode.InternalServerError, "{}");
+
+        var language = await service.ResolveReplyLanguageAsync("I'd like to be on the same team as @To An today");
+
+        Assert.Equal("English", language.ToString());
+    }
+
     private static ZaloAiContext CreateGeneralContext(string question) =>
         new(
             "group-1",
