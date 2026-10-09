@@ -74,9 +74,10 @@ public static class ZaloPendingTurnPolicy
         return normalized is
                    "huy" or "cancel" or "thoi" or "bo qua" or "khong can nua" or
                    "thoi khoi" or "thoi khoi di" or "hoi khoi di" or "khoi" or "khoi di" or
-                   "bo di" or "khong lam nua" ||
+                   "bo di" or "khong lam nua" or "취소" or "취소해" or "취소 해" or "그만" ||
                normalized.StartsWith("huy ", StringComparison.Ordinal) ||
                normalized.StartsWith("cancel ", StringComparison.Ordinal) ||
+               normalized.StartsWith("취소 ", StringComparison.Ordinal) ||
                normalized.StartsWith("thoi khoi", StringComparison.Ordinal) ||
                normalized.StartsWith("hoi khoi", StringComparison.Ordinal) ||
                normalized.StartsWith("khoi di", StringComparison.Ordinal) ||
@@ -89,8 +90,12 @@ public static class ZaloPendingTurnPolicy
         var normalized = ZaloTextNormalizer.Normalize(value);
         return normalized is
                    "xac nhan" or "xac nhan draft" or "dong y" or "ok" or "ok chay" or
-                   "chay di" or "draft di" or "chot" or "lam di" or "thuc hien di" ||
+                   "chay di" or "draft di" or "chot" or "lam di" or "thuc hien di" or
+                   "confirm" or "confirmed" or "yes" or "go ahead" or "do it" or
+                   "확인" or "확인해" or "확인 해" or "네" or "응" or "진행해" or "진행 해" ||
                normalized.StartsWith("xac nhan ", StringComparison.Ordinal) ||
+               normalized.StartsWith("confirm ", StringComparison.Ordinal) ||
+               normalized.StartsWith("확인 ", StringComparison.Ordinal) ||
                normalized.StartsWith("dong y ", StringComparison.Ordinal) ||
                normalized.StartsWith("chot ", StringComparison.Ordinal);
     }

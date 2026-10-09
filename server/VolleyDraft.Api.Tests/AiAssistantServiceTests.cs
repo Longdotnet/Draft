@@ -384,6 +384,99 @@ public sealed class AiAssistantServiceTests
         Assert.Equal("Chào Thanh Long, mình vẫn ở đây nè 😊", result);
     }
 
+    [Fact]
+    public async Task General_answer_rejects_truncated_provider_output_instead_of_sending_partial_text()
+    {
+        var service = CreateService([
+            """{"choices":[{"message":{"content":"Haha, love the energy! 🫶 I can"},"finish_reason":"length"}]}""",
+            """{"choices":[{"message":{"content":"en"},"finish_reason":"stop"}]}"""
+        ]);
+
+        var result = await service.AnswerAsync(CreateGeneralContext("Can you keep us on the same team?"));
+
+        Assert.Equal("I couldn't complete that reply. Please send it again in a shorter sentence.", result);
+        Assert.DoesNotContain("I can", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Factual_rewrite_rejects_truncated_provider_output_and_keeps_caller_fallback_available()
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"Got it, [[VD_FACT_0]] and I"},"finish_reason":"max_tokens"}]}""");
+
+        var result = await service.RewriteFactualAnswerAsync(new ZaloAiRewriteContext(
+            "Please keep us together",
+            "Thanh Long",
+            ZaloBotIntent.SessionSchedule,
+            "Recorded Thanh Long and To An for Friday 9/10.",
+            ["Thanh Long and To An"]));
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task General_answer_prompt_follows_english_message_language()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"Sure, I can help with that."},"finish_reason":"stop"}]}""",
+            out var handler);
+
+        var result = await service.AnswerAsync(CreateGeneralContext("Can you help me today?"));
+
+        Assert.Equal("Sure, I can help with that.", result);
+        using var request = JsonDocument.Parse(handler.LastRequestBody!);
+        var systemPrompt = request.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        Assert.Contains("Reply in the same natural language as Question", systemPrompt, StringComparison.Ordinal);
+        Assert.Contains("not from a keyword list", systemPrompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task General_answer_prompt_follows_korean_message_language()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"네, 도와드릴게요."},"finish_reason":"stop"}]}""",
+            out var handler);
+
+        var result = await service.AnswerAsync(CreateGeneralContext("오늘 도와줄 수 있어?"));
+
+        Assert.Equal("네, 도와드릴게요.", result);
+        using var request = JsonDocument.Parse(handler.LastRequestBody!);
+        var systemPrompt = request.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        Assert.Contains("Reply in the same natural language as Question", systemPrompt, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("hello bot", "en", "English")]
+    [InlineData("good evening, how is everyone?", "en", "English")]
+    [InlineData("chao bot hom nay khoe khong", "vi", "Vietnamese")]
+    [InlineData("tui muon chung team voi To An", "vi", "Vietnamese")]
+    public async Task Ambiguous_latin_script_language_is_classified_semantically(
+        string question,
+        string providerLanguage,
+        string expected)
+    {
+        var service = CreateService(HttpStatusCode.OK,
+            $$"""{"choices":[{"message":{"content":"{{providerLanguage}}"},"finish_reason":"stop"}]}""");
+
+        var result = await service.ResolveReplyLanguageAsync(question);
+
+        Assert.Equal(expected, result.ToString());
+    }
+
+    [Theory]
+    [InlineData("안녕하세요 bot", "Korean")]
+    [InlineData("đừng xếp tui chung team", "Vietnamese")]
+    public async Task Unicode_script_language_does_not_need_ai_classification(string question, string expected)
+    {
+        var service = CreateService(HttpStatusCode.InternalServerError, "{}");
+
+        var result = await service.ResolveReplyLanguageAsync(question);
+
+        Assert.Equal(expected, result.ToString());
+    }
+
     private static ZaloAiContext CreateGeneralContext(string question) =>
         new(
             "group-1",
@@ -395,7 +488,39 @@ public sealed class AiAssistantServiceTests
             [],
             new DateTimeOffset(2026, 7, 25, 15, 0, 0, TimeSpan.FromHours(7)));
 
-    private static AiAssistantService CreateService(HttpStatusCode statusCode, string responseBody)
+    private static AiAssistantService CreateService(HttpStatusCode statusCode, string responseBody) =>
+        CreateService(statusCode, responseBody, out _);
+
+    private static AiAssistantService CreateService(IReadOnlyList<string> responseBodies)
+    {
+        var index = 0;
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Ai:Endpoint"] = "https://ai.test/chat/completions",
+                ["Ai:ApiKey"] = "test-key",
+                ["Ai:Model"] = "test-model"
+            })
+            .Build();
+        var handler = new StubHandler(_ =>
+        {
+            var body = responseBodies[Math.Min(index, responseBodies.Count - 1)];
+            index += 1;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+        });
+        return new AiAssistantService(
+            new HttpClient(handler),
+            configuration,
+            NullLogger<AiAssistantService>.Instance);
+    }
+
+    private static AiAssistantService CreateService(
+        HttpStatusCode statusCode,
+        string responseBody,
+        out StubHandler handler)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -405,7 +530,7 @@ public sealed class AiAssistantServiceTests
                 ["Ai:Model"] = "test-model"
             })
             .Build();
-        var handler = new StubHandler(_ => new HttpResponseMessage(statusCode)
+        handler = new StubHandler(_ => new HttpResponseMessage(statusCode)
         {
             Content = new StringContent(responseBody, Encoding.UTF8, "application/json")
         });
@@ -417,9 +542,16 @@ public sealed class AiAssistantServiceTests
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(
+        public string? LastRequestBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(responseFactory(request));
+            CancellationToken cancellationToken)
+        {
+            LastRequestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            return responseFactory(request);
+        }
     }
 }

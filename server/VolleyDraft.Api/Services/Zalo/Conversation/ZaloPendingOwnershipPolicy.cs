@@ -29,9 +29,9 @@ public static class ZaloPendingOwnershipPolicy
 
         // Exact bare controls belong to the pending workflow even if a classifier
         // produces an unrelated guess. They carry no domain qualifier of their own.
-        if (normalized is "huy" or "cancel" or "thoi khoi")
+        if (normalized is "huy" or "cancel" or "thoi khoi" or "취소" or "그만")
             return SharedDisposition.CancelPending;
-        if (normalized == "xac nhan")
+        if (normalized is "xac nhan" or "confirm" or "yes" or "확인" or "네")
             return SharedDisposition.ConfirmPending;
 
         // A domain-qualified deterministic intent owns the current turn before broad
