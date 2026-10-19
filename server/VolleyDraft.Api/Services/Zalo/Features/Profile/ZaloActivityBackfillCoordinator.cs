@@ -607,6 +607,9 @@ public sealed class ZaloActivityBackfillCoordinator(
             int claimed;
             if (db.Database.IsSqlite())
             {
+                // ExecuteUpdate in QueueGroupAsync bypasses tracked entities. Read the
+                // persisted status, not a stale entity from an earlier status check.
+                db.ChangeTracker.Clear();
                 var sqliteCandidate = await db.ZaloActivityBackfillJobs
                     .SingleOrDefaultAsync(job => job.Id == candidateId, cancellationToken);
                 if (sqliteCandidate is null ||
