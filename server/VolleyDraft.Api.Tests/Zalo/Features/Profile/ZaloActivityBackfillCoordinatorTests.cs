@@ -89,6 +89,84 @@ public sealed class ZaloActivityBackfillCoordinatorTests
     }
 
     [Fact]
+    public async Task Expired_running_lease_is_reclaimed_and_rescanned_without_double_counting()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var job = await fixture.Coordinator.QueueGroupAsync("connection", "group", true);
+        job.Status = ZaloActivityBackfillStatus.Running;
+        job.Stage = ZaloActivityBackfillStage.SyncingPollDetails;
+        job.BoardPage = 1;
+        job.ProcessedCount = 50;
+        job.DiscoveredTotal = 50;
+        job.TotalBoardItemsScanned = 50;
+        job.LeaseToken = "orphaned-lease";
+        job.LeaseUntil = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        Assert.True(await fixture.Coordinator.ProcessNextAsync(CancellationToken.None));
+
+        fixture.Db.ChangeTracker.Clear();
+        var recovered = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(ZaloActivityBackfillStatus.CompletedWithLimitations, recovered.Status);
+        Assert.Equal(ZaloActivityBackfillStage.Completed, recovered.Stage);
+        Assert.Equal(2, recovered.ProcessedCount);
+        Assert.Equal(2, recovered.DiscoveredTotal);
+        Assert.Equal(2, recovered.TotalBoardItemsScanned);
+        Assert.Null(recovered.LeaseToken);
+        Assert.Null(recovered.LeaseUntil);
+        Assert.Equal(2, await fixture.Db.ZaloPollSnapshots.CountAsync());
+    }
+
+    [Fact]
+    public async Task Running_job_with_live_lease_is_not_claimed_again()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+        var job = await fixture.Coordinator.QueueGroupAsync("connection", "group", true);
+        var leaseUntil = DateTimeOffset.UtcNow.AddMinutes(5);
+        job.Status = ZaloActivityBackfillStatus.Running;
+        job.Stage = ZaloActivityBackfillStage.SyncingPollDetails;
+        job.LeaseToken = "active-worker-lease";
+        job.LeaseUntil = leaseUntil;
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        Assert.False(await fixture.Coordinator.ProcessNextAsync(CancellationToken.None));
+
+        fixture.Db.ChangeTracker.Clear();
+        var persisted = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(ZaloActivityBackfillStatus.Running, persisted.Status);
+        Assert.Equal("active-worker-lease", persisted.LeaseToken);
+        Assert.Equal(leaseUntil, persisted.LeaseUntil);
+    }
+
+    [Fact]
+    public async Task Incremental_queue_resets_progress_to_each_scan_instead_of_accumulating()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync();
+
+        await fixture.Coordinator.QueueGroupAsync("connection", "group", true);
+        Assert.True(await fixture.Coordinator.ProcessNextAsync(CancellationToken.None));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(2, (await fixture.Db.ZaloActivityBackfillJobs.SingleAsync()).ProcessedCount);
+
+        var queued = await fixture.Coordinator.QueueGroupAsync("connection", "group", false);
+        Assert.Equal(ZaloActivityBackfillStatus.Queued, queued.Status);
+        Assert.Equal(0, queued.ProcessedCount);
+        Assert.Null(queued.DiscoveredTotal);
+        Assert.Equal(0, queued.TotalBoardItemsScanned);
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.True(await fixture.Coordinator.ProcessNextAsync(CancellationToken.None));
+        fixture.Db.ChangeTracker.Clear();
+        var finished = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(2, finished.ProcessedCount);
+        Assert.Equal(2, finished.DiscoveredTotal);
+        Assert.Equal(2, finished.TotalBoardItemsScanned);
+        Assert.Equal(2, await fixture.Db.ZaloPollSnapshots.CountAsync());
+    }
+
+    [Fact]
     public async Task Missing_backfill_is_discovered_from_durable_tracked_group_without_active_session()
     {
         await using var fixture = await BackfillFixture.CreateAsync();
