@@ -424,6 +424,9 @@ public sealed class ZaloActivityBackfillCoordinator(
                 .SetProperty(job => job.LeaseUntil, (DateTimeOffset?)null)
                 .SetProperty(job => job.BoardPage, 1)
                 .SetProperty(job => job.LastBoardPageFingerprint, (string?)null)
+                .SetProperty(job => job.ProcessedCount, 0)
+                .SetProperty(job => job.DiscoveredTotal, (int?)null)
+                .SetProperty(job => job.TotalBoardItemsScanned, 0)
                 .SetProperty(job => job.UpdatedAt, now),
                 cancellationToken);
         }
@@ -573,6 +576,7 @@ public sealed class ZaloActivityBackfillCoordinator(
             .AsNoTracking()
             .Where(job =>
                 job.Status == ZaloActivityBackfillStatus.Queued ||
+                job.Status == ZaloActivityBackfillStatus.Running ||
                 job.Status == ZaloActivityBackfillStatus.FailedRetryable ||
                 job.Status == ZaloActivityBackfillStatus.Completed ||
                 job.Status == ZaloActivityBackfillStatus.CompletedWithLimitations)
@@ -582,6 +586,7 @@ public sealed class ZaloActivityBackfillCoordinator(
                 (job.LeaseUntil == null || job.LeaseUntil < now) &&
                 (
                     job.Status == ZaloActivityBackfillStatus.Queued ||
+                    job.Status == ZaloActivityBackfillStatus.Running ||
                     (job.Status == ZaloActivityBackfillStatus.FailedRetryable &&
                      (job.NextAttemptAt == null || job.NextAttemptAt <= now)) ||
                     ((job.Status == ZaloActivityBackfillStatus.Completed ||
@@ -591,19 +596,24 @@ public sealed class ZaloActivityBackfillCoordinator(
             .OrderBy(job => job.Status == ZaloActivityBackfillStatus.Queued ? 0 : 1)
             .ThenBy(job => job.NextAttemptAt)
             .ThenBy(job => job.UpdatedAt)
-            .Select(job => job.Id)
+            .Select(job => new { job.Id, job.Status })
             .Take(5)
             .ToList();
 
-        foreach (var candidateId in candidates)
+        foreach (var candidate in candidates)
         {
+            var candidateId = candidate.Id;
             var leaseToken = Guid.NewGuid().ToString("n");
             int claimed;
             if (db.Database.IsSqlite())
             {
+                // ExecuteUpdate in QueueGroupAsync bypasses tracked entities. Read the
+                // persisted status, not a stale entity from an earlier status check.
+                db.ChangeTracker.Clear();
                 var sqliteCandidate = await db.ZaloActivityBackfillJobs
                     .SingleOrDefaultAsync(job => job.Id == candidateId, cancellationToken);
                 if (sqliteCandidate is null ||
+                    sqliteCandidate.Status != candidate.Status ||
                     sqliteCandidate.LeaseUntil is not null &&
                     sqliteCandidate.LeaseUntil >= now)
                 {
@@ -623,6 +633,7 @@ public sealed class ZaloActivityBackfillCoordinator(
             {
                 claimed = await db.ZaloActivityBackfillJobs
                     .Where(job => job.Id == candidateId &&
+                                  job.Status == candidate.Status &&
                                   (job.LeaseUntil == null || job.LeaseUntil < now))
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(job => job.LeaseToken, leaseToken)
@@ -638,7 +649,17 @@ public sealed class ZaloActivityBackfillCoordinator(
                 .SingleAsync(
                     item => item.Id == candidateId && item.LeaseToken == leaseToken,
                     cancellationToken);
-            if (job.BackfillCompletedAt is not null && job.Stage == ZaloActivityBackfillStage.Completed)
+            if (candidate.Status == ZaloActivityBackfillStatus.Running)
+            {
+                // A previous worker died mid-page. Restart the board scan so the
+                // unfinished page is not double-counted; stored polls remain intact.
+                ResetBoardScanCheckpoint(job);
+                logger.LogWarning(
+                    "Reclaimed expired Zalo activity sync lease JobId={JobId} Stage={Stage}",
+                    job.Id,
+                    job.Stage);
+            }
+            else if (job.BackfillCompletedAt is not null && job.Stage == ZaloActivityBackfillStage.Completed)
             {
                 job.IsFullBackfill = false;
                 job.BoardPage = 1;
@@ -1390,9 +1411,14 @@ public sealed class ZaloActivityBackfillCoordinator(
 
     private static void ResetScanCheckpoint(ZaloActivityBackfillJob job)
     {
+        ResetBoardScanCheckpoint(job);
+        job.MessageCursor = null;
+    }
+
+    private static void ResetBoardScanCheckpoint(ZaloActivityBackfillJob job)
+    {
         job.BoardPage = 1;
         job.BoardCursor = null;
-        job.MessageCursor = null;
         job.LastBoardPageFingerprint = null;
         job.ProcessedCount = 0;
         job.DiscoveredTotal = null;
