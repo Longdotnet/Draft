@@ -130,7 +130,7 @@ internal sealed class ZaloProactiveMessageStore(VolleyDraftDbContext db)
                 "LeaseUntil" = excluded."LeaseUntil",
                 "IdempotencyKey" = excluded."IdempotencyKey",
                 "UpdatedAt" = excluded."UpdatedAt"
-            WHERE "LeaseUntil" <= @Now;
+            WHERE "ZaloProactiveSendLease"."LeaseUntil" <= @Now;
             """;
 
         await using var command = await CreateCommandAsync(sql, cancellationToken);
