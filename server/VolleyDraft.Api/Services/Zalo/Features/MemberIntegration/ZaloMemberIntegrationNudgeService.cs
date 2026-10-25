@@ -61,11 +61,12 @@ internal static class ZaloMemberIntegrationDeliveryPolicy
         DateTimeOffset now,
         int sentToday,
         DateTimeOffset? lastSentAt,
-        ZaloMemberIntegrationDeliverySettings settings)
+        ZaloMemberIntegrationLifecycleDecision lifecycle)
     {
-        if (sentToday >= settings.TargetPerMemberPerDay) return false;
+        if (lifecycle.StopOnboarding || lifecycle.TargetPerDay <= 0) return false;
+        if (sentToday >= lifecycle.TargetPerDay) return false;
         return lastSentAt is null ||
-               now - lastSentAt >= TimeSpan.FromMinutes(settings.MinMemberIntervalMinutes);
+               now - lastSentAt >= lifecycle.MinimumMemberSpacing;
     }
 }
 
@@ -120,19 +121,27 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 .BuildAsync(connectionId, groupId, history, now, cancellationToken);
             if (selections.Count == 0) continue;
 
-            var memberHistoryToday = history
+            var memberIntegrationHistory = history
                 .Where(item =>
                     (item.Lane == ZaloProactiveLane.MemberIntegration ||
                      item.Lane == ZaloProactiveLane.Community) &&
                     item.Kind.StartsWith("member_integration_", StringComparison.Ordinal) &&
-                    item.SubjectUserId is not null &&
-                    item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date)
+                    item.SubjectUserId is not null)
+                .ToList();
+            var memberHistoryToday = memberIntegrationHistory
+                .Where(item => item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date)
                 .GroupBy(item => item.SubjectUserId!, StringComparer.Ordinal)
                 .ToDictionary(
                     group => group.Key,
                     group => new DailyMemberDelivery(
                         group.Count(),
                         group.Max(item => item.SentAt)),
+                    StringComparer.Ordinal);
+            var memberLatestDelivery = memberIntegrationHistory
+                .GroupBy(item => item.SubjectUserId!, StringComparer.Ordinal)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Max(item => item.SentAt),
                     StringComparer.Ordinal);
 
             var recentMessages = await LoadRecentHumanMessagesAsync(connectionId, groupId, now, cancellationToken);
@@ -148,26 +157,36 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 now,
                 cancellationToken);
             var ordered = selections
-                .Where(selection =>
+                .Select(selection =>
                 {
-                    memberHistoryToday.TryGetValue(selection.Context.ZaloUserId, out var delivery);
-                    return ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(
+                    memberHistoryToday.TryGetValue(selection.Context.ZaloUserId, out var today);
+                    memberLatestDelivery.TryGetValue(selection.Context.ZaloUserId, out var lastSentAt);
+                    var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(selection.Context, settings);
+                    var isGraduationNotice = string.Equals(
+                        selection.Suggestion.CapabilityKey,
+                        "graduated",
+                        StringComparison.Ordinal);
+                    return new
+                    {
+                        Selection = selection,
+                        Lifecycle = lifecycle,
+                        IsGraduationNotice = isGraduationNotice,
+                        DailyDeliveryCount = today?.Count ?? 0,
+                        LastSentAt = lastSentAt == default ? (DateTimeOffset?)null : lastSentAt,
+                        Activity = activityHints.GetValueOrDefault(
+                            selection.Context.ZaloUserId,
+                            new ZaloMemberIntegrationActivityHint(selection.Context.ZaloUserId, null, null))
+                    };
+                })
+                .Where(item =>
+                    item.IsGraduationNotice ||
+                    ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(
                         now,
-                        delivery?.Count ?? 0,
-                        delivery?.LastSentAt,
-                        settings);
-                })
-                .Select(selection => new
-                {
-                    Selection = selection,
-                    DailyDeliveryCount = memberHistoryToday.TryGetValue(selection.Context.ZaloUserId, out var delivery)
-                        ? delivery.Count
-                        : 0,
-                    Activity = activityHints.GetValueOrDefault(
-                        selection.Context.ZaloUserId,
-                        new ZaloMemberIntegrationActivityHint(selection.Context.ZaloUserId, null, null))
-                })
-                .OrderBy(item => item.DailyDeliveryCount)
+                        item.DailyDeliveryCount,
+                        item.LastSentAt,
+                        item.Lifecycle))
+                .OrderByDescending(item => item.IsGraduationNotice)
+                .ThenBy(item => item.DailyDeliveryCount)
                 .ThenByDescending(item =>
                     item.Activity.LastActivityAt is { } activityAt &&
                     now - activityAt <= TimeSpan.FromMinutes(settings.RecentActivityMinutes))
