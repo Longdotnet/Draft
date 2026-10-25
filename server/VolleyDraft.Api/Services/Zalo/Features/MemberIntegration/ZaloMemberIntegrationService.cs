@@ -13,6 +13,8 @@ internal sealed class ZaloMemberIntegrationService(
 {
     private readonly ZaloMemberIntegrationContextBuilder contextBuilder = new(db, bridge, configuration);
     private readonly ZaloMemberIntegrationCoordinator coordinator = new(CreateCapabilities());
+    private readonly ZaloMemberIntegrationDeliverySettings deliverySettings =
+        ZaloMemberIntegrationDeliverySettings.FromConfiguration(configuration);
 
     public async Task<IReadOnlyList<ZaloMemberIntegrationSelection>> BuildAsync(
         string connectionId,
@@ -34,6 +36,20 @@ internal sealed class ZaloMemberIntegrationService(
                                item.Kind.StartsWith("member_integration_", StringComparison.Ordinal))
                 .OrderByDescending(item => item.SentAt)
                 .ToList();
+
+            if (ZaloMemberIntegrationLifecyclePolicy.HasCurrentPeriodGraduation(context, memberHistory))
+                continue;
+
+            var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(context, deliverySettings);
+            if (lifecycle.ShouldAnnounceGraduation)
+            {
+                result.Add(new ZaloMemberIntegrationSelection(
+                    context,
+                    ZaloMemberIntegrationLifecyclePolicy.BuildGraduationSuggestion(context)));
+                continue;
+            }
+            if (lifecycle.StopOnboarding)
+                continue;
 
             var plan = await coordinator.EvaluateAsync(context, cancellationToken);
             var suggestion = plan.Suggestions
