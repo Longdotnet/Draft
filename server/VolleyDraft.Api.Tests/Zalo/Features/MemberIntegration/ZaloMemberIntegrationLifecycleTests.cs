@@ -68,23 +68,23 @@ public sealed class ZaloMemberIntegrationLifecycleTests
     }
 
     [Theory]
-    [InlineData(0, ZaloMemberIntegrationLifecycleStage.Newcomer, 2)]
-    [InlineData(2, ZaloMemberIntegrationLifecycleStage.Newcomer, 2)]
-    [InlineData(3, ZaloMemberIntegrationLifecycleStage.Integrating, 1)]
-    [InlineData(5, ZaloMemberIntegrationLifecycleStage.Integrating, 1)]
-    [InlineData(6, ZaloMemberIntegrationLifecycleStage.PassiveIntegrating, 1)]
-    [InlineData(7, ZaloMemberIntegrationLifecycleStage.PassiveIntegrating, 1)]
-    [InlineData(8, ZaloMemberIntegrationLifecycleStage.PassiveMember, 0)]
+    [InlineData(0, "Newcomer", 2)]
+    [InlineData(2, "Newcomer", 2)]
+    [InlineData(3, "Integrating", 1)]
+    [InlineData(5, "Integrating", 1)]
+    [InlineData(6, "PassiveIntegrating", 1)]
+    [InlineData(7, "PassiveIntegrating", 1)]
+    [InlineData(8, "PassiveMember", 0)]
     public void Newcomer_cadence_tapers_with_age(
         int days,
-        ZaloMemberIntegrationLifecycleStage expectedStage,
+        string expectedStage,
         int expectedDailyTarget)
     {
         var decision = ZaloMemberIntegrationLifecyclePolicy.Evaluate(
             Context(joinedDaysAgo: days),
             Settings());
 
-        Assert.Equal(expectedStage, decision.Stage);
+        Assert.Equal(expectedStage, decision.Stage.ToString());
         Assert.Equal(expectedDailyTarget, decision.TargetPerDay);
         if (days >= 8)
             Assert.True(decision.StopOnboarding);
