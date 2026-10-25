@@ -61,15 +61,49 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
     }
 
     [Fact]
-    public void Member_is_due_twice_per_day_but_not_back_to_back()
+    public void Newcomer_is_due_twice_per_day_but_not_back_to_back()
     {
-        var settings = Settings();
+        var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(Context(joinedDaysAgo: 0), Settings());
 
-        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 0, null, settings));
-        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddMinutes(-120), settings));
-        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddMinutes(-181), settings));
-        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 2, Now.AddHours(-6), settings));
+        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 0, null, lifecycle));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddMinutes(-120), lifecycle));
+        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddMinutes(-181), lifecycle));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 2, Now.AddHours(-6), lifecycle));
     }
+
+    [Fact]
+    public void Integrating_member_is_limited_to_one_touch_per_day()
+    {
+        var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(Context(joinedDaysAgo: 4), Settings());
+
+        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 0, Now.AddHours(-1), lifecycle));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddHours(-12), lifecycle));
+    }
+
+    [Fact]
+    public void Passive_integrating_member_requires_two_days_between_touches()
+    {
+        var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(Context(joinedDaysAgo: 6), Settings());
+
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 0, Now.AddHours(-47), lifecycle));
+        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 0, Now.AddHours(-49), lifecycle));
+    }
+
+    private static ZaloMemberIntegrationContext Context(int joinedDaysAgo) => new(
+        ZaloConnectionId: "conn",
+        AccountId: "account",
+        GroupId: "group",
+        ZaloUserId: "user",
+        DisplayName: "Member",
+        JoinedAt: Now.AddDays(-joinedDaysAgo),
+        IsRejoin: false,
+        SnapshotAt: Now,
+        Signals: new ZaloMemberIntegrationSignals(),
+        Facts: new ZaloMemberIntegrationGroupFacts(
+            "Group", "Thanh Long", "Nick Tran", "Purpose", "Culture", 28000, 18, []),
+        Roles: new ZaloMemberIntegrationRoleDirectory(null, []),
+        PeerCandidates: [],
+        LoreHints: []);
 
     private static ZaloMemberIntegrationDeliverySettings Settings() => new(
         Enabled: true,
