@@ -66,7 +66,9 @@ public sealed record ZaloMemberIntegrationContext(
     ZaloMemberIntegrationGroupFacts Facts,
     ZaloMemberIntegrationRoleDirectory Roles,
     IReadOnlyList<ZaloMemberIntegrationPeer> PeerCandidates,
-    IReadOnlyList<ZaloMemberIntegrationLoreHint> LoreHints);
+    IReadOnlyList<ZaloMemberIntegrationLoreHint> LoreHints,
+    DateTimeOffset? IntegrationStartedAt = null,
+    bool IsRecoveredNewcomer = false);
 
 /// <summary>
 /// A person a capability wants to mention when its suggestion is eventually rendered.

@@ -24,6 +24,8 @@ This list is a roadmap, not a requirement that all capabilities ship together.
 
 Verified membership events remain authoritative for real join time. `FirstSeenAt` from directory sync must not be presented as the actual join date when no provider join event exists.
 
+If the Zalo listener was offline and missed a real join, an admin may explicitly confirm that a currently observed member is a newcomer. Those confirmations are stored separately in `ZaloRecoveredNewcomers`. They participate in onboarding, but they do not mutate `ZaloGroupMembershipPeriods`, do not convert `FirstSeenAt` into a fake join timestamp, and are ignored whenever a verified provider join/rejoin exists for the same member.
+
 Community facts should come from one of three sources:
 
 1. configured group facts for stable information such as purpose, leaders, costs and rules;

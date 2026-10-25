@@ -48,7 +48,26 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
             settings.NewMemberWindowDays,
             snapshotAt,
             cancellationToken);
-        if (recent.Members.Count == 0) return [];
+        var recoveredStore = new ZaloRecoveredNewcomerStore(db);
+        foreach (var seed in settings.RecoveredNewcomers)
+        {
+            await recoveredStore.UpsertAsync(
+                connectionId,
+                groupId,
+                seed.ZaloUserId,
+                seed.DisplayName,
+                seed.FirstObservedAt,
+                confirmedBy: "member-integration-config",
+                sourceNote: "Admin-confirmed newcomer recovered after listener downtime.",
+                confirmedAt: seed.FirstObservedAt,
+                cancellationToken: cancellationToken);
+        }
+        var recovered = await recoveredStore.GetActiveAsync(
+            connectionId,
+            groupId,
+            snapshotAt.AddDays(-settings.NewMemberWindowDays),
+            cancellationToken);
+        if (recent.Members.Count == 0 && recovered.Count == 0) return [];
 
         var currentMembers = await db.ZaloGroupMembers
             .AsNoTracking()
@@ -122,6 +141,7 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
         var botUserId = CleanId(connection.AccountZaloId);
         var recentMemberIds = recent.Members
             .Select(item => CleanId(item.ZaloUserId))
+            .Concat(recovered.Select(item => CleanId(item.ZaloUserId)))
             .Where(id => id.Length > 0)
             .ToHashSet(StringComparer.Ordinal);
         var peers = currentMembers
@@ -157,14 +177,42 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
             settings.MaxPlayersPerSession,
             settings.ApprovedLore);
 
+        var providerIds = recent.Members
+            .Select(item => CleanId(item.ZaloUserId))
+            .Where(id => id.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+        var currentIds = currentMembers
+            .Select(item => CleanId(item.ZaloUserId))
+            .Where(id => id.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+        var candidates = recent.Members
+            .Select(item => new IntegrationCandidate(
+                CleanId(item.ZaloUserId),
+                CleanName(item.DisplayName),
+                item.JoinedAt,
+                item.JoinedAt,
+                item.IsRejoin,
+                false))
+            .Concat(recovered
+                .Where(item => !providerIds.Contains(CleanId(item.ZaloUserId)) && currentIds.Contains(CleanId(item.ZaloUserId)))
+                .Select(item => new IntegrationCandidate(
+                    CleanId(item.ZaloUserId),
+                    CleanName(item.DisplayName),
+                    null,
+                    item.FirstObservedAt,
+                    false,
+                    true)))
+            .OrderByDescending(item => item.IntegrationStartedAt)
+            .ToArray();
+
         var contexts = new List<ZaloMemberIntegrationContext>();
-        foreach (var joined in recent.Members)
+        foreach (var candidate in candidates)
         {
-            var userId = CleanId(joined.ZaloUserId);
+            var userId = CleanId(candidate.ZaloUserId);
             if (userId.Length == 0 || string.Equals(userId, botUserId, StringComparison.Ordinal)) continue;
-            var joinedAt = joined.JoinedAt;
+            var analysisStartAt = candidate.JoinedAt ?? candidate.IntegrationStartedAt;
             var memberMessages = messages
-                .Where(item => CleanId(item.SenderId) == userId && item.SentAt >= joinedAt)
+                .Where(item => CleanId(item.SenderId) == userId && item.SentAt >= analysisStartAt)
                 .ToList();
             var memberMessageIds = memberMessages
                 .Select(item => item.MessageId)
@@ -220,7 +268,7 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
                 beenRepliedTo,
                 lastMessageAt);
             var displayName = names.GetValueOrDefault(userId);
-            if (string.IsNullOrWhiteSpace(displayName)) displayName = CleanName(joined.DisplayName);
+            if (string.IsNullOrWhiteSpace(displayName)) displayName = CleanName(candidate.DisplayName);
             if (string.IsNullOrWhiteSpace(displayName)) displayName = userId;
 
             contexts.Add(new ZaloMemberIntegrationContext(
@@ -229,14 +277,16 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
                 groupId,
                 userId,
                 displayName,
-                joinedAt,
-                joined.IsRejoin,
+                candidate.JoinedAt,
+                candidate.IsRejoin,
                 snapshotAt,
                 signals,
                 facts,
                 roles,
                 peers.Where(item => item.ZaloUserId != userId).Take(8).ToArray(),
-                loreHints));
+                loreHints,
+                candidate.IntegrationStartedAt,
+                candidate.IsRecoveredNewcomer));
         }
 
         return contexts;
@@ -376,4 +426,11 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
 
     private sealed record ReplyRelation(string FromMessageId, string? ToMessageId, string? QuotedSenderId);
     private sealed record VoteRow(string PollSnapshotId, string ZaloUserId);
+    private sealed record IntegrationCandidate(
+        string ZaloUserId,
+        string DisplayName,
+        DateTimeOffset? JoinedAt,
+        DateTimeOffset IntegrationStartedAt,
+        bool IsRejoin,
+        bool IsRecoveredNewcomer);
 }

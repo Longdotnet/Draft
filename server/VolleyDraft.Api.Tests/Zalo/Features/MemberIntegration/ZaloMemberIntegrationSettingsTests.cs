@@ -21,7 +21,27 @@ public sealed class ZaloMemberIntegrationSettingsTests
         Assert.Null(settings.NormalCourtFeeVnd);
         Assert.Null(settings.MaxPlayersPerSession);
         Assert.Empty(settings.ApprovedLore);
+        Assert.Empty(settings.RecoveredNewcomers);
         Assert.True(settings.AppliesTo("any group"));
+    }
+
+    [Fact]
+    public void FromConfiguration_reads_only_valid_recovered_newcomers()
+    {
+        var settings = FromValues(new Dictionary<string, string?>
+        {
+            ["ZaloBot:MemberIntegration:RecoveredNewcomers:0:ZaloUserId"] = " user-1 ",
+            ["ZaloBot:MemberIntegration:RecoveredNewcomers:0:DisplayName"] = " Kim Phụng ",
+            ["ZaloBot:MemberIntegration:RecoveredNewcomers:0:FirstObservedAt"] = "2026-10-25T04:52:01.881888Z",
+            ["ZaloBot:MemberIntegration:RecoveredNewcomers:1:ZaloUserId"] = "user-2",
+            ["ZaloBot:MemberIntegration:RecoveredNewcomers:1:DisplayName"] = "bad date",
+            ["ZaloBot:MemberIntegration:RecoveredNewcomers:1:FirstObservedAt"] = "not-a-date"
+        });
+
+        var recovered = Assert.Single(settings.RecoveredNewcomers);
+        Assert.Equal("user-1", recovered.ZaloUserId);
+        Assert.Equal("Kim Phụng", recovered.DisplayName);
+        Assert.Equal(DateTimeOffset.Parse("2026-10-25T04:52:01.881888Z"), recovered.FirstObservedAt);
     }
 
     [Theory]

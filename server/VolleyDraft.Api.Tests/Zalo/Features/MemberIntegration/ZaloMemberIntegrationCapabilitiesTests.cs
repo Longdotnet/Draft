@@ -26,6 +26,21 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
     }
 
     [Fact]
+    public async Task Welcome_accepts_admin_confirmed_recovered_newcomer_without_fake_join_time()
+    {
+        var capability = new ZaloMemberWelcomeCapability();
+        var recovered = await capability.EvaluateAsync(Context(
+            joinedDaysAgo: null,
+            integrationStartedDaysAgo: 0,
+            isRecoveredNewcomer: true));
+
+        Assert.NotNull(recovered);
+        Assert.Equal("admin_confirmed_recovered_newcomer", recovered!.Reason);
+        Assert.Contains("bữa trước tui chưa kịp chào", recovered.Text);
+        Assert.Contains("Welcome", recovered.Text);
+    }
+
+    [Fact]
     public async Task Bot_identity_waits_one_day_and_uses_configured_creator_when_available()
     {
         var capability = new ZaloMemberBotIdentityCapability();
@@ -222,7 +237,9 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
         ZaloMemberIntegrationGroupFacts? facts = null,
         ZaloMemberIntegrationRoleDirectory? roles = null,
         IReadOnlyList<ZaloMemberIntegrationPeer>? peers = null,
-        IReadOnlyList<ZaloMemberIntegrationLoreHint>? loreHints = null) =>
+        IReadOnlyList<ZaloMemberIntegrationLoreHint>? loreHints = null,
+        int? integrationStartedDaysAgo = null,
+        bool isRecoveredNewcomer = false) =>
         new(
             ZaloConnectionId: "conn-1",
             AccountId: "account-1",
@@ -236,7 +253,11 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
             Facts: facts ?? Facts(),
             Roles: roles ?? new ZaloMemberIntegrationRoleDirectory(null, []),
             PeerCandidates: peers ?? [],
-            LoreHints: loreHints ?? []);
+            LoreHints: loreHints ?? [],
+            IntegrationStartedAt: integrationStartedDaysAgo is null
+                ? null
+                : Snapshot.AddDays(-integrationStartedDaysAgo.Value),
+            IsRecoveredNewcomer: isRecoveredNewcomer);
 
     private static ZaloMemberIntegrationGroupFacts Facts(
         string groupPurpose = "giao lưu vui vẻ, không phụ thu",

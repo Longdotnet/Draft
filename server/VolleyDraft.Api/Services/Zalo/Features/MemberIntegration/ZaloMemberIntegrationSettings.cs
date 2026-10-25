@@ -10,7 +10,8 @@ public sealed record ZaloMemberIntegrationSettings(
     string CultureSummary,
     int? NormalCourtFeeVnd,
     int? MaxPlayersPerSession,
-    IReadOnlyList<string> ApprovedLore)
+    IReadOnlyList<string> ApprovedLore,
+    IReadOnlyList<ZaloRecoveredNewcomerSeed> RecoveredNewcomers)
 {
     public static ZaloMemberIntegrationSettings FromConfiguration(IConfiguration configuration)
     {
@@ -21,6 +22,21 @@ public sealed record ZaloMemberIntegrationSettings(
             .Where(item => !string.IsNullOrWhiteSpace(item))
             .Cast<string>()
             .Take(20)
+            .ToArray();
+        var recovered = section.GetSection("RecoveredNewcomers")
+            .GetChildren()
+            .Select(item =>
+            {
+                var userId = item["ZaloUserId"]?.Trim() ?? string.Empty;
+                var displayName = item["DisplayName"]?.Trim() ?? string.Empty;
+                var firstObservedRaw = item["FirstObservedAt"]?.Trim();
+                return DateTimeOffset.TryParse(firstObservedRaw, out var firstObservedAt) && userId.Length > 0
+                    ? new ZaloRecoveredNewcomerSeed(userId, displayName, firstObservedAt)
+                    : null;
+            })
+            .Where(item => item is not null)
+            .Cast<ZaloRecoveredNewcomerSeed>()
+            .Take(50)
             .ToArray();
 
         var fee = section.GetValue<int?>("NormalCourtFeeVnd");
@@ -35,7 +51,8 @@ public sealed record ZaloMemberIntegrationSettings(
             section["CultureSummary"]?.Trim() ?? string.Empty,
             fee is > 0 ? fee : null,
             capacity is > 0 ? capacity : null,
-            lore);
+            lore,
+            recovered);
     }
 
     public bool AppliesTo(string? groupName)
@@ -45,3 +62,8 @@ public sealed record ZaloMemberIntegrationSettings(
         return (groupName ?? string.Empty).Contains(GroupNameContains, StringComparison.CurrentCultureIgnoreCase);
     }
 }
+
+public sealed record ZaloRecoveredNewcomerSeed(
+    string ZaloUserId,
+    string DisplayName,
+    DateTimeOffset FirstObservedAt);

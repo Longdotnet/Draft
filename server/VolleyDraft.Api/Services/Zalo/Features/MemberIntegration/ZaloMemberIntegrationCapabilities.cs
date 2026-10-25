@@ -4,8 +4,9 @@ internal static class ZaloMemberIntegrationCapabilitySupport
 {
     public static int DaysSinceJoin(ZaloMemberIntegrationContext context)
     {
-        if (context.JoinedAt is null) return int.MaxValue;
-        return Math.Max(0, (int)Math.Floor((context.SnapshotAt - context.JoinedAt.Value).TotalDays));
+        var anchor = context.JoinedAt ?? context.IntegrationStartedAt;
+        if (anchor is null) return int.MaxValue;
+        return Math.Max(0, (int)Math.Floor((context.SnapshotAt - anchor.Value).TotalDays));
     }
 
     public static ZaloMemberIntegrationMentionTarget Subject(ZaloMemberIntegrationContext context) =>
@@ -41,21 +42,27 @@ public sealed class ZaloMemberWelcomeCapability : IZaloMemberIntegrationCapabili
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (context.JoinedAt is null) return ZaloMemberIntegrationCapabilitySupport.None();
+        if (context.JoinedAt is null && context.IntegrationStartedAt is null)
+            return ZaloMemberIntegrationCapabilitySupport.None();
         var days = ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context);
         var subject = ZaloMemberIntegrationCapabilitySupport.Subject(context);
-        var text = context.IsRejoin
+        var text = context.IsRecoveredNewcomer
+            ? $"👋 @{context.DisplayName} bữa trước tui chưa kịp chào 😆 Welcome vào {context.Facts.GroupName} nha. Cứ tự nhiên bắt chuyện, hỏi kèo hay chen vô tám với anh em bình thường."
+            : context.IsRejoin
             ? $"👋 @{context.DisplayName} quay lại hội rồi nè 😄 Welcome back ông. Cứ nhập hội như cũ nha, thấy kèo hay câu chuyện nào vui thì chen vô bình thường."
             : days <= 1
                 ? $"👋 Welcome @{context.DisplayName} vào {context.Facts.GroupName} nha 😄 Hội này chơi bóng chuyền để giao lưu vui vẻ, cứ tự nhiên bắt chuyện với anh em, đừng ngại."
                 : $"👋 @{context.DisplayName} vào hội được {days} ngày rồi nè 😄 Nếu còn đang ngại thì cứ chen vô chat, hỏi kèo hay rủ anh em chơi bình thường nha.";
-        var joinKey = context.JoinedAt.Value.ToUniversalTime().ToString("yyyyMMddHHmmss");
+        var anchor = context.JoinedAt ?? context.IntegrationStartedAt!.Value;
+        var joinKey = anchor.ToUniversalTime().ToString("yyyyMMddHHmmss");
         return ZaloMemberIntegrationCapabilitySupport.Suggest(new(
             Key,
             Priority,
             text,
             $"member-integration:welcome:{context.ZaloUserId}:{joinKey}",
-            context.IsRejoin ? "verified_rejoin" : "verified_join",
+            context.IsRecoveredNewcomer
+                ? "admin_confirmed_recovered_newcomer"
+                : context.IsRejoin ? "verified_rejoin" : "verified_join",
             [subject]));
     }
 }
