@@ -47,7 +47,7 @@ public sealed class ZaloConversationSummaryTests
 
         Assert.NotNull(answer);
         Assert.Equal(ZaloBotIntent.SummarizeConversation, answer.Intent);
-        var ids = await fixture.LoadSavedTopicMessageIdsAsync("sender");
+        var ids = await fixture.LoadSavedAllTopicMessageIdsAsync("sender");
         Assert.Contains("recent-1", ids);
         Assert.Contains("recent-2", ids);
         Assert.DoesNotContain("old-1", ids);
@@ -124,7 +124,7 @@ public sealed class ZaloConversationSummaryTests
         Assert.NotNull(answer);
         Assert.Equal(ZaloBotIntent.SummarizeHotTopics, answer.Intent);
         Assert.Contains("Team đi giải", answer.Text);
-        Assert.Contains("Sáng giờ", answer.Text);
+        Assert.Contains("Từ sáng tới giờ", answer.Text);
         Assert.Equal(2, handler.CallCount);
     }
 
@@ -148,7 +148,8 @@ public sealed class ZaloConversationSummaryTests
 
         Assert.NotNull(answer);
         Assert.Equal(ZaloBotIntent.SummarizeMemberConversation, answer.Intent);
-        Assert.Contains("Vũ chủ yếu bàn chuyện team đi giải", answer.Text);
+        Assert.Contains("Team đi giải", answer.Text);
+        Assert.Contains("Vũ nói đang tính gom bốn người để tập", answer.Text);
         var row = await fixture.Db.ZaloConversationSummaryContexts.AsNoTracking().SingleAsync();
         Assert.Equal("vu-uid", row.TargetZaloUserId);
         var ids = ReadTopicMessageIds(row.SummaryJson);
@@ -159,7 +160,7 @@ public sealed class ZaloConversationSummaryTests
     [Fact]
     public async Task Ai_summary_drops_fabricated_message_and_participant_ids()
     {
-        var response = """{"overview":"ok","topics":[{"id":"t1","title":"Vụ test","summary":"grounded","messageIds":["real","fake"],"participantIds":["u1","fake-user"],"decisions":[],"openQuestions":[],"importance":0.8}]}""";
+        var response = """{"overview":"ok","topics":[{"id":"t1","title":"Long nói nội dung","summary":"Long nói nội dung đã lưu.","messageIds":["real","fake"],"participantIds":["u1","fake-user"],"decisions":[],"openQuestions":[],"importance":0.8}]}""";
         var (ai, _) = CreateConfiguredAi(response);
         var result = await ai.SummarizeConversationAsync(
             new ZaloConversationSummaryAiContext(
@@ -175,6 +176,25 @@ public sealed class ZaloConversationSummaryTests
         var topic = Assert.Single(result.Topics);
         Assert.Equal(["real"], topic.MessageIds);
         Assert.Equal(["u1"], topic.ParticipantIds);
+    }
+
+    [Fact]
+    public async Task Ai_summary_rejects_story_text_not_supported_by_its_real_message_ids()
+    {
+        var response = """{"overview":"ok","topics":[{"id":"t1","title":"Vivian làm mất ví","summary":"Vivian báo làm mất ví và nhờ mọi người tìm giúp.","messageIds":["real"],"participantIds":["u1"],"decisions":[],"openQuestions":[],"importance":0.8}]}""";
+        var (ai, _) = CreateConfiguredAi(response);
+
+        var result = await ai.SummarizeConversationAsync(
+            new ZaloConversationSummaryAiContext(
+                ZaloConversationSummaryKind.GroupSummary,
+                "tóm tắt",
+                null,
+                null,
+                "hôm nay",
+                [new ZaloConversationSummaryCandidate("real", DateTimeOffset.UtcNow, "u1", "Vivian", "mình góp ý cách xếp team cần cân bằng hơn", null, false)]),
+            CancellationToken.None);
+
+        Assert.Null(result);
     }
 
     [Fact]
@@ -274,6 +294,94 @@ public sealed class ZaloConversationSummaryTests
     }
 
     [Fact]
+    public async Task Generic_follow_up_after_member_summary_keeps_saved_target_uid()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.Parse("2026-10-25T17:00:00Z");
+        fixture.AddMessage("real", "target-real", "Vũ", "tui đồng ý gom team để tập", now.AddMinutes(-20));
+        fixture.AddMessage("decoy", "target-decoy", "Vũ", "tui không liên quan vụ này", now.AddMinutes(-19));
+        await fixture.Db.SaveChangesAsync();
+        await fixture.SaveMemoryAsync("sender", now,
+            new ZaloConversationSummaryMemory(
+                "một chủ đề",
+                [new ZaloConversationSummaryTopic("t1", "Vũ bàn team", "Vũ nói về team", ["real", "decoy"], ["target-real", "target-decoy"], [], [], .9)],
+                TargetZaloUserId: "target-real",
+                TargetDisplayName: "Vũ"));
+
+        var answer = await fixture.Bot.TryHandleConversationSummaryAsync(
+            "connection-a", "group-1", Incoming("q-follow-saved-target", "sender", "vụ đó nói kỹ hơn", now),
+            "vụ đó nói kỹ hơn", false, CancellationToken.None);
+
+        Assert.NotNull(answer);
+        Assert.Contains("tui đồng ý gom team để tập", answer.Text);
+        Assert.DoesNotContain("tui không liên quan vụ này", answer.Text);
+    }
+
+    [Fact]
+    public async Task Grounded_fallback_keeps_direct_delayed_reply_in_original_story()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.Parse("2026-10-26T01:10:00+07:00");
+        var parentTime = DateTimeOffset.Parse("2026-10-25T10:00:00+07:00");
+        var replyTime = parentTime.AddMinutes(75);
+        fixture.AddMessage("story-parent", "vivian", "Vivian",
+            "Mình góp ý cách xếp team hiện tại đang mất cân bằng, nên để bot hỗ trợ chia lại cho công bằng.", parentTime);
+        fixture.AddMessage("story-reply", "long", "Thanh Long",
+            "Anh hiểu ý em, phần này anh sẽ nhắc mọi người lưu ý hơn.", replyTime);
+        fixture.AddMessage("noise-late", "other", "Người khác", "chiều nay ai đi uống cà phê không", replyTime.AddMinutes(-5));
+        await fixture.Db.SaveChangesAsync();
+        await new ZaloMessageGraphStore(fixture.Db).RememberIncomingQuoteAsync(
+            "connection-a",
+            new ZaloIncomingMessageEvent(
+                "bot-a", "bot-a", "group-1", "story-reply", "long", "Thanh Long",
+                "Anh hiểu ý em, phần này anh sẽ nhắc mọi người lưu ý hơn.", [], false,
+                replyTime.ToUnixTimeMilliseconds(),
+                new ZaloBridgeMessageQuote(
+                    "story-parent", "vivian", "Vivian",
+                    "Mình góp ý cách xếp team hiện tại đang mất cân bằng, nên để bot hỗ trợ chia lại cho công bằng.",
+                    "chat", parentTime.ToUnixTimeMilliseconds(), null)));
+
+        var answer = await fixture.Bot.TryHandleConversationSummaryAsync(
+            "connection-a", "group-1", Incoming("q-delayed-reply", "sender", "tóm tắt hôm qua", now),
+            "tóm tắt hôm qua", false, CancellationToken.None);
+
+        Assert.NotNull(answer);
+        var row = await fixture.Db.ZaloConversationSummaryContexts.AsNoTracking().SingleAsync();
+        using var doc = JsonDocument.Parse(row.SummaryJson);
+        var topic = doc.RootElement.GetProperty("topics").EnumerateArray()
+            .Single(item => item.GetProperty("messageIds").EnumerateArray().Any(id => id.GetString() == "story-parent"));
+        var ids = topic.GetProperty("messageIds").EnumerateArray().Select(item => item.GetString()!).ToList();
+        Assert.Contains("story-parent", ids);
+        Assert.Contains("story-reply", ids);
+        Assert.DoesNotContain("noise-late", ids);
+    }
+
+    [Fact]
+    public async Task Grounded_fallback_does_not_dedupe_repeated_keyword_stories_hours_apart()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.Parse("2026-10-26T01:10:00+07:00");
+        fixture.AddMessage("morning-team", "u1", "Long", "Sáng nay team đi giải đang bàn danh sách bốn người tập bài", DateTimeOffset.Parse("2026-10-25T08:00:00+07:00"));
+        fixture.AddMessage("morning-reply", "u2", "Vũ", "Team sáng chốt tập bài trước rồi tính danh sách giải", DateTimeOffset.Parse("2026-10-25T08:05:00+07:00"));
+        fixture.AddMessage("evening-team", "u3", "Nick", "Tối nay team đi giải khác đang hỏi danh sách bốn người tập bài", DateTimeOffset.Parse("2026-10-25T20:00:00+07:00"));
+        fixture.AddMessage("evening-reply", "u4", "Sin", "Team tối này là nhóm khác, chưa chốt người đánh giải", DateTimeOffset.Parse("2026-10-25T20:05:00+07:00"));
+        await fixture.Db.SaveChangesAsync();
+
+        var answer = await fixture.Bot.TryHandleConversationSummaryAsync(
+            "connection-a", "group-1", Incoming("q-repeat-story", "sender", "tóm tắt hôm qua", now),
+            "tóm tắt hôm qua", false, CancellationToken.None);
+
+        Assert.NotNull(answer);
+        var row = await fixture.Db.ZaloConversationSummaryContexts.AsNoTracking().SingleAsync();
+        using var doc = JsonDocument.Parse(row.SummaryJson);
+        var topicIds = doc.RootElement.GetProperty("topics").EnumerateArray()
+            .Select(topic => topic.GetProperty("messageIds").EnumerateArray().Select(id => id.GetString()!).ToHashSet(StringComparer.Ordinal))
+            .ToList();
+        Assert.Contains(topicIds, ids => ids.Contains("morning-team") && !ids.Contains("evening-team"));
+        Assert.Contains(topicIds, ids => ids.Contains("evening-team") && !ids.Contains("morning-team"));
+    }
+
+    [Fact]
     public async Task Grounded_fallback_summarizes_111_messages_into_topics_with_real_evidence()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -295,13 +403,14 @@ public sealed class ZaloConversationSummaryTests
 
         Assert.NotNull(answer);
         Assert.Equal(ZaloBotIntent.SummarizeConversation, answer.Intent);
-        Assert.Contains("111 tin nhắn", answer.Text);
-        Assert.Contains("Team / giải đấu", answer.Text);
-        Assert.Contains("Lịch chơi / sân / slot", answer.Text);
-        Assert.Contains("Sử dụng bot / hỗ trợ thành viên", answer.Text);
-        Assert.Contains("Vị trí / trình độ thành viên", answer.Text);
+        Assert.Contains("chuyện chính", answer.Text);
+        Assert.Contains("Mọi người bàn về đội đi giải", answer.Text);
+        Assert.Contains("Trao đổi về lịch chơi / sân / slot", answer.Text);
+        Assert.Contains("Hướng dẫn thành viên sử dụng bot", answer.Text);
+        Assert.Contains("Bàn về vị trí / trình độ thành viên", answer.Text);
         Assert.Contains("↳", answer.Text);
         Assert.Contains("team đi giải", answer.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("tin từ", answer.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("chỉ giữ phần dữ liệu gốc gần nhất", answer.Text);
 
         void AddCluster(int count, DateTimeOffset start, Func<int, string> content)
@@ -316,6 +425,64 @@ public sealed class ZaloConversationSummaryTests
                     start.AddMinutes(i));
             }
         }
+    }
+
+    [Fact]
+    public async Task Grounded_fallback_reconstructs_vivian_team_complaint_as_story_and_excludes_nearby_bottle_chat()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.Parse("2026-10-26T01:10:00+07:00");
+        fixture.AddMessage(
+            "vivian-main", "vivian", "Vivian",
+            "Em có đôi điều muốn nói luôn ạ. Thật sự em không thích cách mng tự chọn cho mình nguyên 1 team luôn vì như vậy là không tôn trọng những người còn lại. Em nghĩ chỉ nên ghép 2-3 người thôi, còn lại để BOT cân bằng. Hổm nay cứ pick team mạnh, team khác lại thiếu vị trí hỗ trợ nên mất cân bằng.",
+            DateTimeOffset.Parse("2026-10-25T19:47:00+07:00"));
+        fixture.AddMessage(
+            "phan-rule", "phan", "Phan Nguyên",
+            "Oke từ nay mọi người lưu ý ghép tối đa 3 người thôi nha, để cho cân bằng",
+            DateTimeOffset.Parse("2026-10-25T19:57:00+07:00"));
+        fixture.AddMessage(
+            "bottle-1", "thanh", "Thanh Thanh",
+            "Cả nhà ơi em để quên cái bình trên sân, ai lấy giúp em với",
+            DateTimeOffset.Parse("2026-10-25T20:02:00+07:00"));
+        fixture.AddMessage(
+            "bottle-2", "phan", "Phan Nguyên",
+            "@Thanh Thanh đặc điểm bình như thế nào em",
+            DateTimeOffset.Parse("2026-10-25T20:03:00+07:00"));
+        fixture.AddMessage(
+            "long-asks", "long", "Thanh Long",
+            "@Vivian sao thế em, em khó chịu gì hả",
+            DateTimeOffset.Parse("2026-10-25T20:20:00+07:00"));
+        fixture.AddMessage(
+            "vivian-reply", "vivian", "Vivian",
+            "@Thanh Long dạ em đã viết đầy đủ ý của mình ở trên rồi ạ. Chuyện này xảy ra không chỉ hôm nay và không riêng gì Vũ nha.",
+            DateTimeOffset.Parse("2026-10-25T20:21:00+07:00"));
+        fixture.AddMessage(
+            "team-tournament", "nick", "Nick Tran",
+            "@Nguyễn Hoàng Vũ em có gom team đi đánh giải thiệt không, sao anh hỏi mấy bạn nói không biết",
+            DateTimeOffset.Parse("2026-10-25T20:27:00+07:00"));
+        await fixture.Db.SaveChangesAsync();
+
+        var answer = await fixture.Bot.TryHandleConversationSummaryAsync(
+            "connection-a", "group-1", Incoming("q-story-vivian", "sender", "tóm tắt hôm qua có gì", now),
+            "tóm tắt hôm qua có gì", false, CancellationToken.None);
+
+        Assert.NotNull(answer);
+        Assert.Contains("Vivian phản ánh việc xếp team thiếu cân bằng", answer.Text);
+        Assert.Contains("Vivian cho rằng việc mọi người tự chọn nguyên team", answer.Text);
+        Assert.Contains("Phan Nguyên", answer.Text);
+        Assert.Contains("thống nhất từ nay chỉ ghép tối đa 3 người", answer.Text);
+
+        var row = await fixture.Db.ZaloConversationSummaryContexts.AsNoTracking().SingleAsync();
+        using var doc = JsonDocument.Parse(row.SummaryJson);
+        var vivianTopic = doc.RootElement.GetProperty("topics").EnumerateArray()
+            .Single(topic => (topic.GetProperty("title").GetString() ?? string.Empty).Contains("Vivian", StringComparison.Ordinal));
+        var storyIds = vivianTopic.GetProperty("messageIds").EnumerateArray().Select(item => item.GetString()!).ToList();
+        Assert.Contains("vivian-main", storyIds);
+        Assert.Contains("phan-rule", storyIds);
+        Assert.Contains("long-asks", storyIds);
+        Assert.DoesNotContain("bottle-1", storyIds);
+        Assert.DoesNotContain("bottle-2", storyIds);
+        Assert.DoesNotContain("team-tournament", storyIds);
     }
 
     private static ZaloGroupMember Member(string userId, string displayName, DateTimeOffset now) => new()
@@ -405,6 +572,17 @@ public sealed class ZaloConversationSummaryTests
         {
             var row = await Db.ZaloConversationSummaryContexts.AsNoTracking().SingleAsync(item => item.RequesterZaloUserId == requesterId);
             return ReadTopicMessageIds(row.SummaryJson);
+        }
+
+        public async Task<IReadOnlyList<string>> LoadSavedAllTopicMessageIdsAsync(string requesterId)
+        {
+            var row = await Db.ZaloConversationSummaryContexts.AsNoTracking().SingleAsync(item => item.RequesterZaloUserId == requesterId);
+            using var doc = JsonDocument.Parse(row.SummaryJson);
+            return doc.RootElement.GetProperty("topics").EnumerateArray()
+                .SelectMany(topic => topic.GetProperty("messageIds").EnumerateArray())
+                .Select(item => item.GetString()!)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
         }
 
         public async Task SaveMemoryAsync(string requesterId, DateTimeOffset now, ZaloConversationSummaryMemory memory)

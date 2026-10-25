@@ -401,7 +401,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private static bool ShouldSkipEquivalentModelFailure(ZaloAiFailureKind failureKind) => failureKind is
         ZaloAiFailureKind.Timeout or
         ZaloAiFailureKind.InvalidResponse or
-        ZaloAiFailureKind.ModelOrEndpointUnavailable;
+        ZaloAiFailureKind.ModelOrEndpointUnavailable or
+        ZaloAiFailureKind.RateLimited;
 
     private static bool RequiresJsonObject(ZaloAiWorkload workload) => workload is
         ZaloAiWorkload.IntentClassification or

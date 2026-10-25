@@ -43,8 +43,8 @@ public sealed partial class ZaloMemberIntelligenceBotService
         if (classification.Kind == ZaloConversationSummaryKind.FollowUpDetail)
         {
             if (memory is null) return null;
-            string? followUpTargetId = null;
-            string? followUpTargetName = null;
+            string? followUpTargetId = memory.TargetZaloUserId;
+            string? followUpTargetName = memory.TargetDisplayName;
             var hasHumanMention = incoming.Mentions.Any(mention => NormalizeId(mention.Uid) != NormalizeId(incoming.BotId));
             if (hasHumanMention || !string.IsNullOrWhiteSpace(classification.MemberReference))
             {

@@ -16,6 +16,14 @@ internal sealed class ZaloConversationSummaryService(
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private static readonly TimeSpan CurrentConversationGap = TimeSpan.FromMinutes(90);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly HashSet<string> StoryStopWords = new(StringComparer.Ordinal)
+    {
+        "anh", "chi", "em", "minh", "ban", "moi", "nguoi", "nay", "do", "kia", "roi", "nha", "nhe", "voi",
+        "cho", "cua", "mot", "nhung", "ma", "la", "thi", "co", "khong", "ko", "hong", "duoc", "dc", "dang",
+        "cung", "gio", "hom", "qua", "nay", "luon", "lam", "ve", "trong", "ngoai", "them", "gi", "sao", "oi",
+        "all", "bot", "bott", "noi", "hoi", "biet", "viet", "thay", "day", "du", "y", "ra", "xay", "chi",
+        "rieng", "tu", "toi", "de", "nen", "thiet", "may", "ha", "a"
+    };
 
     public async Task<ZaloConversationSummaryMemory?> LoadMemoryAsync(
         string connectionId,
@@ -35,7 +43,13 @@ internal sealed class ZaloConversationSummaryService(
         if (row is null || string.IsNullOrWhiteSpace(row.SummaryJson)) return null;
         try
         {
-            return JsonSerializer.Deserialize<ZaloConversationSummaryMemory>(row.SummaryJson, JsonOptions);
+            var memory = JsonSerializer.Deserialize<ZaloConversationSummaryMemory>(row.SummaryJson, JsonOptions);
+            return memory is null
+                ? null
+                : memory with
+                {
+                    TargetZaloUserId = memory.TargetZaloUserId ?? row.TargetZaloUserId
+                };
         }
         catch (JsonException)
         {
@@ -96,7 +110,7 @@ internal sealed class ZaloConversationSummaryService(
         }
 
         var relations = await new ZaloMessageGraphStore(db).LoadReplyRelationsAsync(connectionId, groupId, cancellationToken);
-        var selected = SelectRepresentativeMessages(messages, normalizedTarget);
+        var selected = SelectRepresentativeMessages(messages, normalizedTarget, relations);
         var candidates = selected.Select(message =>
         {
             relations.TryGetValue(message.MessageId, out var relation);
@@ -107,7 +121,9 @@ internal sealed class ZaloConversationSummaryService(
                 Clean(message.SenderName, 120),
                 SanitizeContent(message.Content, 360),
                 BuildReplyContext(relation),
-                normalizedTarget is not null && NormalizeId(message.SenderId) == normalizedTarget);
+                normalizedTarget is not null && NormalizeId(message.SenderId) == normalizedTarget,
+                relation?.ToMessageId,
+                NormalizeId(relation?.QuotedSenderId));
         }).ToList();
 
         ZaloConversationSummaryAiResult? summary = null;
@@ -132,7 +148,11 @@ internal sealed class ZaloConversationSummaryService(
             .OrderByDescending(topic => classification.Kind == ZaloConversationSummaryKind.HotTopics ? CalculateHotScore(topic, selected, relations) : topic.Importance)
             .Take(5)
             .ToList();
-        var memory = new ZaloConversationSummaryMemory(summary.Overview, topics);
+        var memory = new ZaloConversationSummaryMemory(
+            summary.Overview,
+            topics,
+            TargetZaloUserId: normalizedTarget,
+            TargetDisplayName: targetDisplayName);
         await SaveMemoryAsync(
             connectionId,
             groupId,
@@ -146,7 +166,7 @@ internal sealed class ZaloConversationSummaryService(
             cancellationToken);
 
         return new ZaloConversationSummaryHandleResult(
-            FormatSummary(summary.Overview, topics, classification.Kind, targetDisplayName, range.Description, messages, relations, usedFallback),
+            FormatSummary(topics, classification.Kind, targetDisplayName, range.Description, messages, relations, usedFallback),
             MapIntent(classification.Kind),
             aiCalled,
             BuildProtectedTerms(topics, targetDisplayName));
@@ -177,19 +197,20 @@ internal sealed class ZaloConversationSummaryService(
         }
 
         var topicIds = topic.MessageIds.ToHashSet(StringComparer.Ordinal);
+        var relations = await new ZaloMessageGraphStore(db).LoadReplyRelationsAsync(connectionId, groupId, cancellationToken);
+        var expandedTopicIds = ExpandTopicMessageIds(topicIds, relations, 80);
         var sourceMessages = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(message =>
                 message.ZaloConnectionId == connectionId &&
                 message.GroupId == groupId &&
-                topicIds.Contains(message.MessageId) &&
+                expandedTopicIds.Contains(message.MessageId) &&
                 !message.IsFromBot)
             .OrderBy(message => message.SentAt)
             .ToListAsync(cancellationToken);
         if (sourceMessages.Count == 0)
             return null;
 
-        var relations = await new ZaloMessageGraphStore(db).LoadReplyRelationsAsync(connectionId, groupId, cancellationToken);
         var candidates = sourceMessages.Select(message =>
         {
             relations.TryGetValue(message.MessageId, out var relation);
@@ -200,7 +221,9 @@ internal sealed class ZaloConversationSummaryService(
                 Clean(message.SenderName, 120),
                 SanitizeContent(message.Content, 520),
                 BuildReplyContext(relation),
-                !string.IsNullOrWhiteSpace(targetUserId) && NormalizeId(message.SenderId) == NormalizeId(targetUserId));
+                !string.IsNullOrWhiteSpace(targetUserId) && NormalizeId(message.SenderId) == NormalizeId(targetUserId),
+                relation?.ToMessageId,
+                NormalizeId(relation?.QuotedSenderId));
         }).ToList();
 
         ZaloConversationSummaryFollowUpAiResult? answer = null;
@@ -219,7 +242,7 @@ internal sealed class ZaloConversationSummaryService(
                                   .Where(item => NormalizeId(item.SenderId) == NormalizeId(targetUserId))
                                   .Select(item => item.MessageId)
                                   .ToHashSet(StringComparer.Ordinal)
-                              : topicIds);
+                              : expandedTopicIds);
         var grounded = sourceMessages.Where(item => selectedIds.Contains(item.MessageId)).Take(4).ToList();
         if (grounded.Count == 0) grounded = sourceMessages.Take(4).ToList();
         var detail = answer?.Answer;
@@ -371,29 +394,68 @@ internal sealed class ZaloConversationSummaryService(
 
     private static IReadOnlyList<ZaloGroupMessage> SelectRepresentativeMessages(
         IReadOnlyList<ZaloGroupMessage> messages,
-        string? targetUserId)
+        string? targetUserId,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations)
     {
         if (messages.Count <= MaxAiCandidates) return messages;
-        var indexes = new HashSet<int>();
+        var priorities = new Dictionary<int, double>();
+        void Add(int index, double priority)
+        {
+            if (index < 0 || index >= messages.Count) return;
+            if (!priorities.TryGetValue(index, out var current) || priority > current)
+                priorities[index] = priority;
+        }
+
         if (targetUserId is not null)
         {
             for (var index = 0; index < messages.Count; index++)
             {
                 if (NormalizeId(messages[index].SenderId) != targetUserId) continue;
-                indexes.Add(index);
-                if (index > 0) indexes.Add(index - 1);
-                if (index + 1 < messages.Count) indexes.Add(index + 1);
+                Add(index, 100);
+                Add(index - 1, 80);
+                Add(index + 1, 80);
             }
         }
-        var evenly = 110;
+
+        var anchors = messages
+            .Select((message, index) => new
+            {
+                Index = index,
+                Score = CalculateStoryAnchorScore(message, relations)
+            })
+            .OrderByDescending(item => item.Score)
+            .Take(70)
+            .ToList();
+        foreach (var anchor in anchors)
+        {
+            Add(anchor.Index, 50 + anchor.Score);
+            Add(anchor.Index - 1, 35 + anchor.Score);
+            Add(anchor.Index + 1, 35 + anchor.Score);
+        }
+
+        for (var index = Math.Max(0, messages.Count - 24); index < messages.Count; index++)
+            Add(index, 25);
+
+        var indexByMessageId = messages
+            .Select((message, index) => new { message.MessageId, Index = index })
+            .ToDictionary(item => item.MessageId, item => item.Index, StringComparer.Ordinal);
+        foreach (var relation in relations.Values)
+        {
+            if (indexByMessageId.TryGetValue(relation.FromMessageId, out var fromIndex)) Add(fromIndex, 72);
+            if (!string.IsNullOrWhiteSpace(relation.ToMessageId) && indexByMessageId.TryGetValue(relation.ToMessageId, out var toIndex)) Add(toIndex, 76);
+        }
+
+        var evenly = 36;
         var stride = Math.Max(1d, (messages.Count - 1d) / Math.Max(1, evenly - 1));
         for (var sample = 0; sample < evenly; sample++)
-            indexes.Add(Math.Min(messages.Count - 1, (int)Math.Round(sample * stride)));
-        for (var index = Math.Max(0, messages.Count - 40); index < messages.Count; index++)
-            indexes.Add(index);
-        return indexes
+            Add(Math.Min(messages.Count - 1, (int)Math.Round(sample * stride)), 10);
+
+        return priorities
+            .OrderByDescending(item => item.Value)
+            .ThenByDescending(item => messages[item.Key].SentAt)
+            .Take(MaxAiCandidates)
+            .Select(item => item.Key)
             .OrderBy(index => index)
-            .TakeLast(MaxAiCandidates)
             .Select(index => messages[index])
             .ToList();
     }
@@ -405,27 +467,18 @@ internal sealed class ZaloConversationSummaryService(
         string rangeDescription,
         IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations)
     {
-        var relevant = targetUserId is null
+        var targetMessages = targetUserId is null
             ? messages
             : messages.Where(item => NormalizeId(item.SenderId) == targetUserId).ToList();
-        var participantCount = relevant.Select(item => NormalizeId(item.SenderId)).Distinct(StringComparer.Ordinal).Count();
-        var segments = BuildFallbackSegments(relevant)
-            .Select(segment => new
-            {
-                Messages = segment,
-                Score = CalculateFallbackSegmentScore(segment, relations)
-            })
-            .OrderByDescending(item => item.Score)
-            .Take(4)
-            .ToList();
+        var stories = BuildFallbackStories(messages, relations, targetUserId).Take(5).ToList();
 
         var topics = new List<ZaloConversationSummaryTopic>();
-        for (var index = 0; index < segments.Count; index++)
+        for (var index = 0; index < stories.Count; index++)
         {
-            var segment = segments[index].Messages;
-            var ids = SelectFallbackEvidence(segment, relations, 12)
-                .Select(item => item.MessageId)
-                .ToList();
+            var story = stories[index];
+            var segment = story.Messages;
+            var evidence = SelectFallbackStoryEvidence(story, relations, 24);
+            var ids = evidence.Select(item => item.MessageId).ToList();
             if (ids.Count == 0) continue;
             var participants = segment
                 .Select(item => NormalizeId(item.SenderId))
@@ -443,39 +496,35 @@ internal sealed class ZaloConversationSummaryService(
                 .Take(2)
                 .Select(item => $"{Clean(item.SenderName, 60)}: “{SanitizeContent(item.Content, 180)}”")
                 .ToList();
-            var start = segment.Min(item => item.SentAt);
-            var end = segment.Max(item => item.SentAt);
-            var summary = segment.Count == 1
-                ? $"Một tin đáng chú ý lúc {FormatVietnamTime(start)}."
-                : $"{segment.Count} tin từ {participants.Count} người, diễn ra khoảng {FormatVietnamClock(start)}–{FormatVietnamClock(end)}.";
             topics.Add(new ZaloConversationSummaryTopic(
                 $"topic-{index + 1}",
-                InferFallbackTitle(segment, targetDisplayName),
-                summary,
+                InferFallbackStoryTitle(story, targetDisplayName),
+                BuildFallbackStoryNarrative(story, relations),
                 ids,
                 participants,
                 decisions,
                 questions,
-                Math.Min(1, segments[index].Score / 20d)));
+                Math.Min(1, story.Score / 20d)));
         }
 
         if (topics.Count == 0)
         {
-            var ids = relevant.TakeLast(8).Select(item => item.MessageId).ToList();
+            var ids = targetMessages.TakeLast(8).Select(item => item.MessageId).ToList();
             topics.Add(new ZaloConversationSummaryTopic(
                 "topic-1",
                 targetUserId is null ? "Đoạn chat gần đây" : $"Phần {targetDisplayName ?? "thành viên"} đã nói",
-                $"Có {relevant.Count} tin nhắn trong {rangeDescription}.",
+                $"Có {targetMessages.Count} tin nhắn trong {rangeDescription}.",
                 ids,
-                relevant.TakeLast(8).Select(item => NormalizeId(item.SenderId)).Distinct().ToList(),
+                targetMessages.TakeLast(8).Select(item => NormalizeId(item.SenderId)).Distinct().ToList(),
                 [],
                 [],
                 .5));
         }
 
+        var lead = RangeLead(rangeDescription);
         var overview = targetUserId is null
-            ? $"Bot ghi nhận {relevant.Count} tin nhắn từ {participantCount} người trong {rangeDescription}. Dưới đây là các cụm trao đổi nổi bật dựa trực tiếp trên tin nhắn đã lưu."
-            : $"Bot ghi nhận {relevant.Count} tin của {targetDisplayName ?? "người bạn hỏi"} trong {rangeDescription}; các đoạn dưới đây chỉ dùng lời của đúng UID đó làm phát biểu chính.";
+            ? $"{lead} nhóm có khoảng {topics.Count} chuyện chính."
+            : $"{lead}, {targetDisplayName ?? "người bạn hỏi"} có khoảng {topics.Count} chuyện đáng chú ý.";
         return new ZaloConversationSummaryAiResult(overview, topics);
     }
 
@@ -491,7 +540,6 @@ internal sealed class ZaloConversationSummaryService(
     }
 
     private static string FormatSummary(
-        string overview,
         IReadOnlyList<ZaloConversationSummaryTopic> topics,
         ZaloConversationSummaryKind kind,
         string? targetDisplayName,
@@ -500,80 +548,158 @@ internal sealed class ZaloConversationSummaryService(
         IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations,
         bool usedFallback)
     {
-        var header = kind switch
+        var lead = RangeLead(rangeDescription);
+        var intro = kind switch
         {
-            ZaloConversationSummaryKind.MemberSummary => $"Tóm tắt phần {targetDisplayName ?? "thành viên"} nói trong {rangeDescription}:",
-            ZaloConversationSummaryKind.HotTopics => $"Mấy chuyện đáng chú ý trong {rangeDescription}:",
-            _ => $"Tóm tắt {rangeDescription}:"
+            ZaloConversationSummaryKind.MemberSummary => $"{lead}, {targetDisplayName ?? "người bạn hỏi"} chủ yếu có khoảng {topics.Count} chuyện đáng chú ý.",
+            ZaloConversationSummaryKind.HotTopics => $"{lead} có khoảng {topics.Count} chuyện đáng chú ý.",
+            _ => $"{lead} nhóm có khoảng {topics.Count} chuyện chính."
         };
-        var lines = new List<string> { header, overview };
+        var lines = new List<string> { intro };
         for (var index = 0; index < topics.Count; index++)
         {
             var topic = topics[index];
-            lines.Add($"{index + 1}. {topic.Title} — {topic.Summary}");
-            if (topic.Decisions.Count > 0) lines.Add($"   • Đã chốt/xác nhận: {string.Join("; ", topic.Decisions)}");
-            if (topic.OpenQuestions.Count > 0) lines.Add($"   • Còn mở: {string.Join("; ", topic.OpenQuestions)}");
-            var evidence = SelectTopicEvidence(topic, messages, relations, 2);
+            lines.Add($"{index + 1}. {topic.Title}: {topic.Summary}");
+            var evidence = SelectTopicEvidenceInTopicOrder(topic, messages, 3);
             foreach (var item in evidence)
                 lines.Add($"   ↳ {FormatVietnamTime(item.SentAt)} · {Clean(item.SenderName, 60)}: “{SanitizeContent(item.Content, 200)}”");
+            if (index + 1 < topics.Count) lines.Add(string.Empty);
         }
         if (topics.Count > 0)
             lines.Add("Bạn có thể hỏi tiếp tự nhiên như `vụ số 2 nói kỹ hơn` hoặc `cái vụ team đi giải ai đề xuất vậy?`.");
         if (usedFallback)
-            lines.Add("Lưu ý: lượt này AI không phản hồi kịp, nên bot tự gom cụm từ dữ liệu gốc và chỉ nêu những gì có tin nhắn làm căn cứ.");
+            lines.Add("Nguồn: dữ liệu chat đã lưu; các dòng ↳ là dẫn chứng gốc để kiểm chứng phần tóm tắt.");
         return string.Join("\n", lines);
     }
 
-    private static IReadOnlyList<IReadOnlyList<ZaloGroupMessage>> BuildFallbackSegments(IReadOnlyList<ZaloGroupMessage> messages)
+    private sealed record FallbackStory(
+        ZaloGroupMessage Anchor,
+        IReadOnlyList<ZaloGroupMessage> Messages,
+        double Score);
+
+    private static IReadOnlyList<FallbackStory> BuildFallbackStories(
+        IReadOnlyList<ZaloGroupMessage> messages,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations,
+        string? targetUserId = null)
     {
         if (messages.Count == 0) return [];
         var ordered = messages.OrderBy(item => item.SentAt).ThenBy(item => item.MessageId).ToList();
-        var result = new List<IReadOnlyList<ZaloGroupMessage>>();
-        var current = new List<ZaloGroupMessage>();
-        foreach (var message in ordered)
+        var anchors = ordered
+            .Where(item => targetUserId is null || NormalizeId(item.SenderId) == targetUserId)
+            .Where(item => !IsLowSignalMessage(item.Content))
+            .Select(item => new { Message = item, Score = CalculateStoryAnchorScore(item, relations) })
+            .OrderByDescending(item => item.Score)
+            .Take(60)
+            .ToList();
+        var candidates = new List<FallbackStory>();
+        foreach (var seed in anchors)
         {
-            if (current.Count > 0)
+            var cluster = new List<ZaloGroupMessage> { seed.Message };
+            for (var pass = 0; pass < 3; pass++)
             {
-                var gap = message.SentAt - current[^1].SentAt;
-                if (gap >= TimeSpan.FromMinutes(25) || current.Count >= 30)
+                var added = false;
+                foreach (var item in ordered)
                 {
-                    result.Add(current);
-                    current = [];
+                    if (cluster.Any(existing => existing.MessageId == item.MessageId)) continue;
+                    if (!cluster.Any(existing => IsStoryRelated(existing, item, relations))) continue;
+                    cluster.Add(item);
+                    added = true;
                 }
+                if (!added) break;
             }
-            current.Add(message);
+            cluster = cluster
+                .DistinctBy(item => item.MessageId)
+                .OrderBy(item => item.SentAt)
+                .ThenBy(item => item.MessageId)
+                .ToList();
+            var participants = cluster.Select(item => NormalizeId(item.SenderId)).Distinct(StringComparer.Ordinal).Count();
+            var decisions = cluster.Count(item => LooksLikeDecision(item.Content));
+            var replies = cluster.Count(item => relations.ContainsKey(item.MessageId));
+            var score = seed.Score + Math.Min(cluster.Count, 12) * .55 + participants * .8 + decisions * 1.4 + replies * .7;
+            candidates.Add(new FallbackStory(seed.Message, cluster, score));
         }
-        if (current.Count > 0) result.Add(current);
-        return result;
+
+        var selected = new List<FallbackStory>();
+        foreach (var candidate in candidates.OrderByDescending(item => item.Score))
+        {
+            var ids = candidate.Messages.Select(item => item.MessageId).ToHashSet(StringComparer.Ordinal);
+            var duplicate = selected.Any(existing =>
+            {
+                var existingIds = existing.Messages.Select(item => item.MessageId).ToHashSet(StringComparer.Ordinal);
+                var overlap = ids.Count == 0 ? 0 : ids.Count(existingIds.Contains) / (double)Math.Min(ids.Count, existingIds.Count);
+                var anchorGap = (candidate.Anchor.SentAt - existing.Anchor.SentAt).Duration();
+                return overlap >= .55 ||
+                       (anchorGap <= TimeSpan.FromMinutes(75) &&
+                        StoryTokenSimilarity(candidate.Anchor.Content, existing.Anchor.Content) >= .72);
+            });
+            if (duplicate) continue;
+            selected.Add(candidate);
+            if (selected.Count >= 8) break;
+        }
+        return selected;
     }
 
-    private static double CalculateFallbackSegmentScore(
-        IReadOnlyList<ZaloGroupMessage> segment,
+    private static double CalculateStoryAnchorScore(
+        ZaloGroupMessage message,
         IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations)
     {
-        var participants = segment.Select(item => NormalizeId(item.SenderId)).Distinct(StringComparer.Ordinal).Count();
-        var substantive = segment.Count(item => !IsLowSignalMessage(item.Content));
-        var replies = segment.Count(item => relations.ContainsKey(item.MessageId));
-        var questions = segment.Count(item => LooksLikeQuestion(item.Content));
-        var decisions = segment.Count(item => LooksLikeDecision(item.Content));
-        return Math.Min(segment.Count, 20) * .45 +
-               substantive * .55 +
-               participants * 1.3 +
-               replies * 1.6 +
-               questions * .45 +
-               decisions * .75;
+        var content = message.Content ?? string.Empty;
+        var normalized = ZaloBotIntelligence.Normalize(content);
+        var score = CalculateMessageSignal(message, relations);
+        var inboundReplies = relations.Values.Count(relation => relation.ToMessageId == message.MessageId);
+        score += Math.Min(inboundReplies, 4) * 1.6;
+        if (content.Length >= 120) score += 3.5;
+        else if (content.Length >= 70) score += 1.8;
+        if (LooksLikeConcernOrProposal(normalized)) score += 4;
+        if (LooksLikeDecision(content)) score += 2;
+        if (LooksLikeQuestion(content)) score += .8;
+        return score;
     }
 
-    private static IReadOnlyList<ZaloGroupMessage> SelectFallbackEvidence(
-        IReadOnlyList<ZaloGroupMessage> messages,
+    private static bool IsStoryRelated(
+        ZaloGroupMessage anchor,
+        ZaloGroupMessage candidate,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations)
+    {
+        if (anchor.MessageId == candidate.MessageId) return true;
+        if (relations.TryGetValue(candidate.MessageId, out var candidateRelation) && candidateRelation.ToMessageId == anchor.MessageId)
+            return true;
+        if (relations.TryGetValue(anchor.MessageId, out var anchorRelation) && anchorRelation.ToMessageId == candidate.MessageId)
+            return true;
+
+        var gap = (candidate.SentAt - anchor.SentAt).Duration();
+        if (gap > TimeSpan.FromMinutes(55)) return false;
+
+        var candidateNormalized = ZaloBotIntelligence.Normalize(candidate.Content ?? string.Empty);
+        var anchorName = ZaloBotIntelligence.Normalize(anchor.SenderName ?? string.Empty);
+        if (anchorName.Length >= 3 && candidateNormalized.Contains(anchorName, StringComparison.Ordinal) && gap <= TimeSpan.FromMinutes(40))
+            return true;
+
+        var similarity = StoryTokenSimilarity(anchor.Content, candidate.Content);
+        if (similarity >= .34) return true;
+        var shared = StoryTokens(anchor.Content).Intersect(StoryTokens(candidate.Content), StringComparer.Ordinal).Count();
+        if (shared >= 3 && gap <= TimeSpan.FromMinutes(40)) return true;
+        if (NormalizeId(anchor.SenderId) == NormalizeId(candidate.SenderId) && shared >= 1 && gap <= TimeSpan.FromMinutes(25)) return true;
+        return false;
+    }
+
+    private static IReadOnlyList<ZaloGroupMessage> SelectFallbackStoryEvidence(
+        FallbackStory story,
         IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations,
-        int limit) =>
-        messages
+        int limit)
+    {
+        var selected = new List<ZaloGroupMessage> { story.Anchor };
+        var responses = SelectStoryResponses(story, relations, excludeDecision: true, 2);
+        if (responses.Count > 0) selected.Add(responses[0]);
+        var decision = SelectBestStoryResolution(story, relations);
+        if (decision is not null) selected.Add(decision);
+        if (responses.Count > 1) selected.Add(responses[1]);
+        selected.AddRange(story.Messages
+            .Where(item => selected.All(chosen => chosen.MessageId != item.MessageId))
             .OrderByDescending(item => CalculateMessageSignal(item, relations))
-            .ThenBy(item => item.SentAt)
-            .Take(limit)
-            .OrderBy(item => item.SentAt)
-            .ToList();
+            .Take(Math.Max(0, limit - selected.Count)));
+        return selected.DistinctBy(item => item.MessageId).Take(limit).ToList();
+    }
 
     private static IReadOnlyList<ZaloGroupMessage> SelectTopicEvidence(
         ZaloConversationSummaryTopic topic,
@@ -588,6 +714,19 @@ internal sealed class ZaloConversationSummaryService(
             .ThenBy(item => item.SentAt)
             .Take(limit)
             .OrderBy(item => item.SentAt)
+            .ToList();
+    }
+
+    private static IReadOnlyList<ZaloGroupMessage> SelectTopicEvidenceInTopicOrder(
+        ZaloConversationSummaryTopic topic,
+        IReadOnlyList<ZaloGroupMessage> messages,
+        int limit)
+    {
+        var byId = messages.ToDictionary(item => item.MessageId, StringComparer.Ordinal);
+        return topic.MessageIds
+            .Where(byId.ContainsKey)
+            .Select(id => byId[id])
+            .Take(limit)
             .ToList();
     }
 
@@ -606,32 +745,181 @@ internal sealed class ZaloConversationSummaryService(
         return score;
     }
 
-    private static string InferFallbackTitle(IReadOnlyList<ZaloGroupMessage> segment, string? targetDisplayName)
+    private static string InferFallbackStoryTitle(FallbackStory story, string? targetDisplayName)
     {
-        var normalized = ZaloBotIntelligence.Normalize(string.Join(" ", segment.Select(item => item.Content)));
+        var normalized = ZaloBotIntelligence.Normalize(story.Anchor.Content ?? string.Empty);
+        var anchorName = Clean(story.Anchor.SenderName, 60);
         string? title = null;
-        if (HasAny(normalized, "giai", "team", "doi hinh", "tap bai"))
-            title = "Team / giải đấu";
-        else if (HasAny(normalized, "lich", "san", "vote", "slot", "danh sach da"))
-            title = "Lịch chơi / sân / slot";
-        else if (HasAny(normalized, "chuyen hai", "vi tri", "trinh do", "libero", "cong", "thu"))
-            title = "Vị trí / trình độ thành viên";
+        if (LooksLikeTeamBalanceConcern(normalized))
+            title = $"{anchorName} phản ánh việc xếp team thiếu cân bằng";
+        else if (HasAny(normalized, "danh giai", "di giai", "team di giai", "ghom team", "gom team"))
+            title = story.Messages.Select(item => NormalizeId(item.SenderId)).Distinct(StringComparer.Ordinal).Count() > 1
+                ? "Mọi người bàn về đội đi giải"
+                : $"{anchorName} nói về đội đi giải";
+        else if (HasAny(normalized, "de quen", "bo quen", "cai binh", "binh nuoc", "lay giup"))
+            title = $"{anchorName} nhờ tìm đồ để quên trên sân";
+        else if (LooksLikeScheduleOrSlot(normalized))
+            title = "Trao đổi về lịch chơi / sân / slot";
+        else if (HasAny(normalized, "chuyen hai", "vi tri", "trinh do", "libero", "set cong", "set thu"))
+            title = "Bàn về vị trí / trình độ thành viên";
         else if (HasAny(normalized, "bot", "help", "ho tro"))
-            title = "Sử dụng bot / hỗ trợ thành viên";
+            title = "Hướng dẫn thành viên sử dụng bot";
         else if (HasAny(normalized, "dang ky", "gui", "form", "cap nhat"))
             title = "Gửi / cập nhật thông tin";
 
         if (!string.IsNullOrWhiteSpace(title))
             return string.IsNullOrWhiteSpace(targetDisplayName) ? title : $"{targetDisplayName}: {title}";
 
-        var representative = segment
-            .OrderByDescending(item => (item.Content ?? string.Empty).Length)
-            .FirstOrDefault(item => !IsLowSignalMessage(item.Content)) ?? segment[^1];
-        var cue = SanitizeContent(representative.Content, 72);
+        var cue = CompactNarrativeText(story.Anchor.Content, 72);
         return string.IsNullOrWhiteSpace(targetDisplayName)
-            ? $"Trao đổi quanh “{cue}”"
+            ? $"Trao đổi về {cue}"
             : $"{targetDisplayName}: “{cue}”";
     }
+
+    private static string BuildFallbackStoryNarrative(
+        FallbackStory story,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations)
+    {
+        var anchor = story.Anchor;
+        var normalized = ZaloBotIntelligence.Normalize(anchor.Content ?? string.Empty);
+        var sender = Clean(anchor.SenderName, 60);
+        var parts = new List<string>();
+        if (LooksLikeTeamBalanceConcern(normalized))
+        {
+            if (HasExplicitTeamBalanceProposal(normalized))
+                parts.Add($"{sender} cho rằng việc mọi người tự chọn nguyên team đang làm mất cân bằng và đề nghị chỉ ghép 2–3 người, phần còn lại để bot cân bằng.");
+            else
+                parts.Add($"{sender} phản ánh cách xếp/chọn team hiện tại đang thiếu cân bằng và ảnh hưởng sự công bằng giữa các đội.");
+        }
+        else if (HasAny(normalized, "danh giai", "di giai", "team di giai", "ghom team", "gom team"))
+        {
+            parts.Add($"{sender} nêu chuyện đội đi giải: {CompactNarrativeText(anchor.Content, 150)}.");
+        }
+        else
+        {
+            parts.Add($"{sender} nêu: {CompactNarrativeText(anchor.Content, 160)}.");
+        }
+
+        var responses = SelectStoryResponses(story, relations, excludeDecision: true, 2);
+        for (var index = 0; index < responses.Count; index++)
+        {
+            var response = responses[index];
+            var prefix = index == 0 ? "Sau đó" : "Tiếp đó";
+            parts.Add($"{prefix} {Clean(response.SenderName, 60)} phản hồi: {CompactNarrativeText(response.Content, 130)}.");
+        }
+
+        var decision = SelectBestStoryResolution(story, relations);
+        if (decision is not null)
+        {
+            var decisionNormalized = ZaloBotIntelligence.Normalize(decision.Content ?? string.Empty);
+            if (LooksLikeTeamBalanceConcern(normalized) && HasAny(decisionNormalized, "toi da 3", "ghep toi da", "de cho can bang"))
+                parts.Add($"Kết quả hiện tại: {Clean(decision.SenderName, 60)} thống nhất từ nay chỉ ghép tối đa 3 người để giữ cân bằng.");
+            else
+                parts.Add($"Kết quả hiện tại: {Clean(decision.SenderName, 60)} chốt/xác nhận: {CompactNarrativeText(decision.Content, 130)}.");
+        }
+        else if (LooksLikeQuestion(anchor.Content) || story.Messages.Any(item => LooksLikeQuestion(item.Content)))
+        {
+            parts.Add("Hiện chưa thấy nhóm chốt rõ câu trả lời cuối cùng trong đoạn chat đã lưu.");
+        }
+        return string.Join(" ", parts);
+    }
+
+    private static IReadOnlyList<ZaloGroupMessage> SelectStoryResponses(
+        FallbackStory story,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations,
+        bool excludeDecision,
+        int limit) =>
+        story.Messages
+            .Where(item => item.MessageId != story.Anchor.MessageId)
+            .Where(item => NormalizeId(item.SenderId) != NormalizeId(story.Anchor.SenderId))
+            .Where(item => !excludeDecision || (!LooksLikeDecision(item.Content) && !LooksLikeResolution(item.Content)))
+            .Where(item => !IsLowSignalMessage(item.Content))
+            .OrderByDescending(item => DirectlyReferencesStoryAnchor(story.Anchor, item, relations) ? 1 : 0)
+            .ThenByDescending(item => CalculateMessageSignal(item, relations))
+            .ThenBy(item => item.SentAt)
+            .DistinctBy(item => NormalizeId(item.SenderId))
+            .Take(limit)
+            .ToList();
+
+    private static ZaloGroupMessage? SelectBestStoryResolution(
+        FallbackStory story,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations) =>
+        story.Messages
+            .Where(item => item.MessageId != story.Anchor.MessageId && LooksLikeResolution(item.Content))
+            .OrderByDescending(item => item.SentAt)
+            .ThenByDescending(item => CalculateMessageSignal(item, relations))
+            .FirstOrDefault();
+
+    private static bool DirectlyReferencesStoryAnchor(
+        ZaloGroupMessage anchor,
+        ZaloGroupMessage candidate,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations)
+    {
+        if (relations.TryGetValue(candidate.MessageId, out var relation) && relation.ToMessageId == anchor.MessageId)
+            return true;
+        var anchorName = ZaloBotIntelligence.Normalize(anchor.SenderName ?? string.Empty);
+        var content = ZaloBotIntelligence.Normalize(candidate.Content ?? string.Empty);
+        return anchorName.Length >= 3 && content.Contains(anchorName, StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeConcernOrProposal(string normalized) => HasAny(normalized,
+        "khong thich", "khong ton trong", "mat can bang", "cong bang", "can bang", "phan anh", "complain",
+        "de nghi", "nen ", "vui long", "luu y", "rut kinh nghiem", "y kien", "gop y");
+
+    private static bool LooksLikeTeamBalanceConcern(string normalized) =>
+        LooksLikeConcernOrProposal(normalized) &&
+        HasAny(normalized, "team", "xep", "pick", "ghep") &&
+        HasAny(normalized, "can bang", "cong bang", "khong ton trong", "tu chon", "nguyen 1 team", "nguyen team");
+
+    private static bool LooksLikeScheduleOrSlot(string normalized) =>
+        HasAny(normalized, "slot", "vote", "lich san", "san nao", "may gio", "danh sach da") ||
+        (normalized.Contains("lich", StringComparison.Ordinal) && normalized.Contains("san", StringComparison.Ordinal));
+
+    private static bool HasExplicitTeamBalanceProposal(string normalized) =>
+        HasAny(normalized, "2-3", "2 3", "hai ba", "ghep 2", "ghep hai", "con lai de bot", "de bot can bang");
+
+    private static bool LooksLikeResolution(string? value)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(value ?? string.Empty);
+        return HasAny(normalized,
+            "chot", "thong nhat", "tu nay", "ke tu nay", "toi da", "quy dinh", "xac nhan se", "luu y ghep", "de cho can bang");
+    }
+
+    private static IReadOnlyList<string> StoryTokens(string? value) =>
+        Regex.Split(ZaloBotIntelligence.Normalize(value ?? string.Empty), @"[^a-z0-9]+", RegexOptions.CultureInvariant)
+            .Where(token => token.Length >= 2 && !StoryStopWords.Contains(token))
+            .Distinct(StringComparer.Ordinal)
+            .Take(80)
+            .ToList();
+
+    private static double StoryTokenSimilarity(string? left, string? right)
+    {
+        var a = StoryTokens(left).ToHashSet(StringComparer.Ordinal);
+        var b = StoryTokens(right).ToHashSet(StringComparer.Ordinal);
+        if (a.Count == 0 || b.Count == 0) return 0;
+        var intersection = a.Count(b.Contains);
+        var union = a.Count + b.Count - intersection;
+        return union == 0 ? 0 : intersection / (double)union;
+    }
+
+    private static string CompactNarrativeText(string? value, int maxLength)
+    {
+        var text = SanitizeContent(value, Math.Max(maxLength * 2, 160));
+        text = Regex.Replace(text, @"\s+", " ");
+        text = text.Trim(' ', '.', ',', ':', ';', '-', '–', '—');
+        if (text.Length > maxLength) text = text[..maxLength].TrimEnd() + "…";
+        return text;
+    }
+
+    private static string RangeLead(string rangeDescription) => rangeDescription switch
+    {
+        "hôm qua" => "Hôm qua",
+        "hôm nay" => "Hôm nay",
+        "từ sáng tới giờ" => "Từ sáng tới giờ",
+        "tuần này" => "Tuần này",
+        "đoạn hội thoại hiện tại" => "Trong đoạn hội thoại hiện tại",
+        _ => $"Trong {rangeDescription}"
+    };
 
     private static bool HasAny(string value, params string[] terms) =>
         terms.Any(term => value.Contains(term, StringComparison.Ordinal));
@@ -655,8 +943,6 @@ internal sealed class ZaloConversationSummaryService(
         if (normalized.Length <= 3) return true;
         return normalized is "daaa" or "daa" or "da" or "ok" or "oke" or "uh" or "u" or "alo" or "gui a" or "e gui a" or "em gui a";
     }
-
-    private static string FormatVietnamClock(DateTimeOffset value) => value.ToOffset(VietnamOffset).ToString("HH:mm");
 
     private static IReadOnlyList<string> BuildProtectedTerms(IReadOnlyList<ZaloConversationSummaryTopic> topics, string? targetDisplayName)
     {
@@ -687,6 +973,29 @@ internal sealed class ZaloConversationSummaryService(
         if (!string.IsNullOrWhiteSpace(memory.LastTopicId))
             return memory.Topics.FirstOrDefault(item => item.Id == memory.LastTopicId);
         return memory.Topics.Count == 1 ? memory.Topics[0] : null;
+    }
+
+    private static HashSet<string> ExpandTopicMessageIds(
+        IReadOnlySet<string> seedIds,
+        IReadOnlyDictionary<string, ZaloMessageGraphRelation> relations,
+        int maxIds)
+    {
+        var expanded = seedIds.ToHashSet(StringComparer.Ordinal);
+        for (var pass = 0; pass < 3 && expanded.Count < maxIds; pass++)
+        {
+            var added = false;
+            foreach (var relation in relations.Values)
+            {
+                if (!string.Equals(relation.RelationType, "ReplyTo", StringComparison.Ordinal)) continue;
+                var fromIn = expanded.Contains(relation.FromMessageId);
+                var toIn = !string.IsNullOrWhiteSpace(relation.ToMessageId) && expanded.Contains(relation.ToMessageId);
+                if (!fromIn && !toIn) continue;
+                if (expanded.Count < maxIds && expanded.Add(relation.FromMessageId)) added = true;
+                if (!string.IsNullOrWhiteSpace(relation.ToMessageId) && expanded.Count < maxIds && expanded.Add(relation.ToMessageId)) added = true;
+            }
+            if (!added) break;
+        }
+        return expanded;
     }
 
     internal static (DateTimeOffset Start, DateTimeOffset End, string Description) ResolveRange(

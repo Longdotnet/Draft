@@ -40,7 +40,9 @@ public sealed record ZaloConversationSummaryCandidate(
     string SenderName,
     string Content,
     string? ReplyContext,
-    bool IsTarget);
+    bool IsTarget,
+    string? ReplyToMessageId = null,
+    string? QuotedSenderId = null);
 
 public sealed record ZaloConversationSummaryTopic(
     string Id,
@@ -78,7 +80,9 @@ public sealed record ZaloConversationSummaryFollowUpAiResult(
 internal sealed record ZaloConversationSummaryMemory(
     string Overview,
     IReadOnlyList<ZaloConversationSummaryTopic> Topics,
-    string? LastTopicId = null);
+    string? LastTopicId = null,
+    string? TargetZaloUserId = null,
+    string? TargetDisplayName = null);
 
 internal sealed record ZaloConversationSummaryHandleResult(
     string Text,

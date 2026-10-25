@@ -223,6 +223,41 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
+    public async Task RateLimited_DoesNotHammerSameModelAcrossDifferentKeys()
+    {
+        var calls = 0;
+        var handler = new StubHandler(request =>
+        {
+            calls += 1;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                Content = new StringContent("{\"error\":{\"message\":\"rate limited\"}}", Encoding.UTF8, "application/json")
+            });
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "xingchen-agi/xing4.0-29b-a4b:free",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "xingchen-agi/xing4.0-29b-a4b:free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.StructuredExtraction,
+            [new ZaloAiChatMessage("user", "extract")])) ;
+
+        Assert.False(result.Success);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, result.FailureKind);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public async Task CompletionParser_AcceptsArrayTextContent()
     {
         var handler = new StubHandler(request => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
