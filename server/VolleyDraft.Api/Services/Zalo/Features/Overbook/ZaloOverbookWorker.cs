@@ -11,6 +11,7 @@ public sealed class ZaloOverbookWorker(
         await Task.Delay(TimeSpan.FromSeconds(25), stoppingToken);
         var nextV2RetentionAt = DateTimeOffset.MinValue;
         var nextHeavyCycleAt = DateTimeOffset.MinValue;
+        var nextMemberIntegrationCycleAt = DateTimeOffset.MinValue;
         var nextCommunityCycleAt = DateTimeOffset.MinValue;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -162,6 +163,35 @@ public sealed class ZaloOverbookWorker(
             catch (Exception exception)
             {
                 logger.LogError(exception, "Overbook/profile-reply/recruitment/draft/V2 background cycle failed");
+            }
+
+            // MemberIntegration has its own proactive lane and cadence. It does not consume
+            // Community/STT daily slots; it opportunistically speaks when the group is quiet.
+            var memberIntegrationNow = DateTimeOffset.UtcNow;
+            if (memberIntegrationNow >= nextMemberIntegrationCycleAt)
+            {
+                nextMemberIntegrationCycleAt = memberIntegrationNow.AddMinutes(1);
+                try
+                {
+                    await using var integrationScope = scopeFactory.CreateAsyncScope();
+                    var services = integrationScope.ServiceProvider;
+                    var integrationSent = await new ZaloMemberIntegrationNudgeService(
+                            services.GetRequiredService<VolleyDraftDbContext>(),
+                            services.GetRequiredService<ZaloBridgeClient>(),
+                            services.GetRequiredService<IConfiguration>(),
+                            services.GetRequiredService<ILogger<ZaloMemberIntegrationNudgeService>>())
+                        .ProcessDueAsync(stoppingToken);
+                    if (integrationSent > 0)
+                        logger.LogInformation("MemberIntegration lane sent {SentCount} message(s)", integrationSent);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "MemberIntegration background cycle failed");
+                }
             }
 
             // Community/STT is intentionally isolated from the match-orchestration lane.

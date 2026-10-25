@@ -95,12 +95,6 @@ public sealed class ZaloCommunityNudgeService(
             var accountId = CleanId(target.AccountId);
             if (connectionId.Length == 0 || groupId.Length == 0 || accountId.Length == 0) continue;
 
-            if (configuration is not null)
-            {
-                await new ZaloMemberIntegrationContextBuilder(db, bridge, configuration)
-                    .EnsureConfiguredRecoveriesAsync(connectionId, groupId, cancellationToken);
-            }
-
             var dailyCount = await store.GetDailyCountAsync(connectionId, groupId, cancellationToken);
             var localDate = localNow.ToString("yyyy-MM-dd");
             var history = await store.GetHistoryAsync(connectionId, groupId, 300, cancellationToken);
@@ -255,36 +249,6 @@ public sealed class ZaloCommunityNudgeService(
                 "💡 Có thể bạn chưa biết: nếu hai người muốn thay nhau dùng chung một suất thì cứ nói “tui muốn share slot với Minh”. Tui sẽ hỏi phần còn thiếu rồi đưa vào đúng flow share slot.",
                 ContentKey: "feature:share-slot")
         };
-
-        if (configuration is not null)
-        {
-            var integration = await new ZaloMemberIntegrationService(db, bridge, configuration)
-                .BuildAsync(
-                    connectionId,
-                    groupId,
-                    proactiveHistory,
-                    DateTimeOffset.UtcNow,
-                    cancellationToken);
-            var integrationCandidates = integration
-                .Select(item => new ZaloCommunityNudgeCandidate(
-                    $"member_integration_{item.Suggestion.CapabilityKey}",
-                    item.Suggestion.Text,
-                    item.Context.DisplayName,
-                    item.Context.ZaloUserId,
-                    item.Suggestion.ContentKey,
-                    BuildExplicitMentions(item.Suggestion)))
-                .ToList();
-            if (integrationCandidates.Count > 0)
-            {
-                return SelectRotatedCandidate(
-                    integrationCandidates,
-                    history,
-                    connectionId,
-                    groupId,
-                    localDate,
-                    slotNumber);
-            }
-        }
 
         var activityCandidates = await BuildVoteActivityCandidatesWithProactiveHistoryAsync(
             connectionId,

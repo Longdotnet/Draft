@@ -29,7 +29,8 @@ internal sealed class ZaloMemberIntegrationService(
         foreach (var context in contexts.OrderBy(item => item.JoinedAt))
         {
             var memberHistory = proactiveHistory
-                .Where(item => item.Lane == ZaloProactiveLane.Community &&
+                .Where(item => (item.Lane == ZaloProactiveLane.MemberIntegration ||
+                                item.Lane == ZaloProactiveLane.Community) &&
                                item.SubjectUserId == context.ZaloUserId &&
                                item.Kind.StartsWith("member_integration_", StringComparison.Ordinal))
                 .OrderByDescending(item => item.SentAt)

@@ -57,7 +57,7 @@ This also gives the feature a stable parent boundary for future work: adding one
 
 ## Current implementation
 
-The first complete capability set is now wired into the existing `Community/STT` lane:
+The first complete capability set is delivered through the dedicated `MemberIntegration` proactive lane:
 
 - `welcome` uses only verified join/rejoin evidence;
 - `bot-identity` introduces the NPC and its configured creator;
@@ -68,5 +68,11 @@ The first complete capability set is now wired into the existing `Community/STT`
 - `social-bridge` links a newcomer with an established active member when human interaction is still low;
 - `group-lore` uses approved lore first, otherwise harmless activity-backed observations from message/poll history;
 - `integration-score` uses chat days, messages, votes and reply interactions to decide whether to encourage more conversation or recognize successful integration. The numeric score is never published to the group.
+
+### Delivery lane
+
+`MemberIntegration` now has its own proactive delivery lane and no longer consumes `Community/STT` daily slots. The lane checks frequently but only sends when the group is quiet. A newcomer who has recently produced a real group activity signal such as a realtime message can be approached after a shorter quiet period; a newcomer without a recent signal requires a much longer quiet period. The lane has its own per-member spacing, group interval, daily safety cap and durable history.
+
+The current Zalo Bridge listener exposes `message` and `group_event`; it does **not** expose trustworthy online presence or read/seen receipts. The implementation therefore never claims that a member is online or has read a message. Presence/read can be added later as another activity signal without changing the capability model or delivery lane.
 
 Only one highest-priority eligible capability is proposed for a member at a time. Durable proactive history spaces messages for the same UID and prevents the same join welcome or capability from being repeated too frequently. Real Zalo mentions are built only after final text selection so mention offsets remain correct.
