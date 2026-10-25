@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: free
     dockerfilePath: server/VolleyDraft.Api/Dockerfile
-    dockerContext: server/VolleyDraft.Api
+    dockerContext: .
     healthCheckPath: /health
     envVars:
       - key: Database__Provider
@@ -19,6 +19,10 @@ services:
         value: VolleyDraftClient
       - key: Jwt__Key
         generateValue: true
+      - key: AccessControl__Enabled
+        value: "true"
+      - key: AccessControl__AllowedCidrs__0
+        sync: false
       - key: Cors__Origins__0
         value: https://volley-draft.onrender.com
       - key: Zalo__BridgeBaseUrl
@@ -126,20 +130,6 @@ services:
         value: "true"
       - key: ZALO_BRIDGE_API_KEEP_ALIVE_MINUTES
         value: "8"
-
-  - type: web
-    name: volley-draft-web
-    runtime: static
-    plan: free
-    buildCommand: npm ci && npm run build
-    staticPublishPath: dist
-    envVars:
-      - key: VITE_API_BASE_URL
-        sync: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
 
 databases:
   - name: volley-draft-db

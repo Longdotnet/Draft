@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
+using VolleyDraft.Api.Security;
 using VolleyDraft.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -123,6 +124,7 @@ builder.Services
         };
     });
 builder.Services.AddAuthorization();
+builder.Services.AddSingleton<ClientIpAccessPolicy>();
 
 var app = builder.Build();
 
@@ -165,6 +167,22 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.Use(async (httpContext, next) =>
+{
+    var accessPolicy = httpContext.RequestServices.GetRequiredService<ClientIpAccessPolicy>();
+    if (!ClientIpAccessPolicy.IsInfrastructureRequest(httpContext) &&
+        !accessPolicy.IsAllowed(httpContext))
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await httpContext.Response.WriteAsJsonAsync(new { message = "This site is restricted to approved IP addresses." });
+        return;
+    }
+
+    await next(httpContext);
+});
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.UseCors("AppClient");
 app.UseAuthentication();
 app.UseAuthorization();
@@ -1044,6 +1062,26 @@ sessions.MapPost("/{sessionId}/blind-bags/{bagId}/open", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.OpenBagAsync(userId, sessionId, bagId)).ToHttpResult();
+});
+
+app.MapFallback(async context =>
+{
+    if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase) ||
+        context.Request.Path.StartsWithSegments("/health", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    var indexPath = Path.Combine(app.Environment.WebRootPath ?? string.Empty, "index.html");
+    if (!File.Exists(indexPath))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    context.Response.ContentType = "text/html; charset=utf-8";
+    await context.Response.SendFileAsync(indexPath);
 });
 
 app.Run();

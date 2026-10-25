@@ -14,11 +14,17 @@ This repo includes:
 3. Select this repository.
 4. Render will create:
    - `volley-draft-api`
-   - `volley-draft-web`
+   - `volley-draft-zalo-bridge`
    - `volley-draft-db`
-5. When Render prompts for unsynced env vars:
-   - `VITE_API_BASE_URL`: set to the API public URL, for example `https://volley-draft-api.onrender.com`.
-   - `Cors__Origins__0`: set to the frontend public URL, for example `https://volley-draft-web.onrender.com`.
+5. The API Docker image also builds and serves the React app, so there is no separate public static-site service.
+6. When Render prompts for unsynced env vars on `volley-draft-api`:
+   - `AccessControl__AllowedCidrs__0`: set the approved public IP as a CIDR, for example `203.0.113.10/32`.
+   - `Public__BaseUrl`: set the API public origin, for example `https://volley-draft-api.onrender.com`.
+   - Keep the existing Zalo, AI, scheduler, and credential secrets configured as before.
+
+`AccessControl__Enabled=true` is set by the Blueprint. Browser/UI/API requests are allowed only when the `CF-Connecting-IP` address belongs to the configured CIDR list. Health checks, the exact scheduler/Zalo internal endpoints, and the public image endpoints used by Zalo remain reachable without the browser IP allowlist and retain their existing key or route-level protections.
+
+If this Blueprint previously managed a separate `volley-draft-web` static site, removing that service from `render.yaml` does not delete the existing Render service. After the API deployment is verified, delete the old static site so it cannot remain as a second public entry point.
 
 ## Keep Zalo Reminder Alive
 
