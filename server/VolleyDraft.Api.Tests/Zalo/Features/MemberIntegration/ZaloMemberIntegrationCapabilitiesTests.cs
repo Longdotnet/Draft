@@ -41,13 +41,11 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
     }
 
     [Fact]
-    public async Task Bot_identity_waits_one_day_and_uses_configured_creator_when_available()
+    public async Task Bot_identity_is_available_on_join_day_and_uses_configured_creator_when_available()
     {
         var capability = new ZaloMemberBotIdentityCapability();
 
-        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 0)));
-
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 1));
+        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 0));
         Assert.NotNull(suggestion);
         Assert.Equal("bot-identity", suggestion!.CapabilityKey);
         Assert.Contains("Thanh Long", suggestion.Text);
@@ -59,12 +57,12 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
     {
         var capability = new ZaloMemberGroupOriginsCapability();
 
-        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 1)));
+        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 0)));
         Assert.Null(await capability.EvaluateAsync(Context(
-            joinedDaysAgo: 2,
+            joinedDaysAgo: 1,
             facts: Facts(groupPurpose: string.Empty))));
 
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 2));
+        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 1));
         Assert.NotNull(suggestion);
         Assert.Contains("Nick Tran", suggestion!.Text);
         Assert.Contains("giao lưu vui vẻ", suggestion.Text);
@@ -95,16 +93,16 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
     }
 
     [Fact]
-    public async Task Group_culture_requires_three_days_and_configured_culture_summary()
+    public async Task Group_culture_requires_two_days_and_configured_culture_summary()
     {
         var capability = new ZaloMemberGroupCultureCapability();
 
-        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 2)));
+        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 1)));
         Assert.Null(await capability.EvaluateAsync(Context(
-            joinedDaysAgo: 3,
+            joinedDaysAgo: 2,
             facts: Facts(cultureSummary: string.Empty))));
 
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 3));
+        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 2));
         Assert.NotNull(suggestion);
         Assert.Contains("không toxic, không blame", suggestion!.Text);
         Assert.Equal("new_member_culture_orientation", suggestion.Reason);
@@ -220,9 +218,9 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
             ? new ZaloMemberIntegrationSignals(MessageCount: 2, ActiveMessageDays: 3, HasSpoken: true)
             : new ZaloMemberIntegrationSignals(VoteCount: voteCount);
 
-        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 6, signals: signals)));
+        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 3, signals: signals)));
 
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 7, signals: signals));
+        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 4, signals: signals));
         Assert.NotNull(suggestion);
         Assert.Equal($"member-integration:score:{expectedBand}", suggestion!.ContentKey);
         Assert.Equal("integration_signals", suggestion.Reason);
