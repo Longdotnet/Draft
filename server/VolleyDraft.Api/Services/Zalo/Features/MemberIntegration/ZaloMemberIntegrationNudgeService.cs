@@ -9,6 +9,8 @@ internal sealed record ZaloMemberIntegrationDeliverySettings(
     int QuietMinutes,
     int PassiveQuietMinutes,
     int RecentActivityMinutes,
+    int TargetPerMemberPerDay,
+    int MinMemberIntervalMinutes,
     int MinGroupIntervalMinutes,
     int MaxPerDay,
     int StartHour,
@@ -20,8 +22,10 @@ internal sealed record ZaloMemberIntegrationDeliverySettings(
         QuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:QuietMinutes", 20), 5, 240),
         PassiveQuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:PassiveQuietMinutes", 90), 20, 720),
         RecentActivityMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:RecentActivityMinutes", 360), 30, 1440),
-        MinGroupIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinGroupIntervalMinutes", 60), 15, 720),
-        MaxPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MaxPerDay", 8), 1, 20),
+        TargetPerMemberPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:TargetPerMemberPerDay", 2), 1, 4),
+        MinMemberIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinMemberIntervalMinutes", 180), 30, 720),
+        MinGroupIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinGroupIntervalMinutes", 20), 15, 720),
+        MaxPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MaxPerDay", 40), 1, 100),
         StartHour: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:StartHour", 9), 0, 23),
         EndHour: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:EndHour", 22), 1, 24));
 }
@@ -51,6 +55,17 @@ internal static class ZaloMemberIntegrationDeliveryPolicy
         return string.Equals(activity.Source, "seen", StringComparison.Ordinal)
             ? settings.PresenceQuietMinutes
             : settings.QuietMinutes;
+    }
+
+    public static bool IsMemberDue(
+        DateTimeOffset now,
+        int sentToday,
+        DateTimeOffset? lastSentAt,
+        ZaloMemberIntegrationDeliverySettings settings)
+    {
+        if (sentToday >= settings.TargetPerMemberPerDay) return false;
+        return lastSentAt is null ||
+               now - lastSentAt >= TimeSpan.FromMinutes(settings.MinMemberIntervalMinutes);
     }
 }
 
@@ -105,6 +120,21 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 .BuildAsync(connectionId, groupId, history, now, cancellationToken);
             if (selections.Count == 0) continue;
 
+            var memberHistoryToday = history
+                .Where(item =>
+                    (item.Lane == ZaloProactiveLane.MemberIntegration ||
+                     item.Lane == ZaloProactiveLane.Community) &&
+                    item.Kind.StartsWith("member_integration_", StringComparison.Ordinal) &&
+                    item.SubjectUserId is not null &&
+                    item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date)
+                .GroupBy(item => item.SubjectUserId!, StringComparer.Ordinal)
+                .ToDictionary(
+                    group => group.Key,
+                    group => new DailyMemberDelivery(
+                        group.Count(),
+                        group.Max(item => item.SentAt)),
+                    StringComparer.Ordinal);
+
             var recentMessages = await LoadRecentHumanMessagesAsync(connectionId, groupId, now, cancellationToken);
             var lastHumanMessageAt = recentMessages.Count == 0
                 ? (DateTimeOffset?)null
@@ -118,14 +148,27 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 now,
                 cancellationToken);
             var ordered = selections
+                .Where(selection =>
+                {
+                    memberHistoryToday.TryGetValue(selection.Context.ZaloUserId, out var delivery);
+                    return ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(
+                        now,
+                        delivery?.Count ?? 0,
+                        delivery?.LastSentAt,
+                        settings);
+                })
                 .Select(selection => new
                 {
                     Selection = selection,
+                    DailyDeliveryCount = memberHistoryToday.TryGetValue(selection.Context.ZaloUserId, out var delivery)
+                        ? delivery.Count
+                        : 0,
                     Activity = activityHints.GetValueOrDefault(
                         selection.Context.ZaloUserId,
                         new ZaloMemberIntegrationActivityHint(selection.Context.ZaloUserId, null, null))
                 })
-                .OrderByDescending(item =>
+                .OrderBy(item => item.DailyDeliveryCount)
+                .ThenByDescending(item =>
                     item.Activity.LastActivityAt is { } activityAt &&
                     now - activityAt <= TimeSpan.FromMinutes(settings.RecentActivityMinutes))
                 .ThenByDescending(item => item.Activity.LastActivityAt)
@@ -141,7 +184,8 @@ public sealed class ZaloMemberIntegrationNudgeService(
 
             var suggestion = chosen.Selection.Suggestion;
             var context = chosen.Selection.Context;
-            var idempotencyKey = $"member-integration:{connectionId}:{groupId}:{context.ZaloUserId}:{suggestion.ContentKey}";
+            var deliverySlot = chosen.DailyDeliveryCount + 1;
+            var idempotencyKey = $"member-integration:{connectionId}:{groupId}:{context.ZaloUserId}:{suggestion.ContentKey}:{localNow:yyyyMMdd}:{deliverySlot}";
             if (!await proactiveStore.TryAcquireLeaseAsync(
                     connectionId,
                     groupId,
@@ -335,4 +379,5 @@ public sealed class ZaloMemberIntegrationNudgeService(
     }
 
     private sealed record RecentHumanMessage(string SenderId, DateTimeOffset SentAt, string ObservationSource);
+    private sealed record DailyMemberDelivery(int Count, DateTimeOffset LastSentAt);
 }

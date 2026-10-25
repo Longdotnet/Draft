@@ -77,8 +77,6 @@ public sealed class ZaloMemberBotIdentityCapability : IZaloMemberIntegrationCapa
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 1)
-            return ZaloMemberIntegrationCapabilitySupport.None();
         var creator = context.Facts.BotCreatorName;
         var origin = string.IsNullOrWhiteSpace(creator)
             ? "Tui là NPC của group"
@@ -100,7 +98,7 @@ public sealed class ZaloMemberGroupOriginsCapability : IZaloMemberIntegrationCap
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 2 ||
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 1 ||
             string.IsNullOrWhiteSpace(context.Facts.GroupPurpose))
             return ZaloMemberIntegrationCapabilitySupport.None();
         var founder = string.IsNullOrWhiteSpace(context.Facts.GroupFounderName)
@@ -123,7 +121,7 @@ public sealed class ZaloMemberRoleIntroductionCapability : IZaloMemberIntegratio
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 2)
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 1)
             return ZaloMemberIntegrationCapabilitySupport.None();
         var people = new List<(string Role, ZaloMemberIntegrationMentionTarget Person)>();
         if (context.Roles.Creator is { } creator) people.Add(("người tạo/đứng group", creator));
@@ -151,7 +149,7 @@ public sealed class ZaloMemberGroupCultureCapability : IZaloMemberIntegrationCap
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 3 ||
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 2 ||
             string.IsNullOrWhiteSpace(context.Facts.CultureSummary))
             return ZaloMemberIntegrationCapabilitySupport.None();
         var text = $"🤝 @{context.DisplayName} note văn hóa hội nè: {context.Facts.CultureSummary} Đánh lỗi thì góp ý vui vẻ rồi đánh tiếp, mục tiêu là càng chơi càng quen nhau nha 😄";
@@ -171,7 +169,7 @@ public sealed class ZaloMemberPracticalGuideCapability : IZaloMemberIntegrationC
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 3)
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 2)
             return ZaloMemberIntegrationCapabilitySupport.None();
         var facts = new List<string>();
         if (context.Facts.NormalCourtFeeVnd is { } fee)
@@ -196,7 +194,7 @@ public sealed class ZaloMemberSocialBridgeCapability : IZaloMemberIntegrationCap
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 4 ||
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 3 ||
             context.Signals.DistinctHumanInteractionCount >= 3)
             return ZaloMemberIntegrationCapabilitySupport.None();
         var peer = context.PeerCandidates
@@ -227,7 +225,7 @@ public sealed class ZaloMemberGroupLoreCapability : IZaloMemberIntegrationCapabi
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 5)
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 3)
             return ZaloMemberIntegrationCapabilitySupport.None();
         var subject = ZaloMemberIntegrationCapabilitySupport.Subject(context);
         var approved = context.Facts.ApprovedLore.FirstOrDefault(ZaloMemberIntegrationCapabilitySupport.IsSafeLore);
@@ -288,7 +286,7 @@ public sealed class ZaloMemberIntegrationScoreCapability : IZaloMemberIntegratio
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 7)
+        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 4)
             return ZaloMemberIntegrationCapabilitySupport.None();
         var score = Calculate(context.Signals);
         var subject = ZaloMemberIntegrationCapabilitySupport.Subject(context);
