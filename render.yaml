@@ -3,7 +3,7 @@ services:
     name: volley-draft-api
     runtime: docker
     plan: free
-    dockerfilePath: server/VolleyDraft.Api/Dockerfile
+    dockerfilePath: Dockerfile
     dockerContext: .
     healthCheckPath: /health
     envVars:
