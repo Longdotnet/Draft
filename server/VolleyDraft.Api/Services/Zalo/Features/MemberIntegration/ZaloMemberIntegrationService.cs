@@ -11,7 +11,6 @@ internal sealed class ZaloMemberIntegrationService(
     ZaloBridgeClient bridge,
     IConfiguration configuration)
 {
-    private static readonly TimeSpan PerMemberSpacing = TimeSpan.FromDays(2);
     private readonly ZaloMemberIntegrationContextBuilder contextBuilder = new(db, bridge, configuration);
     private readonly ZaloMemberIntegrationCoordinator coordinator = new(CreateCapabilities());
 
@@ -35,8 +34,6 @@ internal sealed class ZaloMemberIntegrationService(
                                item.Kind.StartsWith("member_integration_", StringComparison.Ordinal))
                 .OrderByDescending(item => item.SentAt)
                 .ToList();
-            if (memberHistory.FirstOrDefault() is { } last && now - last.SentAt < PerMemberSpacing)
-                continue;
 
             var plan = await coordinator.EvaluateAsync(context, cancellationToken);
             var suggestion = plan.Suggestions
@@ -57,17 +54,14 @@ internal sealed class ZaloMemberIntegrationService(
     {
         var kind = $"member_integration_{suggestion.CapabilityKey}";
         var matching = history.Where(item => item.Kind == kind).ToList();
-        if (matching.Any(item => item.ContentKey == suggestion.ContentKey)) return false;
-        if (suggestion.CapabilityKey == "welcome") return true;
+        if (suggestion.CapabilityKey == "welcome") return matching.Count == 0;
 
-        var cooldown = suggestion.CapabilityKey switch
-        {
-            "bot-identity" or "group-origins" or "role-introduction" => TimeSpan.FromDays(14),
-            "group-culture" => TimeSpan.FromDays(10),
-            "practical-guide" => TimeSpan.FromDays(7),
-            _ => TimeSpan.FromDays(5)
-        };
-        return matching.Count == 0 || now - matching.Max(item => item.SentAt) >= cooldown;
+        var cooldown = TimeSpan.FromDays(4);
+        var sameContent = matching
+            .Where(item => string.Equals(item.ContentKey, suggestion.ContentKey, StringComparison.Ordinal))
+            .OrderByDescending(item => item.SentAt)
+            .FirstOrDefault();
+        return sameContent is null || now - sameContent.SentAt >= cooldown;
     }
 
     private static IZaloMemberIntegrationCapability[] CreateCapabilities() =>
