@@ -78,3 +78,25 @@ The Zalo Bridge now forwards the realtime `zca-js` group `seen_messages` and `ty
 This still does not claim a durable Zalo "online" state. The stored rows are observation facts (`seen` / `typing`, observed timestamp, optional provider timestamp/message id), and MemberIntegration uses only recent observations. A fresh `seen` can reduce the required group-quiet window to 10 minutes; ordinary recent message/poll activity uses the 20-minute window and members without recent activity still require the longer passive quiet window.
 
 Only one highest-priority eligible capability is proposed for a member at a time. Durable proactive history spaces messages for the same UID and prevents the same join welcome or capability from being repeated too frequently. Real Zalo mentions are built only after final text selection so mention offsets remain correct.
+
+### Lifecycle and graduation
+
+The 28-day newcomer window is a discovery/history window, not a promise to keep onboarding somebody for 28 days.
+
+For a first-time or recovered newcomer, the delivery cadence now tapers with age:
+
+- day 0-2: target up to 2 MemberIntegration touches per local day, with at least 3 hours between touches for the same member;
+- day 3-5: at most 1 touch per local day;
+- day 6-7: at most 1 touch every 2 days;
+- from day 8: stop onboarding if the member still has not integrated. This is a passive stop, not a claim that the member successfully integrated.
+
+A first-time or recovered newcomer is considered established only after at least 2 days and only when the observed behavior supports it: integration score at least 55, plus either 2 active chat days or 2 distinct human interactions, plus either at least 3 human messages or 2 poll participations.
+
+Returning members use a lighter path. A rejoin graduates after one distinct human interaction, or after at least two meaningful message/vote actions. If that does not happen within 3 days, returning-member onboarding stops without emitting a fake success message.
+
+Successful integration emits one terminal MemberIntegration notice for the current membership period:
+
+- first-time/recovered: the public badge is **ĐÃ NHẬP HỘI**;
+- rejoin: the public badge is **ĐÃ TRỞ LẠI ĐỘI HÌNH**.
+
+The message explains naturally that the member has caught the group's rhythm and that the bot will stop newcomer-style guidance. Numeric scores and threshold details remain internal. The terminal notice is keyed to the current join/rejoin/integration anchor, so it is durable and sent once per membership period; a future genuine rejoin gets a new period and is not incorrectly blocked by an old graduation record.
