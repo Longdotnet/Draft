@@ -114,6 +114,24 @@ public sealed class ZaloMemberIntegrationLifecycleTests
     }
 
     [Fact]
+    public void Recovered_newcomer_uses_integration_anchor_without_inventing_join_time()
+    {
+        var recovered = Context(joinedDaysAgo: 2, signals: IntegratedSignals()) with
+        {
+            JoinedAt = null,
+            IntegrationStartedAt = Snapshot.AddDays(-2),
+            IsRecoveredNewcomer = true
+        };
+
+        var decision = ZaloMemberIntegrationLifecyclePolicy.Evaluate(recovered, Settings());
+        var key = ZaloMemberIntegrationLifecyclePolicy.GraduationContentKey(recovered);
+
+        Assert.Equal(ZaloMemberIntegrationLifecycleStage.Established, decision.Stage);
+        Assert.Contains("user-1", key);
+        Assert.EndsWith("20261023120000", key);
+    }
+
+    [Fact]
     public void Graduation_is_scoped_to_the_current_membership_period()
     {
         var current = Context(joinedDaysAgo: 2, signals: IntegratedSignals());
