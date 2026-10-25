@@ -399,25 +399,6 @@ public sealed partial class ZaloBotService(
             accountId, groupId, messageId, response.Intent, response.AiCalled);
     }
 
-    private async Task FinishMessageAsync(string id, string token, ZaloBotIntent? intent, bool aiCalled, string outcome, CancellationToken cancellationToken)
-    {
-        await db.ZaloGroupMessages.Where(message => message.Id == id && message.ProcessingToken == token)
-            .ExecuteUpdateAsync(updates => updates
-                .SetProperty(message => message.BotReplySentAt, outcome == "sent" ? DateTimeOffset.UtcNow : null)
-                .SetProperty(message => message.SelectedIntent, intent == null ? null : intent.Value.ToString())
-                .SetProperty(message => message.AiCalled, aiCalled)
-                .SetProperty(message => message.ReplyOutcome, outcome), cancellationToken);
-    }
-
-    private async Task ReleaseMessageAsync(string id, string token, string outcome, CancellationToken cancellationToken)
-    {
-        await db.ZaloGroupMessages.Where(message => message.Id == id && message.ProcessingToken == token)
-            .ExecuteUpdateAsync(updates => updates
-                .SetProperty(message => message.ProcessingStartedAt, (DateTimeOffset?)null)
-                .SetProperty(message => message.ProcessingToken, (string?)null)
-                .SetProperty(message => message.ReplyOutcome, outcome), cancellationToken);
-    }
-
     private async Task<BotAnswer> BuildAnswerAsync(
         IReadOnlyList<string> connectionIds,
         string activeConnectionId,
@@ -435,6 +416,19 @@ public sealed partial class ZaloBotService(
             var card = await npc11Cards.GenerateAsync(activeConnectionId, incoming, question, cancellationToken);
             return new BotAnswer(card.Text, card.ImageUrl, ZaloBotIntent.GeneralChat);
         }
+
+        var evidenceAiAllowed = ZaloConversationEvidenceIntentPolicy.MightBeQuestion(question) &&
+                                ai.IsConfigured &&
+                                await IsAiCallAllowedAsync(activeConnectionId, groupId, incoming.SenderId, cancellationToken);
+        var conversationEvidence = await memberIntelligence.TryHandleConversationEvidenceAsync(
+            activeConnectionId,
+            groupId,
+            incoming,
+            question,
+            evidenceAiAllowed,
+            cancellationToken);
+        if (conversationEvidence is not null)
+            return new BotAnswer(conversationEvidence.Text, null, conversationEvidence.Intent, conversationEvidence.AiCalled, ProtectedTerms: conversationEvidence.ProtectedTerms);
 
         var sessions = await LoadSessionSnapshotsAsync(connectionIds, groupId, incoming.SenderId, cancellationToken);
         if (sessions.Count == 0)

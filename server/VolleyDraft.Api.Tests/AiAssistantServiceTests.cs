@@ -111,6 +111,61 @@ public sealed class AiAssistantServiceTests
     }
 
     [Fact]
+    public async Task Conversation_evidence_judge_accepts_only_existing_candidate_ids()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"verdict\":\"Supported\",\"confidence\":0.95,\"messageIds\":[\"m2\",\"invented\",\"m1\"]}"}}]}""");
+
+        var result = await service.JudgeConversationEvidenceAsync(new ZaloConversationEvidenceAiContext(
+            "trước đó Vũ có nói đánh giải không?",
+            "uid-vu",
+            "Nguyễn Hoàng Vũ",
+            [
+                new ZaloConversationEvidenceAiCandidate("m1", DateTimeOffset.UtcNow.AddDays(-2), "tập bóng"),
+                new ZaloConversationEvidenceAiCandidate("m2", DateTimeOffset.UtcNow.AddDays(-1), "4 người đánh giải")
+            ]));
+
+        Assert.NotNull(result);
+        Assert.Equal(ZaloConversationEvidenceVerdict.Supported, result.Verdict);
+        Assert.Equal(["m2", "m1"], result.MessageIds);
+        Assert.DoesNotContain("invented", result.MessageIds);
+    }
+
+    [Fact]
+    public async Task Conversation_evidence_judge_rejects_supported_result_with_only_fabricated_ids()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"verdict\":\"Supported\",\"confidence\":0.99,\"messageIds\":[\"invented\"]}"}}]}""");
+
+        var result = await service.JudgeConversationEvidenceAsync(new ZaloConversationEvidenceAiContext(
+            "Vũ có nói đánh giải không?",
+            "uid-vu",
+            "Nguyễn Hoàng Vũ",
+            [new ZaloConversationEvidenceAiCandidate("m1", DateTimeOffset.UtcNow, "4 người đánh giải")]));
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task Conversation_evidence_judge_downgrades_low_confidence_supported_verdict()
+    {
+        var service = CreateService(
+            HttpStatusCode.OK,
+            """{"choices":[{"message":{"content":"{\"verdict\":\"Supported\",\"confidence\":0.60,\"messageIds\":[\"m1\"]}"}}]}""");
+
+        var result = await service.JudgeConversationEvidenceAsync(new ZaloConversationEvidenceAiContext(
+            "Vũ có nói đánh giải không?",
+            "uid-vu",
+            "Nguyễn Hoàng Vũ",
+            [new ZaloConversationEvidenceAiCandidate("m1", DateTimeOffset.UtcNow, "có nói chuyện về team")]));
+
+        Assert.NotNull(result);
+        Assert.Equal(ZaloConversationEvidenceVerdict.Related, result.Verdict);
+    }
+
+    [Fact]
     public async Task Rewrite_is_rejected_when_confirmation_command_changes()
     {
         var service = CreateService(HttpStatusCode.OK,

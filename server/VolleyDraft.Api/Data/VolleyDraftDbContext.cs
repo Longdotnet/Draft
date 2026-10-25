@@ -151,6 +151,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             }
             entity.HasIndex(message => new { message.ZaloConnectionId, message.MessageId }).IsUnique();
             entity.HasIndex(message => new { message.ZaloConnectionId, message.GroupId, message.SentAt });
+            entity.HasIndex(message => new { message.ZaloConnectionId, message.GroupId, message.SenderId, message.SentAt });
             entity.HasOne(message => message.ZaloConnection)
                 .WithMany(connection => connection.GroupMessages)
                 .HasForeignKey(message => message.ZaloConnectionId)

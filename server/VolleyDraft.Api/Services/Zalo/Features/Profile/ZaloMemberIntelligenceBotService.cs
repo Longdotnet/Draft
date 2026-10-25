@@ -59,7 +59,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         ZaloBotIntent.SyncMemberActivity,
         ZaloBotIntent.GetActivitySyncStatus,
         ZaloBotIntent.ListRecentlyJoinedMembers,
-        ZaloBotIntent.GetMemberJoinDate
+        ZaloBotIntent.GetMemberJoinDate,
+        ZaloBotIntent.SearchMemberConversationEvidence
     ];
     private const string PendingCount = "MemberActivity:Count";
     private const string PendingMember = "MemberActivity:Member";
@@ -70,7 +71,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         string groupId,
         ZaloIncomingMessageEvent incoming,
         string question,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool evidenceAiAllowed = false)
     {
         var senderId = NormalizeId(incoming.SenderId);
         var state = await db.ZaloBotConversationStates
@@ -88,7 +90,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 groupId,
                 incoming,
                 question,
-                cancellationToken);
+                cancellationToken,
+                evidenceAiAllowed);
             if (pending.Handled)
                 return pending.Answer;
         }
@@ -112,7 +115,9 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 decision = classification.Intent;
         }
         else if (ActivityIntents.Contains(decision) &&
-                 decision is not (ZaloBotIntent.ListRecentlyJoinedMembers or ZaloBotIntent.GetMemberJoinDate) &&
+                 decision is not (ZaloBotIntent.ListRecentlyJoinedMembers or
+                                  ZaloBotIntent.GetMemberJoinDate or
+                                  ZaloBotIntent.SearchMemberConversationEvidence) &&
                  ai.IsConfigured &&
                  !ZaloBotIntelligence.TryGetExactCommand(question, out _))
         {
@@ -187,7 +192,106 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             1,
             Math.Clamp(limit ?? 10, 1, 30),
             aiCalled,
+            cancellationToken,
+            evidenceAiAllowed);
+    }
+
+    public async Task<ZaloMemberBotAnswer?> TryHandleConversationEvidenceAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        string question,
+        bool aiAllowed,
+        CancellationToken cancellationToken)
+    {
+        var senderId = NormalizeId(incoming.SenderId);
+        if (await HasPendingConversationEvidenceAsync(
+                connectionId,
+                groupId,
+                senderId,
+                cancellationToken))
+        {
+            return await TryHandleAsync(
+                connectionId,
+                groupId,
+                incoming,
+                question,
+                cancellationToken,
+                aiAllowed);
+        }
+
+        if (ZaloConversationEvidenceIntentPolicy.LooksLikeQuestion(question))
+        {
+            return await TryHandleAsync(
+                connectionId,
+                groupId,
+                incoming,
+                question,
+                cancellationToken,
+                aiAllowed);
+        }
+
+        if (!aiAllowed ||
+            !ai.IsConfigured ||
+            !ZaloConversationEvidenceIntentPolicy.MightBeQuestion(question))
+            return null;
+
+        var classification = await ai.ClassifyMemberActivityAsync(
+            new ZaloMemberActivityClassifierContext(
+                question,
+                senderId,
+                incoming.SenderName,
+                DateTimeOffset.UtcNow.ToOffset(VietnamOffset)),
             cancellationToken);
+        if (classification is not
+            {
+                Intent: ZaloBotIntent.SearchMemberConversationEvidence,
+                Confidence: >= .72
+            })
+            return null;
+
+        var period = BuildPeriod(question, classification.TimeRange);
+        return await ExecuteAsync(
+            connectionId,
+            groupId,
+            incoming,
+            ZaloBotIntent.SearchMemberConversationEvidence,
+            period,
+            classification.MemberReference,
+            null,
+            1,
+            10,
+            true,
+            cancellationToken,
+            aiAllowed);
+    }
+
+    private async Task<bool> HasPendingConversationEvidenceAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        CancellationToken cancellationToken)
+    {
+        var payloadJson = await db.ZaloBotConversationStates
+            .AsNoTracking()
+            .Where(item =>
+                item.ZaloConnectionId == connectionId &&
+                item.GroupId == groupId &&
+                item.SenderZaloUserId == senderId &&
+                item.PendingIntent == PendingMember &&
+                item.ExpiresAt > DateTimeOffset.UtcNow)
+            .Select(item => item.PendingPayloadJson)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(payloadJson)) return false;
+        try
+        {
+            return JsonSerializer.Deserialize<MemberActivityPendingPayload>(payloadJson)?.Intent ==
+                   ZaloBotIntent.SearchMemberConversationEvidence;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private async Task<PendingHandleResult> HandlePendingAsync(
@@ -196,7 +300,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         string groupId,
         ZaloIncomingMessageEvent incoming,
         string question,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool evidenceAiAllowed = false)
     {
         if (ZaloBotIntelligence.IsCancel(question))
         {
@@ -250,6 +355,18 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             var selectedUserId = payload.CandidateUserIds[memberNumber - 1];
             db.ZaloBotConversationStates.Remove(state);
             await db.SaveChangesAsync(cancellationToken);
+            if (payload.Intent == ZaloBotIntent.SearchMemberConversationEvidence)
+            {
+                return PendingHandleResult.With(await ExecuteConversationEvidenceAsync(
+                    connectionId,
+                    groupId,
+                    incoming,
+                    selectedUserId,
+                    payload.OriginalQuestion ?? question,
+                    false,
+                    evidenceAiAllowed,
+                    cancellationToken));
+            }
             return PendingHandleResult.With(await ExecuteForMemberAsync(
                 connectionId,
                 groupId,
@@ -305,7 +422,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         int page,
         int pageSize,
         bool aiCalled,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool evidenceAiAllowed = false)
     {
         if (intent == ZaloBotIntent.GetActivitySyncStatus)
             return await GetSyncStatusAsync(connectionId, groupId, incoming.SenderId, intent, aiCalled, cancellationToken);
@@ -331,6 +449,29 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 intent,
                 aiCalled,
                 [job.Id[..8]]);
+        }
+
+        if (intent == ZaloBotIntent.SearchMemberConversationEvidence)
+        {
+            var evidenceResolution = await ResolveMemberAsync(
+                connectionId,
+                groupId,
+                incoming,
+                memberReference,
+                intent,
+                period,
+                cancellationToken);
+            if (evidenceResolution.Answer is not null)
+                return evidenceResolution.Answer with { AiCalled = aiCalled };
+            return await ExecuteConversationEvidenceAsync(
+                connectionId,
+                groupId,
+                incoming,
+                evidenceResolution.UserId!,
+                incoming.Content,
+                aiCalled,
+                evidenceAiAllowed,
+                cancellationToken);
         }
 
         // Verify group-wide read permissions before EnsureReadyAsync can expose
@@ -760,16 +901,30 @@ public sealed partial class ZaloMemberIntelligenceBotService(
     {
         var senderId = NormalizeId(incoming.SenderId);
         var normalizedQuestion = ZaloBotIntelligence.Normalize(incoming.Content);
-        if (IsSelfReference(memberReference) ||
-            (string.IsNullOrWhiteSpace(memberReference) &&
-             SelfReferenceRegex().IsMatch(normalizedQuestion)))
-            return MemberResolution.Found(senderId);
-
         var mentionedIds = incoming.Mentions
             .Where(mention => NormalizeId(mention.Uid) != NormalizeId(incoming.BotId))
             .Select(mention => NormalizeId(mention.Uid))
             .Distinct(StringComparer.Ordinal)
             .ToList();
+        if (intent == ZaloBotIntent.SearchMemberConversationEvidence)
+        {
+            if (mentionedIds.Count == 1)
+                return MemberResolution.Found(mentionedIds[0]);
+            if (mentionedIds.Count > 1)
+            {
+                return MemberResolution.WithAnswer(new ZaloMemberBotAnswer(
+                    "Bạn đang tag nhiều người. Với tra cứu lịch sử, hãy tag đúng 1 người cần kiểm tra để tui không lấy nhầm UID.",
+                    intent));
+            }
+        }
+
+        // A structured human @mention is transport-grounded identity and must win
+        // over conversational first-person words such as "tui" for evidence research.
+        // Keep the older self-reference precedence unchanged for existing activity intents.
+        if (IsSelfReference(memberReference) ||
+            (string.IsNullOrWhiteSpace(memberReference) &&
+             SelfReferenceRegex().IsMatch(normalizedQuestion)))
+            return MemberResolution.Found(senderId);
         if (mentionedIds.Count == 1)
             return MemberResolution.Found(mentionedIds[0]);
 
@@ -851,7 +1006,10 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                 null,
                 1,
                 10,
-                materialized.Select(member => member.ZaloUserId).ToList()),
+                materialized.Select(member => member.ZaloUserId).ToList(),
+                OriginalQuestion: intent == ZaloBotIntent.SearchMemberConversationEvidence
+                    ? incoming.Content
+                    : null),
             cancellationToken);
         var choices = string.Join("\n", materialized.Select((member, index) =>
             $"{index + 1}. {member.DisplayName}"));
@@ -1178,6 +1336,7 @@ public sealed partial class ZaloMemberIntelligenceBotService(
     {
         var q = ZaloBotIntelligence.Normalize(question);
         return q == "12" ||
+               ZaloConversationEvidenceIntentPolicy.LooksLikeQuestion(q) ||
                q.Contains("hoat dong", StringComparison.Ordinal) ||
                q.Contains("inactive", StringComparison.Ordinal) ||
                q.Contains("it tuong tac", StringComparison.Ordinal) ||
@@ -1191,6 +1350,52 @@ public sealed partial class ZaloMemberIntelligenceBotService(
                  q.Contains("chua", StringComparison.Ordinal) ||
                  q.Contains("khong", StringComparison.Ordinal) ||
                  q.Contains("phan tich", StringComparison.Ordinal)));
+    }
+
+    private async Task<ZaloMemberBotAnswer> ExecuteConversationEvidenceAsync(
+        string connectionId,
+        string groupId,
+        ZaloIncomingMessageEvent incoming,
+        string memberUserId,
+        string researchQuestion,
+        bool aiCalled,
+        bool evidenceAiAllowed,
+        CancellationToken cancellationToken)
+    {
+        var displayName = await db.ZaloGroupMembers
+            .AsNoTracking()
+            .Where(member =>
+                member.ZaloConnectionId == connectionId &&
+                member.GroupId == groupId &&
+                member.ZaloUserId == memberUserId)
+            .OrderByDescending(member => member.LastSeenAt)
+            .Select(member => member.DisplayName)
+            .FirstOrDefaultAsync(cancellationToken);
+        displayName ??= incoming.Mentions
+            .Where(mention => NormalizeId(mention.Uid) == memberUserId)
+            .Select(mention =>
+            {
+                if (mention.Pos < 0 || mention.Len <= 0 || mention.Pos + mention.Len > incoming.Content.Length)
+                    return null;
+                return incoming.Content.Substring(mention.Pos, mention.Len).Trim().TrimStart('@');
+            })
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+        displayName ??= memberUserId;
+
+        var research = await new ZaloConversationEvidenceResearchService(db, ai).ResearchAsync(
+            connectionId,
+            groupId,
+            memberUserId,
+            displayName,
+            researchQuestion,
+            NormalizeId(incoming.MessageId),
+            evidenceAiAllowed,
+            cancellationToken);
+        return new ZaloMemberBotAnswer(
+            research.Text,
+            ZaloBotIntent.SearchMemberConversationEvidence,
+            aiCalled || research.AiCalled,
+            research.ProtectedTerms);
     }
 
     private static bool TryReadCount(string question, out int count)
@@ -1367,7 +1572,8 @@ public sealed partial class ZaloMemberIntelligenceBotService(
         int Page,
         int PageSize,
         IReadOnlyList<string>? CandidateUserIds,
-        int? TotalPages = null)
+        int? TotalPages = null,
+        string? OriginalQuestion = null)
     {
         public ZaloActivityPeriod ToPeriod() =>
             new(PeriodStart, PeriodEnd, PeriodDescription);

@@ -748,6 +748,8 @@ public static class DatabaseSchemaPatch
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_MessageId" ON "ZaloGroupMessages" ("ZaloConnectionId", "MessageId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_GroupId_SentAt" ON "ZaloGroupMessages" ("ZaloConnectionId", "GroupId", "SentAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_GroupId_SenderId_SentAt" ON "ZaloGroupMessages" ("ZaloConnectionId", "GroupId", "SenderId", "SentAt");""");
     }
 
     private static async Task EnsurePostgresZaloBotTables(VolleyDraftDbContext db)
@@ -779,6 +781,8 @@ public static class DatabaseSchemaPatch
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_MessageId" ON "ZaloGroupMessages" ("ZaloConnectionId", "MessageId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_GroupId_SentAt" ON "ZaloGroupMessages" ("ZaloConnectionId", "GroupId", "SentAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloGroupMessages_ZaloConnectionId_GroupId_SenderId_SentAt" ON "ZaloGroupMessages" ("ZaloConnectionId", "GroupId", "SenderId", "SentAt");""");
     }
 
     private static async Task EnsureSqliteZaloBotLearningTables(VolleyDraftDbContext db)
