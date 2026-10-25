@@ -54,7 +54,8 @@ internal sealed class ZaloMemberIntegrationService(
     {
         var kind = $"member_integration_{suggestion.CapabilityKey}";
         var matching = history.Where(item => item.Kind == kind).ToList();
-        if (suggestion.CapabilityKey == "welcome") return matching.Count == 0;
+        if (suggestion.CapabilityKey == "welcome")
+            return matching.All(item => !string.Equals(item.ContentKey, suggestion.ContentKey, StringComparison.Ordinal));
 
         var cooldown = TimeSpan.FromDays(4);
         var sameContent = matching
