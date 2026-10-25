@@ -58,6 +58,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloBotTables(db);
             await EnsureSqliteZaloBotLearningTables(db);
             await EnsureSqliteZaloBotConversationTables(db);
+            await EnsureSqliteZaloConversationSummaryTables(db);
             await EnsureSqliteZaloBotImageTables(db);
             await EnsureSqliteZaloReminderScheduleTables(db);
             await EnsureSqliteWaitlistAndActionHistoryTables(db);
@@ -150,6 +151,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloBotTables(db);
             await EnsurePostgresZaloBotLearningTables(db);
             await EnsurePostgresZaloBotConversationTables(db);
+            await EnsurePostgresZaloConversationSummaryTables(db);
             await EnsurePostgresZaloBotImageTables(db);
             await EnsurePostgresZaloReminderScheduleTables(db);
             await EnsurePostgresWaitlistAndActionHistoryTables(db);
@@ -887,6 +889,58 @@ public static class DatabaseSchemaPatch
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloBotConversationStates_Connection_Group_Sender" ON "ZaloBotConversationStates" ("ZaloConnectionId", "GroupId", "SenderZaloUserId");""");
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotConversationStates_ExpiresAt" ON "ZaloBotConversationStates" ("ExpiresAt");""");
+    }
+
+    private static async Task EnsureSqliteZaloConversationSummaryTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloConversationSummaryContexts" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloConversationSummaryContexts" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "RequesterZaloUserId" TEXT NOT NULL,
+                "ScopeKind" TEXT NOT NULL,
+                "TargetZaloUserId" TEXT NULL,
+                "RangeStart" TEXT NOT NULL,
+                "RangeEnd" TEXT NOT NULL,
+                "SummaryJson" TEXT NOT NULL,
+                "ExpiresAt" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloConversationSummaryContexts_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloConversationSummaryContexts_Connection_Group_Requester" ON "ZaloConversationSummaryContexts" ("ZaloConnectionId", "GroupId", "RequesterZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloConversationSummaryContexts_ExpiresAt" ON "ZaloConversationSummaryContexts" ("ExpiresAt");""");
+    }
+
+    private static async Task EnsurePostgresZaloConversationSummaryTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloConversationSummaryContexts" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloConversationSummaryContexts" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "RequesterZaloUserId" text NOT NULL,
+                "ScopeKind" text NOT NULL,
+                "TargetZaloUserId" text NULL,
+                "RangeStart" timestamp with time zone NOT NULL,
+                "RangeEnd" timestamp with time zone NOT NULL,
+                "SummaryJson" text NOT NULL,
+                "ExpiresAt" timestamp with time zone NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloConversationSummaryContexts_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloConversationSummaryContexts_Connection_Group_Requester" ON "ZaloConversationSummaryContexts" ("ZaloConnectionId", "GroupId", "RequesterZaloUserId");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloConversationSummaryContexts_ExpiresAt" ON "ZaloConversationSummaryContexts" ("ExpiresAt");""");
     }
 
     private static async Task EnsureSqliteZaloBotImageTables(VolleyDraftDbContext db)

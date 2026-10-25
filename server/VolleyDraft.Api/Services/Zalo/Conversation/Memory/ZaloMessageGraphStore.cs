@@ -164,6 +164,36 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         return result;
     }
 
+    public async Task<IReadOnlyDictionary<string, ZaloMessageGraphRelation>> LoadReplyRelationsAsync(
+        string zaloConnectionId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        var connection = db.Database.GetDbConnection();
+        await OpenIfNeededAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT "Id", "ZaloConnectionId", "GroupId", "FromMessageId", "ToMessageId",
+                   "RelationType", "QuotedSenderId", "QuotedSenderName", "QuotedContentSnapshot",
+                   "ProviderOutboundMessageId", "CreatedAt"
+            FROM "ZaloMessageRelations"
+            WHERE "ZaloConnectionId" = @connectionId
+              AND "GroupId" = @groupId
+              AND "RelationType" = 'ReplyTo';
+            """;
+        Add(command, "@connectionId", Clean(zaloConnectionId, 100));
+        Add(command, "@groupId", Clean(groupId, 100));
+        var result = new Dictionary<string, ZaloMessageGraphRelation>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var relation = Read(reader);
+            result[relation.FromMessageId] = relation;
+        }
+        return result;
+    }
+
     public async Task<bool> ReconcileQuotedLegacyBotMessageAsync(
         string zaloConnectionId,
         string groupId,

@@ -15,6 +15,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<ZaloGroupMessage> ZaloGroupMessages => Set<ZaloGroupMessage>();
     public DbSet<ZaloBotLearnedRule> ZaloBotLearnedRules => Set<ZaloBotLearnedRule>();
     public DbSet<ZaloBotConversationState> ZaloBotConversationStates => Set<ZaloBotConversationState>();
+    public DbSet<ZaloConversationSummaryContext> ZaloConversationSummaryContexts => Set<ZaloConversationSummaryContext>();
     public DbSet<ZaloBotImageAsset> ZaloBotImageAssets => Set<ZaloBotImageAsset>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
@@ -325,6 +326,21 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(state => state.PendingPayloadJson).HasMaxLength(8000);
             entity.Property(state => state.PreviousCommand).HasMaxLength(80);
             entity.HasIndex(state => new { state.ZaloConnectionId, state.GroupId, state.SenderZaloUserId }).IsUnique();
+            entity.HasIndex(state => state.ExpiresAt);
+            entity.HasOne(state => state.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(state => state.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloConversationSummaryContext>(entity =>
+        {
+            entity.Property(state => state.GroupId).HasMaxLength(100);
+            entity.Property(state => state.RequesterZaloUserId).HasMaxLength(100);
+            entity.Property(state => state.ScopeKind).HasMaxLength(40);
+            entity.Property(state => state.TargetZaloUserId).HasMaxLength(100);
+            entity.Property(state => state.SummaryJson).HasMaxLength(32000);
+            entity.HasIndex(state => new { state.ZaloConnectionId, state.GroupId, state.RequesterZaloUserId }).IsUnique();
             entity.HasIndex(state => state.ExpiresAt);
             entity.HasOne(state => state.ZaloConnection)
                 .WithMany()

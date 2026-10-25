@@ -417,6 +417,11 @@ public sealed partial class ZaloBotService(
             return new BotAnswer(card.Text, card.ImageUrl, ZaloBotIntent.GeneralChat);
         }
 
+        var conversationSummary = await TryBuildConversationSummaryAnswerAsync(
+            activeConnectionId, groupId, incoming, question, cancellationToken);
+        if (conversationSummary is not null)
+            return conversationSummary;
+
         var evidenceAiAllowed = ZaloConversationEvidenceIntentPolicy.MightBeQuestion(question) &&
                                 ai.IsConfigured &&
                                 await IsAiCallAllowedAsync(activeConnectionId, groupId, incoming.SenderId, cancellationToken);

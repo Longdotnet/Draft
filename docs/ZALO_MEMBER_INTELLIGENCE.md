@@ -160,7 +160,11 @@ Các intent mới:
 - `GetActivitySyncStatus`.
 - `ListRecentlyJoinedMembers`;
 - `GetMemberJoinDate`;
-- `SearchMemberConversationEvidence`.
+- `SearchMemberConversationEvidence`;
+- `SummarizeConversation`;
+- `SummarizeMemberConversation`;
+- `SummarizeHotTopics`;
+- `ConversationSummaryFollowUp`.
 
 `@bot 12` hỏi số lượng từ 1–30 rồi hiển thị danh sách kèm bằng chứng gần nhất. Danh sách mặc định 10 người/trang và hỗ trợ `tiếp`, `xem thêm`, `trang 2`, `trang trước`, `đầu`, `cuối`. State được scope theo connection + group + sender UID.
 
@@ -175,6 +179,10 @@ Danh sách toàn nhóm, ranking và dữ liệu chi tiết của người khác 
 Ngoại lệ công khai là `SearchMemberConversationEvidence`: mọi thành viên trong group có thể hỏi bot một thành viên khác trước đó có từng nói/nhắc một nội dung nào trong **chính group hiện tại** hay không. Nếu câu hỏi có một structured `@mention` người thật thì UID của mention là định danh bắt buộc và thắng display name; điều này tránh lấy nhầm khi hai account có cùng tên. Tính năng không đọc chat riêng, không đọc group khác và không bỏ qua scope `ZaloConnectionId + GroupId`.
 
 Research lịch sử không dùng cửa sổ GeneralAI 16–20 tin gần nhất. Backend lọc toàn bộ `ZaloGroupMessages` đã lưu của đúng UID trong group, xếp hạng candidate rồi chỉ đưa tập candidate giới hạn cho AI kiểm chứng. AI chỉ được chọn `MessageId` có thật; câu trả lời cuối cùng luôn render lại từ row backend và có timestamp/câu dẫn chứng. Nếu không tìm thấy, bot phải nói “chưa tìm thấy trong phần lịch sử bot đã lưu”, không được suy ra người đó chưa từng nói.
+
+Conversation Summary/Memory là lớp tiếp theo trên cùng nguồn dữ liệu đã lưu. `tóm tắt nãy giờ` lấy cụm hội thoại hiện tại theo chronological window và cắt sau khoảng im lặng lớn thay vì cố định 20/40 tin; `hôm nay`, `từ sáng tới giờ`, `hôm qua`, `tuần này` dùng mốc lịch theo UTC+7. Member summary ưu tiên structured `@mention` UID; lời người khác và reply/quote chỉ là context, không được gán thành lời của target. `HotTopics` dùng mức tham gia/reply/decision/open-question cùng AI importance để sắp chủ đề đáng chú ý.
+
+Intent summary có deterministic fast-path nhưng không phụ thuộc phrase bank: các câu chưa thuộc command nghiệp vụ rõ ràng có thể được semantic classifier hiểu theo `GroupSummary | MemberSummary | HotTopics | FollowUpDetail | None`. AI trả structured topics kèm `MessageId`; backend bỏ mọi ID/participant bịa trước khi lưu hoặc render. Sau một summary, context riêng theo `connection + group + requester UID` được giữ ngắn hạn để hiểu follow-up như `vụ số 2 nói kỹ hơn`, `cái vụ team đi giải ai đề xuất vậy?` hoặc `@Vũ nói gì về vụ đó?`. Follow-up chỉ đọc các message ID đã được snapshot trong topic và vẫn khóa UID khi câu hỏi nhắm tới một member.
 
 Quyền được xác minh bằng UID, không dùng display name. Nếu bridge không xác minh được role, bot từ chối an toàn và không rò tên. Module không tự kick, public shame, mass private message hoặc tự mention campaign.
 
@@ -280,6 +288,8 @@ dung của người khác vẫn đi qua kiểm tra quyền operator/admin/trư�
 thành viên thường chỉ được xem nội dung của chính mình.
 
 `SearchMemberConversationEvidence` là ngoại lệ có chủ đích cho phần nội dung hội thoại đã phát trong chính group: mọi thành viên trong group được phép tra cứu evidence của thành viên khác. Kết quả chỉ dùng nội dung bot đã lưu cho đúng UID/group, tối đa một số evidence tốt nhất, kèm thời gian; reply/quote được lấy từ `ZaloMessageRelations` nếu có. API key, token và password vẫn bị che trước khi gửi candidate cho AI và trước khi hiển thị.
+
+Các intent Conversation Summary/Memory cũng chỉ đọc nội dung đã phát trong **chính group hiện tại** và không mở quyền sang private chat/group khác. Summary state không dùng chung `ZaloBotConversationStates` của pending workflow; nó nằm ở `ZaloConversationSummaryContexts`, có TTL và scope theo requester để một người hỏi tiếp không lấy nhầm topic của người khác.
 
 Đoạn trích là dữ liệu backend, không do AI tạo hoặc sửa. API key, token và mật
 khẩu theo các mẫu phổ biến được che trước khi hiển thị. Tin cũ chỉ được import
