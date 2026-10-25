@@ -95,6 +95,12 @@ public sealed class ZaloCommunityNudgeService(
             var accountId = CleanId(target.AccountId);
             if (connectionId.Length == 0 || groupId.Length == 0 || accountId.Length == 0) continue;
 
+            if (configuration is not null)
+            {
+                await new ZaloMemberIntegrationContextBuilder(db, bridge, configuration)
+                    .EnsureConfiguredRecoveriesAsync(connectionId, groupId, cancellationToken);
+            }
+
             var dailyCount = await store.GetDailyCountAsync(connectionId, groupId, cancellationToken);
             var localDate = localNow.ToString("yyyy-MM-dd");
             var history = await store.GetHistoryAsync(connectionId, groupId, 300, cancellationToken);

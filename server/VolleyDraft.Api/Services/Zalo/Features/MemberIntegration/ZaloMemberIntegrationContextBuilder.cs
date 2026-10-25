@@ -49,19 +49,7 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
             snapshotAt,
             cancellationToken);
         var recoveredStore = new ZaloRecoveredNewcomerStore(db);
-        foreach (var seed in settings.RecoveredNewcomers)
-        {
-            await recoveredStore.UpsertAsync(
-                connectionId,
-                groupId,
-                seed.ZaloUserId,
-                seed.DisplayName,
-                seed.FirstObservedAt,
-                confirmedBy: "member-integration-config",
-                sourceNote: "Admin-confirmed newcomer recovered after listener downtime.",
-                confirmedAt: seed.FirstObservedAt,
-                cancellationToken: cancellationToken);
-        }
+        await EnsureConfiguredRecoveriesAsync(connectionId, groupId, groupName, cancellationToken);
         var recovered = await recoveredStore.GetActiveAsync(
             connectionId,
             groupId,
@@ -290,6 +278,53 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
         }
 
         return contexts;
+    }
+
+    public async Task EnsureConfiguredRecoveriesAsync(
+        string connectionId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        connectionId = CleanId(connectionId);
+        groupId = CleanId(groupId);
+        if (connectionId.Length == 0 || groupId.Length == 0 || !settings.Enabled || settings.RecoveredNewcomers.Count == 0)
+            return;
+        var tracked = (await new ZaloAutoSessionSettingsStore(db).GetAllAsync(cancellationToken))
+            .FirstOrDefault(item => item.ZaloConnectionId == connectionId && item.GroupId == groupId);
+        var groupName = tracked?.GroupName?.Trim() ?? groupId;
+        await EnsureConfiguredRecoveriesAsync(connectionId, groupId, groupName, cancellationToken);
+    }
+
+    private async Task EnsureConfiguredRecoveriesAsync(
+        string connectionId,
+        string groupId,
+        string groupName,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.AppliesTo(groupName) || settings.RecoveredNewcomers.Count == 0) return;
+        var store = new ZaloRecoveredNewcomerStore(db);
+        var existing = await store.GetActiveAsync(
+            connectionId,
+            groupId,
+            DateTimeOffset.MinValue,
+            cancellationToken);
+        var existingIds = existing.Select(item => CleanId(item.ZaloUserId)).ToHashSet(StringComparer.Ordinal);
+        foreach (var seed in settings.RecoveredNewcomers)
+        {
+            var userId = CleanId(seed.ZaloUserId);
+            if (userId.Length == 0 || existingIds.Contains(userId)) continue;
+            await store.UpsertAsync(
+                connectionId,
+                groupId,
+                userId,
+                seed.DisplayName,
+                seed.FirstObservedAt,
+                confirmedBy: "member-integration-config",
+                sourceNote: "Admin-confirmed newcomer recovered after listener downtime.",
+                confirmedAt: seed.FirstObservedAt,
+                cancellationToken: cancellationToken);
+            existingIds.Add(userId);
+        }
     }
 
     private async Task<ZaloMemberIntegrationRoleDirectory> LoadRolesAsync(
