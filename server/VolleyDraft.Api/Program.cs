@@ -243,6 +243,24 @@ app.MapPost("/api/internal/zalo/membership-events", async (
     return Results.Accepted(value: new { accepted });
 });
 
+app.MapPost("/api/internal/zalo/presence-events", async (
+    HttpContext httpContext,
+    ZaloMemberPresenceSignalEvent incoming,
+    VolleyDraftDbContext db,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var expectedKey = configuration["Zalo:WebhookKey"]
+        ?? configuration["Zalo:BridgeInternalKey"]
+        ?? "development-zalo-bridge-key";
+    if (httpContext.Request.Headers["x-zalo-bridge-key"] != expectedKey)
+        return Results.Unauthorized();
+
+    var accepted = await new ZaloMemberPresenceSignalStore(db)
+        .RecordAsync(incoming, cancellationToken);
+    return Results.Accepted(value: new { accepted });
+});
+
 app.MapPost("/api/internal/zalo/poll-events", (
     HttpContext httpContext,
     ZaloPollBoardEvent incoming,

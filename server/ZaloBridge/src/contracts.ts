@@ -176,6 +176,16 @@ export type GroupMembershipChangedEvent = {
   occurredAtUnixMs: number;
 };
 
+export type GroupPresenceSignalEvent = {
+  accountId: string;
+  groupId: string;
+  eventType: "seen" | "typing";
+  memberIds: string[];
+  messageId: string | null;
+  providerOccurredAtUnixMs: number | null;
+  observedAtUnixMs: number;
+};
+
 export type PollBoardChangedEvent = {
   accountId: string;
   groupId: string;

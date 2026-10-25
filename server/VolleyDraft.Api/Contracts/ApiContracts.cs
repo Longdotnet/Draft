@@ -310,6 +310,15 @@ public sealed record ZaloMembershipChangedEvent(
     string EventId,
     long OccurredAtUnixMs);
 
+public sealed record ZaloMemberPresenceSignalEvent(
+    string AccountId,
+    string GroupId,
+    string EventType,
+    IReadOnlyList<string> MemberIds,
+    string? MessageId,
+    long? ProviderOccurredAtUnixMs,
+    long ObservedAtUnixMs);
+
 public sealed record ZaloPollBoardEvent(
     string AccountId,
     string GroupId,

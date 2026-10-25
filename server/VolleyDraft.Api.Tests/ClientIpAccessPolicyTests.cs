@@ -57,6 +57,7 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/api/internal/scheduler/tick")]
     [InlineData("/api/internal/zalo/events")]
     [InlineData("/api/internal/zalo/membership-events")]
+    [InlineData("/api/internal/zalo/presence-events")]
     [InlineData("/api/internal/zalo/poll-events")]
     public void ExactInternalPostPathsBypassBrowserIpGate(string path)
     {

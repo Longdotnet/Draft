@@ -20,6 +20,18 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
     }
 
     [Fact]
+    public void Seen_receipt_uses_presence_quiet_window()
+    {
+        var settings = Settings();
+        var activity = new ZaloMemberIntegrationActivityHint(
+            "user-1",
+            Now.AddMinutes(-5),
+            "seen");
+
+        Assert.Equal(10, ZaloMemberIntegrationDeliveryPolicy.RequiredQuietMinutes(Now, activity, settings));
+    }
+
+    [Fact]
     public void Stale_or_missing_activity_requires_longer_passive_quiet_window()
     {
         var settings = Settings();
@@ -50,6 +62,7 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
 
     private static ZaloMemberIntegrationDeliverySettings Settings() => new(
         Enabled: true,
+        PresenceQuietMinutes: 10,
         QuietMinutes: 20,
         PassiveQuietMinutes: 90,
         RecentActivityMinutes: 360,

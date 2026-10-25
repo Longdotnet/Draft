@@ -5,6 +5,7 @@ namespace VolleyDraft.Api.Services;
 
 internal sealed record ZaloMemberIntegrationDeliverySettings(
     bool Enabled,
+    int PresenceQuietMinutes,
     int QuietMinutes,
     int PassiveQuietMinutes,
     int RecentActivityMinutes,
@@ -15,6 +16,7 @@ internal sealed record ZaloMemberIntegrationDeliverySettings(
 {
     public static ZaloMemberIntegrationDeliverySettings FromConfiguration(IConfiguration configuration) => new(
         Enabled: configuration.GetValue("ZaloBot:MemberIntegration:Delivery:Enabled", true),
+        PresenceQuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:PresenceQuietMinutes", 10), 5, 120),
         QuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:QuietMinutes", 20), 5, 240),
         PassiveQuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:PassiveQuietMinutes", 90), 20, 720),
         RecentActivityMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:RecentActivityMinutes", 360), 30, 1440),
@@ -45,7 +47,10 @@ internal static class ZaloMemberIntegrationDeliveryPolicy
     {
         var recent = activity.LastActivityAt is { } at &&
                      now - at <= TimeSpan.FromMinutes(settings.RecentActivityMinutes);
-        return recent ? settings.QuietMinutes : settings.PassiveQuietMinutes;
+        if (!recent) return settings.PassiveQuietMinutes;
+        return string.Equals(activity.Source, "seen", StringComparison.Ordinal)
+            ? settings.PresenceQuietMinutes
+            : settings.QuietMinutes;
     }
 }
 
@@ -277,6 +282,26 @@ public sealed class ZaloMemberIntegrationNudgeService(
             if (!result.TryGetValue(group.Key, out var current) || current.LastActivityAt is null || at > current.LastActivityAt)
                 result[group.Key] = new ZaloMemberIntegrationActivityHint(group.Key, at, "poll");
         }
+
+        var presence = await new ZaloMemberPresenceSignalStore(db)
+            .GetRecentAsync(
+                connectionId,
+                groupId,
+                candidateIds,
+                activityCutoff,
+                cancellationToken);
+        foreach (var signal in presence)
+        {
+            if (!result.TryGetValue(signal.ZaloUserId, out var current) ||
+                current.LastActivityAt is null ||
+                signal.ObservedAt > current.LastActivityAt)
+            {
+                result[signal.ZaloUserId] = new ZaloMemberIntegrationActivityHint(
+                    signal.ZaloUserId,
+                    signal.ObservedAt,
+                    signal.SignalType);
+            }
+        }
         return result;
     }
 
@@ -285,6 +310,10 @@ public sealed class ZaloMemberIntegrationNudgeService(
         DateTimeOffset? lastHumanMessageAt,
         ZaloMemberIntegrationActivityHint activity)
     {
+        if (string.Equals(activity.Source, "typing", StringComparison.Ordinal) &&
+            activity.LastActivityAt is { } typingAt &&
+            now - typingAt < TimeSpan.FromMinutes(3))
+            return false;
         var required = ZaloMemberIntegrationDeliveryPolicy.RequiredQuietMinutes(now, activity, settings);
         return lastHumanMessageAt is null || now - lastHumanMessageAt >= TimeSpan.FromMinutes(required);
     }

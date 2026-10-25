@@ -27,6 +27,7 @@ import type {
   BridgePoll,
   IncomingGroupMessageEvent,
   GroupMembershipChangedEvent,
+  GroupPresenceSignalEvent,
   PollBoardChangedEvent,
   SendGroupMessageRequest,
   StartListenerRequest,
@@ -103,6 +104,8 @@ type MinimalZaloApi = AvatarProfileApi & {
   listener: {
     on(event: "message", callback: (message: MinimalMessage) => unknown): void;
     on(event: "group_event", callback: (event: MinimalGroupEvent) => unknown): void;
+    on(event: "typing", callback: (event: MinimalTyping) => unknown): void;
+    on(event: "seen_messages", callback: (events: MinimalSeenMessage[]) => unknown): void;
     on(event: "error", callback: (error: unknown) => unknown): void;
     on(event: "closed", callback: (code: number, reason: string) => unknown): void;
     start(options?: { retryOnClose?: boolean }): void;
@@ -149,6 +152,28 @@ type MinimalGroupEvent = {
     groupTopic?: Record<string, unknown> | null;
     extraData?: Record<string, unknown> | null;
     updateMembers?: Array<{ id?: string; dName?: string }> | null;
+  };
+};
+
+type MinimalTyping = {
+  type: number;
+  threadId: string;
+  isSelf: boolean;
+  data: {
+    uid?: string;
+    ts?: string | number;
+    gid?: string;
+  };
+};
+
+type MinimalSeenMessage = {
+  type: number;
+  threadId: string;
+  isSelf: boolean;
+  data: {
+    msgId?: string;
+    groupId?: string;
+    seenUids?: string[];
   };
 };
 
@@ -270,7 +295,7 @@ function normalizeMentions(value: MinimalMessage["data"]["mentions"]): BridgeMen
 
 async function postWebhook(
   listener: ActiveListener,
-  event: IncomingGroupMessageEvent | PollBoardChangedEvent | GroupMembershipChangedEvent,
+  event: IncomingGroupMessageEvent | PollBoardChangedEvent | GroupMembershipChangedEvent | GroupPresenceSignalEvent,
   webhookUrl = listener.webhookUrl,
 ) {
   let lastError: unknown;
@@ -309,6 +334,14 @@ function membershipWebhookUrl(messageWebhookUrl: string): string {
   parsed.pathname = /\/events\/?$/.test(parsed.pathname)
     ? parsed.pathname.replace(/\/events\/?$/, "/membership-events")
     : `${parsed.pathname.replace(/\/$/, "")}/membership-events`;
+  return parsed.toString();
+}
+
+function presenceWebhookUrl(messageWebhookUrl: string): string {
+  const parsed = new URL(messageWebhookUrl);
+  parsed.pathname = /\/events\/?$/.test(parsed.pathname)
+    ? parsed.pathname.replace(/\/events\/?$/, "/presence-events")
+    : `${parsed.pathname.replace(/\/$/, "")}/presence-events`;
   return parsed.toString();
 }
 
@@ -393,6 +426,56 @@ function handleMembershipEvent(accountId: string, listener: ActiveListener, even
   );
 }
 
+function handleTypingEvent(accountId: string, listener: ActiveListener, event: MinimalTyping) {
+  if (event.type !== ThreadType.Group || event.isSelf) return;
+  const groupId = normalizeId(event.data?.gid ?? event.threadId);
+  if (!groupId || !listener.groupIds.has(groupId)) return;
+  const memberId = normalizeMemberId(String(event.data?.uid ?? ""));
+  if (!memberId || memberId === listener.botId) return;
+
+  const providerOccurredAtUnixMs = normalizeUnixMs(event.data?.ts);
+  const payload: GroupPresenceSignalEvent = {
+    accountId,
+    groupId,
+    eventType: "typing",
+    memberIds: [memberId],
+    messageId: null,
+    providerOccurredAtUnixMs: providerOccurredAtUnixMs > 0 ? providerOccurredAtUnixMs : null,
+    observedAtUnixMs: Date.now(),
+  };
+  void postWebhook(listener, payload, presenceWebhookUrl(listener.webhookUrl)).catch((error) =>
+    console.error(`[Zalo listener ${accountId}] Failed to forward typing presence signal:`, error),
+  );
+}
+
+function handleSeenMessages(accountId: string, listener: ActiveListener, events: MinimalSeenMessage[]) {
+  if (!Array.isArray(events) || events.length === 0) return;
+  const observedAtUnixMs = Date.now();
+  for (const event of events) {
+    if (event.type !== ThreadType.Group || event.isSelf) continue;
+    const groupId = normalizeId(event.data?.groupId ?? event.threadId);
+    if (!groupId || !listener.groupIds.has(groupId)) continue;
+    const memberIds = [...new Set((event.data?.seenUids ?? [])
+      .map((uid) => normalizeMemberId(String(uid ?? "")))
+      .filter((uid) => uid.length > 0 && uid !== listener.botId))]
+      .sort();
+    if (memberIds.length === 0) continue;
+
+    const payload: GroupPresenceSignalEvent = {
+      accountId,
+      groupId,
+      eventType: "seen",
+      memberIds,
+      messageId: normalizeId(event.data?.msgId ?? "") || null,
+      providerOccurredAtUnixMs: null,
+      observedAtUnixMs,
+    };
+    void postWebhook(listener, payload, presenceWebhookUrl(listener.webhookUrl)).catch((error) =>
+      console.error(`[Zalo listener ${accountId}] Failed to forward seen presence signal:`, error),
+    );
+  }
+}
+
 async function handleIncomingMessage(accountId: string, listener: ActiveListener, message: MinimalMessage) {
   if (message.type !== ThreadType.Group || message.isSelf || typeof message.data.content !== "string") return;
   const groupId = normalizeId(message.threadId);
@@ -438,6 +521,12 @@ function attachListenerHandlers(accountId: string, listener: ActiveListener): vo
   listener.api.listener.on("group_event", (event) => {
     handleBoardEvent(accountId, listener, event);
     handleMembershipEvent(accountId, listener, event);
+  });
+  listener.api.listener.on("typing", (event) => {
+    handleTypingEvent(accountId, listener, event);
+  });
+  listener.api.listener.on("seen_messages", (events) => {
+    handleSeenMessages(accountId, listener, events);
   });
   listener.api.listener.on("error", (error) => console.error(`[Zalo listener ${accountId}]`, error));
   listener.api.listener.on("closed", (code, reason) => {
