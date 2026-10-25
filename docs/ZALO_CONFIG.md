@@ -22,11 +22,11 @@ The text/semantic AI path uses an ordered provider pool. Feature code still talk
 The repository defaults currently try these OpenRouter slots in order:
 
 ```text
-1. inclusionai/ling-3.0-flash-vl:free
-2. nex-agi/nex-n2.5-pro:free
-3. nex-agi/nex-n2.5-mini:free
-4. inclusionai/ling-3.0-flash-vl:free
-5. nex-agi/nex-n2.5-pro:free
+1. recursive/flint-v1.0:free
+2. recursive/flint-v1.0:free
+3. recursive/flint-v1.0:free
+4. recursive/flint-v1.0:free
+5. recursive/flint-v1.0:free
 ```
 
 Each pool slot can have an independent API key. When a slot key is blank, the gateway inherits the legacy `Ai:ApiKey`. Exact duplicate endpoint/key/model slots are collapsed automatically, so a deployment with only one shared key does not waste calls retrying the exact same model credential twice. Once separate keys are configured, repeated model slots remain distinct failover credentials.

@@ -16,6 +16,21 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloConversationSummaryTests
 {
     [Fact]
+    public void Vietnam_calendar_range_is_converted_to_utc_before_database_query()
+    {
+        var now = DateTimeOffset.Parse("2026-10-26T00:10:00+07:00");
+
+        var yesterday = ZaloConversationSummaryService.ResolveRange(
+            ZaloConversationSummaryTimeScope.Yesterday,
+            now);
+
+        Assert.Equal(TimeSpan.Zero, yesterday.Start.Offset);
+        Assert.Equal(TimeSpan.Zero, yesterday.End.Offset);
+        Assert.Equal(DateTimeOffset.Parse("2026-10-24T17:00:00Z"), yesterday.Start);
+        Assert.Equal(DateTimeOffset.Parse("2026-10-25T16:59:59.9999999Z"), yesterday.End);
+    }
+
+    [Fact]
     public async Task Current_conversation_starts_after_last_ninety_minute_gap()
     {
         await using var fixture = await Fixture.CreateAsync();

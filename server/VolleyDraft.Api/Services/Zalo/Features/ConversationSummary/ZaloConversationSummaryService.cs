@@ -484,13 +484,13 @@ internal sealed class ZaloConversationSummaryService(
         return memory.Topics.Count == 1 ? memory.Topics[0] : null;
     }
 
-    private static (DateTimeOffset Start, DateTimeOffset End, string Description) ResolveRange(
+    internal static (DateTimeOffset Start, DateTimeOffset End, string Description) ResolveRange(
         ZaloConversationSummaryTimeScope scope,
         DateTimeOffset now)
     {
         var local = now.ToOffset(VietnamOffset);
         var startOfToday = new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, VietnamOffset);
-        return scope switch
+        var localRange = scope switch
         {
             ZaloConversationSummaryTimeScope.Today => (startOfToday, local, "hôm nay"),
             ZaloConversationSummaryTimeScope.SinceMorning => (local.Hour >= 6 ? startOfToday.AddHours(6) : startOfToday, local, "từ sáng tới giờ"),
@@ -498,6 +498,7 @@ internal sealed class ZaloConversationSummaryService(
             ZaloConversationSummaryTimeScope.ThisWeek => (startOfToday.AddDays(-(((int)local.DayOfWeek + 6) % 7)), local, "tuần này"),
             _ => (local.AddHours(-24), local, "đoạn hội thoại hiện tại")
         };
+        return (localRange.Item1.ToUniversalTime(), localRange.Item2.ToUniversalTime(), localRange.Item3);
     }
 
     private static DateTimeOffset ResolveIncomingTime(ZaloIncomingMessageEvent incoming)
