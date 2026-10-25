@@ -33,6 +33,7 @@ public sealed class ZaloModularArchitectureGuardTests
             "Zalo*Proactive*.cs",
             "Zalo*Roster*.cs",
             "Zalo*DomainEvent*.cs",
+            "Zalo*MemberIntegration*.cs",
             "Zalo*OperatorPermission*.cs",
             "Zalo*ConversationState*.cs",
             "Zalo*MessageGraph*.cs",
@@ -157,6 +158,7 @@ public sealed class ZaloModularArchitectureGuardTests
     [InlineData("Proactive")]
     [InlineData("Roster")]
     [InlineData("DomainEvents")]
+    [InlineData("MemberIntegration")]
     [InlineData("Permissions")]
     [InlineData("Overbook")]
     public void Migrated_features_have_explicit_ownership_folder(string feature)

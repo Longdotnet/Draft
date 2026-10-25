@@ -137,7 +137,7 @@ export function ZaloCommunityTipSettingsPanel() {
             <h2 style={{ margin: 0 }}>STT · Community Tips</h2>
           </div>
           <p style={{ margin: "8px 0 0", color: "#94a3b8", maxWidth: 780 }}>
-            Số lần bot chủ động nhắn mỗi ngày về share slot, muốn chơi chung và spotlight thành viên theo dữ liệu tham gia thật. Bot không tag người được nhắc và không tự thay đổi roster/team.
+            Số lần bot chủ động nhắn mỗi ngày về share slot, muốn chơi chung, spotlight và hỗ trợ thành viên mới hòa nhập theo dữ liệu tham gia thật. Bot có thể tag đúng người khi cần tạo cầu nối xã hội và không tự thay đổi roster/team.
           </p>
         </div>
         <button

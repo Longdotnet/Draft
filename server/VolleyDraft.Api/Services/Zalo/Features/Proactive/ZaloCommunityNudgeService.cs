@@ -11,7 +11,8 @@ internal sealed record ZaloCommunityNudgeCandidate(
     string Text,
     string? SubjectName = null,
     string? SubjectUserId = null,
-    string? ContentKey = null);
+    string? ContentKey = null,
+    IReadOnlyList<BridgeOutgoingMention>? ExplicitMentions = null);
 
 internal sealed record ZaloCommunityVoteMember(
     string UserId,
@@ -248,6 +249,36 @@ public sealed class ZaloCommunityNudgeService(
                 "💡 Có thể bạn chưa biết: nếu hai người muốn thay nhau dùng chung một suất thì cứ nói “tui muốn share slot với Minh”. Tui sẽ hỏi phần còn thiếu rồi đưa vào đúng flow share slot.",
                 ContentKey: "feature:share-slot")
         };
+
+        if (configuration is not null)
+        {
+            var integration = await new ZaloMemberIntegrationService(db, bridge, configuration)
+                .BuildAsync(
+                    connectionId,
+                    groupId,
+                    proactiveHistory,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+            var integrationCandidates = integration
+                .Select(item => new ZaloCommunityNudgeCandidate(
+                    $"member_integration_{item.Suggestion.CapabilityKey}",
+                    item.Suggestion.Text,
+                    item.Context.DisplayName,
+                    item.Context.ZaloUserId,
+                    item.Suggestion.ContentKey,
+                    BuildExplicitMentions(item.Suggestion)))
+                .ToList();
+            if (integrationCandidates.Count > 0)
+            {
+                return SelectRotatedCandidate(
+                    integrationCandidates,
+                    history,
+                    connectionId,
+                    groupId,
+                    localDate,
+                    slotNumber);
+            }
+        }
 
         var activityCandidates = await BuildVoteActivityCandidatesWithProactiveHistoryAsync(
             connectionId,
@@ -585,6 +616,7 @@ public sealed class ZaloCommunityNudgeService(
     internal static IReadOnlyList<BridgeOutgoingMention> BuildMentions(
         ZaloCommunityNudgeCandidate candidate)
     {
+        if (candidate.ExplicitMentions is { Count: > 0 }) return candidate.ExplicitMentions;
         var userId = CleanId(candidate.SubjectUserId);
         var displayName = CleanDisplayName(candidate.SubjectName);
         if (userId.Length == 0 || displayName.Length == 0) return [];
@@ -594,6 +626,25 @@ public sealed class ZaloCommunityNudgeService(
         return position < 0
             ? []
             : [new BridgeOutgoingMention(userId, position, label.Length)];
+    }
+
+    internal static IReadOnlyList<BridgeOutgoingMention> BuildExplicitMentions(
+        ZaloMemberIntegrationSuggestion suggestion)
+    {
+        var result = new List<BridgeOutgoingMention>();
+        var usedRanges = new HashSet<(int Position, int Length)>();
+        foreach (var target in suggestion.MentionTargets
+                     .Where(item => !string.IsNullOrWhiteSpace(item.ZaloUserId) && !string.IsNullOrWhiteSpace(item.DisplayName))
+                     .DistinctBy(item => CleanId(item.ZaloUserId)))
+        {
+            var userId = CleanId(target.ZaloUserId);
+            var label = $"@{CleanDisplayName(target.DisplayName)}";
+            if (userId.Length == 0 || label.Length <= 1) continue;
+            var position = suggestion.Text.IndexOf(label, StringComparison.Ordinal);
+            if (position >= 0 && usedRanges.Add((position, label.Length)))
+                result.Add(new BridgeOutgoingMention(userId, position, label.Length));
+        }
+        return result;
     }
 
     private static ZaloCommunityNudgeCandidate BuildTargetedCandidate(
