@@ -159,7 +159,8 @@ Các intent mới:
 - `SyncMemberActivity`;
 - `GetActivitySyncStatus`.
 - `ListRecentlyJoinedMembers`;
-- `GetMemberJoinDate`.
+- `GetMemberJoinDate`;
+- `SearchMemberConversationEvidence`.
 
 `@bot 12` hỏi số lượng từ 1–30 rồi hiển thị danh sách kèm bằng chứng gần nhất. Danh sách mặc định 10 người/trang và hỗ trợ `tiếp`, `xem thêm`, `trang 2`, `trang trước`, `đầu`, `cuối`. State được scope theo connection + group + sender UID.
 
@@ -170,6 +171,10 @@ Khi backfill chưa xong, bot trả tiến độ thay vì trả danh sách có co
 ## Authorization và privacy
 
 Danh sách toàn nhóm, ranking và dữ liệu chi tiết của người khác chỉ dành cho UID operator, creator group hoặc admin/deputy group do Zalo trả về. Thành viên thường chỉ được hỏi hoạt động của chính UID gửi tin.
+
+Ngoại lệ công khai là `SearchMemberConversationEvidence`: mọi thành viên trong group có thể hỏi bot một thành viên khác trước đó có từng nói/nhắc một nội dung nào trong **chính group hiện tại** hay không. Nếu câu hỏi có một structured `@mention` người thật thì UID của mention là định danh bắt buộc và thắng display name; điều này tránh lấy nhầm khi hai account có cùng tên. Tính năng không đọc chat riêng, không đọc group khác và không bỏ qua scope `ZaloConnectionId + GroupId`.
+
+Research lịch sử không dùng cửa sổ GeneralAI 16–20 tin gần nhất. Backend lọc toàn bộ `ZaloGroupMessages` đã lưu của đúng UID trong group, xếp hạng candidate rồi chỉ đưa tập candidate giới hạn cho AI kiểm chứng. AI chỉ được chọn `MessageId` có thật; câu trả lời cuối cùng luôn render lại từ row backend và có timestamp/câu dẫn chứng. Nếu không tìm thấy, bot phải nói “chưa tìm thấy trong phần lịch sử bot đã lưu”, không được suy ra người đó chưa từng nói.
 
 Quyền được xác minh bằng UID, không dùng display name. Nếu bridge không xác minh được role, bot từ chối an toàn và không rò tên. Module không tự kick, public shame, mass private message hoặc tự mention campaign.
 
@@ -273,6 +278,8 @@ Member Intelligence lưu và trả một đoạn trích ngắn của tin nhắn 
 nội dung đó thật sự có trong `ZaloGroupMessages`. Danh sách toàn nhóm và nội
 dung của người khác vẫn đi qua kiểm tra quyền operator/admin/trưởng/phó nhóm;
 thành viên thường chỉ được xem nội dung của chính mình.
+
+`SearchMemberConversationEvidence` là ngoại lệ có chủ đích cho phần nội dung hội thoại đã phát trong chính group: mọi thành viên trong group được phép tra cứu evidence của thành viên khác. Kết quả chỉ dùng nội dung bot đã lưu cho đúng UID/group, tối đa một số evidence tốt nhất, kèm thời gian; reply/quote được lấy từ `ZaloMessageRelations` nếu có. API key, token và password vẫn bị che trước khi gửi candidate cho AI và trước khi hiển thị.
 
 Đoạn trích là dữ liệu backend, không do AI tạo hoặc sửa. API key, token và mật
 khẩu theo các mẫu phổ biến được che trước khi hiển thị. Tin cũ chỉ được import

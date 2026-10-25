@@ -85,6 +85,23 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
             Clean(providerOutboundMessageId, 160),
             cancellationToken);
 
+    public Task<ZaloMessageGraphRelation?> RememberHistoricalQuoteAsync(
+        string zaloConnectionId,
+        string groupId,
+        BridgeHistoricalMessage message,
+        CancellationToken cancellationToken = default)
+    {
+        if (message.Quote is null) return Task.FromResult<ZaloMessageGraphRelation?>(null);
+        var fromMessageId = Clean(message.MessageId, 160);
+        if (fromMessageId.Length == 0) return Task.FromResult<ZaloMessageGraphRelation?>(null);
+        return RememberHistoricalQuoteCoreAsync(
+            Clean(zaloConnectionId, 100),
+            Clean(groupId, 100),
+            fromMessageId,
+            message.Quote,
+            cancellationToken);
+    }
+
     public async Task<ZaloMessageGraphRelation?> LoadRelationAsync(
         string zaloConnectionId,
         string groupId,
@@ -108,6 +125,43 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         Add(command, "@fromMessageId", Clean(fromMessageId, 160));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken) ? Read(reader) : null;
+    }
+
+    public async Task<IReadOnlyDictionary<string, ZaloMessageGraphRelation>> LoadReplyRelationsForSenderAsync(
+        string zaloConnectionId,
+        string groupId,
+        string senderId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        var connection = db.Database.GetDbConnection();
+        await OpenIfNeededAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT r."Id", r."ZaloConnectionId", r."GroupId", r."FromMessageId", r."ToMessageId",
+                   r."RelationType", r."QuotedSenderId", r."QuotedSenderName", r."QuotedContentSnapshot",
+                   r."ProviderOutboundMessageId", r."CreatedAt"
+            FROM "ZaloMessageRelations" r
+            INNER JOIN "ZaloGroupMessages" m
+              ON m."ZaloConnectionId" = r."ZaloConnectionId"
+             AND m."GroupId" = r."GroupId"
+             AND m."MessageId" = r."FromMessageId"
+            WHERE r."ZaloConnectionId" = @connectionId
+              AND r."GroupId" = @groupId
+              AND r."RelationType" = 'ReplyTo'
+              AND m."SenderId" = @senderId;
+            """;
+        Add(command, "@connectionId", Clean(zaloConnectionId, 100));
+        Add(command, "@groupId", Clean(groupId, 100));
+        Add(command, "@senderId", Clean(senderId, 100));
+        var result = new Dictionary<string, ZaloMessageGraphRelation>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var relation = Read(reader);
+            result[relation.FromMessageId] = relation;
+        }
+        return result;
     }
 
     public async Task<bool> ReconcileQuotedLegacyBotMessageAsync(
@@ -166,6 +220,27 @@ public sealed class ZaloMessageGraphStore(VolleyDraftDbContext db)
         selected.LastObservedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    private async Task<ZaloMessageGraphRelation?> RememberHistoricalQuoteCoreAsync(
+        string zaloConnectionId,
+        string groupId,
+        string fromMessageId,
+        BridgeMessageQuote quote,
+        CancellationToken cancellationToken)
+    {
+        if (zaloConnectionId.Length == 0 || groupId.Length == 0) return null;
+        return await UpsertAsync(
+            zaloConnectionId,
+            groupId,
+            fromMessageId,
+            CleanOptional(quote.MessageId, 160),
+            "ReplyTo",
+            CleanOptional(quote.SenderId, 100),
+            CleanOptional(quote.SenderName, 160),
+            CleanOptional(quote.Content, 4000),
+            null,
+            cancellationToken);
     }
 
     private async Task<ZaloMessageGraphRelation> UpsertAsync(

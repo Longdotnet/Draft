@@ -68,6 +68,7 @@ public enum ZaloBotIntent
     GetActivitySyncStatus,
     ListRecentlyJoinedMembers,
     GetMemberJoinDate,
+    SearchMemberConversationEvidence,
     GeneralChat
 }
 
@@ -489,6 +490,8 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.ActionHistory, .98, q, false, null, "action_history_phrase");
         if (Regex.IsMatch(q, @"(?:^|\s)(?:undo|hoan tac|khoi phuc)(?:\s|$)", RegexOptions.CultureInvariant))
             return new(ZaloBotIntent.UndoAction, .99, q, false, null, "undo_action_phrase");
+        if (ZaloConversationEvidenceIntentPolicy.LooksLikeQuestion(q))
+            return new(ZaloBotIntent.SearchMemberConversationEvidence, .995, q, false, null, "member_conversation_evidence");
         if (TryParseReminderCommand(value, out var reminderCommand))
         {
             var intent = reminderCommand.Kind switch

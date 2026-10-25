@@ -1207,6 +1207,17 @@ public sealed class ZaloActivityBackfillCoordinator(
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        var graph = new ZaloMessageGraphStore(db);
+        foreach (var source in history.Messages.Where(message =>
+                     message.Quote is not null &&
+                     !string.IsNullOrWhiteSpace(message.MessageId)))
+        {
+            await graph.RememberHistoricalQuoteAsync(
+                job.ZaloConnectionId,
+                job.GroupId,
+                source,
+                cancellationToken);
+        }
         job.MessageCursor = JsonSerializer.Serialize(new
         {
             history.LastActionId,

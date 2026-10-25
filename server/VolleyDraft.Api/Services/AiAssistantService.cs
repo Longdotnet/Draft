@@ -6,7 +6,7 @@ using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
-public sealed class AiAssistantService(
+public sealed partial class AiAssistantService(
     HttpClient httpClient,
     IConfiguration configuration,
     ILogger<AiAssistantService> logger,
@@ -26,7 +26,8 @@ public sealed class AiAssistantService(
         ZaloBotIntent.ListMostInactiveMembers,
         ZaloBotIntent.ListAtRiskMembers,
         ZaloBotIntent.SyncMemberActivity,
-        ZaloBotIntent.GetActivitySyncStatus
+        ZaloBotIntent.GetActivitySyncStatus,
+        ZaloBotIntent.SearchMemberConversationEvidence
     ];
     private readonly IZaloAiGateway aiGateway = ZaloAiGatewayFactory.Create(httpClient, configuration, logger);
 
@@ -129,7 +130,7 @@ public sealed class AiAssistantService(
             GetMemberLastActivity, GetMemberLastVote, GetMemberLastMessage,
             AnalyzeMemberVoteActivity, AnalyzeMemberMessageActivity, AnalyzeGroupEngagement,
             ListMostInactiveMembers, ListAtRiskMembers, SyncMemberActivity,
-            GetActivitySyncStatus, Unknown.
+            GetActivitySyncStatus, SearchMemberConversationEvidence, Unknown.
 
             timeRange.kind chỉ được là: PreviousDays, PreviousCalendarMonths, ThisWeek,
             ThisMonth, ThisYear, SinceMonth, ExplicitRange, Recent.
@@ -137,6 +138,7 @@ public sealed class AiAssistantService(
             - "90 ngày" là PreviousDays amount=90.
             - ngày cụ thể dùng yyyy-MM-dd và chỉ lấy ngày thật sự có trong câu hỏi.
             - memberReference giữ nguyên tên/cách gọi trong câu hỏi; "tui/mình/em/tôi" giữ nguyên.
+            - SearchMemberConversationEvidence khi người dùng muốn kiểm tra một thành viên trước đó có từng nói/nhắc một nội dung nào trong lịch sử chat hay không, hoặc muốn tìm lại câu nói/tin nhắn làm bằng chứng.
             - limit từ 1 đến 30. Không có thì null.
             - Không sinh SQL, method, entity hay lệnh thực thi.
             """;
@@ -910,38 +912,6 @@ public sealed record ZaloIntentClassifierContext(
     ZaloAiSender Sender,
     IReadOnlyList<ZaloAiMessage> RecentMessages,
     IReadOnlyList<ZaloAiSessionReference> AvailableSessions,
-    DateTimeOffset CurrentVietnamTime);
-
-public enum ZaloActivityTimeRangeKind
-{
-    PreviousDays,
-    PreviousCalendarMonths,
-    ThisWeek,
-    ThisMonth,
-    ThisYear,
-    SinceMonth,
-    ExplicitRange,
-    Recent
-}
-
-public sealed record ZaloActivityTimeRangeExtraction(
-    ZaloActivityTimeRangeKind Kind,
-    int? Amount,
-    DateOnly? StartDate,
-    DateOnly? EndDate);
-
-public sealed record ZaloMemberActivityClassification(
-    ZaloBotIntent Intent,
-    double Confidence,
-    string? MemberReference,
-    ZaloActivityTimeRangeExtraction? TimeRange,
-    int? Limit,
-    bool NeedsClarification);
-
-public sealed record ZaloMemberActivityClassifierContext(
-    string Question,
-    string SenderZaloUserId,
-    string SenderName,
     DateTimeOffset CurrentVietnamTime);
 
 public sealed record ZaloAiRewriteContext(
