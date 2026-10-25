@@ -154,6 +154,100 @@ public sealed class ZaloAiProviderPoolTests
         Assert.Equal(new[] { "key-a", "key-b" }, auth);
     }
 
+    [Fact]
+    public async Task StructuredWorkload_SendsJsonObjectFormat_AndDisablesXingReasoning()
+    {
+        JsonElement? captured = null;
+        var handler = new StubHandler(async request =>
+        {
+            var body = await request.Content!.ReadAsStringAsync();
+            using var json = JsonDocument.Parse(body);
+            captured = json.RootElement.Clone();
+            return JsonResponse(HttpStatusCode.OK, "{\"ok\":true}");
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:Providers:0:Provider"] = "xing",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "xingchen-agi/xing4.0-29b-a4b:free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.StructuredExtraction,
+            [new ZaloAiChatMessage("user", "extract json")]));
+
+        Assert.True(result.Success);
+        Assert.True(captured.HasValue);
+        Assert.Equal("json_object", captured.Value.GetProperty("response_format").GetProperty("type").GetString());
+        Assert.False(captured.Value.GetProperty("reasoning").GetProperty("enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task InvalidResponse_DoesNotHammerSameModelAcrossDifferentKeys()
+    {
+        var calls = 0;
+        var handler = new StubHandler(request =>
+        {
+            calls += 1;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { choices = new[] { new { message = new { content = "" } } } }),
+                    Encoding.UTF8,
+                    "application/json")
+            });
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "xingchen-agi/xing4.0-29b-a4b:free",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "xingchen-agi/xing4.0-29b-a4b:free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.StructuredExtraction,
+            [new ZaloAiChatMessage("user", "extract")])) ;
+
+        Assert.False(result.Success);
+        Assert.Equal(ZaloAiFailureKind.InvalidResponse, result.FailureKind);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task CompletionParser_AcceptsArrayTextContent()
+    {
+        var handler = new StubHandler(request => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"choices\":[{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"intent\\\":\\\"GeneralChat\\\"}\"}]}}]}",
+                Encoding.UTF8,
+                "application/json")
+        }));
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:ApiKey"] = "key-a",
+            ["Ai:Model"] = "liquid/lfm-2.5-2.6b:free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.IntentClassification,
+            [new ZaloAiChatMessage("user", "classify")])) ;
+
+        Assert.True(result.Success);
+        Assert.Equal("{\"intent\":\"GeneralChat\"}", result.Content);
+    }
+
     private static OpenAiCompatibleZaloAiGateway CreateGateway(
         HttpMessageHandler handler,
         IConfiguration configuration) =>

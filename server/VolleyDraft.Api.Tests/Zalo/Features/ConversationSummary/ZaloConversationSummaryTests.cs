@@ -273,6 +273,51 @@ public sealed class ZaloConversationSummaryTests
         Assert.DoesNotContain("tui không liên quan", answer.Text);
     }
 
+    [Fact]
+    public async Task Grounded_fallback_summarizes_111_messages_into_topics_with_real_evidence()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.Parse("2026-10-26T01:10:00+07:00");
+        var sequence = 0;
+        AddCluster(27, DateTimeOffset.Parse("2026-10-25T08:00:00+07:00"), i =>
+            i % 3 == 0 ? "team đi giải mình chốt ai tập bài vậy?" : $"bàn team đi giải lượt {i}");
+        AddCluster(28, DateTimeOffset.Parse("2026-10-25T12:00:00+07:00"), i =>
+            i % 4 == 0 ? "vote sân tuần sau mấy giờ đánh?" : $"bàn lịch sân và slot lượt {i}");
+        AddCluster(28, DateTimeOffset.Parse("2026-10-25T17:00:00+07:00"), i =>
+            i % 5 == 0 ? "@All bạn mới cần hỗ trợ thì @bot help nha" : $"hướng dẫn bot help lượt {i}");
+        AddCluster(28, DateTimeOffset.Parse("2026-10-25T22:00:00+07:00"), i =>
+            i % 4 == 0 ? "mình set thêm vị trí chuyền hai được ko?" : $"cập nhật vị trí và trình độ lượt {i}");
+        await fixture.Db.SaveChangesAsync();
+
+        var answer = await fixture.Bot.TryHandleConversationSummaryAsync(
+            "connection-a", "group-1", Incoming("q-fallback-111", "sender", "tóm tắt hôm qua có gì", now),
+            "tóm tắt hôm qua có gì", false, CancellationToken.None);
+
+        Assert.NotNull(answer);
+        Assert.Equal(ZaloBotIntent.SummarizeConversation, answer.Intent);
+        Assert.Contains("111 tin nhắn", answer.Text);
+        Assert.Contains("Team / giải đấu", answer.Text);
+        Assert.Contains("Lịch chơi / sân / slot", answer.Text);
+        Assert.Contains("Sử dụng bot / hỗ trợ thành viên", answer.Text);
+        Assert.Contains("Vị trí / trình độ thành viên", answer.Text);
+        Assert.Contains("↳", answer.Text);
+        Assert.Contains("team đi giải", answer.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("chỉ giữ phần dữ liệu gốc gần nhất", answer.Text);
+
+        void AddCluster(int count, DateTimeOffset start, Func<int, string> content)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                fixture.AddMessage(
+                    $"fallback-{++sequence}",
+                    $"u{(i % 6) + 1}",
+                    $"Member {(i % 6) + 1}",
+                    content(i),
+                    start.AddMinutes(i));
+            }
+        }
+    }
+
     private static ZaloGroupMember Member(string userId, string displayName, DateTimeOffset now) => new()
     {
         ZaloConnectionId = "connection-a",

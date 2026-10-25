@@ -16,7 +16,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private readonly ILogger<OpenAiCompatibleZaloAiGateway> _logger;
     private readonly IReadOnlyList<ZaloAiProviderProfile> _providers;
     private readonly int _retryCount;
-    private readonly TimeSpan _timeout;
+    private readonly TimeSpan _defaultTimeout;
+    private readonly IReadOnlyDictionary<ZaloAiWorkload, TimeSpan> _workloadTimeouts;
 
     public OpenAiCompatibleZaloAiGateway(
         HttpClient httpClient,
@@ -27,7 +28,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         _logger = logger;
         _providers = LoadProfiles(configuration);
         _retryCount = Math.Clamp(configuration.GetValue("Ai:RetryCount", 0), 0, 2);
-        _timeout = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:TimeoutSeconds", 6), 3, 60));
+        _defaultTimeout = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:TimeoutSeconds", 6), 3, 60));
+        _workloadTimeouts = LoadWorkloadTimeouts(configuration, _defaultTimeout);
     }
 
     public bool IsConfigured => _providers.Count > 0;
@@ -66,7 +68,11 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             if (!ShouldFallback(result.FailureKind) || providerIndex == _providers.Count - 1)
                 return result;
 
-            var next = _providers[providerIndex + 1];
+            var nextProviderIndex = FindNextProviderIndex(providerIndex, request, result.FailureKind);
+            if (nextProviderIndex < 0)
+                return result;
+
+            var next = _providers[nextProviderIndex];
             _logger.LogWarning(
                 "Zalo AI workload {Workload} failing over from {Provider}/{Model} to {NextProvider}/{NextModel} after {FailureKind}",
                 request.Workload,
@@ -75,6 +81,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 next.Name,
                 next.ResolveModel(request),
                 result.FailureKind);
+            providerIndex = nextProviderIndex - 1;
         }
 
         return lastResult ?? ZaloAiCompletionResult.NotConfigured(request.Workload);
@@ -102,23 +109,29 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             }
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_timeout);
+            timeoutCts.CancelAfter(ResolveTimeout(request.Workload));
 
             try
             {
+                var payload = new Dictionary<string, object?>
+                {
+                    ["model"] = model,
+                    ["temperature"] = request.Temperature,
+                    ["max_tokens"] = request.MaxTokens,
+                    ["messages"] = request.Messages.Select(item => new
+                    {
+                        role = item.Role,
+                        content = item.Content
+                    }).ToArray()
+                };
+                if (RequiresJsonObject(request.Workload))
+                    payload["response_format"] = new { type = "json_object" };
+                if (ShouldDisableReasoning(model, request.Workload))
+                    payload["reasoning"] = new { enabled = false };
+
                 using var message = new HttpRequestMessage(HttpMethod.Post, profile.Endpoint)
                 {
-                    Content = JsonContent.Create(new
-                    {
-                        model,
-                        temperature = request.Temperature,
-                        max_tokens = request.MaxTokens,
-                        messages = request.Messages.Select(item => new
-                        {
-                            role = item.Role,
-                            content = item.Content
-                        })
-                    })
+                    Content = JsonContent.Create(payload)
                 };
                 message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", profile.ApiKey);
 
@@ -341,6 +354,64 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         return $"{profile.Endpoint}\u001f{profile.ApiKey}\u001f{profile.DefaultModel}\u001f{workloadModels}";
     }
 
+    private static IReadOnlyDictionary<ZaloAiWorkload, TimeSpan> LoadWorkloadTimeouts(
+        IConfiguration configuration,
+        TimeSpan defaultTimeout)
+    {
+        var defaults = new Dictionary<ZaloAiWorkload, int>
+        {
+            [ZaloAiWorkload.IntentClassification] = 8,
+            [ZaloAiWorkload.StructuredExtraction] = 20,
+            [ZaloAiWorkload.DomainNarration] = 15
+        };
+        return Enum.GetValues<ZaloAiWorkload>().ToDictionary(
+            workload => workload,
+            workload =>
+            {
+                var fallbackSeconds = defaults.TryGetValue(workload, out var configuredDefault)
+                    ? configuredDefault
+                    : (int)Math.Ceiling(defaultTimeout.TotalSeconds);
+                var seconds = configuration.GetValue<int?>($"Ai:TimeoutSecondsByWorkload:{workload}") ?? fallbackSeconds;
+                return TimeSpan.FromSeconds(Math.Clamp(seconds, 3, 60));
+            });
+    }
+
+    private TimeSpan ResolveTimeout(ZaloAiWorkload workload) =>
+        _workloadTimeouts.TryGetValue(workload, out var timeout) ? timeout : _defaultTimeout;
+
+    private int FindNextProviderIndex(
+        int currentIndex,
+        ZaloAiCompletionRequest request,
+        ZaloAiFailureKind failureKind)
+    {
+        var current = _providers[currentIndex];
+        var currentModel = current.ResolveModel(request);
+        for (var index = currentIndex + 1; index < _providers.Count; index++)
+        {
+            var candidate = _providers[index];
+            if (ShouldSkipEquivalentModelFailure(failureKind) &&
+                candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
+                candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
+                continue;
+            return index;
+        }
+        return -1;
+    }
+
+    private static bool ShouldSkipEquivalentModelFailure(ZaloAiFailureKind failureKind) => failureKind is
+        ZaloAiFailureKind.Timeout or
+        ZaloAiFailureKind.InvalidResponse or
+        ZaloAiFailureKind.ModelOrEndpointUnavailable;
+
+    private static bool RequiresJsonObject(ZaloAiWorkload workload) => workload is
+        ZaloAiWorkload.IntentClassification or
+        ZaloAiWorkload.StructuredExtraction or
+        ZaloAiWorkload.DomainNarration;
+
+    private static bool ShouldDisableReasoning(string model, ZaloAiWorkload workload) =>
+        model.Contains("xing4.0", StringComparison.OrdinalIgnoreCase) &&
+        workload is ZaloAiWorkload.StructuredExtraction or ZaloAiWorkload.DomainNarration;
+
     private static bool ShouldFallback(ZaloAiFailureKind kind) => kind is
         ZaloAiFailureKind.AuthenticationFailed or
         ZaloAiFailureKind.QuotaExceeded or
@@ -375,13 +446,42 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
             if (first.TryGetProperty("message", out var message) &&
                 message.TryGetProperty("content", out var content))
-                return (content.GetString(), finishReason);
+                return (ReadTextContent(content), finishReason);
+
+            if (first.TryGetProperty("text", out var textNode))
+                return (ReadTextContent(textNode), finishReason);
         }
 
         if (root.TryGetProperty("output_text", out var outputText))
             return (outputText.GetString(), null);
 
         return (null, null);
+    }
+
+    private static string? ReadTextContent(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString();
+        if (content.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var parts = new List<string>();
+        foreach (var item in content.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+            {
+                var value = item.GetString();
+                if (!string.IsNullOrWhiteSpace(value)) parts.Add(value);
+                continue;
+            }
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            if (item.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+            {
+                var value = text.GetString();
+                if (!string.IsNullOrWhiteSpace(value)) parts.Add(value);
+            }
+        }
+        return parts.Count == 0 ? null : string.Join("", parts);
     }
 
     private static ZaloAiCompletionResult Failure(
