@@ -95,6 +95,13 @@ public sealed partial class ZaloOverbookService
         // FactPilot.Enabled=true. Explicit mentions/replies continue through V1.
         if (!incoming.MentionedBot)
         {
+            if (await TryHandleDirectedAudienceContinuationAsync(
+                    connection.Id,
+                    groupId,
+                    incoming,
+                    cancellationToken))
+                return true;
+
             await TryObserveAmbientShadowAsync(connection.Id, groupId, incoming, cancellationToken);
             return false;
         }

@@ -12,7 +12,8 @@ public sealed record ZaloMemberBotAnswer(
     string Text,
     ZaloBotIntent Intent,
     bool AiCalled = false,
-    IReadOnlyList<string>? ProtectedTerms = null);
+    IReadOnlyList<string>? ProtectedTerms = null,
+    ZaloAudienceReferenceDraft? ReferencedAudience = null);
 
 public sealed partial class ZaloMemberIntelligenceBotService(
     VolleyDraftDbContext db,
@@ -753,7 +754,14 @@ public sealed partial class ZaloMemberIntelligenceBotService(
             text,
             ZaloBotIntent.ListRecentlyJoinedMembers,
             aiCalled,
-            items.Select(item => item.DisplayName).ToList());
+            items.Select(item => item.DisplayName).ToList(),
+            new ZaloAudienceReferenceDraft(
+                "recent-members",
+                $"thành viên đã vào nhóm trong {days} ngày gần đây",
+                items.Select(item => new ZaloAudienceReferenceTarget(
+                        item.ZaloUserId,
+                        item.DisplayName))
+                    .ToArray()));
     }
 
     private async Task<ZaloMemberBotAnswer> ExecuteJoinDateAsync(

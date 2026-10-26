@@ -179,6 +179,41 @@ public sealed class ZaloTeamLineupFormatterTests
         Assert.Equal("@Thanh Tuyền", result.Text.Substring(mention.Pos, mention.Len));
         Assert.Contains("Bạn của Nick", result.Text);
         Assert.DoesNotContain("@Bạn của Nick", result.Text);
+        Assert.NotNull(result.ReferencedAudience);
+        Assert.Equal(2, result.ReferencedAudience!.Targets.Count);
+        Assert.Equal("zalo-tuyen", result.ReferencedAudience.Targets[0].ZaloUserId);
+        Assert.Null(result.ReferencedAudience.Targets[1].ZaloUserId);
+        Assert.All(result.ReferencedAudience.Targets, target => Assert.Equal("Team A", target.SegmentLabel));
+    }
+
+    [Fact]
+    public void Normal_lineup_can_publish_grounded_audience_without_tagging_people_yet()
+    {
+        var teams = new[]
+        {
+            new TeamPreviewResponse(
+                "team-a",
+                "Team A",
+                "Thanh Tuyền",
+                [Slot("slot-1", "Thanh Tuyền")])
+        };
+        var players = new Dictionary<string, IReadOnlyList<ZaloTeamMentionPlayer>>
+        {
+            ["slot-1"] = [new("Thanh Tuyền", "zalo-tuyen")]
+        };
+
+        var result = ZaloTeamLineupFormatter.Format(
+            "Thứ 4 15/7",
+            teams,
+            players,
+            mentionPlayers: false);
+
+        Assert.Empty(result.Mentions);
+        Assert.Contains("Thanh Tuyền", result.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Thanh Tuyền", result.Text, StringComparison.Ordinal);
+        var target = Assert.Single(result.ReferencedAudience!.Targets);
+        Assert.Equal("zalo-tuyen", target.ZaloUserId);
+        Assert.Equal("Team A", target.SegmentLabel);
     }
 
     private static TeamSlotPreviewResponse Slot(string id, string name) =>

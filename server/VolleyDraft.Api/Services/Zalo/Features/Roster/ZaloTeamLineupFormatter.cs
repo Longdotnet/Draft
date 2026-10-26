@@ -8,7 +8,8 @@ public sealed record ZaloTeamMentionPlayer(string DisplayName, string? ZaloUserI
 
 public sealed record ZaloTeamLineupMessage(
     string Text,
-    IReadOnlyList<BridgeOutgoingMention> Mentions);
+    IReadOnlyList<BridgeOutgoingMention> Mentions,
+    ZaloAudienceReferenceDraft? ReferencedAudience = null);
 
 public static class ZaloTeamLineupFormatter
 {
@@ -25,7 +26,8 @@ public static class ZaloTeamLineupFormatter
         string sessionName,
         IReadOnlyList<TeamPreviewResponse> teams,
         IReadOnlyDictionary<string, IReadOnlyList<ZaloTeamMentionPlayer>>? playersBySlot = null,
-        ZaloDraftReadinessSnapshot? readiness = null)
+        ZaloDraftReadinessSnapshot? readiness = null,
+        bool mentionPlayers = true)
     {
         // A draft-state projection can contain captain/partial assignments while a draft
         // is still in progress. Never turn those rows into a user-visible "team result".
@@ -36,13 +38,21 @@ public static class ZaloTeamLineupFormatter
         {
             return new ZaloTeamLineupMessage(
                 ZaloTeamResultRecoveryPolicy.BuildNoResultMessage(sessionName, readiness),
-                []);
+                [],
+                new ZaloAudienceReferenceDraft(
+                    "team-lineup",
+                    $"đội hình {sessionName}",
+                    []));
         }
 
         var builder = new StringBuilder($"Đội hình {sessionName}:");
         var mentions = new List<BridgeOutgoingMention>();
-        foreach (var team in teams.Take(3))
+        var references = new List<ZaloAudienceReferenceTarget>();
+        var visibleTeams = teams.Take(3).ToList();
+        for (var teamIndex = 0; teamIndex < visibleTeams.Count; teamIndex += 1)
         {
+            var team = visibleTeams[teamIndex];
+            var segmentKey = $"team:{teamIndex + 1}";
             builder.Append('\n').Append(team.TeamName).Append(" (");
             builder.Append(string.IsNullOrWhiteSpace(team.CaptainName)
                 ? "chưa chọn đội trưởng"
@@ -71,20 +81,38 @@ public static class ZaloTeamLineupFormatter
                     if (playerIndex > 0) builder.Append(" / ");
                     var player = slotPlayers[playerIndex];
                     var displayName = player.DisplayName.Trim().TrimStart('@');
+                    references.Add(new ZaloAudienceReferenceTarget(
+                        string.IsNullOrWhiteSpace(player.ZaloUserId) ? null : player.ZaloUserId.Trim(),
+                        displayName,
+                        segmentKey,
+                        team.TeamName));
                     if (string.IsNullOrWhiteSpace(player.ZaloUserId))
                     {
                         builder.Append(displayName);
                         continue;
                     }
 
-                    var label = $"@{displayName}";
-                    var position = builder.Length;
-                    builder.Append(label);
-                    mentions.Add(new BridgeOutgoingMention(player.ZaloUserId.Trim(), position, label.Length));
+                    if (mentionPlayers)
+                    {
+                        var label = $"@{displayName}";
+                        var position = builder.Length;
+                        builder.Append(label);
+                        mentions.Add(new BridgeOutgoingMention(player.ZaloUserId.Trim(), position, label.Length));
+                    }
+                    else
+                    {
+                        builder.Append(displayName);
+                    }
                 }
             }
         }
 
-        return new ZaloTeamLineupMessage(builder.ToString(), mentions);
+        return new ZaloTeamLineupMessage(
+            builder.ToString(),
+            mentions,
+            new ZaloAudienceReferenceDraft(
+                "team-lineup",
+                $"đội hình {sessionName}",
+                references));
     }
 }

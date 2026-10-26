@@ -381,6 +381,10 @@ public sealed partial class ZaloBotService(
 
         await FinishMessageAsync(storedMessage.Id, processingToken, response.Intent, response.AiCalled, "sent", cancellationToken);
 
+        await ZaloDirectedAudienceBotIntegration.RememberAsync(
+            db, logger, connection.Id, groupId, NormalizeId(incoming.SenderId), messageId,
+            response.ReferencedAudience, cancellationToken);
+
         db.ZaloGroupMessages.Add(new ZaloGroupMessage
         {
             ZaloConnectionId = connection.Id,
@@ -442,6 +446,20 @@ public sealed partial class ZaloBotService(
             return new BotAnswer(ZaloCommonReplyText.NoActiveSessions(replyLanguage), null);
         }
 
+        var directedAudienceReply = await ZaloDirectedAudienceBotIntegration.TryHandleAsync(
+            db, zaloIntegration, configuration, logger,
+            activeConnectionId, groupId, incoming, question, cancellationToken);
+        if (directedAudienceReply is not null)
+        {
+            return new BotAnswer(
+                directedAudienceReply.Text,
+                null,
+                ZaloBotIntent.GeneralChat,
+                directedAudienceReply.AiCalled,
+                TextGeneratedByAi: true,
+                Mentions: directedAudienceReply.Mentions);
+        }
+
         var memberActivityAnswer = await memberIntelligence.TryHandleAsync(
             activeConnectionId,
             groupId,
@@ -455,7 +473,8 @@ public sealed partial class ZaloBotService(
                 null,
                 memberActivityAnswer.Intent,
                 memberActivityAnswer.AiCalled,
-                ProtectedTerms: memberActivityAnswer.ProtectedTerms);
+                ProtectedTerms: memberActivityAnswer.ProtectedTerms,
+                ReferencedAudience: memberActivityAnswer.ReferencedAudience);
         }
 
         var pending = await ResolvePendingConversationAsync(activeConnectionId, groupId, incoming.SenderId, normalizedQuestion, sessions, cancellationToken);
@@ -843,7 +862,8 @@ public sealed partial class ZaloBotService(
                 return new BotAnswer(state.Error ?? "Mình chưa đọc được đội hình của buổi này.", null, decision.Intent);
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(session.Id, cancellationToken: cancellationToken);
-            var lineup = await BuildTeamLineupMessageAsync(
+            var lineup = await ZaloTeamLineupAudienceBuilder.BuildAsync(
+                db,
                 session.Name,
                 state.Value.TeamPreview,
                 ZaloTeamLineupFormatter.WantsPlayerMentions(question),
@@ -860,6 +880,7 @@ public sealed partial class ZaloBotService(
                 null,
                 decision.Intent,
                 Mentions: lineup.Mentions,
+                ReferencedAudience: lineup.ReferencedAudience,
                 ImageBase64: image?.Base64,
                 ImageContentType: image?.ContentType,
                 ImageFileName: image?.FileName);
@@ -4347,51 +4368,6 @@ public sealed partial class ZaloBotService(
     private static string BuildTeamImageRecoveryText(string sessionName) =>
         $"\n\nẢnh Court Index chưa tạo được lúc này. Đội hình đã được lưu; gõ `@Npc 10 {sessionName}` để lấy lại ảnh, không cần draft lại.";
 
-    private async Task<ZaloTeamLineupMessage> BuildTeamLineupMessageAsync(
-        string sessionName,
-        IReadOnlyList<TeamPreviewResponse> teams,
-        bool mentionPlayers,
-        CancellationToken cancellationToken,
-        ZaloDraftReadinessSnapshot? readiness = null)
-    {
-        if (readiness is { HasTeams: false })
-            return ZaloTeamLineupFormatter.Format(sessionName, teams, readiness: readiness);
-        if (!mentionPlayers)
-            return ZaloTeamLineupFormatter.Format(sessionName, teams, readiness: readiness);
-
-        var slotIds = teams
-            .SelectMany(team => team.Slots)
-            .Select(slot => slot.Id)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        if (slotIds.Count == 0)
-            return ZaloTeamLineupFormatter.Format(sessionName, teams, readiness: readiness);
-
-        var links = await db.DraftSlotPlayers
-            .AsNoTracking()
-            .Where(link => slotIds.Contains(link.DraftSlotId))
-            .OrderBy(link => link.DraftSlotId)
-            .ThenBy(link => link.RotationOrder)
-            .Select(link => new
-            {
-                link.DraftSlotId,
-                link.SessionPlayer.DisplayName,
-                ZaloUserId = link.SessionPlayer.PlayerProfile == null
-                    ? null
-                    : link.SessionPlayer.PlayerProfile.ZaloUserId
-            })
-            .ToListAsync(cancellationToken);
-        var playersBySlot = links
-            .GroupBy(link => link.DraftSlotId, StringComparer.Ordinal)
-            .ToDictionary(
-                group => group.Key,
-                group => (IReadOnlyList<ZaloTeamMentionPlayer>)group
-                    .Select(link => new ZaloTeamMentionPlayer(link.DisplayName, Clean(link.ZaloUserId, 100)))
-                    .ToList(),
-                StringComparer.Ordinal);
-        return ZaloTeamLineupFormatter.Format(sessionName, teams, playersBySlot, readiness);
-    }
-
     private async Task<bool> IsAiCallAllowedAsync(string connectionId, string groupId, string senderId, CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
@@ -4877,7 +4853,8 @@ public sealed partial class ZaloBotService(
             if (!state.IsSuccess || state.Value is null) return new BotAnswer(state.Error ?? "Không đọc được đội hình.", null, decision.Intent, true);
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(teamSession.Id, cancellationToken: cancellationToken);
-            var lineup = await BuildTeamLineupMessageAsync(
+            var lineup = await ZaloTeamLineupAudienceBuilder.BuildAsync(
+                db,
                 teamSession.Name,
                 state.Value.TeamPreview,
                 ZaloTeamLineupFormatter.WantsPlayerMentions(ExtractQuestion(incoming)),
@@ -4895,6 +4872,7 @@ public sealed partial class ZaloBotService(
                 decision.Intent,
                 true,
                 Mentions: lineup.Mentions,
+                ReferencedAudience: lineup.ReferencedAudience,
                 ImageBase64: image?.Base64,
                 ImageContentType: image?.ContentType,
                 ImageFileName: image?.FileName);
@@ -5675,6 +5653,7 @@ public sealed partial class ZaloBotService(
         bool TextGeneratedByAi = false,
         IReadOnlyList<BridgeOutgoingMention>? Mentions = null,
         IReadOnlyList<string>? ProtectedTerms = null,
+        ZaloAudienceReferenceDraft? ReferencedAudience = null,
         string? ImageBase64 = null,
         string? ImageContentType = null,
         string? ImageFileName = null);
