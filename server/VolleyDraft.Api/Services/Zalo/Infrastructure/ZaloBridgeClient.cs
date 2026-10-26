@@ -9,6 +9,7 @@ namespace VolleyDraft.Api.Services;
 
 public sealed class ZaloBridgeClient
 {
+    private const int MaxOutboundTextLength = 1800;
     private readonly HttpClient httpClient;
     private readonly IServiceScopeFactory? scopeFactory;
     private readonly ILogger<ZaloBridgeClient> logger;
@@ -149,6 +150,58 @@ public sealed class ZaloBridgeClient
         string? imageContentType = null,
         string? imageFileName = null)
     {
+        var parentMessageId = ParseParentMessageId(accountId, idempotencyKey);
+        var chunks = SplitOutboundText(message, mentions);
+        BridgeSendMessageResponse? result = null;
+        for (var index = 0; index < chunks.Count; index++)
+        {
+            var chunk = chunks[index];
+            var chunkIdempotencyKey = chunks.Count == 1 || string.IsNullOrWhiteSpace(idempotencyKey)
+                ? idempotencyKey
+                : $"{idempotencyKey}:part:{index + 1}-of-{chunks.Count}";
+            var includeMedia = index == 0;
+            result = await SendGroupMessagePartAsync(
+                accountId,
+                groupId,
+                chunk.Text,
+                chunk.Mentions,
+                includeMedia ? imageUrl : null,
+                chunkIdempotencyKey,
+                includeMedia ? imageBase64 : null,
+                includeMedia ? imageContentType : null,
+                includeMedia ? imageFileName : null,
+                parentMessageId);
+        }
+
+        result ??= new BridgeSendMessageResponse(false, false);
+
+        // Expressive stickers are intentionally best-effort and happen only after the
+        // text send has succeeded. A sticker lookup/provider failure must never turn a
+        // successful conversational reply into a retryable send failure.
+        if (result.Sent && !result.Mock)
+        {
+            await TrySendExpressiveStickerAsync(
+                accountId,
+                groupId,
+                message,
+                imageUrl ?? (string.IsNullOrWhiteSpace(imageBase64) ? null : "inline:image"),
+                idempotencyKey);
+        }
+        return result;
+    }
+
+    private async Task<BridgeSendMessageResponse> SendGroupMessagePartAsync(
+        string accountId,
+        string groupId,
+        string message,
+        IReadOnlyList<BridgeOutgoingMention> mentions,
+        string? imageUrl,
+        string? idempotencyKey,
+        string? imageBase64,
+        string? imageContentType,
+        string? imageFileName,
+        string? parentMessageId)
+    {
         using var response = await httpClient.PostAsJsonAsync(
             "v1/group-messages",
             new
@@ -175,23 +228,62 @@ public sealed class ZaloBridgeClient
                 groupId,
                 result.MessageId!,
                 message,
-                ParseParentMessageId(accountId, idempotencyKey));
-        }
-
-        // Expressive stickers are intentionally best-effort and happen only after the
-        // text send has succeeded. A sticker lookup/provider failure must never turn a
-        // successful conversational reply into a retryable send failure.
-        if (result.Sent && !result.Mock)
-        {
-            await TrySendExpressiveStickerAsync(
-                accountId,
-                groupId,
-                message,
-                imageUrl ?? (string.IsNullOrWhiteSpace(imageBase64) ? null : "inline:image"),
-                idempotencyKey);
+                parentMessageId);
         }
         return result;
     }
+
+    private static IReadOnlyList<OutboundTextChunk> SplitOutboundText(
+        string message,
+        IReadOnlyList<BridgeOutgoingMention> mentions)
+    {
+        if (message.Length <= MaxOutboundTextLength)
+            return [new OutboundTextChunk(message, mentions)];
+
+        var chunks = new List<OutboundTextChunk>();
+        var start = 0;
+        while (start < message.Length)
+        {
+            var maxEnd = Math.Min(message.Length, start + MaxOutboundTextLength);
+            var end = maxEnd;
+            if (maxEnd < message.Length)
+            {
+                end = FindPreferredSplit(message, start, maxEnd);
+                if (end <= start) end = maxEnd;
+
+                var crossingMention = mentions.FirstOrDefault(mention =>
+                    mention.Pos < end && mention.Pos + mention.Len > end);
+                if (crossingMention is not null)
+                {
+                    end = crossingMention.Pos > start
+                        ? crossingMention.Pos
+                        : Math.Min(message.Length, crossingMention.Pos + crossingMention.Len);
+                }
+            }
+
+            if (end <= start) end = Math.Min(message.Length, start + MaxOutboundTextLength);
+            var chunkMentions = mentions
+                .Where(mention => mention.Pos >= start && mention.Pos + mention.Len <= end)
+                .Select(mention => mention with { Pos = mention.Pos - start })
+                .ToList();
+            chunks.Add(new OutboundTextChunk(message[start..end], chunkMentions));
+            start = end;
+        }
+        return chunks;
+    }
+
+    private static int FindPreferredSplit(string message, int start, int maxEnd)
+    {
+        var minUsefulEnd = start + Math.Max(1, MaxOutboundTextLength / 2);
+        var newline = message.LastIndexOf('\n', maxEnd - 1, maxEnd - start);
+        if (newline >= minUsefulEnd) return newline + 1;
+        var space = message.LastIndexOf(' ', maxEnd - 1, maxEnd - start);
+        return space >= minUsefulEnd ? space + 1 : maxEnd;
+    }
+
+    private sealed record OutboundTextChunk(
+        string Text,
+        IReadOnlyList<BridgeOutgoingMention> Mentions);
 
     private async Task TryRememberProviderOutboundIdAsync(
         string accountId,
