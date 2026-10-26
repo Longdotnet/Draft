@@ -180,6 +180,70 @@ public sealed class ZaloCommunityNudgeTests
     }
 
     [Fact]
+    public async Task Recent_verified_join_is_not_selected_for_reengagement()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        await fixture.SeedVoteActivityAsync(now);
+        fixture.Db.ZaloGroupMembershipPeriods.Add(new ZaloGroupMembershipPeriod
+        {
+            Id = "period-nam-recent",
+            ZaloConnectionId = "conn-1",
+            GroupId = "g1",
+            ZaloUserId = "nam-user",
+            JoinedAt = now.AddDays(-1),
+            FirstObservedAt = now.AddDays(-1),
+            LastObservedAt = now,
+            EvidenceKind = ZaloMembershipEvidenceKind.ProviderJoinEvent,
+            IsCurrentPeriod = true,
+            CreatedAt = now.AddDays(-1),
+            UpdatedAt = now
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var service = CommunityService(fixture.Db);
+        var candidates = await service.BuildVoteActivityCandidatesAsync(
+            "conn-1",
+            "g1",
+            [],
+            now);
+
+        Assert.DoesNotContain(
+            candidates,
+            item => item.Type == "member_vote_reengagement" && item.SubjectUserId == "nam-user");
+    }
+
+    [Fact]
+    public async Task Recovered_newcomer_is_not_selected_for_reengagement()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        await fixture.SeedVoteActivityAsync(now);
+        await new ZaloRecoveredNewcomerStore(fixture.Db).UpsertAsync(
+            "conn-1",
+            "g1",
+            "nam-user",
+            "Nam",
+            firstObservedAt: now.AddDays(-1),
+            confirmedBy: "test",
+            sourceNote: "recovered newcomer regression",
+            confirmedAt: now.AddDays(-1));
+        fixture.Db.ChangeTracker.Clear();
+
+        var service = CommunityService(fixture.Db);
+        var candidates = await service.BuildVoteActivityCandidatesAsync(
+            "conn-1",
+            "g1",
+            [],
+            now);
+
+        Assert.DoesNotContain(
+            candidates,
+            item => item.Type == "member_vote_reengagement" && item.SubjectUserId == "nam-user");
+    }
+
+    [Fact]
     public async Task Recent_subject_is_not_selected_for_another_personal_nudge()
     {
         await using var fixture = await Fixture.CreateAsync();

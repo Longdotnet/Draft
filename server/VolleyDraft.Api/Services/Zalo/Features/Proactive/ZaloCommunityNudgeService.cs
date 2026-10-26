@@ -407,6 +407,11 @@ public sealed class ZaloCommunityNudgeService(
                 .ToHashSet(StringComparer.Ordinal);
 
         var result = new List<ZaloCommunityNudgeCandidate>();
+        var onboardingMemberIds = await LoadOnboardingMemberIdsAsync(
+            connectionId,
+            groupId,
+            now,
+            cancellationToken);
 
         var top = stats
             .Where(item => item.VoteCount > 0)
@@ -453,6 +458,7 @@ public sealed class ZaloCommunityNudgeService(
         var reengagePool = stats
             .Where(item =>
                 item.VoteCount <= reengagementMaximum &&
+                !onboardingMemberIds.Contains(item.UserId) &&
                 !legacyRecentNames.Contains(NormalizeName(item.DisplayName)))
             .ToList();
         var reengage = SelectRotatedMember(
@@ -471,6 +477,48 @@ public sealed class ZaloCommunityNudgeService(
                 proactiveHistory,
                 groupId,
                 localDate));
+        }
+
+        return result;
+    }
+
+    private async Task<HashSet<string>> LoadOnboardingMemberIdsAsync(
+        string connectionId,
+        string groupId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var onboardingCutoff = now.AddDays(-ZaloMemberIntegrationLifecyclePolicy.PassiveMemberAfterDays);
+        var verifiedRecentJoinIds = await db.ZaloGroupMembershipPeriods
+            .AsNoTracking()
+            .Where(item =>
+                item.ZaloConnectionId == connectionId &&
+                item.GroupId == groupId &&
+                item.IsCurrentPeriod &&
+                item.JoinedAt != null &&
+                item.JoinedAt > onboardingCutoff &&
+                item.JoinedAt <= now &&
+                item.EvidenceKind != ZaloMembershipEvidenceKind.ObservedOnly)
+            .Select(item => item.ZaloUserId)
+            .ToListAsync(cancellationToken);
+
+        var result = verifiedRecentJoinIds
+            .Select(CleanId)
+            .Where(id => id.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var recovered = await new ZaloRecoveredNewcomerStore(db).GetActiveAsync(
+            connectionId,
+            groupId,
+            DateTimeOffset.MinValue,
+            cancellationToken);
+        foreach (var member in recovered)
+        {
+            if (member.FirstObservedAt > onboardingCutoff && member.FirstObservedAt <= now)
+            {
+                var userId = CleanId(member.ZaloUserId);
+                if (userId.Length > 0) result.Add(userId);
+            }
         }
 
         return result;

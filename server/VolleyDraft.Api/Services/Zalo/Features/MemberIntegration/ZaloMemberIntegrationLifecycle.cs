@@ -20,6 +20,7 @@ internal sealed record ZaloMemberIntegrationLifecycleDecision(
 internal static class ZaloMemberIntegrationLifecyclePolicy
 {
     private const int EstablishedScoreThreshold = 55;
+    internal const int PassiveMemberAfterDays = 8;
 
     public static ZaloMemberIntegrationLifecycleDecision Evaluate(
         ZaloMemberIntegrationContext context,
@@ -82,7 +83,7 @@ internal static class ZaloMemberIntegrationLifecyclePolicy
                 StopOnboarding: true);
         }
 
-        if (days >= 8)
+        if (days >= PassiveMemberAfterDays)
         {
             return new(
                 ZaloMemberIntegrationLifecycleStage.PassiveMember,
