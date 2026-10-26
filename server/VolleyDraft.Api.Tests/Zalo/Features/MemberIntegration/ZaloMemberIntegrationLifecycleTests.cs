@@ -19,7 +19,7 @@ public sealed class ZaloMemberIntegrationLifecycleTests
         Assert.Equal(ZaloMemberIntegrationLifecycleStage.Newcomer, decision.Stage);
         Assert.False(decision.ShouldAnnounceGraduation);
         Assert.False(decision.StopOnboarding);
-        Assert.Equal(2, decision.TargetPerDay);
+        Assert.Equal(1, decision.TargetPerDay);
     }
 
     [Fact]
@@ -68,8 +68,8 @@ public sealed class ZaloMemberIntegrationLifecycleTests
     }
 
     [Theory]
-    [InlineData(0, "Newcomer", 2)]
-    [InlineData(2, "Newcomer", 2)]
+    [InlineData(0, "Newcomer", 1)]
+    [InlineData(2, "Newcomer", 1)]
     [InlineData(3, "Integrating", 1)]
     [InlineData(5, "Integrating", 1)]
     [InlineData(6, "PassiveIntegrating", 1)]
@@ -224,10 +224,10 @@ public sealed class ZaloMemberIntegrationLifecycleTests
         QuietMinutes: 20,
         PassiveQuietMinutes: 90,
         RecentActivityMinutes: 360,
-        TargetPerMemberPerDay: 2,
-        MinMemberIntervalMinutes: 180,
-        MinGroupIntervalMinutes: 20,
-        MaxPerDay: 40,
+        TargetPerMemberPerDay: 1,
+        MinMemberIntervalMinutes: 720,
+        MinGroupIntervalMinutes: 60,
+        MaxPerDay: 8,
         StartHour: 9,
         EndHour: 22);
 }

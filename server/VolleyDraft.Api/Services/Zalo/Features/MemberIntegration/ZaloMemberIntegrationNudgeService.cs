@@ -22,10 +22,10 @@ internal sealed record ZaloMemberIntegrationDeliverySettings(
         QuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:QuietMinutes", 20), 5, 240),
         PassiveQuietMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:PassiveQuietMinutes", 90), 20, 720),
         RecentActivityMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:RecentActivityMinutes", 360), 30, 1440),
-        TargetPerMemberPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:TargetPerMemberPerDay", 2), 1, 4),
-        MinMemberIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinMemberIntervalMinutes", 180), 30, 720),
-        MinGroupIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinGroupIntervalMinutes", 20), 15, 720),
-        MaxPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MaxPerDay", 40), 1, 100),
+        TargetPerMemberPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:TargetPerMemberPerDay", 1), 1, 4),
+        MinMemberIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinMemberIntervalMinutes", 720), 30, 1440),
+        MinGroupIntervalMinutes: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MinGroupIntervalMinutes", 60), 15, 720),
+        MaxPerDay: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:MaxPerDay", 8), 1, 100),
         StartHour: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:StartHour", 9), 0, 23),
         EndHour: Math.Clamp(configuration.GetValue("ZaloBot:MemberIntegration:Delivery:EndHour", 22), 1, 24));
 }
@@ -81,6 +81,7 @@ public sealed class ZaloMemberIntegrationNudgeService(
     private readonly ZaloMemberIntegrationDeliverySettings settings =
         ZaloMemberIntegrationDeliverySettings.FromConfiguration(configuration);
     private readonly ZaloProactiveMessageStore proactiveStore = new(db);
+    private readonly ZaloMemberIntegrationTextGenerator textGenerator = new(configuration, logger);
 
     public async Task<int> ProcessDueAsync(CancellationToken cancellationToken = default)
     {
@@ -217,6 +218,11 @@ public sealed class ZaloMemberIntegrationNudgeService(
             var accepted = false;
             try
             {
+                suggestion = await textGenerator.RewriteAsync(
+                    context,
+                    suggestion,
+                    history,
+                    cancellationToken);
                 var response = await bridge.SendGroupMessageAsync(
                     accountId,
                     groupId,
@@ -248,7 +254,7 @@ public sealed class ZaloMemberIntegrationNudgeService(
                     connectionId,
                     groupId,
                     idempotencyKey,
-                    now.AddMinutes(20),
+                    now.AddMinutes(settings.MinGroupIntervalMinutes),
                     cancellationToken);
                 sent += 1;
             }

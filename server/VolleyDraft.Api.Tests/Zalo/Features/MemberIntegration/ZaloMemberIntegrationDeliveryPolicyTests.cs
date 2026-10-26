@@ -61,14 +61,12 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
     }
 
     [Fact]
-    public void Newcomer_is_due_twice_per_day_but_not_back_to_back()
+    public void Newcomer_is_due_once_per_day()
     {
         var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(Context(joinedDaysAgo: 0), Settings());
 
         Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 0, null, lifecycle));
-        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddMinutes(-120), lifecycle));
-        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddMinutes(-181), lifecycle));
-        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 2, Now.AddHours(-6), lifecycle));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, Now.AddHours(-12), lifecycle));
     }
 
     [Fact]
@@ -111,10 +109,10 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
         QuietMinutes: 20,
         PassiveQuietMinutes: 90,
         RecentActivityMinutes: 360,
-        TargetPerMemberPerDay: 2,
-        MinMemberIntervalMinutes: 180,
-        MinGroupIntervalMinutes: 20,
-        MaxPerDay: 40,
+        TargetPerMemberPerDay: 1,
+        MinMemberIntervalMinutes: 720,
+        MinGroupIntervalMinutes: 60,
+        MaxPerDay: 8,
         StartHour: 9,
         EndHour: 22);
 }

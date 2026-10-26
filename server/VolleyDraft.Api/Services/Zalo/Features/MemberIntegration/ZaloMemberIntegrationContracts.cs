@@ -88,7 +88,8 @@ public sealed record ZaloMemberIntegrationSuggestion(
     string Text,
     string ContentKey,
     string Reason,
-    IReadOnlyList<ZaloMemberIntegrationMentionTarget> MentionTargets);
+    IReadOnlyList<ZaloMemberIntegrationMentionTarget> MentionTargets,
+    IReadOnlyList<string>? TextVariants = null);
 
 /// <summary>
 /// Extension point for a small feature inside MemberIntegration.

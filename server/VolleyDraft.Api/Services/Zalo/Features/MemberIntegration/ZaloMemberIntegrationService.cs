@@ -73,7 +73,13 @@ internal sealed class ZaloMemberIntegrationService(
         if (suggestion.CapabilityKey == "welcome")
             return matching.All(item => !string.Equals(item.ContentKey, suggestion.ContentKey, StringComparison.Ordinal));
 
-        var cooldown = TimeSpan.FromDays(4);
+        var cooldown = suggestion.CapabilityKey switch
+        {
+            "bot-identity" or "group-origins" or "role-introduction" => TimeSpan.FromDays(14),
+            "group-culture" => TimeSpan.FromDays(10),
+            "practical-guide" => TimeSpan.FromDays(7),
+            _ => TimeSpan.FromDays(5)
+        };
         var sameContent = matching
             .Where(item => string.Equals(item.ContentKey, suggestion.ContentKey, StringComparison.Ordinal))
             .OrderByDescending(item => item.SentAt)
