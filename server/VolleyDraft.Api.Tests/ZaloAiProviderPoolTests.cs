@@ -223,6 +223,131 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
+    public async Task ProviderPool_RoundRobinsHealthyAccountsAcrossRequests()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            auth.Add(request.Headers.Authorization?.Parameter);
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, "ok"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://round-robin.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "free-model",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://round-robin.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "free-model",
+            ["Ai:Providers:2:Provider"] = "slot-c",
+            ["Ai:Providers:2:Endpoint"] = "https://round-robin.test/chat",
+            ["Ai:Providers:2:ApiKey"] = "key-c",
+            ["Ai:Providers:2:Model"] = "free-model"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        for (var index = 0; index < 3; index++)
+        {
+            var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+                ZaloAiWorkload.GeneralChat,
+                [new ZaloAiChatMessage("user", $"hello-{index}")]));
+            Assert.True(result.Success);
+            Assert.Equal(1, result.Attempts);
+        }
+
+        Assert.Equal(new[] { "key-a", "key-b", "key-c" }, auth);
+    }
+
+    [Fact]
+    public async Task RateLimited_UsesAtMostOneAlternate_AndCoolsFailedAccounts()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            auth.Add(request.Headers.Authorization?.Parameter);
+            return Task.FromResult(ErrorResponse(
+                HttpStatusCode.TooManyRequests,
+                "rate_limit_exceeded",
+                "rate limited"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:RateLimitCooldownSeconds"] = "120",
+            ["Ai:MaxRateLimitProviderAttempts"] = "2",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://cooldown.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "free-model",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://cooldown.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "free-model",
+            ["Ai:Providers:2:Provider"] = "slot-c",
+            ["Ai:Providers:2:Endpoint"] = "https://cooldown.test/chat",
+            ["Ai:Providers:2:ApiKey"] = "key-c",
+            ["Ai:Providers:2:Model"] = "free-model"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var first = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "first")]));
+        var second = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "second")]));
+
+        Assert.False(first.Success);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, first.FailureKind);
+        Assert.Equal(2, first.Attempts);
+        Assert.False(second.Success);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, second.FailureKind);
+        Assert.Equal(1, second.Attempts);
+        Assert.Equal(new[] { "key-a", "key-b", "key-c" }, auth);
+    }
+
+    [Fact]
+    public async Task RequestBudget_StopsThirdExternalAiCallAcrossStages()
+    {
+        var calls = 0;
+        var handler = new StubHandler(request =>
+        {
+            calls += 1;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, "ok"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://budget.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "free-model"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        using var budget = ZaloAiRequestBudget.Begin(2);
+        var first = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.IntentClassification,
+            [new ZaloAiChatMessage("user", "one")]));
+        var second = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "two")]));
+        var third = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.SocialReply,
+            [new ZaloAiChatMessage("user", "three")]));
+
+        Assert.True(first.Success);
+        Assert.True(second.Success);
+        Assert.False(third.Success);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, third.FailureKind);
+        Assert.Equal("local_request_budget_exhausted", third.ProviderCode);
+        Assert.Equal(0, third.Attempts);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
     public async Task RateLimited_FailsOverToSameModelWithDifferentKey()
     {
         var auth = new List<string?>();
@@ -322,11 +447,14 @@ public sealed class ZaloAiProviderPoolTests
 
     private static OpenAiCompatibleZaloAiGateway CreateGateway(
         HttpMessageHandler handler,
-        IConfiguration configuration) =>
-        new(
+        IConfiguration configuration)
+    {
+        OpenAiCompatibleZaloAiGateway.ResetProviderHealthForTests();
+        return new OpenAiCompatibleZaloAiGateway(
             new HttpClient(handler),
             configuration,
             NullLogger<OpenAiCompatibleZaloAiGateway>.Instance);
+    }
 
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>
         new ConfigurationBuilder()
