@@ -546,6 +546,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             .Where(index =>
                 _providers[index].Endpoint.Equals(primary.Endpoint, StringComparison.OrdinalIgnoreCase) &&
                 _providers[index].ResolveModel(request).Equals(primaryModel, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(index => _providers[index].ApiKey, StringComparer.Ordinal)
+            .Select(group => group.First())
             .ToArray();
     }
 
