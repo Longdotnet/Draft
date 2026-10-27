@@ -247,6 +247,207 @@ public sealed class ZaloAmbientSocialTargetResolverTests
         Assert.Equal(1, handler.CallCount);
     }
 
+    [Fact]
+    public async Task Historical_same_speaker_bot_tease_can_reconnect_ambiguous_turn_hours_later_and_persist_affinity()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        await fixture.AddObservedAsync(
+            "vivian-old-tease",
+            "user-vivian",
+            "Vivian",
+            "Nhỏ Bot nay nch nhiều dữ á ta",
+            now.AddHours(-2));
+
+        var handler = new SequenceAiHandler(
+            "{\"subject\":\"Bot\",\"stance\":\"PlayfulTease\",\"confidence\":0.96,\"reason\":\"same_speaker_old_bot_banter\",\"evidenceMessageIds\":[\"vivian-old-tease\",\"vivian-now\"]}",
+            "Ủa nhớ tui tới giờ luôn hả =)) bà canh tui còn kỹ hơn canh bóng nữa đó.");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("vivian-now", "user-vivian", "Vivian", "Má nó hỗn luôn r", now),
+            UnaddressedDecision("vivian-now"),
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("contextual_bot_playfultease_ai", result!.AddressReason);
+        Assert.Equal(2, handler.CallCount);
+        var affinity = await new ZaloBanterAffinityStore(fixture.Db)
+            .LoadAsync("conn-1", "g1", "user-vivian");
+        Assert.NotNull(affinity);
+        Assert.Equal("vivian-now", affinity!.LastSourceMessageId);
+        Assert.Equal(1, affinity.BanterCount);
+
+        using var outerRequest = JsonDocument.Parse(handler.RequestBodies[0]);
+        var innerJson = outerRequest.RootElement.GetProperty("messages")[1].GetProperty("content").GetString();
+        Assert.NotNull(innerJson);
+        using var innerRequest = JsonDocument.Parse(innerJson!);
+        var memory = innerRequest.RootElement.GetProperty("PriorBanterMemory");
+        Assert.False(memory.GetProperty("StrongAffinity").GetBoolean());
+        Assert.Contains(
+            memory.GetProperty("EvidenceMessages").EnumerateArray(),
+            item => item.GetProperty("MessageId").GetString() == "vivian-old-tease");
+    }
+
+    [Fact]
+    public async Task Remembered_banter_target_replying_with_only_laughter_gets_immediate_tease_back()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        await new ZaloBanterAffinityStore(fixture.Db).RememberAsync(
+            "conn-1",
+            "g1",
+            "user-vivian",
+            "old-banter",
+            "contextual_playfultease");
+        var handler = new SequenceAiHandler("Cười dữ ha =))");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+        var incoming = Message(
+            "vivian-laugh",
+            "user-vivian",
+            "Vivian",
+            ":))))",
+            now,
+            new ZaloBridgeMessageQuote(
+                "bot-provider-1",
+                "bot-account",
+                "Bott",
+                "Nãy ai khịa tui dữ lắm ta =))",
+                "chat",
+                now.AddMinutes(-20).ToUnixTimeMilliseconds(),
+                null));
+        var remembered = await new ZaloBanterAffinityStore(fixture.Db).LoadContextAsync(
+            "conn-1", "g1", "user-vivian", "bot-account", "vivian-laugh", 30);
+        Assert.True(remembered.HasStrongAffinity);
+        var address = ZaloConversationalAddressResolver.Resolve(incoming);
+        Assert.Equal(ZaloConversationalTarget.Bot, address.Target);
+        Assert.True(ZaloQuotedContextResolver.Resolve(incoming).RepliesToBot);
+        var decision = UnaddressedDecision("vivian-laugh") with
+        {
+            Signals = ["ack_or_emoji_only", "quiet_group"]
+        };
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            incoming,
+            decision,
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.Equal(1, handler.CallCount);
+        Assert.NotNull(result);
+        Assert.Equal("remembered_banter_reply_ai", result!.AddressReason);
+        Assert.Equal(100, result.EffectiveScore);
+    }
+
+    [Fact]
+    public async Task Remembered_banter_target_talking_about_another_member_is_still_suppressed()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        await new ZaloBanterAffinityStore(fixture.Db).RememberAsync(
+            "conn-1",
+            "g1",
+            "user-vivian",
+            "old-banter",
+            "contextual_playfultease");
+        var handler = new SequenceAiHandler(
+            "{\"subject\":\"Human\",\"stance\":\"PlayfulTease\",\"confidence\":0.98,\"reason\":\"teasing_nick_not_bot\",\"evidenceMessageIds\":[\"vivian-human\"]}");
+        using var httpClient = new HttpClient(handler);
+        var responder = new ZaloAmbientSocialResponder(
+            fixture.Db,
+            EnabledConfiguration(),
+            NullLogger<ZaloOverbookService>.Instance,
+            httpClient);
+
+        var result = await responder.TryBuildAsync(
+            "conn-1",
+            "g1",
+            Message("vivian-human", "user-vivian", "Vivian", "Nick nay gáy dữ ha", now),
+            UnaddressedDecision("vivian-human"),
+            EnabledSettings(),
+            CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.Equal(1, handler.CallCount);
+    }
+
+    [Fact]
+    public void Direct_banter_policy_recognizes_playful_reply_to_bot()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var incoming = Message(
+            "direct-banter",
+            "user-vivian",
+            "Vivian",
+            "zalo nóng còn đỡ chứ tui nóng là bot mệt đó :))))",
+            now,
+            new ZaloBridgeMessageQuote(
+                "bot-provider-2",
+                "bot-account",
+                "Bott",
+                "đừng để Zalo nóng hơn trên sân nha =))",
+                "chat",
+                now.AddMinutes(-1).ToUnixTimeMilliseconds(),
+                null));
+
+        Assert.True(ZaloBanterAffinityPolicy.LooksLikeDirectBanter(incoming));
+    }
+
+    [Fact]
+    public void Direct_banter_policy_does_not_mark_business_reply_as_banter()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var incoming = Message(
+            "direct-business",
+            "user-vivian",
+            "Vivian",
+            "còn bao nhiêu slot T6?",
+            now,
+            new ZaloBridgeMessageQuote(
+                "bot-provider-3",
+                "bot-account",
+                "Bott",
+                "T6 hiện còn slot.",
+                "chat",
+                now.AddMinutes(-1).ToUnixTimeMilliseconds(),
+                null));
+
+        Assert.False(ZaloBanterAffinityPolicy.LooksLikeDirectBanter(incoming));
+    }
+
+    [Fact]
+    public async Task Banter_affinity_is_scoped_by_connection_group_and_sender()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var store = new ZaloBanterAffinityStore(fixture.Db);
+        await store.RememberAsync(
+            "conn-1",
+            "g1",
+            "user-vivian",
+            "banter-source",
+            "contextual_playfultease");
+
+        Assert.NotNull(await store.LoadAsync("conn-1", "g1", "user-vivian"));
+        Assert.Null(await store.LoadAsync("conn-2", "g1", "user-vivian"));
+        Assert.Null(await store.LoadAsync("conn-1", "g2", "user-vivian"));
+        Assert.Null(await store.LoadAsync("conn-1", "g1", "user-other"));
+    }
+
     private static IConfiguration EnabledConfiguration() =>
         new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -280,7 +481,8 @@ public sealed class ZaloAmbientSocialTargetResolverTests
         string senderId,
         string senderName,
         string content,
-        DateTimeOffset sentAt) => new(
+        DateTimeOffset sentAt,
+        ZaloBridgeMessageQuote? quote = null) => new(
         accountId: "bot-account",
         botId: "bot-account",
         groupId: "g1",
@@ -290,7 +492,8 @@ public sealed class ZaloAmbientSocialTargetResolverTests
         content: content,
         mentions: [],
         mentionedBot: false,
-        sentAtUnixMs: sentAt.ToUnixTimeMilliseconds());
+        sentAtUnixMs: sentAt.ToUnixTimeMilliseconds(),
+        quote: quote);
 
     private sealed class StubGateway(params string[] answers) : IZaloAiGateway
     {

@@ -44,14 +44,17 @@ internal sealed record ZaloAmbientSocialTargetDecision(
 internal sealed class ZaloAmbientSocialTargetResolver(IZaloAiGateway aiGateway, ILogger logger)
 {
     private static readonly Regex BotReference = new(
-        @"(?<![a-z0-9])(?:bot|npc|con\s+bot|thang\s+bot|cai\s+bot)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:bot|bott|npc|con\s+bot|thang\s+bot|cai\s+bot)(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static bool HasPlausibleBotContext(
         ZaloIncomingMessageEvent incoming,
-        IReadOnlyList<ZaloAmbientSocialContextMessage> recent)
+        IReadOnlyList<ZaloAmbientSocialContextMessage> recent,
+        ZaloAmbientBanterMemoryContext? banterMemory = null)
     {
         if (BotReference.IsMatch(ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty)))
+            return true;
+        if (banterMemory?.HasAnyEvidence == true)
             return true;
         if (recent.Count == 0) return false;
 
@@ -72,11 +75,12 @@ internal sealed class ZaloAmbientSocialTargetResolver(IZaloAiGateway aiGateway, 
     public async Task<ZaloAmbientSocialTargetDecision> ResolveAsync(
         ZaloIncomingMessageEvent incoming,
         IReadOnlyList<ZaloAmbientSocialContextMessage> recent,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ZaloAmbientBanterMemoryContext? banterMemory = null)
     {
         if (!aiGateway.IsConfigured)
             return Unknown("ai_not_configured");
-        if (!HasPlausibleBotContext(incoming, recent))
+        if (!HasPlausibleBotContext(incoming, recent, banterMemory))
             return Unknown("no_recent_bot_context");
 
         const string prompt = """
@@ -106,7 +110,9 @@ internal sealed class ZaloAmbientSocialTargetResolver(IZaloAiGateway aiGateway, 
             6. Nếu đang reply/nói với một member khác và nội dung chủ yếu chọc member đó thì subject=Human, kể cả bot vừa nói trước đó.
             7. Emoji, =)), haha chỉ là tín hiệu phụ. Không nâng confidence chỉ vì có emoji.
             8. Chỉ confidence >= 0.90 khi evidence gần, nhất quán và đủ để một người đọc đoạn chat cũng kết luận đang nhắm tới bot. Mơ hồ thì <= 0.89 hoặc Unknown.
-            9. evidenceMessageIds chỉ được copy từ CurrentMessage.MessageId hoặc MessageId có trong RecentMessages; tối đa 4 ID. Không bịa ID.
+            9. evidenceMessageIds chỉ được copy từ CurrentMessage.MessageId, MessageId có trong RecentMessages hoặc PriorBanterMemory; tối đa 4 ID. Không bịa ID.
+            10. PriorBanterMemory là ký ức dài hạn theo đúng GroupId + SenderId. Nếu StrongAffinity=true thì người này trước đây đã được xác nhận đang cà khịa bot; dùng nó để hiểu đại từ/câu nối như "nó", "ẻm", "lại nữa" sau một khoảng im lặng, nhưng vẫn phải đọc CurrentMessage để tránh chen vào chuyện đang nói về người khác.
+            11. EvidenceMessages trong PriorBanterMemory là các tin cũ của chính sender từng nhắc/reply bot. Đây là bằng chứng yếu nếu chưa có StrongAffinity: chỉ nâng confidence khi CurrentMessage thật sự khớp mạch cà khịa/than nhẹ với bot. Không dùng memory để biến chuyện nghiệp vụ hoặc chuyện về member khác thành bot-target.
             """;
 
         var payload = JsonSerializer.Serialize(new
@@ -127,7 +133,26 @@ internal sealed class ZaloAmbientSocialTargetResolver(IZaloAiGateway aiGateway, 
                 item.IsFromBot,
                 SentAt = item.SentAt?.ToUniversalTime().ToString("O"),
                 item.Source
-            })
+            }),
+            PriorBanterMemory = banterMemory is null
+                ? null
+                : new
+                {
+                    StrongAffinity = banterMemory.HasStrongAffinity,
+                    BanterCount = banterMemory.Affinity?.BanterCount ?? 0,
+                    LastBanterAt = banterMemory.Affinity?.LastBanterAt.ToUniversalTime().ToString("O"),
+                    LastReason = banterMemory.Affinity?.LastReason,
+                    SourceMessageId = banterMemory.Affinity?.LastSourceMessageId,
+                    EvidenceMessages = banterMemory.EvidenceMessages.Take(3).Select(item => new
+                    {
+                        item.MessageId,
+                        item.SenderId,
+                        item.SenderName,
+                        item.Content,
+                        SentAt = item.SentAt?.ToUniversalTime().ToString("O"),
+                        item.Source
+                    })
+                }
         });
 
         var result = await aiGateway.CompleteAsync(
@@ -170,6 +195,15 @@ internal sealed class ZaloAmbientSocialTargetResolver(IZaloAiGateway aiGateway, 
                 .Select(item => item.MessageId)
                 .Where(id => !string.IsNullOrWhiteSpace(id))
                 .ToHashSet(StringComparer.Ordinal);
+            if (banterMemory is not null)
+            {
+                foreach (var id in banterMemory.EvidenceMessages
+                             .Select(item => item.MessageId)
+                             .Where(id => !string.IsNullOrWhiteSpace(id)))
+                    allowedEvidence.Add(id);
+                if (!string.IsNullOrWhiteSpace(banterMemory.Affinity?.LastSourceMessageId))
+                    allowedEvidence.Add(banterMemory.Affinity.LastSourceMessageId);
+            }
             var currentMessageId = Clean(incoming.MessageId, 160);
             if (currentMessageId.Length > 0)
                 allowedEvidence.Add(currentMessageId);

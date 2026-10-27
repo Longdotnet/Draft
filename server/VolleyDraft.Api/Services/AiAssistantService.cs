@@ -643,6 +643,7 @@ public sealed partial class AiAssistantService(
             11. Trong LearnedRules, cụm “người đang hỏi” hoặc “người đang nhắn” nghĩa là Sender.Name hiện tại. Không trả nguyên placeholder đó nếu có thể thay bằng tên người hỏi.
             12. Không thêm @mention ở đầu câu vì hệ thống sẽ tự mention người hỏi.
             13. Chỉ xuất câu trả lời cuối cùng dành cho thành viên bằng ngôn ngữ đã chỉ định ở trên. Tuyệt đối không xuất suy luận nội bộ, kế hoạch xử lý, mô tả vai trò hay các câu kiểu “The user is asking…”, “I should…”, “I need to…”, “conversation shows…” hoặc “trong mô phỏng này…”.
+            14. BanterContext chỉ do backend tạo theo đúng GroupId + Sender.Id. Nếu KnownTarget=true và người này đang reply/đang gọi bot trong một câu chat xã giao, vui hoặc cà khịa, hãy phản dame nhẹ như bạn bè quen mồm, có thể one-up một câu ngắn. Không nhắc rằng bot đang "theo dõi" hay "lưu hồ sơ" người đó. Nếu Question là hỏi việc, xin dữ liệu, thao tác nghiệp vụ hoặc đang nói về member khác thì trả lời đúng việc, không cố cà khịa.
             """;
         var contextJson = JsonSerializer.Serialize(context, JsonOptions);
         var payload = new
@@ -956,7 +957,8 @@ public sealed record ZaloAiContext(
     string? CustomInstructions,
     IReadOnlyList<ZaloAiLearnedRule> LearnedRules,
     DateTimeOffset CurrentVietnamTime,
-    IReadOnlyList<ZaloAiUserConcept>? UserConcepts = null);
+    IReadOnlyList<ZaloAiUserConcept>? UserConcepts = null,
+    ZaloAiBanterContext? BanterContext = null);
 
 public sealed record ZaloAiSender(string Id, string Name);
 
@@ -979,3 +981,9 @@ public sealed record ZaloAiUserConcept(
     string ValueJson,
     double Confidence,
     DateTimeOffset UpdatedAt);
+public sealed record ZaloAiBanterContext(
+    bool KnownTarget,
+    int BanterCount,
+    DateTimeOffset LastBanterAt,
+    bool RepliesToBot,
+    bool ExplicitlyAddressed);

@@ -381,6 +381,32 @@ public sealed partial class ZaloBotService(
 
         await FinishMessageAsync(storedMessage.Id, processingToken, response.Intent, response.AiCalled, "sent", cancellationToken);
 
+        if (response.Intent == ZaloBotIntent.GeneralChat)
+        {
+            try
+            {
+                if (ZaloBanterAffinityPolicy.LooksLikeDirectBanter(incoming))
+                {
+                    await new ZaloBanterAffinityStore(db).RememberAsync(
+                        connection.Id,
+                        groupId,
+                        NormalizeId(incoming.SenderId),
+                        messageId,
+                        "direct_general_chat_banter",
+                        cancellationToken);
+                }
+            }
+            catch (Exception banterMemoryException) when (banterMemoryException is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    banterMemoryException,
+                    "Could not remember direct Zalo banter Group={GroupId} Sender={SenderId} Message={MessageId}",
+                    groupId,
+                    incoming.SenderId,
+                    messageId);
+            }
+        }
+
         await ZaloDirectedAudienceBotIntegration.RememberAsync(
             db, logger, connection.Id, groupId, NormalizeId(incoming.SenderId), messageId,
             response.ReferencedAudience, cancellationToken);
@@ -1204,6 +1230,34 @@ public sealed partial class ZaloBotService(
                     cancellationToken);
             }
         }
+        ZaloAiBanterContext? banterContext = null;
+        try
+        {
+            var affinity = await new ZaloBanterAffinityStore(db)
+                .LoadAsync(activeConnectionId, groupId, NormalizeId(incoming.SenderId), cancellationToken);
+            var directBanter = ZaloBanterAffinityPolicy.LooksLikeDirectBanter(incoming);
+            if (affinity is not null || directBanter)
+            {
+                var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+                var conversationalAddress = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
+                banterContext = new ZaloAiBanterContext(
+                    KnownTarget: true,
+                    BanterCount: affinity?.BanterCount ?? 0,
+                    LastBanterAt: affinity?.LastBanterAt ?? DateTimeOffset.UtcNow,
+                    RepliesToBot: quote.RepliesToBot,
+                    ExplicitlyAddressed: conversationalAddress.Target == ZaloConversationalTarget.Bot &&
+                                         conversationalAddress.Confidence >= .9);
+            }
+        }
+        catch (Exception banterContextException) when (banterContextException is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                banterContextException,
+                "Could not load Zalo banter context Group={GroupId} Sender={SenderId}",
+                groupId,
+                incoming.SenderId);
+        }
+
         var aiContext = new ZaloAiContext(
             groupId,
             new ZaloAiSender(NormalizeId(incoming.SenderId), incoming.SenderName),
@@ -1222,7 +1276,8 @@ public sealed partial class ZaloBotService(
                 session.PlayerNames)).ToList(),
             CombineSettings(sessions.Select(session => session.CustomInstructions)),
             learnedRules.Select(rule => new ZaloAiLearnedRule(rule.Trigger, rule.Answer, rule.CreatedBySenderName)).ToList(),
-            DateTimeOffset.UtcNow.ToOffset(VietnamOffset));
+            DateTimeOffset.UtcNow.ToOffset(VietnamOffset),
+            BanterContext: banterContext);
         if (!aiAllowed)
         {
             var replyLanguage = ZaloReplyLanguageDetector.TryDetectFromScript(question);

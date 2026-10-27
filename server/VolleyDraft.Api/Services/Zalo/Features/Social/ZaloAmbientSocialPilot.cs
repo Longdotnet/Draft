@@ -19,7 +19,8 @@ public sealed record ZaloAmbientSocialPilotSettings(
     int MaxTrashTalkLevel = 3,
     bool AllowProfanity = true,
     bool AllowHardRoast = false,
-    int DirectMaxReplyChars = 420)
+    int DirectMaxReplyChars = 420,
+    int BanterMemoryDays = 30)
 {
     public static ZaloAmbientSocialPilotSettings FromConfiguration(IConfiguration configuration) => new(
         Enabled: configuration.GetValue("ZaloBot:Ambient:SocialPilot:Enabled", false),
@@ -30,7 +31,8 @@ public sealed record ZaloAmbientSocialPilotSettings(
         MaxTrashTalkLevel: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:MaxTrashTalkLevel", 3), 0, 4),
         AllowProfanity: configuration.GetValue("ZaloBot:Ambient:SocialPilot:AllowProfanity", true),
         AllowHardRoast: configuration.GetValue("ZaloBot:Ambient:SocialPilot:AllowHardRoast", false),
-        DirectMaxReplyChars: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:DirectMaxReplyChars", 420), 180, 600));
+        DirectMaxReplyChars: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:DirectMaxReplyChars", 420), 180, 600),
+        BanterMemoryDays: Math.Clamp(configuration.GetValue("ZaloBot:Ambient:SocialPilot:BanterMemoryDays", 30), 1, 365));
 }
 
 public sealed record ZaloAmbientSocialReply(
@@ -104,9 +106,8 @@ public sealed class ZaloAmbientSocialResponder
         var normalizedIncoming = ZaloBotIntelligence.Normalize(incoming.Content ?? string.Empty);
         var capabilityQuestion = CapabilityQuestionPattern.IsMatch(normalizedIncoming);
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content ?? string.Empty);
         var directlyAddressed = address.Target == ZaloConversationalTarget.Bot && address.Confidence >= .9;
-        if (decision.Signals.Contains("ack_or_emoji_only", StringComparer.Ordinal))
-            return null;
         var softBotReferenceCandidate = directlyAddressed &&
                                         string.Equals(address.Reason, "explicit_bot_reference", StringComparison.Ordinal) &&
                                         address.SpeechAct == ZaloConversationalSpeechAct.Unknown &&
@@ -121,17 +122,31 @@ public sealed class ZaloAmbientSocialResponder
             decision.Situation.RecentMessageIds,
             settings.MaxContextMessages,
             cancellationToken);
+        var banterStore = new ZaloBanterAffinityStore(db);
+        var banterMemory = await banterStore.LoadContextAsync(
+            connectionId,
+            groupId,
+            incoming.SenderId,
+            incoming.BotId,
+            incoming.MessageId,
+            settings.BanterMemoryDays,
+            cancellationToken);
+        var effectiveDirectAddress = directlyAddressed && !softBotReferenceCandidate;
+        var rememberedBanterReply = banterMemory.HasStrongAffinity &&
+                                    (leaseTurn || quote.RepliesToBot);
+        if (decision.Signals.Contains("ack_or_emoji_only", StringComparer.Ordinal) && !rememberedBanterReply)
+            return null;
+
         ZaloAmbientSocialTargetDecision? contextualTarget = null;
         if (!leaseTurn &&
             (!directlyAddressed || softBotReferenceCandidate) &&
             aiGateway.IsConfigured &&
-            ZaloAmbientSocialTargetResolver.HasPlausibleBotContext(incoming, recent))
+            ZaloAmbientSocialTargetResolver.HasPlausibleBotContext(incoming, recent, banterMemory))
         {
             contextualTarget = await new ZaloAmbientSocialTargetResolver(aiGateway, logger)
-                .ResolveAsync(incoming, recent, cancellationToken);
+                .ResolveAsync(incoming, recent, cancellationToken, banterMemory);
         }
         var contextualBotBanter = contextualTarget?.AllowsImmediateBotBanter == true;
-        var effectiveDirectAddress = directlyAddressed && !softBotReferenceCandidate;
         var userInitiatedSocialTurn = effectiveDirectAddress || leaseTurn || contextualBotBanter;
         var directTrashTalk = ZaloTrashTalkPolicy.LooksLikeDirectTrashTalk(incoming.Content, address, leaseTurn);
 
@@ -155,7 +170,6 @@ public sealed class ZaloAmbientSocialResponder
             address.SpeechAct != ZaloConversationalSpeechAct.Unknown && !capabilityQuestion)
             return null;
 
-        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content ?? string.Empty);
         if (quote.HasQuote && !quote.RepliesToBot && !userInitiatedSocialTurn)
             return null;
 
@@ -223,7 +237,27 @@ public sealed class ZaloAmbientSocialResponder
             ? ZaloInsideJokeRetriever.FindHints(incoming.Content, speakerHistory)
             : [];
 
-        var banterTurn = directTrashTalk || contextualBotBanter;
+        var banterTurn = directTrashTalk || contextualBotBanter || rememberedBanterReply;
+        if (contextualBotBanter)
+        {
+            await banterStore.RememberAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                incoming.MessageId,
+                $"contextual_{contextualTarget!.Stance.ToString().ToLowerInvariant()}",
+                cancellationToken);
+        }
+        else if (directTrashTalk)
+        {
+            await banterStore.RememberAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                incoming.MessageId,
+                "direct_trash_talk",
+                cancellationToken);
+        }
         if (actionShapedSocialCandidate)
         {
             var meaning = await new ZaloAmbientSocialMeaningResolver(aiGateway, logger)
@@ -238,6 +272,13 @@ public sealed class ZaloAmbientSocialResponder
                 return null;
             }
             banterTurn = true;
+            await banterStore.RememberAsync(
+                connectionId,
+                groupId,
+                incoming.SenderId,
+                incoming.MessageId,
+                "semantic_banter",
+                cancellationToken);
         }
 
         var replyCharBudget = userInitiatedSocialTurn
@@ -257,6 +298,7 @@ public sealed class ZaloAmbientSocialResponder
             situation,
             insideJokes,
             contextualTarget,
+            rememberedBanterReply,
             cancellationToken);
 
         if (string.IsNullOrWhiteSpace(rawCandidate))
@@ -296,6 +338,8 @@ public sealed class ZaloAmbientSocialResponder
                 ? $"trash_talk_level_{(int)trashTalk.Level}"
                 : contextualBotBanter
                     ? $"contextual_bot_{contextualTarget!.Stance.ToString().ToLowerInvariant()}_ai"
+                    : rememberedBanterReply
+                        ? "remembered_banter_reply_ai"
                 : banterTurn
                     ? "social_meaning_banter_ai"
                     : wakeTurn
@@ -578,6 +622,7 @@ public sealed class ZaloAmbientSocialResponder
         ZaloSocialSituation situation,
         IReadOnlyList<ZaloInsideJokeHint> insideJokes,
         ZaloAmbientSocialTargetDecision? contextualTarget,
+        bool rememberedBanterReply,
         CancellationToken cancellationToken)
     {
         var mode = socialSafetyPlan.CanRoastBack
@@ -586,6 +631,8 @@ public sealed class ZaloAmbientSocialResponder
                 ? contextualTarget.Stance == ZaloAmbientSocialStance.MildComplaint
                     ? "Bộ phân loại ngữ cảnh đã chứng minh người dùng đang than nhẹ/cà khịa chính bot dù không @ hay reply bot. Được phản dame vui và tự nhận phần đúng nếu RecentMessages cho thấy bot vừa nói nhiều; không phủ nhận fact có bằng chứng."
                     : "Bộ phân loại ngữ cảnh đã chứng minh người dùng đang cà khịa chính bot dù không @ hay reply bot. Được bắt đúng mạch hội thoại và phản dame nhẹ, dựa trên evidence thật thay vì bịa chuyện."
+            : rememberedBanterReply
+                ? "Người dùng này có lịch sử cà khịa qua lại với bot và hiện đang reply/tiếp mạch bot. Dù CurrentMessage chỉ là emoji, cười hoặc câu cụt, được khịa lại nhẹ ngay như bạn bè quen mồm; không lôi member khác vào và không biến thành công kích thật."
             : banterTurn
                 ? "Bộ phân loại social-meaning đã xác định đây là câu cà khịa/nói quá chứ không phải lệnh thao tác thật. Hãy bắt vibe và đáp lại vui như một member trong group, nhưng tuyệt đối không giả vờ đã kick/xóa/đổi dữ liệu."
                 : wakeTurn

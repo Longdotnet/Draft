@@ -102,6 +102,52 @@ public sealed class AiAssistantProviderPoolTests
         Assert.Equal(new[] { "classifier-primary.test", "classifier-backup.test" }, calls);
     }
 
+    [Fact]
+    public async Task AnswerAsync_KnownBanterTarget_SendsBackendBanterContextToGeneralChat()
+    {
+        string? requestBody = null;
+        var handler = new StubHandler(async request =>
+        {
+            requestBody = await request.Content!.ReadAsStringAsync();
+            return JsonResponse(HttpStatusCode.OK, "Cười gì dữ vậy =))");
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:Endpoint"] = "https://ai.test/chat",
+            ["Ai:ApiKey"] = "key",
+            ["Ai:Model"] = "model"
+        });
+        var service = CreateService(handler, configuration);
+
+        var answer = await service.AnswerAsync(new ZaloAiContext(
+            "group-1",
+            new ZaloAiSender("vivian", "Vivian"),
+            ":))))",
+            [],
+            [],
+            null,
+            [],
+            DateTimeOffset.UtcNow,
+            BanterContext: new ZaloAiBanterContext(
+                KnownTarget: true,
+                BanterCount: 3,
+                LastBanterAt: DateTimeOffset.UtcNow.AddHours(-2),
+                RepliesToBot: true,
+                ExplicitlyAddressed: true)));
+
+        Assert.Equal("Cười gì dữ vậy =))", answer);
+        Assert.NotNull(requestBody);
+        Assert.Contains("banterContext", requestBody, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("knownTarget", requestBody, StringComparison.OrdinalIgnoreCase);
+        using var requestJson = JsonDocument.Parse(requestBody!);
+        var systemPrompt = requestJson.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString();
+        Assert.NotNull(systemPrompt);
+        Assert.Contains("phản dame nhẹ", systemPrompt!, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static AiAssistantService CreateService(
         HttpMessageHandler handler,
         IConfiguration configuration) =>
