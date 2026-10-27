@@ -223,16 +223,16 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
-    public async Task RateLimited_DoesNotHammerSameModelAcrossDifferentKeys()
+    public async Task RateLimited_FailsOverToSameModelWithDifferentKey()
     {
-        var calls = 0;
+        var auth = new List<string?>();
         var handler = new StubHandler(request =>
         {
-            calls += 1;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.TooManyRequests)
-            {
-                Content = new StringContent("{\"error\":{\"message\":\"rate limited\"}}", Encoding.UTF8, "application/json")
-            });
+            var apiKey = request.Headers.Authorization?.Parameter;
+            auth.Add(apiKey);
+            return Task.FromResult(apiKey == "key-a"
+                ? ErrorResponse(HttpStatusCode.TooManyRequests, "rate_limit_exceeded", "rate limited")
+                : JsonResponse(HttpStatusCode.OK, "second-key-ok"));
         });
         var configuration = BuildConfiguration(new Dictionary<string, string?>
         {
@@ -251,6 +251,43 @@ public sealed class ZaloAiProviderPoolTests
         var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
             ZaloAiWorkload.StructuredExtraction,
             [new ZaloAiChatMessage("user", "extract")])) ;
+
+        Assert.True(result.Success);
+        Assert.True(result.UsedFallback);
+        Assert.Equal(2, result.Attempts);
+        Assert.Equal(new[] { "key-a", "key-b" }, auth);
+    }
+
+    [Fact]
+    public async Task RateLimited_SkipsSameResolvedModelWithSameKey()
+    {
+        var calls = 0;
+        var handler = new StubHandler(request =>
+        {
+            calls += 1;
+            return Task.FromResult(ErrorResponse(
+                HttpStatusCode.TooManyRequests,
+                "rate_limit_exceeded",
+                "rate limited"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Models:GeneralChat"] = "shared-chat-model",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "shared-key",
+            ["Ai:Providers:0:Model"] = "default-a",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "shared-key",
+            ["Ai:Providers:1:Model"] = "default-b"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "hello")])) ;
 
         Assert.False(result.Success);
         Assert.Equal(ZaloAiFailureKind.RateLimited, result.FailureKind);

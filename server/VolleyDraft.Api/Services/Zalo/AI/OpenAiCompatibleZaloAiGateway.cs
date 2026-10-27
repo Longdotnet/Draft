@@ -389,7 +389,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         for (var index = currentIndex + 1; index < _providers.Count; index++)
         {
             var candidate = _providers[index];
-            if (ShouldSkipEquivalentModelFailure(failureKind) &&
+            if (ShouldSkipEquivalentModelFailure(failureKind, current, candidate) &&
                 candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
                 candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -398,11 +398,17 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         return -1;
     }
 
-    private static bool ShouldSkipEquivalentModelFailure(ZaloAiFailureKind failureKind) => failureKind is
-        ZaloAiFailureKind.Timeout or
-        ZaloAiFailureKind.InvalidResponse or
-        ZaloAiFailureKind.ModelOrEndpointUnavailable or
-        ZaloAiFailureKind.RateLimited;
+    private static bool ShouldSkipEquivalentModelFailure(
+        ZaloAiFailureKind failureKind,
+        ZaloAiProviderProfile current,
+        ZaloAiProviderProfile candidate) =>
+        failureKind is
+            ZaloAiFailureKind.Timeout or
+            ZaloAiFailureKind.InvalidResponse or
+            ZaloAiFailureKind.ModelOrEndpointUnavailable ||
+        // A 429 can be credential-scoped, so a different API key is a real failover slot.
+        failureKind == ZaloAiFailureKind.RateLimited &&
+        string.Equals(candidate.ApiKey, current.ApiKey, StringComparison.Ordinal);
 
     private static bool RequiresJsonObject(ZaloAiWorkload workload) => workload is
         ZaloAiWorkload.IntentClassification or
