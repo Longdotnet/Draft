@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -27,6 +28,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private readonly TimeSpan _rateLimitCooldown;
     private readonly TimeSpan _quotaCooldown;
     private readonly int _maxRateLimitProviderAttempts;
+    private readonly string _healthScope;
     private readonly string _poolKey;
 
     public OpenAiCompatibleZaloAiGateway(
@@ -43,7 +45,12 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         _rateLimitCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:RateLimitCooldownSeconds", 60), 5, 900));
         _quotaCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:QuotaCooldownSeconds", 900), 60, 86400));
         _maxRateLimitProviderAttempts = Math.Clamp(configuration.GetValue("Ai:MaxRateLimitProviderAttempts", 2), 1, 2);
-        _poolKey = BuildPoolKey(_providers);
+        // IConfiguration is a singleton in production, while tests normally build a fresh
+        // root per case. Scoping health this way preserves process-wide production cooldown
+        // without leaking one test's simulated 429 into unrelated gateway tests.
+        _healthScope = configuration["Ai:ProviderHealthScope"] ??
+                       RuntimeHelpers.GetHashCode(configuration).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _poolKey = BuildPoolKey(_healthScope, _providers);
     }
 
     public bool IsConfigured => _providers.Count > 0;
@@ -60,7 +67,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         var rateLimitProviderAttempts = 0;
         ZaloAiCompletionResult? lastResult = null;
         var attemptedProviderIndexes = new HashSet<int>();
-        var providerIndex = FindRoundRobinProviderIndex(attemptedProviderIndexes);
+        var providerIndex = FindRoundRobinProviderIndex(request, attemptedProviderIndexes);
 
         if (providerIndex < 0)
             return BuildCoolingDownResult(request, started.Elapsed);
@@ -432,19 +439,43 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private TimeSpan ResolveTimeout(ZaloAiWorkload workload) =>
         _workloadTimeouts.TryGetValue(workload, out var timeout) ? timeout : _defaultTimeout;
 
-    private int FindRoundRobinProviderIndex(ISet<int> attemptedProviderIndexes)
+    private int FindRoundRobinProviderIndex(
+        ZaloAiCompletionRequest request,
+        ISet<int> attemptedProviderIndexes)
     {
         if (_providers.Count == 0) return -1;
 
+        // Rotate only credential-equivalent slots for the configured primary route.
+        // Heterogeneous fallback endpoints/models keep their ordered primary/fallback
+        // semantics, while the five OpenRouter accounts can share load fairly.
+        var primary = _providers[0];
+        var primaryModel = primary.ResolveModel(request);
+        var rotationIndexes = Enumerable.Range(0, _providers.Count)
+            .Where(index =>
+                _providers[index].Endpoint.Equals(primary.Endpoint, StringComparison.OrdinalIgnoreCase) &&
+                _providers[index].ResolveModel(request).Equals(primaryModel, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        var cursorKey = $"{_poolKey}\u001f{request.Workload}\u001f{primaryModel}";
         var ticket = PoolCursors.AddOrUpdate(
-            _poolKey,
+            cursorKey,
             _ => 0,
             (_, current) => current == long.MaxValue ? 0 : current + 1);
-        var startIndex = (int)(ticket % _providers.Count);
+        var rotationStart = rotationIndexes.Length == 0 ? 0 : (int)(ticket % rotationIndexes.Length);
 
-        for (var offset = 0; offset < _providers.Count; offset++)
+        for (var offset = 0; offset < rotationIndexes.Length; offset++)
         {
-            var index = (startIndex + offset) % _providers.Count;
+            var index = rotationIndexes[(rotationStart + offset) % rotationIndexes.Length];
+            if (attemptedProviderIndexes.Contains(index)) continue;
+            if (IsProviderCoolingDown(_providers[index])) continue;
+            return index;
+        }
+
+        // If every credential-equivalent primary is cooling down, preserve the old
+        // ordered fallback contract for any genuinely different provider/model.
+        for (var index = 0; index < _providers.Count; index++)
+        {
+            if (rotationIndexes.Contains(index)) continue;
             if (attemptedProviderIndexes.Contains(index)) continue;
             if (IsProviderCoolingDown(_providers[index])) continue;
             return index;
@@ -481,7 +512,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
     private bool IsProviderCoolingDown(ZaloAiProviderProfile profile)
     {
-        var key = BuildProviderHealthKey(profile);
+        var key = BuildProviderHealthKey(_healthScope, profile);
         if (!ProviderCooldowns.TryGetValue(key, out var until))
             return false;
 
@@ -496,15 +527,15 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     {
         var safeCooldown = cooldown <= TimeSpan.Zero ? _rateLimitCooldown : cooldown;
         var until = DateTimeOffset.UtcNow.Add(safeCooldown);
-        ProviderCooldowns[BuildProviderHealthKey(profile)] = until;
+        ProviderCooldowns[BuildProviderHealthKey(_healthScope, profile)] = until;
         _logger.LogWarning(
             "Zalo AI provider cooldown. Provider={Provider} CooldownSeconds={CooldownSeconds}",
             profile.Name,
             Math.Ceiling(safeCooldown.TotalSeconds));
     }
 
-    private static void ClearProviderCooldown(ZaloAiProviderProfile profile) =>
-        ProviderCooldowns.TryRemove(BuildProviderHealthKey(profile), out _);
+    private void ClearProviderCooldown(ZaloAiProviderProfile profile) =>
+        ProviderCooldowns.TryRemove(BuildProviderHealthKey(_healthScope, profile), out _);
 
     private TimeSpan ResolveRateLimitCooldown(HttpResponseMessage response)
     {
@@ -544,17 +575,19 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             Retryable: true);
     }
 
-    private static string BuildProviderHealthKey(ZaloAiProviderProfile profile)
+    private static string BuildProviderHealthKey(string healthScope, ZaloAiProviderProfile profile)
     {
         var keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.ApiKey)));
-        return $"{profile.Endpoint}\u001f{keyHash}";
+        return $"{healthScope}\u001f{profile.Endpoint}\u001f{keyHash}";
     }
 
-    private static string BuildPoolKey(IReadOnlyList<ZaloAiProviderProfile> providers) =>
+    private static string BuildPoolKey(
+        string healthScope,
+        IReadOnlyList<ZaloAiProviderProfile> providers) =>
         string.Join(
             "\u001e",
             providers.Select(profile =>
-                $"{profile.Name}\u001f{profile.Endpoint}\u001f{profile.DefaultModel}\u001f{BuildProviderHealthKey(profile)}"));
+                $"{profile.Name}\u001f{profile.Endpoint}\u001f{profile.DefaultModel}\u001f{BuildProviderHealthKey(healthScope, profile)}"));
 
     internal static void ResetProviderHealthForTests()
     {
