@@ -56,7 +56,7 @@ internal static partial class ZaloDraftPreparationDecisionPolicy
         var current = ZaloDraftConversationPolicy.Normalize(incoming.Content);
         current = Regex.Replace(
             current,
-            @"^\s*@?(?:bot|bott|npc)\s*",
+            @"^\s*@?(?:bott|bot|npc)\b\s*",
             string.Empty,
             RegexOptions.CultureInvariant).Trim();
         if (current is not ("huy" or "cancel"))
