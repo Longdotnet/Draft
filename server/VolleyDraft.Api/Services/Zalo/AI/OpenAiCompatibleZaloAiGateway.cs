@@ -505,7 +505,13 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 var position = Array.IndexOf(rotationIndexes, currentIndex);
                 var index = rotationIndexes[(position + offset) % rotationIndexes.Length];
                 if (attemptedProviderIndexes.Contains(index)) continue;
-                if (IsProviderCoolingDown(_providers[index])) continue;
+
+                var candidate = _providers[index];
+                if (IsProviderCoolingDown(candidate)) continue;
+                if (ShouldSkipEquivalentModelFailure(failureKind, current, candidate) &&
+                    candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
+                    candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 return index;
             }
 
