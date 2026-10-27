@@ -195,10 +195,13 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 if (!response.IsSuccessStatusCode)
                 {
                     var providerFailure = AiProviderFailure.FromHttp(response.StatusCode, body);
-                    if (providerFailure.Kind == AiProviderFailureKind.RateLimited)
-                        MarkProviderCooldown(profile, ResolveRateLimitCooldown(response));
-                    else if (providerFailure.Kind == AiProviderFailureKind.QuotaExceeded)
-                        MarkProviderCooldown(profile, _quotaCooldown);
+                    if (GetEquivalentPrimaryIndexes(request).Length > 1)
+                    {
+                        if (providerFailure.Kind == AiProviderFailureKind.RateLimited)
+                            MarkProviderCooldown(profile, ResolveRateLimitCooldown(response));
+                        else if (providerFailure.Kind == AiProviderFailureKind.QuotaExceeded)
+                            MarkProviderCooldown(profile, _quotaCooldown);
+                    }
 
                     lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
                     LogFailure(request.Workload, profile, model, attempt, providerFailure);
@@ -223,7 +226,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     return lastFailure;
                 }
 
-                ClearProviderCooldown(profile);
+                if (GetEquivalentPrimaryIndexes(request).Length > 1)
+                    ClearProviderCooldown(profile);
                 return new ZaloAiCompletionResult(
                     true,
                     completion.Content.Trim(),
@@ -445,23 +449,21 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     {
         if (_providers.Count == 0) return -1;
 
-        // Rotate only credential-equivalent slots for the configured primary route.
-        // Heterogeneous fallback endpoints/models keep their ordered primary/fallback
-        // semantics, while the five OpenRouter accounts can share load fairly.
-        var primary = _providers[0];
-        var primaryModel = primary.ResolveModel(request);
-        var rotationIndexes = Enumerable.Range(0, _providers.Count)
-            .Where(index =>
-                _providers[index].Endpoint.Equals(primary.Endpoint, StringComparison.OrdinalIgnoreCase) &&
-                _providers[index].ResolveModel(request).Equals(primaryModel, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
+        var rotationIndexes = GetEquivalentPrimaryIndexes(request);
 
+        // A normal primary + heterogeneous fallback pool keeps the historical contract:
+        // every fresh completion starts at the primary. Cooldown/rotation is only a
+        // credential-pool policy when 2+ accounts target the same endpoint + model.
+        if (rotationIndexes.Length <= 1)
+            return attemptedProviderIndexes.Contains(0) ? -1 : 0;
+
+        var primaryModel = _providers[0].ResolveModel(request);
         var cursorKey = $"{_poolKey}\u001f{request.Workload}\u001f{primaryModel}";
         var ticket = PoolCursors.AddOrUpdate(
             cursorKey,
             _ => 0,
             (_, current) => current == long.MaxValue ? 0 : current + 1);
-        var rotationStart = rotationIndexes.Length == 0 ? 0 : (int)(ticket % rotationIndexes.Length);
+        var rotationStart = (int)(ticket % rotationIndexes.Length);
 
         for (var offset = 0; offset < rotationIndexes.Length; offset++)
         {
@@ -471,13 +473,12 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             return index;
         }
 
-        // If every credential-equivalent primary is cooling down, preserve the old
-        // ordered fallback contract for any genuinely different provider/model.
+        // Every equivalent account is cooling down. A genuinely different configured
+        // fallback may still be used, preserving its original provider/model order.
         for (var index = 0; index < _providers.Count; index++)
         {
             if (rotationIndexes.Contains(index)) continue;
             if (attemptedProviderIndexes.Contains(index)) continue;
-            if (IsProviderCoolingDown(_providers[index])) continue;
             return index;
         }
 
@@ -490,16 +491,43 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         ZaloAiFailureKind failureKind,
         ISet<int> attemptedProviderIndexes)
     {
+        var rotationIndexes = GetEquivalentPrimaryIndexes(request);
+        var usesCredentialRotation = rotationIndexes.Length > 1;
         var current = _providers[currentIndex];
         var currentModel = current.ResolveModel(request);
 
-        for (var offset = 1; offset < _providers.Count; offset++)
+        if (usesCredentialRotation && rotationIndexes.Contains(currentIndex))
         {
-            var index = (currentIndex + offset) % _providers.Count;
+            // Equivalent account slots are a ring: if slot 5 was selected first,
+            // slot 1 is still a legitimate one-shot alternate unless cooling down.
+            for (var offset = 1; offset < rotationIndexes.Length; offset++)
+            {
+                var position = Array.IndexOf(rotationIndexes, currentIndex);
+                var index = rotationIndexes[(position + offset) % rotationIndexes.Length];
+                if (attemptedProviderIndexes.Contains(index)) continue;
+                if (IsProviderCoolingDown(_providers[index])) continue;
+                return index;
+            }
+
+            // Only after the account ring is unavailable do we walk truly different
+            // fallbacks, in their configured forward order.
+            for (var index = 0; index < _providers.Count; index++)
+            {
+                if (rotationIndexes.Contains(index)) continue;
+                if (attemptedProviderIndexes.Contains(index)) continue;
+                return index;
+            }
+
+            return -1;
+        }
+
+        // Heterogeneous primary/fallback pools retain the pre-rotation ordering and do
+        // not inherit historical cooldown from another completion.
+        for (var index = currentIndex + 1; index < _providers.Count; index++)
+        {
             if (attemptedProviderIndexes.Contains(index)) continue;
 
             var candidate = _providers[index];
-            if (IsProviderCoolingDown(candidate)) continue;
             if (ShouldSkipEquivalentModelFailure(failureKind, current, candidate) &&
                 candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
                 candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
@@ -508,6 +536,17 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         }
 
         return -1;
+    }
+
+    private int[] GetEquivalentPrimaryIndexes(ZaloAiCompletionRequest request)
+    {
+        var primary = _providers[0];
+        var primaryModel = primary.ResolveModel(request);
+        return Enumerable.Range(0, _providers.Count)
+            .Where(index =>
+                _providers[index].Endpoint.Equals(primary.Endpoint, StringComparison.OrdinalIgnoreCase) &&
+                _providers[index].ResolveModel(request).Equals(primaryModel, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
     }
 
     private bool IsProviderCoolingDown(ZaloAiProviderProfile profile)
