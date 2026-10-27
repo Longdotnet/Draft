@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace VolleyDraft.Api.Services.Zalo.AI;
@@ -12,12 +15,19 @@ namespace VolleyDraft.Api.Services.Zalo.AI;
 /// </summary>
 public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 {
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> ProviderCooldowns = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, long> PoolCursors = new(StringComparer.Ordinal);
+
     private readonly HttpClient _httpClient;
     private readonly ILogger<OpenAiCompatibleZaloAiGateway> _logger;
     private readonly IReadOnlyList<ZaloAiProviderProfile> _providers;
     private readonly int _retryCount;
     private readonly TimeSpan _defaultTimeout;
     private readonly IReadOnlyDictionary<ZaloAiWorkload, TimeSpan> _workloadTimeouts;
+    private readonly TimeSpan _rateLimitCooldown;
+    private readonly TimeSpan _quotaCooldown;
+    private readonly int _maxRateLimitProviderAttempts;
+    private readonly string _poolKey;
 
     public OpenAiCompatibleZaloAiGateway(
         HttpClient httpClient,
@@ -30,6 +40,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         _retryCount = Math.Clamp(configuration.GetValue("Ai:RetryCount", 0), 0, 2);
         _defaultTimeout = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:TimeoutSeconds", 6), 3, 60));
         _workloadTimeouts = LoadWorkloadTimeouts(configuration, _defaultTimeout);
+        _rateLimitCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:RateLimitCooldownSeconds", 60), 5, 900));
+        _quotaCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:QuotaCooldownSeconds", 900), 60, 86400));
+        _maxRateLimitProviderAttempts = Math.Clamp(configuration.GetValue("Ai:MaxRateLimitProviderAttempts", 2), 1, 2);
+        _poolKey = BuildPoolKey(_providers);
     }
 
     public bool IsConfigured => _providers.Count > 0;
@@ -43,15 +57,22 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
         var started = Stopwatch.StartNew();
         var totalAttempts = 0;
+        var rateLimitProviderAttempts = 0;
         ZaloAiCompletionResult? lastResult = null;
+        var attemptedProviderIndexes = new HashSet<int>();
+        var providerIndex = FindRoundRobinProviderIndex(attemptedProviderIndexes);
 
-        for (var providerIndex = 0; providerIndex < _providers.Count; providerIndex++)
+        if (providerIndex < 0)
+            return BuildCoolingDownResult(request, started.Elapsed);
+
+        while (providerIndex >= 0)
         {
+            attemptedProviderIndexes.Add(providerIndex);
             var profile = _providers[providerIndex];
             var result = await ExecuteProfileAsync(
                 profile,
                 request,
-                usedFallback: providerIndex > 0,
+                usedFallback: attemptedProviderIndexes.Count > 1,
                 cancellationToken);
 
             totalAttempts += result.Attempts;
@@ -65,10 +86,26 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             if (result.Success || cancellationToken.IsCancellationRequested)
                 return result;
 
-            if (!ShouldFallback(result.FailureKind) || providerIndex == _providers.Count - 1)
+            // The entire inbound turn has already consumed its external-call budget.
+            // Do not walk more provider slots locally and emit misleading failover logs.
+            if (string.Equals(result.ProviderCode, "local_request_budget_exhausted", StringComparison.Ordinal))
                 return result;
 
-            var nextProviderIndex = FindNextProviderIndex(providerIndex, request, result.FailureKind);
+            if (!ShouldFallback(result.FailureKind))
+                return result;
+
+            if (result.FailureKind is ZaloAiFailureKind.RateLimited or ZaloAiFailureKind.QuotaExceeded)
+            {
+                rateLimitProviderAttempts += 1;
+                if (rateLimitProviderAttempts >= _maxRateLimitProviderAttempts)
+                    return result;
+            }
+
+            var nextProviderIndex = FindNextProviderIndex(
+                providerIndex,
+                request,
+                result.FailureKind,
+                attemptedProviderIndexes);
             if (nextProviderIndex < 0)
                 return result;
 
@@ -81,10 +118,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 next.Name,
                 next.ResolveModel(request),
                 result.FailureKind);
-            providerIndex = nextProviderIndex - 1;
+            providerIndex = nextProviderIndex;
         }
 
-        return lastResult ?? ZaloAiCompletionResult.NotConfigured(request.Workload);
+        return lastResult ?? BuildCoolingDownResult(request, started.Elapsed);
     }
 
     private async Task<ZaloAiCompletionResult> ExecuteProfileAsync(
@@ -106,6 +143,16 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     model,
                     attempt - 1,
                     usedFallback);
+            }
+
+            if (!ZaloAiRequestBudget.TryConsume())
+            {
+                var budgetFailure = new AiProviderFailure(
+                    AiProviderFailureKind.RateLimited,
+                    429,
+                    "local_request_budget_exhausted");
+                LogFailure(request.Workload, profile, model, 0, budgetFailure);
+                return Failure(budgetFailure, profile, model, 0, usedFallback);
             }
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -141,6 +188,11 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 if (!response.IsSuccessStatusCode)
                 {
                     var providerFailure = AiProviderFailure.FromHttp(response.StatusCode, body);
+                    if (providerFailure.Kind == AiProviderFailureKind.RateLimited)
+                        MarkProviderCooldown(profile, ResolveRateLimitCooldown(response));
+                    else if (providerFailure.Kind == AiProviderFailureKind.QuotaExceeded)
+                        MarkProviderCooldown(profile, _quotaCooldown);
+
                     lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
                     LogFailure(request.Workload, profile, model, attempt, providerFailure);
 
@@ -164,6 +216,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     return lastFailure;
                 }
 
+                ClearProviderCooldown(profile);
                 return new ZaloAiCompletionResult(
                     true,
                     completion.Content.Trim(),
@@ -379,23 +432,134 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private TimeSpan ResolveTimeout(ZaloAiWorkload workload) =>
         _workloadTimeouts.TryGetValue(workload, out var timeout) ? timeout : _defaultTimeout;
 
+    private int FindRoundRobinProviderIndex(ISet<int> attemptedProviderIndexes)
+    {
+        if (_providers.Count == 0) return -1;
+
+        var ticket = PoolCursors.AddOrUpdate(
+            _poolKey,
+            _ => 0,
+            (_, current) => current == long.MaxValue ? 0 : current + 1);
+        var startIndex = (int)(ticket % _providers.Count);
+
+        for (var offset = 0; offset < _providers.Count; offset++)
+        {
+            var index = (startIndex + offset) % _providers.Count;
+            if (attemptedProviderIndexes.Contains(index)) continue;
+            if (IsProviderCoolingDown(_providers[index])) continue;
+            return index;
+        }
+
+        return -1;
+    }
+
     private int FindNextProviderIndex(
         int currentIndex,
         ZaloAiCompletionRequest request,
-        ZaloAiFailureKind failureKind)
+        ZaloAiFailureKind failureKind,
+        ISet<int> attemptedProviderIndexes)
     {
         var current = _providers[currentIndex];
         var currentModel = current.ResolveModel(request);
-        for (var index = currentIndex + 1; index < _providers.Count; index++)
+
+        for (var offset = 1; offset < _providers.Count; offset++)
         {
+            var index = (currentIndex + offset) % _providers.Count;
+            if (attemptedProviderIndexes.Contains(index)) continue;
+
             var candidate = _providers[index];
+            if (IsProviderCoolingDown(candidate)) continue;
             if (ShouldSkipEquivalentModelFailure(failureKind, current, candidate) &&
                 candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
                 candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
                 continue;
             return index;
         }
+
         return -1;
+    }
+
+    private bool IsProviderCoolingDown(ZaloAiProviderProfile profile)
+    {
+        var key = BuildProviderHealthKey(profile);
+        if (!ProviderCooldowns.TryGetValue(key, out var until))
+            return false;
+
+        if (until > DateTimeOffset.UtcNow)
+            return true;
+
+        ProviderCooldowns.TryRemove(key, out _);
+        return false;
+    }
+
+    private void MarkProviderCooldown(ZaloAiProviderProfile profile, TimeSpan cooldown)
+    {
+        var safeCooldown = cooldown <= TimeSpan.Zero ? _rateLimitCooldown : cooldown;
+        var until = DateTimeOffset.UtcNow.Add(safeCooldown);
+        ProviderCooldowns[BuildProviderHealthKey(profile)] = until;
+        _logger.LogWarning(
+            "Zalo AI provider cooldown. Provider={Provider} CooldownSeconds={CooldownSeconds}",
+            profile.Name,
+            Math.Ceiling(safeCooldown.TotalSeconds));
+    }
+
+    private static void ClearProviderCooldown(ZaloAiProviderProfile profile) =>
+        ProviderCooldowns.TryRemove(BuildProviderHealthKey(profile), out _);
+
+    private TimeSpan ResolveRateLimitCooldown(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+            return ClampCooldown(delta);
+
+        if (retryAfter?.Date is { } date)
+        {
+            var until = date - DateTimeOffset.UtcNow;
+            if (until > TimeSpan.Zero)
+                return ClampCooldown(until);
+        }
+
+        return _rateLimitCooldown;
+    }
+
+    private static TimeSpan ClampCooldown(TimeSpan value) =>
+        TimeSpan.FromSeconds(Math.Clamp((int)Math.Ceiling(value.TotalSeconds), 5, 900));
+
+    private ZaloAiCompletionResult BuildCoolingDownResult(
+        ZaloAiCompletionRequest request,
+        TimeSpan duration)
+    {
+        var profile = _providers[0];
+        return new ZaloAiCompletionResult(
+            false,
+            null,
+            ZaloAiFailureKind.RateLimited,
+            "provider-pool-cooldown",
+            profile.ResolveModel(request),
+            0,
+            429,
+            duration,
+            false,
+            ProviderCode: "provider_pool_cooling_down",
+            Retryable: true);
+    }
+
+    private static string BuildProviderHealthKey(ZaloAiProviderProfile profile)
+    {
+        var keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.ApiKey)));
+        return $"{profile.Endpoint}\u001f{keyHash}";
+    }
+
+    private static string BuildPoolKey(IReadOnlyList<ZaloAiProviderProfile> providers) =>
+        string.Join(
+            "\u001e",
+            providers.Select(profile =>
+                $"{profile.Name}\u001f{profile.Endpoint}\u001f{profile.DefaultModel}\u001f{BuildProviderHealthKey(profile)}"));
+
+    internal static void ResetProviderHealthForTests()
+    {
+        ProviderCooldowns.Clear();
+        PoolCursors.Clear();
     }
 
     private static bool ShouldSkipEquivalentModelFailure(
