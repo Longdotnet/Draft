@@ -47,6 +47,29 @@ internal static partial class ZaloDraftPreparationDecisionPolicy
         return new ZaloDraftPreparationDecisionCommand(ZaloDraftPreparationDecisionKind.PlayCurrentRoster);
     }
 
+    internal static bool IsQuotedBareStopMatch(ZaloIncomingMessageEvent incoming)
+    {
+        var quote = ZaloQuotedContextResolver.Resolve(incoming, incoming.Content);
+        if (!quote.RepliesToBot || string.IsNullOrWhiteSpace(quote.Content))
+            return false;
+
+        var current = ZaloDraftConversationPolicy.Normalize(incoming.Content);
+        current = Regex.Replace(
+            current,
+            @"^\s*@?(?:bot|bott|npc)\s*",
+            string.Empty,
+            RegexOptions.CultureInvariant).Trim();
+        if (current is not ("huy" or "cancel"))
+            return false;
+
+        var quoted = ZaloDraftConversationPolicy.Normalize(quote.Content);
+        var offersPlayCurrent = quoted.Contains("van danh", StringComparison.Ordinal) ||
+                                quoted.Contains("van choi", StringComparison.Ordinal) ||
+                                Regex.IsMatch(quoted, @"(?<![a-z0-9])chot\s*\d{1,2}(?![a-z0-9])", RegexOptions.CultureInvariant);
+        var offersRecruiting = quoted.Contains("kiem them", StringComparison.Ordinal);
+        return offersPlayCurrent && offersRecruiting;
+    }
+
     internal static bool CanAutoDraftEvenly(int effectiveSlotCount, int teamCount) =>
         teamCount > 0 &&
         effectiveSlotCount >= teamCount * 2 &&
@@ -100,12 +123,18 @@ public sealed partial class ZaloOverbookService
             return true;
 
         var command = ZaloDraftPreparationDecisionPolicy.TryParse(incoming.Content);
+        var resolutionContent = incoming.Content;
+        if (command is null && ZaloDraftPreparationDecisionPolicy.IsQuotedBareStopMatch(incoming))
+        {
+            command = new ZaloDraftPreparationDecisionCommand(ZaloDraftPreparationDecisionKind.StopMatch);
+            resolutionContent = incoming.Quote?.Content ?? incoming.Content;
+        }
         if (command is null) return false;
 
         var resolution = await ResolveDraftPreparationDecisionSessionAsync(
             connectionId,
             groupId,
-            incoming.Content,
+            resolutionContent,
             requirePlayCurrentDecision: false,
             cancellationToken);
         var session = resolution.Session;
