@@ -52,6 +52,38 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
     }
 
     [Fact]
+    public async Task Replying_bare_cancel_to_bot_leader_decision_stops_exact_match_without_ai()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var sessionId = await fixture.SeedReadySessionAsync(
+            "T6",
+            DateTimeOffset.UtcNow.AddHours(4));
+
+        var handled = await fixture.Service.TryHandleZaloConfirmationAsync(
+            fixture.Incoming(
+                "quoted-bare-cancel",
+                "@Bott huỷ",
+                new ZaloBridgeMessageQuote(
+                    "leader-decision-prompt",
+                    "bot-account",
+                    "Npc",
+                    "T6 hiện 5/18 chỗ. Nếu giữ danh sách hiện tại nói vẫn đánh; nếu tiếp tục tuyển nói kiếm thêm.",
+                    "text",
+                    DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds(),
+                    null)));
+
+        Assert.True(handled);
+        fixture.Db.ChangeTracker.Clear();
+
+        var decision = await new ZaloDraftPreparationDecisionStore(fixture.Db)
+            .GetAsync(sessionId);
+        Assert.NotNull(decision);
+        Assert.Equal(ZaloDraftPreparationDecisionKind.StopMatch, decision!.Kind);
+        var reply = Assert.Single(fixture.Bridge.GroupMessages);
+        Assert.Contains("dừng kèo T6", reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Explicit_draft_di_other_session_preserves_pending_approval_and_drafts_exact_target()
     {
         await using var fixture = await Fixture.CreateAsync();

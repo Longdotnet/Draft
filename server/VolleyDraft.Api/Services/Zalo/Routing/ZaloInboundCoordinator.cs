@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -35,6 +36,10 @@ public sealed class ZaloInboundCoordinator(
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        // Keep one inbound turn from multiplying a free-tier provider incident across
+        // classifier, semantic and chat stages. Deterministic lanes consume no budget.
+        using var aiBudget = ZaloAiRequestBudget.Begin(maxCalls: 2);
+
         // A trusted no-mention continuation must enter the legacy bot before the
         // coordinator claims the shared ZaloGroupMessage row. ZaloBotService then uses
         // its own durable processing lease and normal authorization/revalidation path.
