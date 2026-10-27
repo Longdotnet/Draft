@@ -91,7 +91,11 @@ public sealed partial class ZaloOverbookService
                 IntentSource: "AmbientSocialShadow",
                 Intent: ZaloBotIntent.GeneralChat.ToString(),
                 Confidence: social.EffectiveScore / 100d,
-                ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
+                ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds
+                    .Concat(social.EvidenceMessageIds ?? [])
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.Ordinal)
+                    .Take(12)),
                 AiCalled: social.AiCalled,
                 FallbackReason: $"candidate_generated|{social.AddressReason}|generation_fallback:{generationFallback}|send_enabled:{socialSettings.SendEnabled}|shadow_mode:{ambientSettings.ShadowMode}"),
                 cancellationToken);
@@ -366,7 +370,11 @@ public sealed partial class ZaloOverbookService
                 IntentSource: "AmbientSocialPilot",
                 Intent: ZaloBotIntent.GeneralChat.ToString(),
                 Confidence: social.EffectiveScore / 100d,
-                ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds.Take(12)),
+                ContextMessageIdsJson: JsonSerializer.Serialize(decision.Situation.RecentMessageIds
+                    .Concat(social.EvidenceMessageIds ?? [])
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.Ordinal)
+                    .Take(12)),
                 AiCalled: social.AiCalled,
                 ReplyMessageId: persistedReplyId,
                 FallbackReason: sentFallbackReason),

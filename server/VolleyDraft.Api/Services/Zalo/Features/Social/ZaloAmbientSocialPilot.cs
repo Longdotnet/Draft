@@ -1,3 +1,6 @@
+using System.Data;
+using System.Data.Common;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
@@ -35,7 +38,8 @@ public sealed record ZaloAmbientSocialReply(
     int EffectiveScore,
     string AddressReason,
     bool AiCalled = true,
-    string? GenerationFallbackReason = null);
+    string? GenerationFallbackReason = null,
+    IReadOnlyList<string>? EvidenceMessageIds = null);
 
 /// <summary>
 /// AI-only social responder. Social meaning is model-led once a user is confidently
@@ -101,16 +105,42 @@ public sealed class ZaloAmbientSocialResponder
         var capabilityQuestion = CapabilityQuestionPattern.IsMatch(normalizedIncoming);
         var address = ZaloConversationalAddressResolver.Resolve(incoming, hasActiveProposal: false);
         var directlyAddressed = address.Target == ZaloConversationalTarget.Bot && address.Confidence >= .9;
-        var userInitiatedSocialTurn = directlyAddressed || leaseTurn;
+        if (decision.Signals.Contains("ack_or_emoji_only", StringComparer.Ordinal))
+            return null;
+        var softBotReferenceCandidate = directlyAddressed &&
+                                        string.Equals(address.Reason, "explicit_bot_reference", StringComparison.Ordinal) &&
+                                        address.SpeechAct == ZaloConversationalSpeechAct.Unknown &&
+                                        !wakeTurn &&
+                                        !BotVocativePattern.IsMatch(normalizedIncoming) &&
+                                        !capabilityQuestion &&
+                                        !decision.Signals.Contains("question", StringComparer.Ordinal);
+        var recent = await LoadRecentContextAsync(
+            connectionId,
+            groupId,
+            incoming,
+            decision.Situation.RecentMessageIds,
+            settings.MaxContextMessages,
+            cancellationToken);
+        ZaloAmbientSocialTargetDecision? contextualTarget = null;
+        if (!leaseTurn &&
+            (!directlyAddressed || softBotReferenceCandidate) &&
+            aiGateway.IsConfigured &&
+            ZaloAmbientSocialTargetResolver.HasPlausibleBotContext(incoming, recent))
+        {
+            contextualTarget = await new ZaloAmbientSocialTargetResolver(aiGateway, logger)
+                .ResolveAsync(incoming, recent, cancellationToken);
+        }
+        var contextualBotBanter = contextualTarget?.AllowsImmediateBotBanter == true;
+        var effectiveDirectAddress = directlyAddressed && !softBotReferenceCandidate;
+        var userInitiatedSocialTurn = effectiveDirectAddress || leaseTurn || contextualBotBanter;
         var directTrashTalk = ZaloTrashTalkPolicy.LooksLikeDirectTrashTalk(incoming.Content, address, leaseTurn);
 
         if (!wakeTurn &&
             HumanVocativePattern.IsMatch(normalizedIncoming) &&
-            !BotVocativePattern.IsMatch(normalizedIncoming))
+            !BotVocativePattern.IsMatch(normalizedIncoming) &&
+            !contextualBotBanter)
             return null;
 
-        if (decision.Signals.Contains("ack_or_emoji_only", StringComparer.Ordinal))
-            return null;
         if (!userInitiatedSocialTurn &&
             decision.Signals.Contains("reply_to_member", StringComparer.Ordinal))
             return null;
@@ -119,7 +149,7 @@ public sealed class ZaloAmbientSocialResponder
             decision.Signals.Any(AmbientOnlySuppressionSignals.Contains))
             return null;
 
-        if (!leaseTurn && !directlyAddressed)
+        if (!leaseTurn && !effectiveDirectAddress && !contextualBotBanter)
             return null;
         if (!wakeTurn && !leaseTurn && !directTrashTalk &&
             address.SpeechAct != ZaloConversationalSpeechAct.Unknown && !capabilityQuestion)
@@ -138,9 +168,11 @@ public sealed class ZaloAmbientSocialResponder
 
         var addressScore = leaseTurn
             ? 96
-            : directlyAddressed
+            : effectiveDirectAddress
                 ? (int)Math.Round(address.Confidence * 100, MidpointRounding.AwayFromZero)
-                : 0;
+                : contextualBotBanter
+                    ? (int)Math.Round(contextualTarget!.Confidence * 100, MidpointRounding.AwayFromZero)
+                    : 0;
         var effectiveScore = Math.Max(decision.Score, addressScore);
         if (effectiveScore < settings.MinimumScore)
             return null;
@@ -170,12 +202,6 @@ public sealed class ZaloAmbientSocialResponder
                 : null;
         }
 
-        var recent = await LoadRecentContextAsync(
-            connectionId,
-            groupId,
-            decision.Situation.RecentMessageIds,
-            settings.MaxContextMessages,
-            cancellationToken);
         var speakerHistory = await LoadSpeakerHistoryAsync(
             connectionId,
             groupId,
@@ -197,7 +223,7 @@ public sealed class ZaloAmbientSocialResponder
             ? ZaloInsideJokeRetriever.FindHints(incoming.Content, speakerHistory)
             : [];
 
-        var banterTurn = directTrashTalk;
+        var banterTurn = directTrashTalk || contextualBotBanter;
         if (actionShapedSocialCandidate)
         {
             var meaning = await new ZaloAmbientSocialMeaningResolver(aiGateway, logger)
@@ -230,6 +256,7 @@ public sealed class ZaloAmbientSocialResponder
             profile,
             situation,
             insideJokes,
+            contextualTarget,
             cancellationToken);
 
         if (string.IsNullOrWhiteSpace(rawCandidate))
@@ -267,6 +294,8 @@ public sealed class ZaloAmbientSocialResponder
             effectiveScore,
             trashTalk.CanRoastBack
                 ? $"trash_talk_level_{(int)trashTalk.Level}"
+                : contextualBotBanter
+                    ? $"contextual_bot_{contextualTarget!.Stance.ToString().ToLowerInvariant()}_ai"
                 : banterTurn
                     ? "social_meaning_banter_ai"
                     : wakeTurn
@@ -275,7 +304,8 @@ public sealed class ZaloAmbientSocialResponder
                             ? "active_conversation_lease_ai"
                             : userInitiatedSocialTurn
                                 ? "direct_social_ai"
-                                : address.Reason);
+                                : address.Reason,
+            EvidenceMessageIds: contextualTarget?.EvidenceMessageIds);
     }
 
     private static ZaloTrashTalkPlan BuildDirectSocialSafetyPlan(
@@ -366,44 +396,147 @@ public sealed class ZaloAmbientSocialResponder
     private async Task<IReadOnlyList<ZaloAmbientSocialContextMessage>> LoadRecentContextAsync(
         string connectionId,
         string groupId,
+        ZaloIncomingMessageEvent incoming,
         IReadOnlyList<string> recentMessageIds,
         int maxContextMessages,
         CancellationToken cancellationToken)
     {
         var ids = recentMessageIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
-            .TakeLast(maxContextMessages)
+            .TakeLast(Math.Max(maxContextMessages, 12))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        if (ids.Length == 0) return [];
+        var incomingAt = SafeTimestamp(incoming.SentAtUnixMs);
+        var windowStart = incomingAt.AddMinutes(-5);
+        var windowEnd = incomingAt.AddMinutes(1);
 
         var rows = await db.ZaloGroupMessages
             .AsNoTracking()
             .Where(item => item.ZaloConnectionId == connectionId &&
                            item.GroupId == groupId &&
-                           ids.Contains(item.MessageId))
+                           ((item.SentAt >= windowStart && item.SentAt <= windowEnd) ||
+                            ids.Contains(item.MessageId)))
+            .OrderByDescending(item => item.SentAt)
+            .Take(Math.Max(24, maxContextMessages * 3))
             .Select(item => new
             {
                 item.MessageId,
                 item.SenderId,
                 item.SenderName,
                 item.Content,
-                item.IsFromBot
+                item.IsFromBot,
+                item.SentAt
             })
             .ToListAsync(cancellationToken);
 
-        var order = ids
-            .Select((id, index) => new { id, index })
-            .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
-        return rows
-            .OrderBy(item => order.GetValueOrDefault(item.MessageId, int.MaxValue))
-            .TakeLast(maxContextMessages)
+        var context = rows
             .Select(item => new ZaloAmbientSocialContextMessage(
                 item.SenderId,
                 Trim(item.SenderName, 80),
                 Trim(item.Content, 400),
-                item.IsFromBot))
+                item.IsFromBot,
+                item.MessageId,
+                item.SentAt,
+                "group_message"))
+            .ToList();
+
+        var knownMessageIds = context
+            .Select(item => item.MessageId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.Ordinal);
+        var proactive = await LoadRecentProactiveContextAsync(
+            connectionId,
+            groupId,
+            Trim(incoming.BotId, 100),
+            windowStart,
+            windowEnd,
+            Math.Max(24, maxContextMessages * 4),
+            cancellationToken);
+        foreach (var item in proactive)
+        {
+            var messageId = item.MessageId ?? string.Empty;
+            if (!knownMessageIds.Add(messageId)) continue;
+            context.Add(item);
+        }
+
+        return context
+            .Where(item => item.SentAt is null || item.SentAt <= windowEnd)
+            .OrderBy(item => item.SentAt ?? DateTimeOffset.MinValue)
+            .TakeLast(maxContextMessages)
             .ToArray();
+    }
+
+    private async Task<IReadOnlyList<ZaloAmbientSocialContextMessage>> LoadRecentProactiveContextAsync(
+        string connectionId,
+        string groupId,
+        string botId,
+        DateTimeOffset windowStart,
+        DateTimeOffset windowEnd,
+        int take,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var connection = db.Database.GetDbConnection();
+            if (connection.State != ConnectionState.Open)
+                await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT "Id", "Lane", "Kind", "MessageText", "SentAt", "ProviderMessageId"
+                FROM "ZaloProactiveMessageHistory"
+                WHERE "ConnectionId" = @connectionId AND "GroupId" = @groupId
+                ORDER BY "SentAt" DESC
+                LIMIT @take;
+                """;
+            AddParameter(command, "@connectionId", Trim(connectionId, 100));
+            AddParameter(command, "@groupId", Trim(groupId, 100));
+            AddParameter(command, "@take", Math.Clamp(take, 1, 100));
+
+            var botName = await db.ZaloConnections
+                .AsNoTracking()
+                .Where(item => item.Id == connectionId)
+                .Select(item => item.DisplayName)
+                .SingleOrDefaultAsync(cancellationToken)
+                ?? "Bot";
+            var result = new List<ZaloAmbientSocialContextMessage>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var sentAtRaw = reader.IsDBNull(4)
+                    ? null
+                    : Convert.ToString(reader.GetValue(4), CultureInfo.InvariantCulture);
+                if (!DateTimeOffset.TryParse(
+                        sentAtRaw,
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind,
+                        out var sentAt) ||
+                    sentAt < windowStart || sentAt > windowEnd)
+                    continue;
+                var id = reader.IsDBNull(0) ? string.Empty : Convert.ToString(reader.GetValue(0)) ?? string.Empty;
+                var providerId = reader.IsDBNull(5) ? null : Convert.ToString(reader.GetValue(5));
+                var lane = reader.IsDBNull(1) ? string.Empty : Convert.ToString(reader.GetValue(1)) ?? string.Empty;
+                var kind = reader.IsDBNull(2) ? string.Empty : Convert.ToString(reader.GetValue(2)) ?? string.Empty;
+                var messageText = reader.IsDBNull(3) ? string.Empty : Convert.ToString(reader.GetValue(3)) ?? string.Empty;
+                result.Add(new ZaloAmbientSocialContextMessage(
+                    botId,
+                    Trim(botName, 80),
+                    Trim(messageText, 400),
+                    true,
+                    string.IsNullOrWhiteSpace(providerId) ? $"proactive:{id}" : providerId,
+                    sentAt,
+                    $"proactive:{lane}:{kind}"));
+            }
+            return result;
+        }
+        catch (DbException exception)
+        {
+            // Proactive history is additive context. A missing/legacy table must not
+            // break ordinary direct social chat or any authoritative business router.
+            logger.LogDebug(exception,
+                "Could not load proactive social context Group={GroupId}; continuing with observed messages only.",
+                groupId);
+            return [];
+        }
     }
 
     private async Task<IReadOnlyList<ZaloSocialHistoryMessage>> LoadSpeakerHistoryAsync(
@@ -444,10 +577,15 @@ public sealed class ZaloAmbientSocialResponder
         ZaloSocialVibeProfile profile,
         ZaloSocialSituation situation,
         IReadOnlyList<ZaloInsideJokeHint> insideJokes,
+        ZaloAmbientSocialTargetDecision? contextualTarget,
         CancellationToken cancellationToken)
     {
         var mode = socialSafetyPlan.CanRoastBack
             ? $"Người dùng vừa chủ động cà khịa/chửi bot theo kiểu bạn bè. Được roast-back ở level {(int)socialSafetyPlan.Level}/4: mirror vibe và one-up nhẹ cho hài, không biến thành thù địch thật."
+            : contextualTarget?.AllowsImmediateBotBanter == true
+                ? contextualTarget.Stance == ZaloAmbientSocialStance.MildComplaint
+                    ? "Bộ phân loại ngữ cảnh đã chứng minh người dùng đang than nhẹ/cà khịa chính bot dù không @ hay reply bot. Được phản dame vui và tự nhận phần đúng nếu RecentMessages cho thấy bot vừa nói nhiều; không phủ nhận fact có bằng chứng."
+                    : "Bộ phân loại ngữ cảnh đã chứng minh người dùng đang cà khịa chính bot dù không @ hay reply bot. Được bắt đúng mạch hội thoại và phản dame nhẹ, dựa trên evidence thật thay vì bịa chuyện."
             : banterTurn
                 ? "Bộ phân loại social-meaning đã xác định đây là câu cà khịa/nói quá chứ không phải lệnh thao tác thật. Hãy bắt vibe và đáp lại vui như một member trong group, nhưng tuyệt đối không giả vờ đã kick/xóa/đổi dữ liệu."
                 : wakeTurn
@@ -507,6 +645,16 @@ public sealed class ZaloAmbientSocialResponder
                     quote.RefersToQuotedObject
                 }
                 : null,
+            ContextualBotTarget = contextualTarget is null
+                ? null
+                : new
+                {
+                    Subject = contextualTarget.Subject.ToString(),
+                    Stance = contextualTarget.Stance.ToString(),
+                    contextualTarget.Confidence,
+                    contextualTarget.Reason,
+                    contextualTarget.EvidenceMessageIds
+                },
             RecentMessages = recent,
             InsideJokeHints = insideJokes.Select(item => new
             {
@@ -559,6 +707,20 @@ public sealed class ZaloAmbientSocialResponder
     {
         var text = (value ?? string.Empty).Trim();
         return text.Length <= maxLength ? text : text[..maxLength];
+    }
+
+    private static DateTimeOffset SafeTimestamp(long unixMs)
+    {
+        try { return DateTimeOffset.FromUnixTimeMilliseconds(unixMs); }
+        catch (ArgumentOutOfRangeException) { return DateTimeOffset.UtcNow; }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
     }
 
     private static class SharedHttpClient

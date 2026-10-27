@@ -22,7 +22,10 @@ internal sealed record ZaloAmbientSocialContextMessage(
     string SenderId,
     string SenderName,
     string Content,
-    bool IsFromBot);
+    bool IsFromBot,
+    string? MessageId = null,
+    DateTimeOffset? SentAt = null,
+    string Source = "group_message");
 
 /// <summary>
 /// A read-only semantic gate for action-shaped group banter. It exists because words
