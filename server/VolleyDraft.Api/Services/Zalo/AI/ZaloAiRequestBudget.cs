@@ -7,13 +7,21 @@ namespace VolleyDraft.Api.Services.Zalo.AI;
 /// </summary>
 internal static class ZaloAiRequestBudget
 {
-    private sealed class BudgetState(int maxCalls)
+    private sealed class BudgetState(int preAnswerCalls, int answerCalls)
     {
-        private int remaining = Math.Max(0, maxCalls);
+        private int preAnswerRemaining = Math.Max(0, preAnswerCalls);
+        private int answerRemaining = Math.Max(0, answerCalls);
 
-        public int Remaining => Math.Max(0, Volatile.Read(ref remaining));
+        public int Remaining =>
+            Math.Max(0, Volatile.Read(ref preAnswerRemaining)) +
+            Math.Max(0, Volatile.Read(ref answerRemaining));
 
-        public bool TryConsume()
+        public bool TryConsume(ZaloAiWorkload workload) =>
+            IsAnswerWorkload(workload)
+                ? TryConsume(ref answerRemaining)
+                : TryConsume(ref preAnswerRemaining);
+
+        private static bool TryConsume(ref int remaining)
         {
             while (true)
             {
@@ -39,15 +47,20 @@ internal static class ZaloAiRequestBudget
 
     private static readonly AsyncLocal<BudgetState?> Current = new();
 
-    public static IDisposable Begin(int maxCalls)
+    public static IDisposable Begin(int preAnswerCalls, int answerCalls)
     {
         var previous = Current.Value;
-        Current.Value = new BudgetState(maxCalls);
+        Current.Value = new BudgetState(preAnswerCalls, answerCalls);
         return new Scope(previous);
     }
 
-    public static bool TryConsume() => Current.Value?.TryConsume() ?? true;
+    public static bool TryConsume(ZaloAiWorkload workload) => Current.Value?.TryConsume(workload) ?? true;
 
     internal static bool IsActive => Current.Value is not null;
     internal static int? RemainingForTests => Current.Value?.Remaining;
+
+    internal static bool IsAnswerWorkload(ZaloAiWorkload workload) => workload is
+        ZaloAiWorkload.GeneralChat or
+        ZaloAiWorkload.SocialReply or
+        ZaloAiWorkload.DomainNarration;
 }

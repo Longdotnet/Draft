@@ -36,9 +36,11 @@ public sealed class ZaloInboundCoordinator(
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
-        // Keep one inbound turn from multiplying a free-tier provider incident across
-        // classifier, semantic and chat stages. Deterministic lanes consume no budget.
-        using var aiBudget = ZaloAiRequestBudget.Begin(maxCalls: 2);
+        // Free-tier protection is stage-aware: one pre-answer semantic/classifier call
+        // may interpret the turn, while two answer calls are reserved so a user-facing
+        // reply can fail over once when its first provider account is rate-limited.
+        // Deterministic lanes consume no budget.
+        using var aiBudget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 2);
 
         // A trusted no-mention continuation must enter the legacy bot before the
         // coordinator claims the shared ZaloGroupMessage row. ZaloBotService then uses

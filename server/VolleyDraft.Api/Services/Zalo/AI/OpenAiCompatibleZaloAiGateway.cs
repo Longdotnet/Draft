@@ -68,8 +68,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         ZaloAiCompletionResult? lastResult = null;
         var attemptedProviderIndexes = new HashSet<int>();
         var providerIndex = FindRoundRobinProviderIndex(request, attemptedProviderIndexes);
-        var singleAttemptClassifier =
-            request.Workload == ZaloAiWorkload.IntentClassification &&
+        var singleAttemptPreAnswer =
+            !ZaloAiRequestBudget.IsAnswerWorkload(request.Workload) &&
             ZaloAiRequestBudget.IsActive;
 
         if (providerIndex < 0)
@@ -96,11 +96,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             if (result.Success || cancellationToken.IsCancellationRequested)
                 return result;
 
-            // Classification is a routing hint, not the user-facing answer. During an
-            // inbound turn it gets one external attempt only so provider failover cannot
-            // consume the call reserved for the downstream semantic/answer stage. A later
-            // distinct classifier is still allowed while the total turn budget remains.
-            if (singleAttemptClassifier)
+            // Pre-answer AI is a routing/semantic hint, not the final response. During an
+            // inbound turn it gets one external attempt only; answer generation owns a
+            // separate two-call pool so its first real 429 can still fail over once.
+            if (singleAttemptPreAnswer)
                 return result;
 
             // The entire inbound turn has already consumed its external-call budget.
@@ -150,7 +149,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         var model = profile.ResolveModel(request);
         ZaloAiCompletionResult? lastFailure = null;
 
-        var maximumAttempts = request.Workload == ZaloAiWorkload.IntentClassification && ZaloAiRequestBudget.IsActive
+        var maximumAttempts = !ZaloAiRequestBudget.IsAnswerWorkload(request.Workload) && ZaloAiRequestBudget.IsActive
             ? 1
             : _retryCount + 1;
         for (var attempt = 1; attempt <= maximumAttempts; attempt++)
@@ -165,7 +164,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     usedFallback);
             }
 
-            if (!ZaloAiRequestBudget.TryConsume())
+            if (!ZaloAiRequestBudget.TryConsume(request.Workload))
             {
                 var budgetFailure = new AiProviderFailure(
                     AiProviderFailureKind.RateLimited,

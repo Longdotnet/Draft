@@ -341,7 +341,7 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
-    public async Task RequestBudget_StopsThirdExternalAiCallAcrossStages()
+    public async Task RequestBudget_ReservesTwoAnswerCallsAfterOnePreAnswerCall()
     {
         var calls = 0;
         var handler = new StubHandler(request =>
@@ -358,7 +358,7 @@ public sealed class ZaloAiProviderPoolTests
         });
         var gateway = CreateGateway(handler, configuration);
 
-        using var budget = ZaloAiRequestBudget.Begin(2);
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 2);
         var first = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
             ZaloAiWorkload.IntentClassification,
             [new ZaloAiChatMessage("user", "one")]));
@@ -368,14 +368,18 @@ public sealed class ZaloAiProviderPoolTests
         var third = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
             ZaloAiWorkload.SocialReply,
             [new ZaloAiChatMessage("user", "three")]));
+        var fourth = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "four")]));
 
         Assert.True(first.Success);
         Assert.True(second.Success);
-        Assert.False(third.Success);
-        Assert.Equal(ZaloAiFailureKind.RateLimited, third.FailureKind);
-        Assert.Equal("local_request_budget_exhausted", third.ProviderCode);
-        Assert.Equal(0, third.Attempts);
-        Assert.Equal(2, calls);
+        Assert.True(third.Success);
+        Assert.False(fourth.Success);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, fourth.FailureKind);
+        Assert.Equal("local_request_budget_exhausted", fourth.ProviderCode);
+        Assert.Equal(0, fourth.Attempts);
+        Assert.Equal(3, calls);
     }
 
     [Fact]
@@ -411,7 +415,7 @@ public sealed class ZaloAiProviderPoolTests
         });
         var gateway = CreateGateway(handler, configuration);
 
-        using var budget = ZaloAiRequestBudget.Begin(2);
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 2);
         var classifier = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
             ZaloAiWorkload.IntentClassification,
             [new ZaloAiChatMessage("user", "classify this natural message")]));
@@ -429,7 +433,7 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
-    public async Task RequestBudget_AllowsTwoDistinctClassifierStagesWithinTotalBudget()
+    public async Task RequestBudget_BlocksSecondPreAnswerStageAndPreservesAnswerPool()
     {
         var calls = 0;
         var handler = new StubHandler(request =>
@@ -446,17 +450,80 @@ public sealed class ZaloAiProviderPoolTests
         });
         var gateway = CreateGateway(handler, configuration);
 
-        using var budget = ZaloAiRequestBudget.Begin(2);
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 2);
         var first = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
             ZaloAiWorkload.IntentClassification,
             [new ZaloAiChatMessage("user", "stage one")]));
         var second = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
             ZaloAiWorkload.IntentClassification,
             [new ZaloAiChatMessage("user", "stage two")]));
+        var answer = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "answer")]));
 
         Assert.True(first.Success);
-        Assert.True(second.Success);
+        Assert.False(second.Success);
+        Assert.Equal("local_request_budget_exhausted", second.ProviderCode);
+        Assert.True(answer.Success);
         Assert.Equal(2, calls);
+        Assert.Equal(1, ZaloAiRequestBudget.RemainingForTests);
+    }
+
+    [Fact]
+    public async Task RequestBudget_ClassifierInvalidResponse_ThenGeneralChat429_CanFailOverOnce()
+    {
+        var calls = new List<(string Key, string Model)>();
+        var handler = new StubHandler(async request =>
+        {
+            var body = await request.Content!.ReadAsStringAsync();
+            using var json = JsonDocument.Parse(body);
+            var model = json.RootElement.GetProperty("model").GetString()!;
+            var key = request.Headers.Authorization?.Parameter ?? string.Empty;
+            calls.Add((key, model));
+
+            if (model == "classifier-model")
+                return JsonResponse(HttpStatusCode.OK, "");
+            if (key == "key-a")
+                return ErrorResponse(HttpStatusCode.TooManyRequests, "rate_limit_exceeded", "busy");
+            return JsonResponse(HttpStatusCode.OK, "chat-fallback-ok");
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:MaxRateLimitProviderAttempts"] = "2",
+            ["Ai:Models:IntentClassification"] = "classifier-model",
+            ["Ai:Models:GeneralChat"] = "chat-model",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://stage-budget.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "default-model",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://stage-budget.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "default-model"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 2);
+        var classifier = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.IntentClassification,
+            [new ZaloAiChatMessage("user", "classify") ]));
+        var answer = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "answer") ]));
+
+        Assert.False(classifier.Success);
+        Assert.Equal(ZaloAiFailureKind.InvalidResponse, classifier.FailureKind);
+        Assert.True(answer.Success);
+        Assert.Equal("chat-fallback-ok", answer.Content);
+        Assert.Equal(
+            new[]
+            {
+                ("key-a", "classifier-model"),
+                ("key-a", "chat-model"),
+                ("key-b", "chat-model")
+            },
+            calls);
         Assert.Equal(0, ZaloAiRequestBudget.RemainingForTests);
     }
 
