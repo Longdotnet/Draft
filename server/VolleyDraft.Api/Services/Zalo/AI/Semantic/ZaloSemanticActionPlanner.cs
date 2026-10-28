@@ -169,7 +169,8 @@ internal sealed class ZaloSemanticActionPlanner
                 ],
                 Temperature: 0,
                 MaxTokens: 720,
-                CorrelationId: incoming.MessageId),
+                CorrelationId: incoming.MessageId,
+                ReasoningEnabled: true),
             cancellationToken);
 
         if (!result.Success)

@@ -15,6 +15,22 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloConversationSummaryTests
 {
+    [Theory]
+    [InlineData("bot nay khỏe không", ZaloBotIntent.GeneralChat, false)]
+    [InlineData("lịch T6 mấy giờ vậy", ZaloBotIntent.Unknown, false)]
+    [InlineData("group từ sáng tới giờ có món nào đáng hóng hông ta?", ZaloBotIntent.Unknown, true)]
+    [InlineData("nãy giờ Vũ nói gì vậy?", ZaloBotIntent.Unknown, true)]
+    [InlineData("vụ số 2 sao rồi?", ZaloBotIntent.Unknown, true)]
+    public void Semantic_probe_is_scoped_to_summary_shaped_turns(
+        string question,
+        ZaloBotIntent deterministicIntent,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            ZaloConversationSummaryIntentPolicy.ShouldProbeSemantically(deterministicIntent, question));
+    }
+
     [Fact]
     public void Vietnam_calendar_range_is_converted_to_utc_before_database_query()
     {

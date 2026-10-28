@@ -4,6 +4,15 @@ namespace VolleyDraft.Api.Services;
 
 internal static class ZaloConversationSummaryIntentPolicy
 {
+    public static bool ShouldProbeSemantically(ZaloBotIntent deterministicIntent, string value) =>
+        deterministicIntent is
+            ZaloBotIntent.SummarizeConversation or
+            ZaloBotIntent.SummarizeMemberConversation or
+            ZaloBotIntent.SummarizeHotTopics or
+            ZaloBotIntent.ConversationSummaryFollowUp ||
+        MightBeQuestion(value) ||
+        LooksLikeFollowUp(value);
+
     public static bool MightBeQuestion(string value)
     {
         var q = ZaloBotIntelligence.Normalize(value);

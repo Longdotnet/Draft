@@ -35,7 +35,8 @@ public sealed record ZaloAiCompletionRequest(
     double Temperature = 0.2,
     int MaxTokens = 300,
     string? ModelOverride = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    bool? ReasoningEnabled = null);
 
 public sealed record ZaloAiCompletionResult(
     bool Success,

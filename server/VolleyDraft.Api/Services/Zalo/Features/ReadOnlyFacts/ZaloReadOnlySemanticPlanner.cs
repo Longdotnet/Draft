@@ -272,8 +272,9 @@ internal sealed class ZaloReadOnlySemanticPlanner
                     new ZaloAiChatMessage("user", userPayload)
                 ],
                 Temperature: 0,
-                MaxTokens: 320,
-                CorrelationId: incoming.MessageId),
+                MaxTokens: 640,
+                CorrelationId: incoming.MessageId,
+                ReasoningEnabled: true),
             cancellationToken);
 
         if (!result.Success)
