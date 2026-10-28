@@ -12,13 +12,12 @@ public sealed partial class ZaloBotService
         CancellationToken cancellationToken)
     {
         var deterministic = ZaloBotIntelligence.ClassifyDeterministically(question);
-        var semanticProbe = deterministic.Intent is
-            ZaloBotIntent.GeneralChat or
-            ZaloBotIntent.Unknown or
-            ZaloBotIntent.SummarizeConversation or
-            ZaloBotIntent.SummarizeMemberConversation or
-            ZaloBotIntent.SummarizeHotTopics or
-            ZaloBotIntent.ConversationSummaryFollowUp;
+        // Do not spend a free-model classifier call on every ordinary GeneralChat/Unknown
+        // turn. This is only a candidate gate; natural/slang summary wording still goes to
+        // the semantic classifier via MightBeQuestion/LooksLikeFollowUp below.
+        var semanticProbe = ZaloConversationSummaryIntentPolicy.ShouldProbeSemantically(
+            deterministic.Intent,
+            question);
         var aiAllowed = semanticProbe &&
                         ai.IsConfigured &&
                         await IsAiCallAllowedAsync(connectionId, groupId, incoming.SenderId, cancellationToken);

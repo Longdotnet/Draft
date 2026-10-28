@@ -48,5 +48,6 @@ internal static class ZaloAiRequestBudget
 
     public static bool TryConsume() => Current.Value?.TryConsume() ?? true;
 
+    internal static bool IsActive => Current.Value is not null;
     internal static int? RemainingForTests => Current.Value?.Remaining;
 }

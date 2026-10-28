@@ -68,6 +68,9 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         ZaloAiCompletionResult? lastResult = null;
         var attemptedProviderIndexes = new HashSet<int>();
         var providerIndex = FindRoundRobinProviderIndex(request, attemptedProviderIndexes);
+        var singleAttemptClassifier =
+            request.Workload == ZaloAiWorkload.IntentClassification &&
+            ZaloAiRequestBudget.IsActive;
 
         if (providerIndex < 0)
             return BuildCoolingDownResult(request, started.Elapsed);
@@ -91,6 +94,13 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             lastResult = result;
 
             if (result.Success || cancellationToken.IsCancellationRequested)
+                return result;
+
+            // Classification is a routing hint, not the user-facing answer. During an
+            // inbound turn it gets one external attempt only so provider failover cannot
+            // consume the call reserved for the downstream semantic/answer stage. A later
+            // distinct classifier is still allowed while the total turn budget remains.
+            if (singleAttemptClassifier)
                 return result;
 
             // The entire inbound turn has already consumed its external-call budget.
@@ -140,7 +150,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         var model = profile.ResolveModel(request);
         ZaloAiCompletionResult? lastFailure = null;
 
-        for (var attempt = 1; attempt <= _retryCount + 1; attempt++)
+        var maximumAttempts = request.Workload == ZaloAiWorkload.IntentClassification && ZaloAiRequestBudget.IsActive
+            ? 1
+            : _retryCount + 1;
+        for (var attempt = 1; attempt <= maximumAttempts; attempt++)
         {
             if (cancellationToken.IsCancellationRequested)
             {
@@ -180,8 +193,9 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 };
                 if (RequiresJsonObject(request.Workload))
                     payload["response_format"] = new { type = "json_object" };
-                if (ShouldDisableReasoning(model, request.Workload))
-                    payload["reasoning"] = new { enabled = false };
+                var reasoningEnabled = ResolveReasoningEnabled(model, request);
+                if (reasoningEnabled is not null)
+                    payload["reasoning"] = new { enabled = reasoningEnabled.Value };
 
                 using var message = new HttpRequestMessage(HttpMethod.Post, profile.Endpoint)
                 {
@@ -206,7 +220,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
                     LogFailure(request.Workload, profile, model, attempt, providerFailure);
 
-                    if (attempt <= _retryCount && providerFailure.Retryable)
+                    if (attempt < maximumAttempts && providerFailure.Retryable)
                     {
                         await DelayBeforeRetryAsync(attempt, cancellationToken);
                         continue;
@@ -249,7 +263,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 if (providerFailure.Kind == AiProviderFailureKind.Cancelled)
                     return lastFailure;
 
-                if (attempt <= _retryCount && providerFailure.Retryable)
+                if (attempt < maximumAttempts && providerFailure.Retryable)
                 {
                     await DelayBeforeRetryAsync(attempt, cancellationToken);
                     continue;
@@ -263,7 +277,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
                 LogFailure(request.Workload, profile, model, attempt, providerFailure, exception);
 
-                if (attempt <= _retryCount && providerFailure.Retryable)
+                if (attempt < maximumAttempts && providerFailure.Retryable)
                 {
                     await DelayBeforeRetryAsync(attempt, cancellationToken);
                     continue;
@@ -659,9 +673,14 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         ZaloAiWorkload.StructuredExtraction or
         ZaloAiWorkload.DomainNarration;
 
-    private static bool ShouldDisableReasoning(string model, ZaloAiWorkload workload) =>
-        model.Contains("xing4.0", StringComparison.OrdinalIgnoreCase) &&
-        workload is ZaloAiWorkload.StructuredExtraction or ZaloAiWorkload.DomainNarration;
+    private static bool? ResolveReasoningEnabled(string model, ZaloAiCompletionRequest request)
+    {
+        if (!model.Contains("xing4.0", StringComparison.OrdinalIgnoreCase)) return null;
+        if (request.ReasoningEnabled is not null) return request.ReasoningEnabled.Value;
+        return request.Workload is ZaloAiWorkload.StructuredExtraction or ZaloAiWorkload.DomainNarration
+            ? false
+            : null;
+    }
 
     private static bool ShouldFallback(ZaloAiFailureKind kind) => kind is
         ZaloAiFailureKind.AuthenticationFailed or
