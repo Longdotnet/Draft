@@ -44,7 +44,11 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         _workloadTimeouts = LoadWorkloadTimeouts(configuration, _defaultTimeout);
         _rateLimitCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:RateLimitCooldownSeconds", 60), 5, 900));
         _quotaCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:QuotaCooldownSeconds", 900), 60, 86400));
-        _maxRateLimitProviderAttempts = Math.Clamp(configuration.GetValue("Ai:MaxRateLimitProviderAttempts", 2), 1, 2);
+        var configuredRateLimitAttempts = configuration.GetValue<int?>("Ai:MaxRateLimitProviderAttempts") ?? _providers.Count;
+        _maxRateLimitProviderAttempts = Math.Clamp(
+            configuredRateLimitAttempts,
+            1,
+            Math.Max(1, _providers.Count));
         // IConfiguration is a singleton in production, while tests normally build a fresh
         // root per case. Scoping health this way preserves process-wide production cooldown
         // without leaking one test's simulated 429 into unrelated gateway tests.
