@@ -181,6 +181,36 @@ public static class ZaloBotIntelligence
         return Regex.Replace(builder.ToString().Normalize(NormalizationForm.FormC), @"\s+", " ").Trim();
     }
 
+    public static bool IsClearlyCasualUnknown(string value)
+    {
+        var q = Normalize(value);
+        if (string.IsNullOrWhiteSpace(q)) return false;
+
+        if (q is
+            "hi" or "hello" or "hey" or "alo" or
+            "hi bot" or "hello bot" or "hey bot" or "alo bot" or
+            "ok" or "oke" or "okay" or "cam on" or "thanks" or "thank you" or
+            "haha" or "hehe" or "hihi" or "kkk")
+            return true;
+
+        if (Has(q,
+                "noi chuyen chut",
+                "noi chuyen ti",
+                "tam su chut",
+                "tam su ti",
+                "ke chuyen di",
+                "dua chut",
+                "bot con do khong",
+                "bot con khong",
+                "bot dau roi"))
+            return true;
+
+        return Regex.IsMatch(
+            q,
+            @"^\s*[-+]?\d+(?:\.\d+)?\s*[+\-*/x:]\s*[-+]?\d+(?:\.\d+)?\s*(?:=\s*\?)?\s*$",
+            RegexOptions.CultureInvariant);
+    }
+
     public static bool TryGetExactCommand(string value, out int command)
     {
         var normalized = Normalize(value);

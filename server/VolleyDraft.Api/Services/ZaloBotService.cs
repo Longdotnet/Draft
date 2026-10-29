@@ -1210,7 +1210,14 @@ public sealed partial class ZaloBotService(
             .ToListAsync(cancellationToken);
         var minimumConfidence = configuration.GetValue("ZaloBot:ClassifierConfidenceThreshold", .72);
         var aiAllowed = await IsAiCallAllowedAsync(activeConnectionId, groupId, incoming.SenderId, cancellationToken);
-        if (decision.Intent == ZaloBotIntent.Unknown && aiAllowed)
+        var obviousCasualUnknown =
+            decision.Intent == ZaloBotIntent.Unknown &&
+            (ZaloBotIntelligence.IsClearlyCasualUnknown(question) ||
+             ZaloAmbientWakePhrase.IsMatch(question) ||
+             ZaloBanterAffinityPolicy.LooksLikeDirectBanter(incoming));
+        if (decision.Intent == ZaloBotIntent.Unknown &&
+            aiAllowed &&
+            !obviousCasualUnknown)
         {
             decision = await ai.ClassifyAsync(new ZaloIntentClassifierContext(
                 question,
