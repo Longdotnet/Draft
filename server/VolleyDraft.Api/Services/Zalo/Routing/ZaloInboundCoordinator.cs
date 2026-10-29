@@ -37,10 +37,11 @@ public sealed class ZaloInboundCoordinator(
         CancellationToken cancellationToken = default)
     {
         // Free-tier protection is stage-aware: one pre-answer semantic/classifier call
-        // may interpret the turn, while two answer calls are reserved so a user-facing
-        // reply can fail over once when its first provider account is rate-limited.
+        // may interpret the turn, while five answer calls are reserved so a user-facing
+        // reply can walk every configured OpenRouter account when earlier accounts are
+        // rate-limited. Provider health still skips accounts already cooling down.
         // Deterministic lanes consume no budget.
-        using var aiBudget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 2);
+        using var aiBudget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 5);
 
         // A trusted no-mention continuation must enter the legacy bot before the
         // coordinator claims the shared ZaloGroupMessage row. ZaloBotService then uses
