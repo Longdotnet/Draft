@@ -36,6 +36,27 @@ public sealed class ZaloBotIntelligenceTests
         Assert.False(ZaloBotIntelligence.TryGetExactCommand(input, out _));
     }
 
+    [Theory]
+    [InlineData("bot còn đó không?")]
+    [InlineData("nói chuyện chút")]
+    [InlineData("1+1=?")]
+    [InlineData("hello bot")]
+    public void Casual_unknown_chat_skips_the_semantic_classifier(string input)
+    {
+        Assert.Equal(ZaloBotIntent.Unknown, ZaloBotIntelligence.ClassifyDeterministically(input).Intent);
+        Assert.True(ZaloBotIntelligence.IsClearlyCasualUnknown(input));
+    }
+
+    [Theory]
+    [InlineData("trận này ổn không bot?")]
+    [InlineData("slot bữa tới sao rồi?")]
+    [InlineData("team hiện tại nhìn ổn không?")]
+    [InlineData("poll này có gì lạ không?")]
+    public void Unknown_domain_chat_is_not_marked_as_obviously_casual(string input)
+    {
+        Assert.False(ZaloBotIntelligence.IsClearlyCasualUnknown(input));
+    }
+
     [Fact]
     public void Command_12_opens_member_inactivity_flow()
     {

@@ -102,7 +102,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
             // Pre-answer AI is a routing/semantic hint, not the final response. During an
             // inbound turn it gets one external attempt only; answer generation owns a
-            // separate two-call pool so its first real 429 can still fail over once.
+            // separate pool so user-facing work can walk the configured provider accounts.
             if (singleAttemptPreAnswer)
                 return result;
 
@@ -525,9 +525,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
                 var candidate = _providers[index];
                 if (IsProviderCoolingDown(candidate)) continue;
-                if (ShouldSkipEquivalentModelFailure(failureKind, current, candidate) &&
-                    candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
-                    candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
+                var candidateModel = candidate.ResolveModel(request);
+                if (candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
+                    candidateModel.Equals(currentModel, StringComparison.OrdinalIgnoreCase) &&
+                    ShouldSkipEquivalentModelFailure(failureKind, current, candidate, currentModel))
                     continue;
                 return index;
             }
@@ -551,9 +552,10 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
             if (attemptedProviderIndexes.Contains(index)) continue;
 
             var candidate = _providers[index];
-            if (ShouldSkipEquivalentModelFailure(failureKind, current, candidate) &&
-                candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
-                candidate.ResolveModel(request).Equals(currentModel, StringComparison.OrdinalIgnoreCase))
+            var candidateModel = candidate.ResolveModel(request);
+            if (candidate.Endpoint.Equals(current.Endpoint, StringComparison.OrdinalIgnoreCase) &&
+                candidateModel.Equals(currentModel, StringComparison.OrdinalIgnoreCase) &&
+                ShouldSkipEquivalentModelFailure(failureKind, current, candidate, currentModel))
                 continue;
             return index;
         }
@@ -662,14 +664,28 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private static bool ShouldSkipEquivalentModelFailure(
         ZaloAiFailureKind failureKind,
         ZaloAiProviderProfile current,
-        ZaloAiProviderProfile candidate) =>
-        failureKind is
-            ZaloAiFailureKind.Timeout or
-            ZaloAiFailureKind.InvalidResponse or
-            ZaloAiFailureKind.ModelOrEndpointUnavailable ||
+        ZaloAiProviderProfile candidate,
+        string currentModel)
+    {
+        if (failureKind == ZaloAiFailureKind.ModelOrEndpointUnavailable)
+            return true;
+
         // A 429 can be credential-scoped, so a different API key is a real failover slot.
-        failureKind == ZaloAiFailureKind.RateLimited &&
-        string.Equals(candidate.ApiKey, current.ApiKey, StringComparison.Ordinal);
+        if (failureKind == ZaloAiFailureKind.RateLimited)
+            return string.Equals(candidate.ApiKey, current.ApiKey, StringComparison.Ordinal);
+
+        // openrouter/free is a router alias, not a single fixed model. A second request can
+        // land on another free model/provider, so a timeout or malformed completion from one
+        // account must not suppress the remaining account slots.
+        if (IsDynamicRouterModel(currentModel))
+            return false;
+
+        return failureKind is ZaloAiFailureKind.Timeout or ZaloAiFailureKind.InvalidResponse;
+    }
+
+    private static bool IsDynamicRouterModel(string model) =>
+        model.Equals("openrouter/free", StringComparison.OrdinalIgnoreCase) ||
+        model.Equals("openrouter/auto", StringComparison.OrdinalIgnoreCase);
 
     private static bool RequiresJsonObject(ZaloAiWorkload workload) => workload is
         ZaloAiWorkload.IntentClassification or

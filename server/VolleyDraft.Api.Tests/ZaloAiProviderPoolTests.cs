@@ -254,6 +254,134 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
+    public async Task DynamicFreeRouter_InvalidResponse_FailsOverAcrossAccounts()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            var key = request.Headers.Authorization?.Parameter;
+            auth.Add(key);
+            return Task.FromResult(key == "key-a"
+                ? JsonResponse(HttpStatusCode.OK, "")
+                : JsonResponse(HttpStatusCode.OK, "router-recovered"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "openrouter/free",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "openrouter/free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "hello")]));
+
+        Assert.True(result.Success);
+        Assert.Equal("router-recovered", result.Content);
+        Assert.Equal(2, result.Attempts);
+        Assert.Equal(new[] { "key-a", "key-b" }, auth);
+    }
+
+    [Fact]
+    public async Task DynamicFreeRouter_Timeout_FailsOverAcrossAccounts()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            var key = request.Headers.Authorization?.Parameter;
+            auth.Add(key);
+            if (key == "key-a")
+                throw new TaskCanceledException("simulated provider timeout");
+
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, "router-timeout-recovered"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "openrouter/free",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "openrouter/free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "hello")]));
+
+        Assert.True(result.Success);
+        Assert.Equal("router-timeout-recovered", result.Content);
+        Assert.Equal(2, result.Attempts);
+        Assert.Equal(new[] { "key-a", "key-b" }, auth);
+    }
+
+    [Fact]
+    public async Task DomainNarration_FixedTimeout_SkipsEquivalentAccount_AndUsesRouterOverride()
+    {
+        var attempts = new List<(string Key, string Model)>();
+        var handler = new StubHandler(async request =>
+        {
+            var raw = await request.Content!.ReadAsStringAsync();
+            using var payload = JsonDocument.Parse(raw);
+            var model = payload.RootElement.GetProperty("model").GetString() ?? string.Empty;
+            var key = request.Headers.Authorization?.Parameter ?? string.Empty;
+            attempts.Add((key, model));
+            if (model == "xingchen-agi/xing4.0-29b-a4b:free")
+                throw new TaskCanceledException("simulated fixed-model timeout");
+
+            return JsonResponse(
+                HttpStatusCode.OK,
+                """{"answer":"router recovered","messageIds":[]}""");
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:Models:DomainNarration"] = "xingchen-agi/xing4.0-29b-a4b:free",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "xingchen-agi/xing4.0-29b-a4b:free",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "xingchen-agi/xing4.0-29b-a4b:free",
+            ["Ai:Providers:2:Provider"] = "slot-c",
+            ["Ai:Providers:2:Endpoint"] = "https://openrouter.test/chat",
+            ["Ai:Providers:2:ApiKey"] = "key-c",
+            ["Ai:Providers:2:Model"] = "xingchen-agi/xing4.0-29b-a4b:free",
+            ["Ai:Providers:2:Models:DomainNarration"] = "openrouter/free"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.DomainNarration,
+            [new ZaloAiChatMessage("user", "summarize")]));
+
+        Assert.True(result.Success);
+        Assert.Equal("openrouter/free", result.Model);
+        Assert.Equal(2, result.Attempts);
+        Assert.Equal(
+            new[]
+            {
+                ("key-a", "xingchen-agi/xing4.0-29b-a4b:free"),
+                ("key-c", "openrouter/free")
+            },
+            attempts);
+        Assert.DoesNotContain(attempts, attempt => attempt.Key == "key-b");
+    }
+
+    [Fact]
     public async Task ProviderPool_RoundRobinsHealthyAccountsAcrossRequests()
     {
         var auth = new List<string?>();
@@ -552,6 +680,44 @@ public sealed class ZaloAiProviderPoolTests
             },
             calls);
         Assert.Equal(0, ZaloAiRequestBudget.RemainingForTests);
+    }
+
+    [Fact]
+    public async Task RequestBudget_AllAnswerProvidersFail_DoesNotSendSixthExternalCall()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            auth.Add(request.Headers.Authorization?.Parameter);
+            return Task.FromResult(ErrorResponse(
+                HttpStatusCode.TooManyRequests,
+                "rate_limit_exceeded",
+                "busy"));
+        });
+        var values = new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:MaxRateLimitProviderAttempts"] = "6"
+        };
+        for (var index = 0; index < 6; index++)
+        {
+            values[$"Ai:Providers:{index}:Provider"] = $"slot-{index + 1}";
+            values[$"Ai:Providers:{index}:Endpoint"] = "https://budget-cap.test/chat";
+            values[$"Ai:Providers:{index}:ApiKey"] = $"key-{index + 1}";
+            values[$"Ai:Providers:{index}:Model"] = "openrouter/free";
+        }
+        var gateway = CreateGateway(handler, BuildConfiguration(values));
+
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 5);
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.GeneralChat,
+            [new ZaloAiChatMessage("user", "answer") ]));
+
+        Assert.False(result.Success);
+        Assert.Equal("local_request_budget_exhausted", result.ProviderCode);
+        Assert.Equal(5, auth.Count);
+        Assert.Equal(new[] { "key-1", "key-2", "key-3", "key-4", "key-5" }, auth);
+        Assert.Equal(1, ZaloAiRequestBudget.RemainingForTests);
     }
 
     [Fact]

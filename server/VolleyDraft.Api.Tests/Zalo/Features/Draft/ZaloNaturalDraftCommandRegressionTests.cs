@@ -196,6 +196,34 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
     }
 
     [Fact]
+    public async Task Casual_general_chat_skips_intent_classifier_and_calls_answer_model_once()
+    {
+        var aiHandler = new RecordingAiHandler();
+        await using var fixture = await Fixture.CreateAsync(
+            aiHandler,
+            new Dictionary<string, string?>
+            {
+                ["Ai:RetryCount"] = "0",
+                ["Ai:Providers:0:Provider"] = "test-openrouter",
+                ["Ai:Providers:0:Endpoint"] = "https://ai.test/chat",
+                ["Ai:Providers:0:ApiKey"] = "key-a",
+                ["Ai:Providers:0:Model"] = "default-model",
+                ["Ai:Models:IntentClassification"] = "classifier-model",
+                ["Ai:Models:GeneralChat"] = "chat-model"
+            });
+        await fixture.SeedReadySessionAsync("T6", DateTimeOffset.UtcNow.AddHours(4));
+
+        var result = await fixture.Coordinator.HandleAsync(
+            fixture.Incoming("casual-chat", "@Npc nói chuyện chút", mentionedBot: true));
+
+        Assert.True(result.Accepted);
+        Assert.Equal(["chat-model"], aiHandler.Models);
+        Assert.DoesNotContain("classifier-model", aiHandler.Models);
+        var reply = Assert.Single(fixture.Bridge.GroupMessages);
+        Assert.Contains("Có đây, nói nghe nè", reply, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Explicit_unavailable_session_never_falls_back_to_only_ready_session()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -311,7 +339,9 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
         public ZaloOverbookService Service { get; }
         public ZaloInboundCoordinator Coordinator { get; }
 
-        public static async Task<Fixture> CreateAsync()
+        public static async Task<Fixture> CreateAsync(
+            HttpMessageHandler? aiHandler = null,
+            IReadOnlyDictionary<string, string?>? configurationOverrides = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -322,16 +352,22 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
             await db.Database.EnsureCreatedAsync();
             await DatabaseSchemaPatch.EnsureLatestAsync(db);
 
+            var configurationValues = new Dictionary<string, string?>
+            {
+                ["Zalo:CredentialEncryptionKey"] = "natural-draft-regression-key",
+                ["ZaloBot:Ambient:Enabled"] = "false",
+                ["ZaloBot:AiStyleEnabled"] = "false",
+                ["ZaloBot:ExactCommandCooldownSeconds"] = "0",
+                ["ZaloBot:DraftAutopilot:Enabled"] = "true",
+                ["ZaloBot:DraftAutopilot:NaturalReadinessEnabled"] = "true"
+            };
+            if (configurationOverrides is not null)
+            {
+                foreach (var pair in configurationOverrides)
+                    configurationValues[pair.Key] = pair.Value;
+            }
             var configuration = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["Zalo:CredentialEncryptionKey"] = "natural-draft-regression-key",
-                    ["ZaloBot:Ambient:Enabled"] = "false",
-                    ["ZaloBot:AiStyleEnabled"] = "false",
-                    ["ZaloBot:ExactCommandCooldownSeconds"] = "0",
-                    ["ZaloBot:DraftAutopilot:Enabled"] = "true",
-                    ["ZaloBot:DraftAutopilot:NaturalReadinessEnabled"] = "true"
-                })
+                .AddInMemoryCollection(configurationValues)
                 .Build();
             var protector = new ZaloCredentialProtector(configuration);
             var bridgeHandler = new RecordingBridgeHandler();
@@ -370,7 +406,7 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
                 null!,
                 null!);
 
-            var aiHttpClient = new HttpClient(new NoAiHandler())
+            var aiHttpClient = new HttpClient(aiHandler ?? new NoAiHandler())
             {
                 BaseAddress = new Uri("https://ai.test/")
             };
@@ -556,7 +592,8 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
         public ZaloIncomingMessageEvent Incoming(
             string messageId,
             string content,
-            ZaloBridgeMessageQuote? quote = null) => new(
+            ZaloBridgeMessageQuote? quote = null,
+            bool mentionedBot = false) => new(
             accountId: "bot-account",
             botId: "bot-account",
             groupId: GroupId,
@@ -564,8 +601,10 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
             senderId: LeaderZaloId,
             senderName: "Leader",
             content: content,
-            mentions: [],
-            mentionedBot: false,
+            mentions: mentionedBot
+                ? [new ZaloBridgeMention("bot-account", 0, Math.Min("@Npc".Length, content.Length))]
+                : [],
+            mentionedBot: mentionedBot,
             sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             quote: quote);
 
@@ -701,6 +740,38 @@ public sealed class ZaloNaturalDraftCommandRegressionTests
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("AI must not be called by natural draft routing.");
+    }
+
+    private sealed class RecordingAiHandler : HttpMessageHandler
+    {
+        public List<string> Models { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var raw = await request.Content!.ReadAsStringAsync(cancellationToken);
+            using var body = JsonDocument.Parse(raw);
+            var model = body.RootElement.GetProperty("model").GetString() ?? string.Empty;
+            Models.Add(model);
+
+            var content = model == "classifier-model"
+                ? "{\"intent\":\"GeneralChat\",\"confidence\":0.99,\"sessionReference\":null,\"needsClarification\":false,\"clarificationQuestion\":null,\"reason\":\"chat\"}"
+                : "Có đây, nói nghe nè 😄";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new
+                    {
+                        choices = new[]
+                        {
+                            new { message = new { content } }
+                        }
+                    }),
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
     }
 
     private sealed class NoExternalHttpHandler : HttpMessageHandler

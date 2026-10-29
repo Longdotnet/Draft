@@ -86,7 +86,7 @@ public sealed class AiProviderFailureTests
     }
 
     [Fact]
-    public async Task General_chat_explains_quota_instead_of_generic_connection_error()
+    public async Task General_chat_quota_failure_uses_local_presence_fallback()
     {
         var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
         {
@@ -98,15 +98,13 @@ public sealed class AiProviderFailureTests
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("hết hạn mức", answer, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("dữ liệu hệ thống", answer, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("vẫn dùng được", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
         Assert.DoesNotContain("secret provider detail", answer, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("không kết nối được dịch vụ AI", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("hạn mức", answer, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task General_chat_explains_rate_limit_separately_from_quota()
+    public async Task General_chat_rate_limit_uses_local_presence_fallback()
     {
         var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.TooManyRequests)
         {
@@ -118,12 +116,13 @@ public sealed class AiProviderFailureTests
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("giới hạn số lượt gọi", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
+        Assert.DoesNotContain("giới hạn", answer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("hết hạn mức", answer, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task General_chat_explains_authentication_failure_without_leaking_provider_body()
+    public async Task General_chat_authentication_failure_uses_local_presence_fallback_without_leaking_provider_body()
     {
         var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
         {
@@ -135,12 +134,13 @@ public sealed class AiProviderFailureTests
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("xác thực", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
+        Assert.DoesNotContain("xác thực", answer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SUPER-SECRET", answer, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task General_chat_explains_provider_outage()
+    public async Task General_chat_provider_outage_uses_local_presence_fallback()
     {
         var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
         {
@@ -149,12 +149,12 @@ public sealed class AiProviderFailureTests
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("Nhà cung cấp AI", answer, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("tạm lỗi", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
+        Assert.DoesNotContain("nhà cung cấp", answer, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task General_chat_explains_invalid_success_payload_as_response_contract_failure()
+    public async Task General_chat_invalid_success_payload_uses_local_presence_fallback()
     {
         var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -163,28 +163,31 @@ public sealed class AiProviderFailureTests
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("không đúng định dạng", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
+        Assert.DoesNotContain("định dạng", answer, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task General_chat_explains_network_failure()
+    public async Task General_chat_network_failure_uses_local_presence_fallback()
     {
         var service = CreateService(_ => throw new HttpRequestException("dns secret.internal.example"));
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("không kết nối được tới nhà cung cấp AI", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
+        Assert.DoesNotContain("nhà cung cấp", answer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("secret.internal.example", answer, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task General_chat_explains_timeout()
+    public async Task General_chat_timeout_uses_local_presence_fallback()
     {
         var service = CreateService(_ => throw new TaskCanceledException("transport timed out"));
 
         var answer = await service.AnswerAsync(CreateContext());
 
-        Assert.Contains("phản hồi quá lâu", answer, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Có đây 😄 Bạn hỏi gì mình nghe nè.", answer);
+        Assert.DoesNotContain("phản hồi quá lâu", answer, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -660,7 +660,7 @@ public sealed partial class AiAssistantService(
 
         var completion = await CompleteViaGatewayAsync(payload, "general_answer", cancellationToken);
         if (!completion.Success)
-            return (completion.Failure ?? new AiProviderFailure(AiProviderFailureKind.Unknown)).ToUserMessage();
+            return GetGeneralProviderFailureFallback(context.Question);
         if (IsTruncationFinishReason(completion.FinishReason))
         {
             logger.LogWarning(
@@ -675,6 +675,40 @@ public sealed partial class AiAssistantService(
         var fallbackLanguage = await ResolveReplyLanguageAsync(context.Question, cancellationToken);
         return ZaloReplyLanguageDetector.GetReasoningFallback(fallbackLanguage);
     }
+
+    private static string GetGeneralProviderFailureFallback(string? question)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(question ?? string.Empty);
+        var language = ZaloReplyLanguageDetector.TryDetectFromScript(question) ??
+                       (Regex.IsMatch(normalized, @"^(?:hello|hi|hey)\b", RegexOptions.CultureInvariant)
+                           ? ZaloReplyLanguage.English
+                           : ZaloReplyLanguage.Vietnamese);
+
+        if (language == ZaloReplyLanguage.Vietnamese &&
+            (HasAny(normalized,
+                "bot con do khong",
+                "bot con khong",
+                "bot dau roi",
+                "alo bot",
+                "hello bot",
+                "hi bot") ||
+             normalized is "alo" or "hello" or "hi"))
+        {
+            return "Có đây 😄 Bạn hỏi gì mình nghe nè.";
+        }
+
+        if (language == ZaloReplyLanguage.English &&
+            (normalized is "hello" or "hi" or "hey" ||
+             HasAny(normalized, "hello bot", "hi bot", "hey bot", "are you there")))
+        {
+            return "I'm here 😄 What can I help you with?";
+        }
+
+        return ZaloReplyLanguageDetector.GetGeneralFallback(language);
+    }
+
+    private static bool HasAny(string value, params string[] terms) =>
+        terms.Any(term => value.Contains(term, StringComparison.Ordinal));
 
     private string? GetSafeGeneralAnswer(string? answer)
     {
