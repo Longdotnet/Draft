@@ -118,16 +118,51 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 now - lastLane.SentAt < TimeSpan.FromMinutes(settings.MinGroupIntervalMinutes))
                 continue;
 
-            var selections = await new ZaloMemberIntegrationService(db, bridge, configuration)
-                .BuildAsync(connectionId, groupId, history, now, cancellationToken);
+            var memberIntegration = new ZaloMemberIntegrationService(db, bridge, configuration);
+            var contexts = await memberIntegration.BuildContextsAsync(
+                connectionId,
+                groupId,
+                now,
+                cancellationToken);
+            if (contexts.Count == 0) continue;
+
+            var recentMessages = await LoadRecentHumanMessagesAsync(connectionId, groupId, now, cancellationToken);
+            var lastHumanMessageAt = recentMessages.Count == 0
+                ? (DateTimeOffset?)null
+                : recentMessages.Max(item => item.SentAt);
+
+            var guideOutcome = await new ZaloMemberMatchGuideService(
+                    db,
+                    bridge,
+                    proactiveStore,
+                    textGenerator,
+                    logger)
+                .TrySendAsync(
+                accountId,
+                connectionId,
+                groupId,
+                contexts,
+                history,
+                settings,
+                now,
+                localNow,
+                lastHumanMessageAt,
+                cancellationToken);
+            if (guideOutcome != ZaloMemberMatchGuideOutcome.None)
+            {
+                if (guideOutcome == ZaloMemberMatchGuideOutcome.Sent) sent += 1;
+                continue;
+            }
+
+            var selections = await memberIntegration.BuildFromContextsAsync(
+                contexts,
+                history,
+                now,
+                cancellationToken);
             if (selections.Count == 0) continue;
 
             var memberIntegrationHistory = history
-                .Where(item =>
-                    (item.Lane == ZaloProactiveLane.MemberIntegration ||
-                     item.Lane == ZaloProactiveLane.Community) &&
-                    item.Kind.StartsWith("member_integration_", StringComparison.Ordinal) &&
-                    item.SubjectUserId is not null)
+                .Where(ZaloMemberMatchGuidePolicy.CountsTowardMemberDelivery)
                 .ToList();
             var memberHistoryToday = memberIntegrationHistory
                 .Where(item => item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date)
@@ -144,11 +179,6 @@ public sealed class ZaloMemberIntegrationNudgeService(
                     group => group.Key,
                     group => group.Max(item => item.SentAt),
                     StringComparer.Ordinal);
-
-            var recentMessages = await LoadRecentHumanMessagesAsync(connectionId, groupId, now, cancellationToken);
-            var lastHumanMessageAt = recentMessages.Count == 0
-                ? (DateTimeOffset?)null
-                : recentMessages.Max(item => item.SentAt);
 
             var activityHints = await BuildActivityHintsAsync(
                 connectionId,

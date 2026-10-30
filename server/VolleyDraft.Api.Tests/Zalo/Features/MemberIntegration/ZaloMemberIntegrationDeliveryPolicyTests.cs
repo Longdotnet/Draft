@@ -70,6 +70,70 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
     }
 
     [Fact]
+    public void Same_day_match_guide_recipient_counts_as_member_integration_touch()
+    {
+        var marker = new ZaloProactiveMessageHistoryData(
+            "history-1",
+            "conn",
+            "group",
+            "2026-10-25",
+            ZaloProactiveLane.MemberIntegrationRecipient,
+            "member_integration_match_guide",
+            "member-integration:match-guide:session-1",
+            "user",
+            "Member",
+            "@Member coi sơ đồ sân nha",
+            Now.AddHours(-2),
+            "provider-1",
+            "guide:recipient:user");
+        var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(Context(joinedDaysAgo: 0), Settings());
+
+        Assert.True(ZaloMemberMatchGuidePolicy.CountsTowardMemberDelivery(marker));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(Now, 1, marker.SentAt, lifecycle));
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(4, true)]
+    [InlineData(6, true)]
+    [InlineData(8, false)]
+    public void Same_day_match_guide_targets_members_while_they_are_still_onboarding(
+        int joinedDaysAgo,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            ZaloMemberMatchGuidePolicy.IsEligible(
+                Context(joinedDaysAgo),
+                Settings()));
+    }
+
+    [Fact]
+    public void Same_day_match_guide_excludes_current_period_graduated_member()
+    {
+        var context = Context(joinedDaysAgo: 4);
+        var graduation = new ZaloProactiveMessageHistoryData(
+            "history-graduated",
+            "conn",
+            "group",
+            "2026-10-25",
+            ZaloProactiveLane.MemberIntegration,
+            "member_integration_graduated",
+            ZaloMemberIntegrationLifecyclePolicy.GraduationContentKey(context),
+            "user",
+            "Member",
+            "đã nhập hội",
+            Now.AddHours(-1),
+            "provider-graduated",
+            "graduated:user");
+
+        Assert.False(ZaloMemberMatchGuidePolicy.IsEligible(
+            context,
+            Settings(),
+            [graduation]));
+    }
+
+    [Fact]
     public void Integrating_member_is_limited_to_one_touch_per_day()
     {
         var lifecycle = ZaloMemberIntegrationLifecyclePolicy.Evaluate(Context(joinedDaysAgo: 4), Settings());

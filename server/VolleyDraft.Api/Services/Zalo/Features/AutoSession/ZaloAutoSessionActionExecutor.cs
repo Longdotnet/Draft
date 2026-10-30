@@ -66,6 +66,11 @@ internal sealed class ZaloAutoSessionActionExecutor(
             // Explicit organizer overrides still win, but stale defaults from preview do not.
             var effectiveTeamSize = Math.Clamp(teamSizeOverride ?? tracked.DefaultTeamSize, 2, 30);
             var effectiveLocation = locationOverride ?? tracked.DefaultLocation;
+            var venueGuidance = await new ZaloVenueGuidanceResolver(db).ResolveAsync(
+                tracked.ZaloConnectionId,
+                tracked.GroupId,
+                effectiveLocation,
+                cancellationToken: cancellationToken);
 
             foreach (var candidate in selected
                          .GroupBy(item => item.OptionId, StringComparer.Ordinal)
@@ -107,6 +112,8 @@ internal sealed class ZaloAutoSessionActionExecutor(
                     ZaloGroupName = tracked.GroupName,
                     StartTime = candidate.StartTime.ToUniversalTime(),
                     Location = effectiveLocation,
+                    ParkingInstructions = venueGuidance.ParkingInstructions,
+                    LocationImageUrl = venueGuidance.LocationImageUrl,
                     BotEnabled = tracked.BotEnabledForCreatedSessions,
                     BotOperatorZaloUserIdsJson = JsonSerializer.Serialize(organizerIds, JsonOptions),
                     TeamCount = 3,

@@ -23,7 +23,23 @@ internal sealed class ZaloMemberIntegrationService(
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        var contexts = await contextBuilder.BuildRecentAsync(connectionId, groupId, now, cancellationToken);
+        var contexts = await BuildContextsAsync(connectionId, groupId, now, cancellationToken);
+        return await BuildFromContextsAsync(contexts, proactiveHistory, now, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ZaloMemberIntegrationContext>> BuildContextsAsync(
+        string connectionId,
+        string groupId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default) =>
+        contextBuilder.BuildRecentAsync(connectionId, groupId, now, cancellationToken);
+
+    public async Task<IReadOnlyList<ZaloMemberIntegrationSelection>> BuildFromContextsAsync(
+        IReadOnlyList<ZaloMemberIntegrationContext> contexts,
+        IReadOnlyList<ZaloProactiveMessageHistoryData> proactiveHistory,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
         if (contexts.Count == 0) return [];
 
         var result = new List<ZaloMemberIntegrationSelection>();
@@ -31,6 +47,7 @@ internal sealed class ZaloMemberIntegrationService(
         {
             var memberHistory = proactiveHistory
                 .Where(item => (item.Lane == ZaloProactiveLane.MemberIntegration ||
+                                item.Lane == ZaloProactiveLane.MemberIntegrationRecipient ||
                                 item.Lane == ZaloProactiveLane.Community) &&
                                item.SubjectUserId == context.ZaloUserId &&
                                item.Kind.StartsWith("member_integration_", StringComparison.Ordinal))

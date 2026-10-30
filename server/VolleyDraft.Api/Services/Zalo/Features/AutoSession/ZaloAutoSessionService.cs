@@ -411,6 +411,11 @@ internal sealed class ZaloAutoSessionService(
                 currentTracked,
                 requirePreAuthorizedPolicy);
             tracked = currentTracked!;
+            var venueGuidance = await new ZaloVenueGuidanceResolver(db).ResolveAsync(
+                tracked.ZaloConnectionId,
+                tracked.GroupId,
+                tracked.DefaultLocation,
+                cancellationToken: cancellationToken);
 
             foreach (var candidate in selected
                          .GroupBy(item => item.OptionId, StringComparer.Ordinal)
@@ -442,6 +447,8 @@ internal sealed class ZaloAutoSessionService(
                     ZaloGroupName = tracked.GroupName,
                     StartTime = candidate.StartTime,
                     Location = tracked.DefaultLocation,
+                    ParkingInstructions = venueGuidance.ParkingInstructions,
+                    LocationImageUrl = venueGuidance.LocationImageUrl,
                     BotEnabled = tracked.BotEnabledForCreatedSessions,
                     BotOperatorZaloUserIdsJson = JsonSerializer.Serialize(organizerIds, JsonOptions),
                     TeamCount = 3,

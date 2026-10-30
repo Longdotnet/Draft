@@ -13,6 +13,7 @@ internal static class ZaloProactiveLane
     public const string SocialPresence = "social_presence";
     public const string Community = "community";
     public const string MemberIntegration = "member_integration";
+    public const string MemberIntegrationRecipient = "member_integration_recipient";
 }
 
 internal sealed record ZaloProactiveMessageHistoryData(
