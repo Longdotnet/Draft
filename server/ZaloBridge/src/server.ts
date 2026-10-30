@@ -34,6 +34,7 @@ import {
   getGroupMemberDirectory,
   getGroupMessageHistory,
   getGroupRoles,
+  leaveGroup,
   getListenerStatuses,
   getMembers,
   getPoll,
@@ -219,6 +220,20 @@ app.post("/v1/groups/:groupId/roles", async (request, response) => {
     `group:${groupId}:roles`,
     () => getGroupRoles(credentials, groupId),
     "roles.read",
+  ));
+});
+
+app.post("/v1/groups/:groupId/leave", async (request, response) => {
+  const accountId = typeof request.body?.accountId === "string" ? request.body.accountId.trim() : "";
+  const groupId = request.params.groupId.trim();
+  if (!accountId || !groupId) {
+    response.status(400).json({ error: "accountId and groupId are required" });
+    return;
+  }
+  response.json(await zaloProviderTrafficGovernor.runWithAccount(
+    accountId,
+    () => leaveGroup(accountId, groupId),
+    "group.leave",
   ));
 });
 
