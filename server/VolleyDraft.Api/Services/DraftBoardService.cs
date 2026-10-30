@@ -73,6 +73,7 @@ public sealed class DraftBoardService(
             var teamIds = teams.Select(team => team.Id).ToHashSet(StringComparer.Ordinal);
             var slots = await db.DraftSlots
                 .Include(slot => slot.Players)
+                .ThenInclude(link => link.SessionPlayer)
                 .Where(slot => slot.SessionId == sessionId && slot.AssignedTeamId != null)
                 .OrderByDescending(slot => slot.IsCaptainSlot)
                 .ThenBy(slot => slot.DisplayName)
@@ -95,8 +96,6 @@ public sealed class DraftBoardService(
                 var assignment = assignmentBySlot[slot.Id];
                 if (!string.Equals(slot.AssignedTeamId, assignment.ExpectedTeamId, StringComparison.Ordinal))
                     return Failure<DraftStateResponse>(StatusCodes.Status409Conflict, "Một slot đã được chuyển sang team khác. Hãy tải lại bảng đội hình.");
-                if (slot.IsCaptainSlot && !string.Equals(slot.AssignedTeamId, assignment.TargetTeamId, StringComparison.Ordinal))
-                    return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest, $"Không thể kéo slot đội trưởng {slot.DisplayName}. Hãy dùng chức năng nhường slot đội trưởng.");
             }
 
             var currentCounts = slots.GroupBy(slot => slot.AssignedTeamId!)
@@ -109,6 +108,51 @@ public sealed class DraftBoardService(
             var changed = slots.Where(slot => !string.Equals(slot.AssignedTeamId, assignmentBySlot[slot.Id].TargetTeamId, StringComparison.Ordinal)).ToList();
             if (changed.Count == 0)
                 return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest, "Đội hình chưa có thay đổi để lưu.");
+
+            var captainTransfers = new List<(Team Team, DraftSlot PreviousSlot, DraftSlot NextSlot, SessionPlayer? PreviousCaptain, SessionPlayer NextCaptain)>();
+            foreach (var team in teams)
+            {
+                var captainSlots = slots
+                    .Where(slot => string.Equals(slot.AssignedTeamId, team.Id, StringComparison.Ordinal) && slot.IsCaptainSlot)
+                    .ToList();
+                if (captainSlots.Count != 1)
+                    return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest, $"{team.Name} phải có đúng một slot đội trưởng trước khi chỉnh đội hình.");
+
+                var captainSlot = captainSlots[0];
+                var captainTargetTeamId = assignmentBySlot[captainSlot.Id].TargetTeamId;
+                if (string.Equals(captainTargetTeamId, team.Id, StringComparison.Ordinal))
+                    continue;
+
+                var incomingSlots = slots
+                    .Where(slot =>
+                        !string.Equals(slot.AssignedTeamId, team.Id, StringComparison.Ordinal) &&
+                        string.Equals(assignmentBySlot[slot.Id].TargetTeamId, team.Id, StringComparison.Ordinal))
+                    .ToList();
+                var reciprocalSlots = incomingSlots
+                    .Where(slot => string.Equals(slot.AssignedTeamId, captainTargetTeamId, StringComparison.Ordinal))
+                    .ToList();
+                var replacementSlot = reciprocalSlots.Count == 1
+                    ? reciprocalSlots[0]
+                    : incomingSlots.Count == 1
+                        ? incomingSlots[0]
+                        : null;
+                if (replacementSlot is null)
+                    return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest,
+                        $"Khi chuyển đội trưởng {captainSlot.DisplayName}, hãy đổi trực tiếp với một slot khác để xác định đội trưởng mới của {team.Name}.");
+
+                var nextCaptain = replacementSlot.Players
+                    .OrderBy(link => link.RotationOrder)
+                    .Select(link => link.SessionPlayer)
+                    .FirstOrDefault();
+                if (nextCaptain is null)
+                    return Failure<DraftStateResponse>(StatusCodes.Status400BadRequest, $"Slot {replacementSlot.DisplayName} không có người để nhận vai trò đội trưởng.");
+
+                var previousCaptain = captainSlot.Players
+                    .Where(link => string.Equals(link.SessionPlayerId, team.CaptainSessionPlayerId, StringComparison.Ordinal))
+                    .Select(link => link.SessionPlayer)
+                    .FirstOrDefault();
+                captainTransfers.Add((team, captainSlot, replacementSlot, previousCaptain, nextCaptain));
+            }
 
             var relationshipOverrides = slots
                 .SelectMany(slot => slot.Players.Select(link => new
@@ -131,6 +175,19 @@ public sealed class DraftBoardService(
             var before = await actionHistory.CaptureAsync(sessionId, cancellationToken);
             foreach (var slot in changed)
                 slot.AssignedTeamId = assignmentBySlot[slot.Id].TargetTeamId;
+            foreach (var transfer in captainTransfers)
+            {
+                transfer.PreviousSlot.IsCaptainSlot = false;
+                if (transfer.PreviousCaptain is not null)
+                    transfer.PreviousCaptain.IsCaptainEligible = false;
+            }
+            foreach (var transfer in captainTransfers)
+            {
+                transfer.NextSlot.IsCaptainSlot = true;
+                transfer.NextCaptain.IsCaptainEligible = true;
+                transfer.Team.CaptainSessionPlayerId = transfer.NextCaptain.Id;
+                transfer.Team.CaptainSessionPlayer = transfer.NextCaptain;
+            }
             foreach (var team in teams)
                 team.TotalAverageScore = slots.Where(slot => slot.AssignedTeamId == team.Id).Sum(slot => slot.AverageScore);
             session.UpdatedAt = now;

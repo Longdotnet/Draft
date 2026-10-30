@@ -648,10 +648,6 @@
     @apply border-orange-300 bg-orange-400/15 shadow-lg shadow-orange-500/10;
   }
 
-  .draft-board-slot.locked {
-    @apply cursor-not-allowed border-orange-300/25 bg-orange-950/20;
-  }
-
   .draft-board-warning {
     @apply rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-sm font-bold text-amber-100;
   }

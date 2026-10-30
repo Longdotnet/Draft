@@ -1805,19 +1805,17 @@ export function DbDraftFlow() {
                                 <div className="draft-board-slots">
                                   {slots.map((slot) => (
                                     <button
-                                      className={`draft-board-slot${selectedBoardSlotId === slot.id ? " selected" : ""}${slot.isCaptainSlot ? " locked" : ""}`}
+                                      className={`draft-board-slot${selectedBoardSlotId === slot.id ? " selected" : ""}`}
                                       type="button"
                                       key={slot.id}
-                                      draggable={!slot.isCaptainSlot}
+                                      draggable
                                       onDragStart={() => {
                                         setDraggedSlotId(slot.id);
                                         setSelectedBoardSlotId(slot.id);
                                       }}
                                       onDragEnd={() => setDraggedSlotId(null)}
                                       onClick={() => {
-                                        if (!slot.isCaptainSlot) {
-                                          setSelectedBoardSlotId((current) => current === slot.id ? null : slot.id);
-                                        }
+                                        setSelectedBoardSlotId((current) => current === slot.id ? null : slot.id);
                                       }}
                                     >
                                       <GripVertical size={17} aria-hidden="true" />
@@ -1827,7 +1825,7 @@ export function DbDraftFlow() {
                                           {slot.type === "Shared" ? "Share slot" : "Một người"} · {slot.averageScore.toFixed(1)} điểm
                                         </small>
                                       </span>
-                                      {slot.isCaptainSlot && <em>Khoá</em>}
+                                      {slot.isCaptainSlot && <em>Đội trưởng</em>}
                                     </button>
                                   ))}
                                 </div>

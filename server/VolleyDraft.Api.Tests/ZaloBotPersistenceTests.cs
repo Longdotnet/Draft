@@ -1357,6 +1357,52 @@ public sealed class ZaloBotPersistenceTests
     }
 
     [Fact]
+    public async Task Manual_board_edit_can_swap_captain_with_member_and_transfers_captain_role()
+    {
+        await using var fixture = await DbFixture.CreateAsync();
+        var session = await SeedFinishedDraftAsync(fixture.Db);
+        var history = new ZaloBotActionHistoryService(
+            fixture.Db,
+            NullLogger<ZaloBotActionHistoryService>.Instance);
+        var draft = new SessionDraftService(fixture.Db);
+        var board = new DraftBoardService(fixture.Db, draft, history);
+        var state = await draft.GetDraftStateAsync("admin", session.Id);
+        Assert.True(state.IsSuccess, state.Error);
+        var assignments = state.Value!.TeamPreview.SelectMany(team => team.Slots.Select(slot =>
+            new DraftBoardAssignmentRequest(
+                slot.Id,
+                team.TeamId,
+                slot.Id == "captain-slot-c" ? "team-b" :
+                slot.Id == "nick-tran-slot" ? "team-c" : team.TeamId)))
+            .ToList();
+
+        var result = await board.UpdateAsync(
+            "admin",
+            session.Id,
+            new UpdateDraftBoardRequest(state.Value.StateToken, assignments));
+
+        Assert.True(result.IsSuccess, result.Error);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("team-b", await fixture.Db.DraftSlots.Where(slot => slot.Id == "captain-slot-c")
+            .Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.False(await fixture.Db.DraftSlots.Where(slot => slot.Id == "captain-slot-c")
+            .Select(slot => slot.IsCaptainSlot).SingleAsync());
+        Assert.Equal("team-c", await fixture.Db.DraftSlots.Where(slot => slot.Id == "nick-tran-slot")
+            .Select(slot => slot.AssignedTeamId).SingleAsync());
+        Assert.True(await fixture.Db.DraftSlots.Where(slot => slot.Id == "nick-tran-slot")
+            .Select(slot => slot.IsCaptainSlot).SingleAsync());
+        Assert.Equal("nick-tran", await fixture.Db.Teams.Where(team => team.Id == "team-c")
+            .Select(team => team.CaptainSessionPlayerId).SingleAsync());
+        Assert.Equal("captain-b", await fixture.Db.Teams.Where(team => team.Id == "team-b")
+            .Select(team => team.CaptainSessionPlayerId).SingleAsync());
+        Assert.True(await fixture.Db.SessionPlayers.Where(player => player.Id == "nick-tran")
+            .Select(player => player.IsCaptainEligible).SingleAsync());
+        Assert.False(await fixture.Db.SessionPlayers.Where(player => player.Id == "captain-c")
+            .Select(player => player.IsCaptainEligible).SingleAsync());
+        Assert.Equal("Nick Tran", result.Value!.TeamPreview.Single(team => team.TeamId == "team-c").CaptainName);
+    }
+
+    [Fact]
     public async Task Manual_board_edit_rejects_apart_constraint_violation()
     {
         await using var fixture = await DbFixture.CreateAsync();
