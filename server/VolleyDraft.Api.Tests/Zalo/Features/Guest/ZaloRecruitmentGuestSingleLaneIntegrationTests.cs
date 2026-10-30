@@ -16,7 +16,7 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
 {
     [Fact]
-    public async Task MentionedNaturalOutsideGuestRequest_IsGuidanceOnly_AndDoesNotChangeRoster()
+    public async Task MentionedMemberPlusOne_IsUnderstoodAsOutsideGuestSponsor_AndDoesNotAddMemberDirectly()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -68,6 +68,15 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
         db.Users.Add(admin);
         db.ZaloConnections.Add(zalo);
         db.MatchSessions.Add(session);
+        db.ZaloGroupMembers.Add(new ZaloGroupMember
+        {
+            Id = "group-member-hmy",
+            ZaloConnectionId = zalo.Id,
+            GroupId = "g1",
+            ZaloUserId = "hmy-id",
+            DisplayName = "Hmy Bk",
+            IsCurrentMember = true
+        });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
@@ -95,6 +104,8 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
             configuration,
             NullLogger<ZaloOverbookService>.Instance);
 
+        const string content = "@Npc +1 bạn @Hmy Bk hôm nay";
+        var hmyPos = content.IndexOf("@Hmy Bk", StringComparison.Ordinal);
         var incoming = new ZaloIncomingMessageEvent(
             accountId: "bot-account",
             botId: "bot-account",
@@ -102,8 +113,12 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
             messageId: "direct-guest-1",
             senderId: "tan-chi",
             senderName: "Tấn Chí",
-            content: "@Npc nay tui đi chung với 1 bạn ở ngoài gr",
-            mentions: [],
+            content: content,
+            mentions:
+            [
+                new ZaloBridgeMention("bot-account", 0, "@Npc".Length),
+                new ZaloBridgeMention("hmy-id", hmyPos, "@Hmy Bk".Length)
+            ],
             mentionedBot: true,
             sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
@@ -114,7 +129,9 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
         using (var payload = JsonDocument.Parse(Assert.Single(bridgeHandler.RequestBodies)))
         {
             var message = payload.RootElement.GetProperty("message").GetString();
-            Assert.Contains("chưa cộng slot", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("bạn ngoài group", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Hmy Bk", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("không phải thêm Hmy Bk", message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("reply đúng tin", message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("+1", message, StringComparison.Ordinal);
         }
@@ -123,6 +140,9 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
             .AsNoTracking()
             .CountAsync(item => item.SessionId == "session-t7" && item.IsPresent);
         Assert.Equal(17, presentCount);
+        Assert.False(await db.SessionPlayers
+            .AsNoTracking()
+            .AnyAsync(item => item.SessionId == "session-t7" && item.DisplayName == "Hmy Bk"));
         Assert.False(await db.ZaloGuestReservations.AsNoTracking().AnyAsync());
 
         var stored = await db.ZaloGroupMessages

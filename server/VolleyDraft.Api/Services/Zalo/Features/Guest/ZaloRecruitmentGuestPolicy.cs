@@ -26,7 +26,24 @@ internal sealed record ZaloRecruitmentGuestCommand(
     PlayerGender? Gender = null,
     PlayerRole? Role = null,
     PlayerLevel? Level = null,
-    bool ApplyAll = false);
+    bool ApplyAll = false,
+    string? SponsorReference = null);
+
+internal static class ZaloRecruitmentGuestSponsorPolicy
+{
+    internal static IReadOnlyList<ZaloGroupMember> FindCurrentMembers(
+        string? sponsorReference,
+        IReadOnlyList<ZaloGroupMember> members)
+    {
+        if (string.IsNullOrWhiteSpace(sponsorReference)) return [];
+        var normalizedReference = ZaloBotIntelligence.Normalize(sponsorReference);
+        return members
+            .Where(member =>
+                member.IsCurrentMember &&
+                ZaloBotIntelligence.Normalize(member.DisplayName) == normalizedReference)
+            .ToList();
+    }
+}
 
 internal static class ZaloRecruitmentGuestPolicy
 {
@@ -134,11 +151,17 @@ internal static class ZaloRecruitmentGuestPolicy
 
         if (quantityToAdd is { } addCount)
         {
-            var specs = ParseGuestSpecs(original, normalized, addCount);
+            var sponsorReference = ExtractDelegatedSponsorReference(original);
+            var specs = sponsorReference is null
+                ? ParseGuestSpecs(original, normalized, addCount)
+                : Enumerable.Range(0, addCount)
+                    .Select(_ => new ZaloRecruitmentGuestSpec())
+                    .ToArray();
             return new ZaloRecruitmentGuestCommand(
                 ZaloRecruitmentGuestCommandKind.Add,
                 Quantity: addCount,
-                Guests: specs);
+                Guests: specs,
+                SponsorReference: sponsorReference);
         }
 
         if (Regex.IsMatch(normalized, @"(?:2|hai)\s*(?:ban|dua|nguoi)?\s*(?:tui|toi|minh)?\s*(?:deu\s*)?(?:la\s*)?(?<gender>nam|nu)(?:\s|$)", RegexOptions.CultureInvariant))
@@ -170,6 +193,23 @@ internal static class ZaloRecruitmentGuestPolicy
         }
 
         return null;
+    }
+
+    private static string? ExtractDelegatedSponsorReference(string original)
+    {
+        var withoutSession = Regex.Replace(
+            original.Trim(),
+            @"\s+(?:hôm\s+nay|hom\s+nay|ngày\s+mai|ngay\s+mai|mai|t[2-7]|cn|thứ\s*[2-7]|thu\s*[2-7]|chủ\s*nhật|chu\s*nhat)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var match = Regex.Match(
+            withoutSession,
+            @"(?:\+\s*[12]|thêm\s*[12]|them\s*[12]|kéo\s*(?:thêm\s*)?[12]|keo\s*(?:them\s*)?[12])\s*(?:bạn|ban|đứa|dua|người|nguoi|khách|khach)?\s*(?:của|cua)?\s*@(?<sponsor>[^,.;:]{2,80})\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return null;
+
+        var sponsor = match.Groups["sponsor"].Value.Trim().TrimStart('@');
+        return sponsor.Length == 0 ? null : sponsor;
     }
 
     private static IReadOnlyList<ZaloRecruitmentGuestSpec> ParseGuestSpecs(

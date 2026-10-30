@@ -508,6 +508,8 @@ public static class ZaloBotIntelligence
             return new(ZaloBotIntent.WeeklySessionCount, .98, null, false, null, "weekly_count_phrase");
         if (IsShareSlotAnnouncement(value))
             return new(ZaloBotIntent.GeneralChat, .99, q, false, null, "share_slot_announcement");
+        if (ZaloNaturalCommandParser.TryParseTeamPreferenceGenderQuestion(value, out _, out var genderSessionReference))
+            return new(ZaloBotIntent.TeamPreference, .995, genderSessionReference, false, null, "team_preference_gender_question");
         if (ZaloNaturalCommandParser.TryParseTeamPreference(value, out _))
             return new(ZaloBotIntent.TeamPreference, .99, q, false, null, "team_preference_phrase");
         if (ZaloNaturalCommandParser.TryParseShareSlot(value, out _))

@@ -7,6 +7,15 @@ namespace VolleyDraft.Api.Services;
 
 public sealed partial class ZaloOverbookService
 {
+    private sealed record RecruitmentGuestSponsorResolution(
+        string ZaloUserId,
+        string DisplayName,
+        bool Delegated,
+        string? Error = null)
+    {
+        public bool IsResolved => Error is null && ZaloUserId.Length > 0;
+    }
+
     private sealed record ReplyGatedGuestResolution(
         MatchSession? Session,
         string? RecruitmentMessageId,
@@ -68,6 +77,26 @@ public sealed partial class ZaloOverbookService
 
                 if (command.Kind == ZaloRecruitmentGuestCommandKind.Add)
                 {
+                    var sponsor = await ResolveRecruitmentGuestSponsorAsync(
+                        message.ZaloConnectionId,
+                        message.GroupId,
+                        message.SenderId,
+                        message.SenderName,
+                        command.SponsorReference,
+                        cancellationToken);
+                    if (!sponsor.IsResolved)
+                    {
+                        await SendReplyGatedRecruitmentGuestReplyAsync(
+                            connection,
+                            message,
+                            session.Id,
+                            sponsor.Error ?? "Chưa xác định được người bảo lãnh guest nên tui chưa cộng slot.",
+                            "guest_sponsor_unresolved",
+                            cancellationToken);
+                        handled += 1;
+                        continue;
+                    }
+
                     var now = DateTimeOffset.UtcNow;
                     if (!ZaloRecruitmentGuestGatePolicy.IsAddWindowOpen(session.StartTime, now, configuration))
                     {
@@ -108,8 +137,8 @@ public sealed partial class ZaloOverbookService
 
                     var result = await service.AddAsync(
                         session,
-                        ZaloOverbookLogic.NormalizeId(message.SenderId),
-                        FriendlySponsorName(message.SenderName, message.SenderId),
+                        sponsor.ZaloUserId,
+                        sponsor.DisplayName,
                         message.MessageId,
                         resolution.RecruitmentMessageId,
                         command,
@@ -189,6 +218,56 @@ public sealed partial class ZaloOverbookService
         }
 
         return handled;
+    }
+
+    private async Task<RecruitmentGuestSponsorResolution> ResolveRecruitmentGuestSponsorAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        string senderName,
+        string? sponsorReference,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = ZaloOverbookLogic.NormalizeId(senderId);
+        var fallback = new RecruitmentGuestSponsorResolution(
+            normalizedSenderId,
+            FriendlySponsorName(senderName, senderId),
+            Delegated: false);
+        if (string.IsNullOrWhiteSpace(sponsorReference))
+            return fallback;
+
+        var members = await db.ZaloGroupMembers
+            .AsNoTracking()
+            .Where(member =>
+                member.ZaloConnectionId == connectionId &&
+                member.GroupId == groupId &&
+                member.IsCurrentMember)
+            .ToListAsync(cancellationToken);
+        var matches = ZaloRecruitmentGuestSponsorPolicy.FindCurrentMembers(
+            sponsorReference,
+            members);
+        if (matches.Count == 1)
+        {
+            return new RecruitmentGuestSponsorResolution(
+                ZaloOverbookLogic.NormalizeId(matches[0].ZaloUserId),
+                matches[0].DisplayName,
+                Delegated: true);
+        }
+
+        if (matches.Count > 1)
+        {
+            return new RecruitmentGuestSponsorResolution(
+                string.Empty,
+                sponsorReference,
+                Delegated: true,
+                Error: $"Có nhiều thành viên tên {sponsorReference}; tui chưa dám gán guest cho nhầm người. Mention rõ đúng người rồi thử lại nha.");
+        }
+
+        return new RecruitmentGuestSponsorResolution(
+            string.Empty,
+            sponsorReference,
+            Delegated: true,
+            Error: $"Tui hiểu đây là guest của {sponsorReference}, nhưng không xác nhận được người này đang là thành viên hiện tại của group nên chưa cộng slot.");
     }
 
     private async Task<ReplyGatedGuestResolution> ResolveReplyGatedRecruitmentGuestSessionAsync(

@@ -2642,6 +2642,91 @@ public sealed partial class ZaloBotService(
         bool aiCalled)
     {
         var replyLanguage = await ai.ResolveReplyLanguageAsync(originalQuestion, cancellationToken);
+        if (ZaloNaturalCommandParser.TryParseTeamPreferenceGenderQuestion(
+                originalQuestion,
+                out var requestedGender,
+                out var genderSessionReference))
+        {
+            var genderSelector = NormalizeText(string.Join(' ', new[]
+            {
+                normalizedQuestion,
+                genderSessionReference,
+                decision.SessionReference
+            }.Where(value => !string.IsNullOrWhiteSpace(value))));
+            var selectedGenderSession = SelectSession(sessions, genderSelector);
+            if (selectedGenderSession.Clarification is not null)
+            {
+                return new BotAnswer(
+                    selectedGenderSession.Clarification,
+                    null,
+                    decision.Intent,
+                    aiCalled);
+            }
+
+            var genderSession = selectedGenderSession.Session!;
+            if (!genderSession.SenderIsListed || string.IsNullOrWhiteSpace(genderSession.SenderPlayerName))
+            {
+                return new BotAnswer(
+                    $"Tui hiểu ông đang hỏi có thể chung team với một bạn {(requestedGender == PlayerGender.Female ? "nữ" : "nam")} trong {genderSession.Name} không, nhưng hiện ông chưa có tên trong roster trận này.",
+                    null,
+                    decision.Intent,
+                    aiCalled,
+                    ProtectedTerms: [genderSession.Name]);
+            }
+
+            var genderSenderId = NormalizeId(incoming.SenderId);
+            var candidates = await db.SessionPlayers
+                .AsNoTracking()
+                .Where(player =>
+                    player.SessionId == genderSession.Id &&
+                    player.IsPresent &&
+                    (player.Gender == requestedGender ||
+                     player.PlayerProfile != null && player.PlayerProfile.Gender == requestedGender))
+                .Select(player => new
+                {
+                    player.DisplayName,
+                    ZaloUserId = player.PlayerProfile == null ? null : player.PlayerProfile.ZaloUserId
+                })
+                .ToListAsync(cancellationToken);
+            var eligible = candidates
+                .Where(player =>
+                    NormalizeId(player.ZaloUserId ?? string.Empty) != genderSenderId &&
+                    NormalizeText(player.DisplayName) != NormalizeText(genderSession.SenderPlayerName))
+                .Select(player => player.DisplayName)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+            var genderLabel = requestedGender == PlayerGender.Female ? "nữ" : "nam";
+            if (eligible.Count == 0)
+            {
+                return new BotAnswer(
+                    $"Tui hiểu ý ông rồi: muốn chung team với một bạn {genderLabel} trong {genderSession.Name}. Hiện roster trận này chưa có bạn {genderLabel} nào phù hợp để chọn.",
+                    null,
+                    decision.Intent,
+                    aiCalled,
+                    ProtectedTerms: [genderSession.Name]);
+            }
+
+            if (eligible.Count == 1)
+            {
+                return new BotAnswer(
+                    $"Được nha. {genderSession.Name} hiện có {eligible[0]} là bạn {genderLabel} phù hợp. Nếu ông muốn giữ chung team với bạn ấy thì @mention {eligible[0]} rồi nói `chung team với bạn này` để tui tạo preview/xác nhận.",
+                    null,
+                    decision.Intent,
+                    aiCalled,
+                    ProtectedTerms: [genderSession.Name, eligible[0]]);
+            }
+
+            var choices = string.Join(", ", eligible.Take(6));
+            return new BotAnswer(
+                $"Được nha. {genderSession.Name} hiện có các bạn {genderLabel}: {choices}. Ông @mention đúng người muốn chung team rồi nói `chung team với bạn này`; tui sẽ tạo preview/xác nhận trước khi đổi dữ liệu.",
+                null,
+                decision.Intent,
+                aiCalled,
+                ProtectedTerms: eligible.Take(6).Append(genderSession.Name).ToList());
+        }
+
         ZaloTeamPreferenceCommand? command = null;
         if (ZaloNaturalCommandParser.TryParseTeamPreference(originalQuestion, out var parsed))
             command = parsed;

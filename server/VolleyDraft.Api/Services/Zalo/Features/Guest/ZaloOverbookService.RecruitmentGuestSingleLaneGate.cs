@@ -115,13 +115,17 @@ public sealed partial class ZaloOverbookService
         if (decision != ZaloRecruitmentGuestMentionGateDecision.RequireRecruitmentReply)
             return false;
 
+        var guidance = command?.SponsorReference is { Length: > 0 } sponsorReference
+            ? $"Tui hiểu `+{command.Quantity} bạn @{sponsorReference}` là thêm {command.Quantity} bạn ngoài group do {sponsorReference} bảo lãnh, không phải thêm {sponsorReference} vào roster. Để cộng slot an toàn, reply đúng tin `@all` tuyển người của tui rồi gửi lại `+{command.Quantity} bạn @{sponsorReference}`."
+            : "Tui chưa cộng slot từ câu này nha. + bạn ngoài group chỉ chạy khi ông reply đúng tin `@all` tuyển người của tui và gửi `+1` hoặc `+2`. Khi mutation DB thành công tui mới báo roster tăng; nói trực tiếp với @Npc sẽ không tự cộng người.";
+
         await SendDeterministicPreRouteResponseAsync(
             connection.Id,
             connection.AccountZaloId,
             connection.DisplayName,
             groupId,
             incoming,
-            "Tui chưa cộng slot từ câu này nha. + bạn ngoài group chỉ chạy khi ông reply đúng tin `@all` tuyển người của tui và gửi `+1` hoặc `+2`. Khi mutation DB thành công tui mới báo roster tăng; nói trực tiếp với @Npc sẽ không tự cộng người.",
+            guidance,
             "RecruitmentGuestReplyRequired",
             cancellationToken);
         return true;

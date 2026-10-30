@@ -221,7 +221,13 @@ public static class ZaloNaturalCommandParser
             return false;
         }
 
-        if (LooksLikeTeamRelationshipQuestion(value, normalized))
+        // Session references such as "hôm nay" commonly trail a feasibility question:
+        // "tui muốn chung team với Hmy được không hôm nay".  Detect the question after
+        // removing that suffix, otherwise the parser can accidentally turn
+        // "Hmy được không" into a player reference before session extraction runs.
+        var questionValue = RemoveTrailingSessionReference(value, out _);
+        var questionNormalized = ZaloBotIntelligence.Normalize(questionValue);
+        if (LooksLikeTeamRelationshipQuestion(questionValue, questionNormalized))
             return false;
 
         var negationCount = Regex.Matches(
@@ -375,6 +381,41 @@ public static class ZaloNaturalCommandParser
         command = new ZaloTeamPreferenceCommand(
             playerReferences,
             SessionReference: sessionReference ?? ExtractSessionReference(value));
+        return true;
+    }
+
+    public static bool TryParseTeamPreferenceGenderQuestion(
+        string question,
+        out PlayerGender gender,
+        out string? sessionReference)
+    {
+        gender = PlayerGender.Unknown;
+        sessionReference = null;
+        if (string.IsNullOrWhiteSpace(question)) return false;
+
+        var withoutSession = RemoveTrailingSessionReference(question.Trim(), out sessionReference);
+        var normalized = ZaloBotIntelligence.Normalize(withoutSession);
+        if (!LooksLikeTeamRelationshipQuestion(withoutSession, normalized)) return false;
+        if (!Regex.IsMatch(
+                normalized,
+                @"(?<![a-z0-9])(?:tui|toi|minh|em|anh|chi)(?![a-z0-9])",
+                RegexOptions.CultureInvariant))
+            return false;
+        if (!Regex.IsMatch(
+                normalized,
+                @"(?:choi|danh|o)?\s*(?:chung|cung)(?:\s+(?:team|doi))?\s+(?:voi|cung)\s+",
+                RegexOptions.CultureInvariant))
+            return false;
+
+        var category = Regex.Match(
+            normalized,
+            @"(?:voi|cung)\s+(?:(?:mot|may|cac)\s+)?(?:(?:ban|con)\s+)?(?<gender>gai|nu|trai|nam)(?![a-z0-9])",
+            RegexOptions.CultureInvariant);
+        if (!category.Success) return false;
+
+        gender = category.Groups["gender"].Value is "gai" or "nu"
+            ? PlayerGender.Female
+            : PlayerGender.Male;
         return true;
     }
 

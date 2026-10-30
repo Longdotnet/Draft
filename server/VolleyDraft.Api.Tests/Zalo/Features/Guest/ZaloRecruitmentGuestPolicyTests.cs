@@ -44,6 +44,63 @@ public sealed class ZaloRecruitmentGuestPolicyTests
         Assert.Equal("Minh", Assert.Single(command!.Guests!).DisplayName);
     }
 
+    [Theory]
+    [InlineData("@Npc +1 bạn @Hmy Bk hôm nay", 1, "Hmy Bk")]
+    [InlineData("+2 bạn của @Hmy Bk", 2, "Hmy Bk")]
+    public void AddParser_TreatsMentionedGroupMemberAsDelegatedSponsor(
+        string text,
+        int quantity,
+        string sponsor)
+    {
+        var command = ZaloRecruitmentGuestPolicy.TryParse(text);
+
+        Assert.NotNull(command);
+        Assert.Equal(ZaloRecruitmentGuestCommandKind.Add, command!.Kind);
+        Assert.Equal(quantity, command.Quantity);
+        Assert.Equal(sponsor, command.SponsorReference);
+        Assert.All(command.Guests!, guest => Assert.Null(guest.DisplayName));
+    }
+
+    [Fact]
+    public void SponsorPolicy_UsesOnlyCurrentMemberWithExactNormalizedDisplayName()
+    {
+        var members = new[]
+        {
+            new ZaloGroupMember
+            {
+                Id = "hmy-current",
+                ZaloConnectionId = "conn",
+                GroupId = "group",
+                ZaloUserId = "hmy-id",
+                DisplayName = "Hmy Bk",
+                IsCurrentMember = true
+            },
+            new ZaloGroupMember
+            {
+                Id = "hmy-old",
+                ZaloConnectionId = "conn",
+                GroupId = "group",
+                ZaloUserId = "hmy-old-id",
+                DisplayName = "HMY BK",
+                IsCurrentMember = false
+            },
+            new ZaloGroupMember
+            {
+                Id = "other",
+                ZaloConnectionId = "conn",
+                GroupId = "group",
+                ZaloUserId = "other-id",
+                DisplayName = "Hmy",
+                IsCurrentMember = true
+            }
+        };
+
+        var matches = ZaloRecruitmentGuestSponsorPolicy.FindCurrentMembers("hmy bk", members);
+
+        var match = Assert.Single(matches);
+        Assert.Equal("hmy-id", match.ZaloUserId);
+    }
+
     [Fact]
     public void AddParser_ReadsTwoNames()
     {

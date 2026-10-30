@@ -6,6 +6,24 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloNaturalCommandTests
 {
+    [Fact]
+    public void Team_preference_question_with_trailing_session_is_not_parsed_as_player_name()
+    {
+        const string question = "tui muốn chung team với gái được không hôm nay";
+
+        Assert.False(ZaloNaturalCommandParser.TryParseTeamPreference(question, out _));
+        Assert.True(ZaloNaturalCommandParser.TryParseTeamPreferenceGenderQuestion(
+            question,
+            out var gender,
+            out var sessionReference));
+        Assert.Equal(PlayerGender.Female, gender);
+        Assert.Equal("hôm nay", sessionReference, ignoreCase: true);
+
+        var decision = ZaloBotIntelligence.ClassifyDeterministically(question);
+        Assert.Equal(ZaloBotIntent.TeamPreference, decision.Intent);
+        Assert.Equal("team_preference_gender_question", decision.Reason);
+    }
+
     [Theory]
     [InlineData("có thể đưa danh sách lịch nhắc cho tui coi được không?")]
     [InlineData("liệt kê các lịch nhắc hiện tại")]
