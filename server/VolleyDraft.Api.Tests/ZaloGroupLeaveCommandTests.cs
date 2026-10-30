@@ -5,6 +5,19 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class ZaloGroupLeaveCommandTests
 {
+    [Fact]
+    public void Farewell_is_fixed_and_matches_approved_text()
+    {
+        const string expected =
+            "🥹 Vậy là đến lúc tui phải chào tạm biệt cả nhà rồi.\n\n" +
+            "Cảm ơn mọi người đã tin tưởng, tương tác và hợp tác với tui trong suốt thời gian qua. Được đồng hành cùng mọi người trong những buổi chơi, những lần xếp team và cả những màn cà khịa vui vẻ là một trải nghiệm rất đáng nhớ.\n\n" +
+            "Chúc cả nhà luôn vui vẻ, chơi hết mình và có thật nhiều trận đấu đáng nhớ nha! 🏐❤️\n\n" +
+            "Tui xin phép rời nhóm đây. Hẹn gặp lại mọi người một ngày không xa! 👋";
+
+        Assert.Equal(expected, ZaloGroupLeaveCommand.FarewellText);
+        Assert.DoesNotContain("@", ZaloGroupLeaveCommand.FarewellText);
+    }
+
     [Theory]
     [InlineData("bot ơi out nhóm đi", false)]
     [InlineData("Bott ơi rời nhóm đi", false)]
