@@ -686,10 +686,11 @@ export async function leaveGroup(accountId: string, groupId: string): Promise<{ 
   const listener = activeListeners.get(account);
   if (!listener) throw new Error("Zalo listener is not active for this account");
   if (!target) throw new Error("Group ID is required");
-  if (mockMode || !listener.api) {
+  if (mockMode) {
     console.info(`[Zalo mock] leave group ${target} for account ${account}`);
     return { left: true, mock: true };
   }
+  if (!listener.api) throw new Error("Zalo provider API is not available for group leave");
   await listener.api.leaveGroup(target, false);
   console.info(`[Zalo bridge] left group ${target} for account ${account}`);
   return { left: true, mock: false };
