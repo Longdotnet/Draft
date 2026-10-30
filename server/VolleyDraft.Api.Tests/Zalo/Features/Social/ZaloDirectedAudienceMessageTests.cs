@@ -84,6 +84,7 @@ public sealed class ZaloDirectedAudienceMessageTests
         Assert.Equal(new[] { "u-bao", "u-chu" }, rendered!.Mentions.Select(item => item.Uid));
         Assert.Contains("nhớ xách banh", rendered.Text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("tag mấy người đó", rendered.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.True(gateway.Requests.Single().UseAnswerBudget);
     }
 
     [Fact]

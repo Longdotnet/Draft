@@ -16,8 +16,8 @@ internal static class ZaloAiRequestBudget
             Math.Max(0, Volatile.Read(ref preAnswerRemaining)) +
             Math.Max(0, Volatile.Read(ref answerRemaining));
 
-        public bool TryConsume(ZaloAiWorkload workload) =>
-            IsAnswerWorkload(workload)
+        public bool TryConsume(bool answerRequest) =>
+            answerRequest
                 ? TryConsume(ref answerRemaining)
                 : TryConsume(ref preAnswerRemaining);
 
@@ -54,13 +54,21 @@ internal static class ZaloAiRequestBudget
         return new Scope(previous);
     }
 
-    public static bool TryConsume(ZaloAiWorkload workload) => Current.Value?.TryConsume(workload) ?? true;
+    public static bool TryConsume(ZaloAiCompletionRequest request) =>
+        Current.Value?.TryConsume(IsAnswerRequest(request)) ?? true;
+
+    public static bool TryConsume(ZaloAiWorkload workload) =>
+        Current.Value?.TryConsume(IsAnswerWorkload(workload)) ?? true;
 
     internal static bool IsActive => Current.Value is not null;
     internal static int? RemainingForTests => Current.Value?.Remaining;
+
+    internal static bool IsAnswerRequest(ZaloAiCompletionRequest request) =>
+        request.UseAnswerBudget || IsAnswerWorkload(request.Workload);
 
     internal static bool IsAnswerWorkload(ZaloAiWorkload workload) => workload is
         ZaloAiWorkload.GeneralChat or
         ZaloAiWorkload.SocialReply or
         ZaloAiWorkload.DomainNarration;
+
 }

@@ -36,7 +36,8 @@ public sealed record ZaloAiCompletionRequest(
     int MaxTokens = 300,
     string? ModelOverride = null,
     string? CorrelationId = null,
-    bool? ReasoningEnabled = null);
+    bool? ReasoningEnabled = null,
+    bool UseAnswerBudget = false);
 
 public sealed record ZaloAiCompletionResult(
     bool Success,

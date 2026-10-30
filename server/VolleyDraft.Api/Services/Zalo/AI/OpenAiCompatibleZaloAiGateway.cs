@@ -72,9 +72,8 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         ZaloAiCompletionResult? lastResult = null;
         var attemptedProviderIndexes = new HashSet<int>();
         var providerIndex = FindRoundRobinProviderIndex(request, attemptedProviderIndexes);
-        var singleAttemptPreAnswer =
-            !ZaloAiRequestBudget.IsAnswerWorkload(request.Workload) &&
-            ZaloAiRequestBudget.IsActive;
+        var answerRequest = ZaloAiRequestBudget.IsAnswerRequest(request);
+        var singleAttemptPreAnswer = !answerRequest && ZaloAiRequestBudget.IsActive;
 
         if (providerIndex < 0)
             return BuildCoolingDownResult(request, started.Elapsed);
@@ -153,7 +152,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         var model = profile.ResolveModel(request);
         ZaloAiCompletionResult? lastFailure = null;
 
-        var maximumAttempts = !ZaloAiRequestBudget.IsAnswerWorkload(request.Workload) && ZaloAiRequestBudget.IsActive
+        var maximumAttempts = !ZaloAiRequestBudget.IsAnswerRequest(request) && ZaloAiRequestBudget.IsActive
             ? 1
             : _retryCount + 1;
         for (var attempt = 1; attempt <= maximumAttempts; attempt++)
@@ -168,7 +167,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                     usedFallback);
             }
 
-            if (!ZaloAiRequestBudget.TryConsume(request.Workload))
+            if (!ZaloAiRequestBudget.TryConsume(request))
             {
                 var budgetFailure = new AiProviderFailure(
                     AiProviderFailureKind.RateLimited,

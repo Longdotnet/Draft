@@ -573,6 +573,87 @@ public sealed class ZaloAiProviderPoolTests
     }
 
     [Fact]
+    public async Task RequestBudget_DirectedAudienceStructuredExtraction_CanUseAnswerPoolAndFailOverAfter429()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            var key = request.Headers.Authorization?.Parameter;
+            auth.Add(key);
+            return Task.FromResult(key == "key-a"
+                ? ErrorResponse(HttpStatusCode.TooManyRequests, "rate_limit_exceeded", "busy")
+                : JsonResponse(HttpStatusCode.OK, "{\"route\":\"Send\"}"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:MaxRateLimitProviderAttempts"] = "2",
+            ["Ai:Models:StructuredExtraction"] = "structured-model",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://directed-audience.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "default-model",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://directed-audience.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "default-model"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 5);
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.StructuredExtraction,
+            [new ZaloAiChatMessage("user", "tag mấy người đó nhớ đem banh")],
+            UseAnswerBudget: true));
+
+        Assert.True(result.Success);
+        Assert.True(result.UsedFallback);
+        Assert.Equal(2, result.Attempts);
+        Assert.Equal(new[] { "key-a", "key-b" }, auth);
+        Assert.Equal(4, ZaloAiRequestBudget.RemainingForTests);
+    }
+
+    [Fact]
+    public async Task RequestBudget_NormalStructuredExtraction_RemainsSingleAttemptPreAnswer()
+    {
+        var auth = new List<string?>();
+        var handler = new StubHandler(request =>
+        {
+            auth.Add(request.Headers.Authorization?.Parameter);
+            return Task.FromResult(ErrorResponse(
+                HttpStatusCode.TooManyRequests,
+                "rate_limit_exceeded",
+                "busy"));
+        });
+        var configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Ai:RetryCount"] = "0",
+            ["Ai:MaxRateLimitProviderAttempts"] = "2",
+            ["Ai:Models:StructuredExtraction"] = "structured-model",
+            ["Ai:Providers:0:Provider"] = "slot-a",
+            ["Ai:Providers:0:Endpoint"] = "https://normal-structured.test/chat",
+            ["Ai:Providers:0:ApiKey"] = "key-a",
+            ["Ai:Providers:0:Model"] = "default-model",
+            ["Ai:Providers:1:Provider"] = "slot-b",
+            ["Ai:Providers:1:Endpoint"] = "https://normal-structured.test/chat",
+            ["Ai:Providers:1:ApiKey"] = "key-b",
+            ["Ai:Providers:1:Model"] = "default-model"
+        });
+        var gateway = CreateGateway(handler, configuration);
+
+        using var budget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 5);
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            ZaloAiWorkload.StructuredExtraction,
+            [new ZaloAiChatMessage("user", "ordinary extract") ]));
+
+        Assert.False(result.Success);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, result.FailureKind);
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(new[] { "key-a" }, auth);
+        Assert.Equal(5, ZaloAiRequestBudget.RemainingForTests);
+    }
+
+    [Fact]
     public async Task RequestBudget_BlocksSecondPreAnswerStageAndPreservesAnswerPool()
     {
         var calls = 0;

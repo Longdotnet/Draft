@@ -151,7 +151,8 @@ internal sealed partial class ZaloDirectedAudienceComposer
                     ],
                     Temperature: .62,
                     MaxTokens: 700,
-                    CorrelationId: $"directed-audience:{senderId}:{audience.SourceMessageId ?? audience.Id}"),
+                    CorrelationId: $"directed-audience:{senderId}:{audience.SourceMessageId ?? audience.Id}",
+                    UseAnswerBudget: true),
                 cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
