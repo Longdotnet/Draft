@@ -781,7 +781,7 @@ export function DbDraftFlow() {
 
   function moveBoardSlot(slotId: string, targetTeamId: string) {
     const slot = draftState?.teamPreview.flatMap((team) => team.slots).find((item) => item.id === slotId);
-    if (!slot || slot.isCaptainSlot || boardAssignments[slotId] === targetTeamId) return;
+    if (!slot || boardAssignments[slotId] === targetTeamId) return;
     setBoardAssignments((current) => ({ ...current, [slotId]: targetTeamId }));
     setSelectedBoardSlotId(null);
   }
