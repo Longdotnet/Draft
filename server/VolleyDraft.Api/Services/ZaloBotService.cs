@@ -316,7 +316,10 @@ public sealed partial class ZaloBotService(
             await ReleaseMessageAsync(storedMessage.Id, processingToken, "routing_failed", cancellationToken);
             throw;
         }
-        if (!response.TextGeneratedByAi &&
+        // Every leave command (including denied/cancelled requests) bypasses AI,
+        // irrespective of the response intent.
+        if (groupLeaveAction == ZaloGroupLeaveAction.None &&
+            !response.TextGeneratedByAi &&
             response.Intent is not (ZaloBotIntent.GeneralChat or ZaloBotIntent.GroupLeaveRequest or ZaloBotIntent.GroupLeaveConfirm) &&
             ZaloBotIntelligence.CanUseAiStyleRewrite(response.Intent) &&
             response.Mentions is not { Count: > 0 } &&
@@ -351,11 +354,15 @@ public sealed partial class ZaloBotService(
 
         var senderName = (Clean(incoming.SenderName, 50) ?? "bạn").TrimStart('@');
         var mentionLabel = $"@{senderName}";
-        var reply = $"{mentionLabel} {response.Text.Trim()}";
-        var outgoingMentions = new List<BridgeOutgoingMention>
-        {
-            new(NormalizeId(incoming.SenderId), 0, mentionLabel.Length)
-        };
+        var isGroupFarewell = response.Intent == ZaloBotIntent.GroupLeaveConfirm;
+        // A farewell is addressed to everyone, not just the member who confirmed.
+        var reply = isGroupFarewell ? response.Text.Trim() : $"{mentionLabel} {response.Text.Trim()}";
+        var outgoingMentions = isGroupFarewell
+            ? new List<BridgeOutgoingMention>()
+            : new List<BridgeOutgoingMention>
+            {
+                new(NormalizeId(incoming.SenderId), 0, mentionLabel.Length)
+            };
         if (response.Mentions is { Count: > 0 })
         {
             var responseOffset = mentionLabel.Length + 1;
