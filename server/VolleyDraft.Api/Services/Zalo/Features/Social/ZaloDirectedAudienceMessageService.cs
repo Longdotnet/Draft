@@ -271,6 +271,10 @@ internal sealed partial class ZaloDirectedAudienceComposer
 
         var selected = plan.TargetIndexes.ToHashSet();
         var mentions = new List<BridgeOutgoingMention>();
+        var mentionableSelectedCount = selected.Count(index =>
+            index >= 0 &&
+            index < audience.Count &&
+            Clean(audience[index].ZaloUserId, 100).Length > 0);
         var builder = new StringBuilder();
         var cursor = 0;
         foreach (Match match in PlaceholderRegex().Matches(plan.MessageTemplate))
@@ -286,11 +290,18 @@ internal sealed partial class ZaloDirectedAudienceComposer
                 var target = audience[index];
                 var userId = Clean(target.ZaloUserId, 100);
                 var displayName = Clean(target.DisplayName, 120).TrimStart('@');
-                if (userId.Length == 0 || displayName.Length == 0) return null;
-                var label = $"@{displayName}";
-                var position = builder.Length;
-                builder.Append(label);
-                mentions.Add(new BridgeOutgoingMention(userId, position, label.Length));
+                if (displayName.Length == 0) return null;
+                if (userId.Length == 0)
+                {
+                    builder.Append(displayName);
+                }
+                else
+                {
+                    var label = $"@{displayName}";
+                    var position = builder.Length;
+                    builder.Append(label);
+                    mentions.Add(new BridgeOutgoingMention(userId, position, label.Length));
+                }
             }
             else
             {
@@ -300,7 +311,7 @@ internal sealed partial class ZaloDirectedAudienceComposer
         }
         builder.Append(plan.MessageTemplate, cursor, plan.MessageTemplate.Length - cursor);
         var text = builder.ToString().Trim();
-        return text.Length is > 0 and <= MaxMessageChars && mentions.Count == selected.Count
+        return text.Length is > 0 and <= MaxMessageChars && mentions.Count == mentionableSelectedCount
             ? new ZaloDirectedAudienceRenderedMessage(text, mentions)
             : null;
     }
@@ -470,21 +481,29 @@ internal sealed partial class ZaloDirectedAudienceMessageService(
         }
 
         var selected = plan.TargetIndexes.Select(index => audience.Targets[index]).ToArray();
-        var unresolved = selected.Where(target => string.IsNullOrWhiteSpace(target.ZaloUserId)).ToArray();
-        if (unresolved.Length > 0)
-        {
-            var names = string.Join(", ", unresolved.Take(4).Select(target => target.DisplayName));
-            return new ZaloDirectedAudienceReply(
-                $"Tui chưa tag được danh sách này vì chưa có UID Zalo chắc chắn cho {names}. Tui chưa gửi thiếu người.",
-                [],
-                true);
-        }
-
         var selectedIds = selected
             .Select(target => NormalizeZaloId(target.ZaloUserId))
             .Where(id => id.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        if (selectedIds.Length == 0)
+        {
+            return new ZaloDirectedAudienceReply(
+                "Danh sách này chưa có ai có UID Zalo chắc chắn để tag. Tui chưa gửi vì không tag được người nào.",
+                [],
+                true);
+        }
+
+        var unresolved = selected.Where(target => string.IsNullOrWhiteSpace(target.ZaloUserId)).ToArray();
+        if (unresolved.Length > 0)
+        {
+            logger.LogInformation(
+                "Directed audience will skip mentions for targets without UID. Group={GroupId} Sender={SenderId} MissingUidCount={MissingUidCount} SelectedCount={SelectedCount}",
+                groupId,
+                senderId,
+                unresolved.Length,
+                selected.Length);
+        }
         var currentIds = (await db.ZaloGroupMembers
             .AsNoTracking()
             .Where(member => member.ZaloConnectionId == connectionId &&

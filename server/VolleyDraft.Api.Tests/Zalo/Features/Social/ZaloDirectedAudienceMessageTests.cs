@@ -202,6 +202,49 @@ public sealed class ZaloDirectedAudienceMessageTests
     }
 
     [Fact]
+    public void Render_keeps_unresolved_target_as_plain_text_and_mentions_resolved_targets()
+    {
+        var plan = new ZaloDirectedAudiencePlan(
+            ZaloDirectedAudiencePlanStatus.Ready,
+            .99,
+            [0, 1, 2],
+            "[[AUD_0]] [[AUD_1]] [[AUD_2]] ơi, [[REQUESTER]] nhờ tui nhắc nhớ đem banh nha.",
+            "ready");
+        var audience = Audience(
+            new(null, "Bạn của Hmy Bk #1"),
+            new("u-bao", "Bảo Long"),
+            new("u-chu", "Chu Thuận Thành"));
+
+        var rendered = ZaloDirectedAudienceComposer.Render(plan, audience.Targets, "Thanh Long");
+
+        Assert.NotNull(rendered);
+        Assert.Contains("Bạn của Hmy Bk #1", rendered!.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("@Bạn của Hmy Bk #1", rendered.Text, StringComparison.Ordinal);
+        Assert.Equal(new[] { "u-bao", "u-chu" }, rendered.Mentions.Select(item => item.Uid));
+    }
+
+    [Fact]
+    public void Render_can_keep_all_unresolved_targets_as_plain_text_without_mentions()
+    {
+        var plan = new ZaloDirectedAudiencePlan(
+            ZaloDirectedAudiencePlanStatus.Ready,
+            .99,
+            [0, 1],
+            "[[AUD_0]] [[AUD_1]] ơi, [[REQUESTER]] nhờ tui nhắc nhớ đem banh nha.",
+            "ready");
+        var audience = Audience(
+            new(null, "Bạn của Hmy Bk #1"),
+            new(null, "Bạn của Hmy Bk #2"));
+
+        var rendered = ZaloDirectedAudienceComposer.Render(plan, audience.Targets, "Thanh Long");
+
+        Assert.NotNull(rendered);
+        Assert.Empty(rendered!.Mentions);
+        Assert.Contains("Bạn của Hmy Bk #1", rendered.Text, StringComparison.Ordinal);
+        Assert.Contains("Bạn của Hmy Bk #2", rendered.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Audience_store_is_sender_scoped_and_empty_result_clears_stale_reference()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
