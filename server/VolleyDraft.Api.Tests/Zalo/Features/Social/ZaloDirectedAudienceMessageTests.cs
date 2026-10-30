@@ -54,6 +54,39 @@ public sealed class ZaloDirectedAudienceMessageTests
     }
 
     [Fact]
+    public async Task Ai_can_handle_short_tag_those_people_bring_ball_instruction()
+    {
+        var gateway = new StubGateway("""
+            {
+              "route":"Send",
+              "confidence":0.98,
+              "targetTokens":["AUD_0","AUD_1"],
+              "message":"[[AUD_0]] [[AUD_1]] tối nay nhớ xách banh theo cứu hội nha 🏐😆 [[REQUESTER]] réo đó.",
+              "reason":"remind_roster_bring_ball"
+            }
+            """);
+        var composer = new ZaloDirectedAudienceComposer(gateway, NullLogger.Instance, 100, 500);
+        var audience = Audience(
+            new("u-bao", "Bảo Long"),
+            new("u-chu", "Chu Thuận Thành"));
+
+        var plan = await composer.PlanAsync(
+            "conn-" + Guid.NewGuid().ToString("n"),
+            "group-1",
+            "admin-long",
+            "Thanh Long",
+            "tag mấy người đó nhớ đem banh",
+            audience);
+        var rendered = ZaloDirectedAudienceComposer.Render(plan, audience.Targets, "Thanh Long");
+
+        Assert.Equal(ZaloDirectedAudiencePlanStatus.Ready, plan.Status);
+        Assert.NotNull(rendered);
+        Assert.Equal(new[] { "u-bao", "u-chu" }, rendered!.Mentions.Select(item => item.Uid));
+        Assert.Contains("nhớ xách banh", rendered.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("tag mấy người đó", rendered.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Ai_may_choose_a_grounded_subset_from_team_metadata()
     {
         var gateway = new StubGateway("""

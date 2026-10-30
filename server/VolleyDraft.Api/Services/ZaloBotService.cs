@@ -1089,16 +1089,7 @@ public sealed partial class ZaloBotService(
         {
             var selected = await SelectSessionAsync(sessions, normalizedQuestion, activeConnectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null);
-            var session = selected.Session!;
-            if (session.PlayerNames.Count == 0)
-            {
-                return new BotAnswer($"{session.Name} hiện chưa có ai trong danh sách.", null);
-            }
-            var players = session.PlayerNames.Select((name, index) => $"{index + 1}. {name}");
-            return new BotAnswer(
-                $"Danh sách {session.Name} ({session.PlayerCount}/{session.Capacity}):\n{string.Join("\n", players)}",
-                null,
-                decision.Intent);
+            return BuildRosterAnswer(selected.Session!, decision.Intent, aiCalled: false);
         }
 
         if (decision.Intent == ZaloBotIntent.SelfMembership)
@@ -5163,9 +5154,37 @@ public sealed partial class ZaloBotService(
             ZaloBotIntent.LocationParking => new BotAnswer($"{session.Name} — địa điểm: {session.Location ?? "chưa cấu hình"} — gửi xe: {session.ParkingInstructions ?? "chưa cấu hình"}.", session.LocationImageUrl, decision.Intent, true),
             ZaloBotIntent.MissingSlots => new BotAnswer(session.PlayerCount >= session.Capacity ? $"{session.Name} đã đủ {session.Capacity} slot." : $"{session.Name} đang có {session.PlayerCount}/{session.Capacity}, còn thiếu {session.Capacity - session.PlayerCount} slot.", null, decision.Intent, true),
             ZaloBotIntent.PaymentQr => new BotAnswer(string.IsNullOrWhiteSpace(session.PaymentQrImageUrl) ? $"Admin chưa cấu hình QR thanh toán cho {session.Name}." : session.PaymentInstructions ?? $"QR thanh toán cho {session.Name}.", session.PaymentQrImageUrl, decision.Intent, true),
-            ZaloBotIntent.Roster => new BotAnswer(session.PlayerNames.Count == 0 ? $"{session.Name} chưa có ai trong danh sách." : $"Danh sách {session.Name} ({session.PlayerCount}/{session.Capacity}):\n{string.Join("\n", session.PlayerNames.Select((name, index) => $"{index + 1}. {name}"))}", null, decision.Intent, true),
+            ZaloBotIntent.Roster => BuildRosterAnswer(session, decision.Intent, aiCalled: true),
             _ => new BotAnswer("Mình chưa đủ dữ kiện để trả lời chắc chắn. Bạn thử thêm ngày hoặc tên trận nhé.", null, decision.Intent, true)
         };
+    }
+
+    private static BotAnswer BuildRosterAnswer(
+        SessionSnapshot session,
+        ZaloBotIntent intent,
+        bool aiCalled)
+    {
+        var audience = ZaloRosterAudienceBuilder.Build(
+            session.Name,
+            session.PlayerNames,
+            session.PlayerNamesByZaloUserId);
+        if (session.PlayerNames.Count == 0)
+        {
+            return new BotAnswer(
+                $"{session.Name} hiện chưa có ai trong danh sách.",
+                null,
+                intent,
+                aiCalled,
+                ReferencedAudience: audience);
+        }
+
+        var players = session.PlayerNames.Select((name, index) => $"{index + 1}. {name}");
+        return new BotAnswer(
+            $"Danh sách {session.Name} ({session.PlayerCount}/{session.Capacity}):\n{string.Join("\n", players)}",
+            null,
+            intent,
+            aiCalled,
+            ReferencedAudience: audience);
     }
 
     private async Task<List<SessionSnapshot>> LoadSessionSnapshotsAsync(
