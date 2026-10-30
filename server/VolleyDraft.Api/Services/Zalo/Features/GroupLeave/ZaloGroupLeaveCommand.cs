@@ -18,6 +18,13 @@ internal enum ZaloGroupLeaveAction
 /// </summary>
 internal static class ZaloGroupLeaveCommand
 {
+    // Exact, provider-independent farewell. Never ask an AI to generate or rewrite it.
+    internal const string FarewellText =
+        "🥹 Vậy là đến lúc tui phải chào tạm biệt cả nhà rồi.\n\n" +
+        "Cảm ơn mọi người đã tin tưởng, tương tác và hợp tác với tui trong suốt thời gian qua. Được đồng hành cùng mọi người trong những buổi chơi, những lần xếp team và cả những màn cà khịa vui vẻ là một trải nghiệm rất đáng nhớ.\n\n" +
+        "Chúc cả nhà luôn vui vẻ, chơi hết mình và có thật nhiều trận đấu đáng nhớ nha! 🏐❤️\n\n" +
+        "Tui xin phép rời nhóm đây. Hẹn gặp lại mọi người một ngày không xa! 👋";
+
     public static ZaloGroupLeaveAction Parse(string? question, bool explicitlyMentioned)
     {
         var text = Normalize(question);
