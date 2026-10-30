@@ -71,6 +71,7 @@ type BridgeSendResult = {
 
 type MinimalZaloApi = AvatarProfileApi & {
   getOwnId(): string;
+  leaveGroup(groupId: string, silent?: boolean): Promise<unknown>;
   fetchAccountInfo(): Promise<{ displayName?: string; zaloName?: string; avatar?: string }>;
   getAllGroups(): Promise<{ gridVerMap?: Record<string, string> }>;
   getGroupInfo(ids: string[]): Promise<{ gridInfoMap?: Record<string, Record<string, unknown>> }>;
@@ -677,6 +678,21 @@ export function decodeInlineImage(request: SendGroupMessageRequest) {
     .slice(0, 80) || "team-result";
   const filename = `${baseName}.${extension}` as `${string}.${string}`;
   return { data, filename, metadata: { totalSize: data.length } };
+}
+
+export async function leaveGroup(accountId: string, groupId: string): Promise<{ left: boolean; mock: boolean }> {
+  const account = normalizeMemberId(accountId);
+  const target = normalizeId(groupId);
+  const listener = activeListeners.get(account);
+  if (!listener) throw new Error("Zalo listener is not active for this account");
+  if (!target) throw new Error("Group ID is required");
+  if (mockMode || !listener.api) {
+    console.info(`[Zalo mock] leave group ${target} for account ${account}`);
+    return { left: true, mock: true };
+  }
+  await listener.api.leaveGroup(target, false);
+  console.info(`[Zalo bridge] left group ${target} for account ${account}`);
+  return { left: true, mock: false };
 }
 
 export async function sendGroupMessage(request: SendGroupMessageRequest) {
