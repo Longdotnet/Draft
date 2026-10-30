@@ -99,23 +99,12 @@ public sealed partial class ZaloBotService
         string groupId,
         ZaloIncomingMessageEvent incoming)
     {
+        BridgeLeaveGroupResponse result;
         try
         {
-            var result = await bridge.LeaveGroupAsync(connection.AccountZaloId, groupId, CancellationToken.None);
+            result = await bridge.LeaveGroupAsync(connection.AccountZaloId, groupId, CancellationToken.None);
             if (!result.Left)
                 throw new InvalidOperationException("Zalo bridge did not confirm group leave");
-            if (!result.Mock)
-            {
-                var disabled = await db.MatchSessions
-                    .Where(session => session.ZaloConnectionId == connection.Id &&
-                                      session.ZaloGroupId == groupId &&
-                                      session.BotEnabled)
-                    .ExecuteUpdateAsync(update => update
-                        .SetProperty(session => session.BotEnabled, false), CancellationToken.None);
-                logger.LogInformation(
-                    "Zalo bot left group Account={AccountId} Group={GroupId} Sender={SenderId} DisabledSessions={Count}",
-                    connection.AccountZaloId, groupId, incoming.SenderId, disabled);
-            }
         }
         catch (Exception exception)
         {
@@ -137,6 +126,29 @@ public sealed partial class ZaloBotService
             {
                 logger.LogWarning(notifyException, "Could not notify failed Zalo group leave Group={GroupId}", groupId);
             }
+            return;
+        }
+
+        if (result.Mock) return;
+        try
+        {
+            var disabled = await db.MatchSessions
+                .Where(session => session.ZaloConnectionId == connection.Id &&
+                                  session.ZaloGroupId == groupId &&
+                                  session.BotEnabled)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(session => session.BotEnabled, false), CancellationToken.None);
+            logger.LogInformation(
+                "Zalo bot left group Account={AccountId} Group={GroupId} Sender={SenderId} DisabledSessions={Count}",
+                connection.AccountZaloId, groupId, incoming.SenderId, disabled);
+        }
+        catch (Exception exception)
+        {
+            // Group departure already succeeded. A database issue must not be reported
+            // as a Zalo leave failure; only the stale local configuration needs repair.
+            logger.LogError(exception,
+                "Zalo bot left group but failed to disable linked sessions Account={AccountId} Group={GroupId}",
+                connection.AccountZaloId, groupId);
         }
     }
 }
