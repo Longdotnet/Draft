@@ -73,6 +73,8 @@ public sealed partial class ZaloOverbookService
             {
                 string reply;
                 string outcome;
+                string? outboundSelectedIntent = null;
+                string? outboundReplyOutcome = null;
                 var service = new ZaloGuestReservationService(db);
 
                 if (command.Kind == ZaloRecruitmentGuestCommandKind.Add)
@@ -143,8 +145,28 @@ public sealed partial class ZaloOverbookService
                         resolution.RecruitmentMessageId,
                         command,
                         cancellationToken);
-                    reply = BuildGuestAddReply(result);
+                    reply = BuildGuestAddReply(result, includeProfileNote: false);
                     outcome = result.Idempotent ? "guest_signup_idempotent" : "guest_signup_added";
+
+                    var profileGuests = result.Added.Concat(result.Waitlisted)
+                        .Where(GuestNeedsProfile)
+                        .ToList();
+                    if (profileGuests.Count > 0)
+                    {
+                        var guestRefs = string.Join(", ", profileGuests.Select(item => $"#{item.SponsorSequence}"));
+                        outboundSelectedIntent = ZaloRecruitmentGuestGatePolicy
+                            .GuestProfileContextSelectedIntent(session.Id, message.MessageId);
+                        if (sponsor.Delegated)
+                        {
+                            reply += $" Còn thiếu hồ sơ cho {guestRefs}. Người vừa + guest chọn `1` nếu admin sẽ tự cập nhật giúp; chọn `2` để tui tag @{sponsor.DisplayName} vào cập nhật cho bạn của họ.";
+                            outboundReplyOutcome = ZaloRecruitmentGuestGatePolicy.GuestProfileChoiceReplyOutcome;
+                        }
+                        else
+                        {
+                            reply += $" Còn thiếu hồ sơ cho {guestRefs}. Reply ngay tin này bằng thông tin kiểu `#1 tên Minh, nam, chủ công, khá`; có thể bổ sung từng phần.";
+                            outboundReplyOutcome = ZaloRecruitmentGuestGatePolicy.GuestProfileSponsorPromptReplyOutcome;
+                        }
+                    }
                 }
                 else if (command.Kind == ZaloRecruitmentGuestCommandKind.Cancel)
                 {
@@ -192,7 +214,9 @@ public sealed partial class ZaloOverbookService
                     session.Id,
                     reply,
                     outcome,
-                    cancellationToken);
+                    cancellationToken,
+                    outboundSelectedIntent,
+                    outboundReplyOutcome);
                 handled += 1;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -384,7 +408,9 @@ public sealed partial class ZaloOverbookService
         string sessionId,
         string body,
         string outcome,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? outboundSelectedIntent = null,
+        string? outboundReplyOutcome = null)
     {
         var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
         var senderName = FriendlySponsorName(incoming.SenderName, senderId);
@@ -420,8 +446,10 @@ public sealed partial class ZaloOverbookService
                 cancellationToken);
         if (outbound is not null)
         {
-            outbound.SelectedIntent = ZaloRecruitmentGuestGatePolicy.GuestSelectedIntent(sessionId);
-            outbound.ReplyOutcome = ZaloRecruitmentGuestGatePolicy.GuestConversationReplyOutcome;
+            outbound.SelectedIntent = outboundSelectedIntent ??
+                                      ZaloRecruitmentGuestGatePolicy.GuestSelectedIntent(sessionId);
+            outbound.ReplyOutcome = outboundReplyOutcome ??
+                                    ZaloRecruitmentGuestGatePolicy.GuestConversationReplyOutcome;
         }
 
         if (providerReplyId is not null)

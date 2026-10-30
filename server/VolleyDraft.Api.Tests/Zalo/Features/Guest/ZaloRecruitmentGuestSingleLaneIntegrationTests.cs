@@ -184,8 +184,45 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 null));
 
+        // Reproduce the production ingress state: the coordinator has already claimed
+        // this row with a token before pre-routing calls the guest gate. The tracked
+        // entity inside the service may still be stale, so queueing must release the
+        // durable token with ExecuteUpdate rather than relying on SaveChanges.
+        db.ZaloGroupMessages.Add(new ZaloGroupMessage
+        {
+            ZaloConnectionId = zalo.Id,
+            GroupId = "g1",
+            MessageId = followup.MessageId,
+            SenderId = followup.SenderId,
+            SenderName = followup.SenderName,
+            Content = followup.Content,
+            IsFromBot = false,
+            SentAt = DateTimeOffset.UtcNow,
+            ReceivedAt = DateTimeOffset.UtcNow,
+            ProcessingStartedAt = DateTimeOffset.UtcNow,
+            ProcessingToken = "ingress-claim-token"
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
         Assert.True(await service.TryHandleZaloConfirmationAsync(followup));
         Assert.Equal(1, bridgeHandler.SendCount);
+
+        // This mirrors CompletePreRouteAsync's claim-token fence. Once the guest gate
+        // queues the mutation, the coordinator must no longer be able to mark the row
+        // pre_route_handled; otherwise the background guest worker will never see it.
+        var staleCoordinatorCompletion = await db.ZaloGroupMessages
+            .Where(item =>
+                item.ZaloConnectionId == zalo.Id &&
+                item.GroupId == "g1" &&
+                item.MessageId == followup.MessageId &&
+                item.ProcessingToken == "ingress-claim-token")
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(item => item.ReplyOutcome, "pre_route_handled")
+                .SetProperty(item => item.SelectedIntent, "pre-route")
+                .SetProperty(item => item.ProcessingToken, (string?)null));
+        Assert.Equal(0, staleCoordinatorCompletion);
+
         var queued = await db.ZaloGroupMessages
             .AsNoTracking()
             .SingleAsync(item =>
@@ -209,6 +246,168 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
         Assert.Equal("RecruitmentGuestReplyRequired", stored.SelectedIntent);
         Assert.Equal("sent", stored.ReplyOutcome);
         Assert.False(stored.AiCalled);
+
+        // Emulate the background worker successfully creating the external guest.
+        // Ownership remains Hmy; the requester only initiated the delegated +1.
+        var liveSession = await db.MatchSessions.SingleAsync(item => item.Id == session.Id);
+        var guestResult = await new ZaloGuestReservationService(db).AddAsync(
+            liveSession,
+            "hmy-id",
+            "Hmy Bk",
+            followup.MessageId,
+            guidance.MessageId,
+            new ZaloRecruitmentGuestCommand(
+                ZaloRecruitmentGuestCommandKind.Add,
+                Quantity: 1,
+                Guests: [new ZaloRecruitmentGuestSpec()]),
+            CancellationToken.None);
+        var guest = Assert.Single(guestResult.Added);
+        Assert.Equal("hmy-id", guest.SponsorZaloUserId);
+        liveSession.BotOperatorZaloUserIdsJson = JsonSerializer.Serialize(new[] { "tan-chi" });
+        await db.SaveChangesAsync();
+
+        // The successful add reply asks the requester to choose who supplies the
+        // external guest profile. Seed that exact grounded prompt and choose option 2.
+        const string profileChoiceMessageId = "provider-profile-choice-1";
+        db.ZaloGroupMessages.Add(new ZaloGroupMessage
+        {
+            ZaloConnectionId = zalo.Id,
+            GroupId = "g1",
+            MessageId = profileChoiceMessageId,
+            SenderId = "bot-account",
+            SenderName = "Npc",
+            Content = "Chọn 1 nếu admin cập nhật hộ; chọn 2 để tui tag @Hmy Bk cập nhật.",
+            IsFromBot = true,
+            SentAt = DateTimeOffset.UtcNow,
+            ReceivedAt = DateTimeOffset.UtcNow,
+            SelectedIntent = ZaloRecruitmentGuestGatePolicy.GuestProfileContextSelectedIntent(
+                session.Id,
+                followup.MessageId),
+            ReplyOutcome = ZaloRecruitmentGuestGatePolicy.GuestProfileChoiceReplyOutcome
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        // Option 1 is the requester/admin path. The requester is configured as a bot
+        // operator for this test, so the bot should keep the same source guest and ask
+        // that requester to fill the profile on Hmy's behalf without changing sponsor.
+        var chooseAdmin = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "guest-profile-choice-1",
+            senderId: "tan-chi",
+            senderName: "Tấn Chí",
+            content: "1",
+            mentions: [],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            quote: new ZaloBridgeMessageQuote(
+                profileChoiceMessageId,
+                "bot-account",
+                "Npc",
+                "Chọn 1 nếu admin cập nhật hộ; chọn 2 để tui tag @Hmy Bk cập nhật.",
+                "chat",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                null));
+
+        Assert.True(await service.TryHandleZaloConfirmationAsync(chooseAdmin));
+        Assert.Equal(2, bridgeHandler.SendCount);
+        using (var payload = JsonDocument.Parse(bridgeHandler.RequestBodies[1]))
+        {
+            var message = payload.RootElement.GetProperty("message").GetString();
+            Assert.StartsWith("@Tấn Chí", message, StringComparison.Ordinal);
+            Assert.Contains("cập nhật giúp", message, StringComparison.OrdinalIgnoreCase);
+            var mention = Assert.Single(payload.RootElement.GetProperty("mentions").EnumerateArray());
+            Assert.Equal("tan-chi", mention.GetProperty("uid").GetString());
+            Assert.Equal(0, mention.GetProperty("pos").GetInt32());
+        }
+        var adminPrompt = await db.ZaloGroupMessages.AsNoTracking().SingleAsync(item =>
+            item.ZaloConnectionId == zalo.Id && item.MessageId == "provider-guest-gate-2");
+        Assert.Equal(
+            ZaloRecruitmentGuestGatePolicy.GuestProfileAdminPromptReplyOutcome,
+            adminPrompt.ReplyOutcome);
+        Assert.Equal(
+            ZaloRecruitmentGuestGatePolicy.GuestProfileContextSelectedIntent(session.Id, followup.MessageId),
+            adminPrompt.SelectedIntent);
+
+        var chooseSponsor = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "guest-profile-choice-2",
+            senderId: "tan-chi",
+            senderName: "Tấn Chí",
+            content: "2",
+            mentions: [],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            quote: new ZaloBridgeMessageQuote(
+                profileChoiceMessageId,
+                "bot-account",
+                "Npc",
+                "Chọn 1 nếu admin cập nhật hộ; chọn 2 để tui tag @Hmy Bk cập nhật.",
+                "chat",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                null));
+
+        Assert.True(await service.TryHandleZaloConfirmationAsync(chooseSponsor));
+        Assert.Equal(3, bridgeHandler.SendCount);
+        using (var payload = JsonDocument.Parse(bridgeHandler.RequestBodies[2]))
+        {
+            var message = payload.RootElement.GetProperty("message").GetString();
+            Assert.StartsWith("@Hmy Bk", message, StringComparison.Ordinal);
+            Assert.Contains("cập nhật", message, StringComparison.OrdinalIgnoreCase);
+            var mention = Assert.Single(payload.RootElement.GetProperty("mentions").EnumerateArray());
+            Assert.Equal("hmy-id", mention.GetProperty("uid").GetString());
+            Assert.Equal(0, mention.GetProperty("pos").GetInt32());
+        }
+        var sponsorPrompt = await db.ZaloGroupMessages.AsNoTracking().SingleAsync(item =>
+            item.ZaloConnectionId == zalo.Id && item.MessageId == "provider-guest-gate-3");
+        Assert.Equal(
+            ZaloRecruitmentGuestGatePolicy.GuestProfileSponsorPromptReplyOutcome,
+            sponsorPrompt.ReplyOutcome);
+        Assert.Equal(
+            ZaloRecruitmentGuestGatePolicy.GuestProfileContextSelectedIntent(session.Id, followup.MessageId),
+            sponsorPrompt.SelectedIntent);
+
+        // Hmy owns the guest and may now supply the profile naturally. Updating the
+        // profile must never transfer sponsorship to the requester.
+        var sponsorProfileReply = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "guest-profile-hmy-1",
+            senderId: "hmy-id",
+            senderName: "Hmy Bk",
+            content: "#1 tên Mai, nữ, chủ công, khá",
+            mentions: [],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            quote: new ZaloBridgeMessageQuote(
+                sponsorPrompt.MessageId,
+                "bot-account",
+                "Npc",
+                sponsorPrompt.Content,
+                "chat",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                null));
+
+        Assert.True(await service.TryHandleZaloConfirmationAsync(sponsorProfileReply));
+        Assert.Equal(4, bridgeHandler.SendCount);
+        var updatedGuest = await db.ZaloGuestReservations.AsNoTracking().SingleAsync(item =>
+            item.SessionId == session.Id && item.SourceMessageId == followup.MessageId);
+        Assert.Equal("hmy-id", updatedGuest.SponsorZaloUserId);
+        Assert.Equal("Mai", updatedGuest.DisplayName);
+        Assert.Equal(PlayerGender.Female, updatedGuest.Gender);
+        Assert.Equal(PlayerRole.Attack, updatedGuest.Role);
+        Assert.Equal(PlayerLevel.Good, updatedGuest.Level);
+        var updatedPlayer = await db.SessionPlayers.AsNoTracking().SingleAsync(item =>
+            item.Id == updatedGuest.SessionPlayerId);
+        Assert.Equal("Mai", updatedPlayer.DisplayName);
+        Assert.Equal(PlayerGender.Female, updatedPlayer.Gender);
+        Assert.Equal(PlayerRole.Attack, updatedPlayer.Role);
+        Assert.Equal(PlayerLevel.Good, updatedPlayer.Level);
     }
 
     private sealed class RecordingBridgeHandler : HttpMessageHandler

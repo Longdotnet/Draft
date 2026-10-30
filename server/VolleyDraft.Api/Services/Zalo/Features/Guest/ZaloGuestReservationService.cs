@@ -215,6 +215,33 @@ internal sealed class ZaloGuestReservationService(VolleyDraftDbContext db)
     {
         await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
         var candidates = await LoadSponsorGuestsAsync(session.Id, sponsorZaloUserId, cancellationToken);
+        return await UpdateProfileCandidatesAsync(session, candidates, command, cancellationToken);
+    }
+
+    public async Task<ZaloGuestUpdateResult> UpdateProfileForSourceAsync(
+        MatchSession session,
+        string sourceMessageId,
+        ZaloRecruitmentGuestCommand command,
+        CancellationToken cancellationToken)
+    {
+        await ZaloGuestReservationSchemaPatch.EnsureAsync(db, cancellationToken);
+        var sourceId = (sourceMessageId ?? string.Empty).Trim();
+        var candidates = await db.ZaloGuestReservations
+            .Where(item => item.SessionId == session.Id &&
+                           item.SourceMessageId == sourceId &&
+                           (item.Status == ZaloGuestReservationStatus.Active ||
+                            item.Status == ZaloGuestReservationStatus.Waitlisted))
+            .OrderBy(item => item.SponsorSequence)
+            .ToListAsync(cancellationToken);
+        return await UpdateProfileCandidatesAsync(session, candidates, command, cancellationToken);
+    }
+
+    private async Task<ZaloGuestUpdateResult> UpdateProfileCandidatesAsync(
+        MatchSession session,
+        List<ZaloGuestReservation> candidates,
+        ZaloRecruitmentGuestCommand command,
+        CancellationToken cancellationToken)
+    {
         var selected = ResolveSelection(candidates, command);
         if (selected.NeedsClarification)
             return new ZaloGuestUpdateResult(session.Id, session.Name, [], true, selected.Clarification);

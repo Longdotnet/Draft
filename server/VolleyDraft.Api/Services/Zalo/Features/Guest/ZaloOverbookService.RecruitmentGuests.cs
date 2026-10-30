@@ -349,7 +349,9 @@ public sealed partial class ZaloOverbookService
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    private static string BuildGuestAddReply(ZaloGuestSignupMutationResult result)
+    private static string BuildGuestAddReply(
+        ZaloGuestSignupMutationResult result,
+        bool includeProfileNote = true)
     {
         var admitted = result.Added.Count;
         var waiting = result.Waitlisted.Count;
@@ -365,10 +367,10 @@ public sealed partial class ZaloOverbookService
                 ? $"roster đang full nên đưa {waiting} guest vào danh sách chờ"
                 : $"giữ {admitted} guest vào roster, {waiting} guest còn lại vào danh sách chờ";
         var missingGender = result.Added.Concat(result.Waitlisted)
-            .Where(item => item.Gender is null)
+            .Where(item => item.Gender is null or PlayerGender.Unknown)
             .Select(item => $"#{item.SponsorSequence}")
             .ToList();
-        var profileNote = missingGender.Count == 0
+        var profileNote = !includeProfileNote || missingGender.Count == 0
             ? string.Empty
             : $" Trước draft cần bổ sung giới tính cho {string.Join(", ", missingGender)}; nói kiểu `bạn #1 nam`/`nữ` là được.";
         var fullNote = result.AfterEffectiveSlots >= result.Capacity
@@ -376,6 +378,18 @@ public sealed partial class ZaloOverbookService
             : string.Empty;
         return $"Ok 👌 {state} ở {result.SessionName}. {roster}. {string.Join(", ", names)}.{profileNote}{fullNote}";
     }
+
+    private static bool GuestNeedsProfile(ZaloGuestReservation guest) =>
+        IsGeneratedGuestName(guest) ||
+        guest.Gender is null or PlayerGender.Unknown ||
+        guest.Role is null ||
+        guest.Level is null;
+
+    private static bool IsGeneratedGuestName(ZaloGuestReservation guest) =>
+        string.Equals(
+            guest.DisplayName.Trim(),
+            $"Bạn của {guest.SponsorDisplayName.Trim()} #{guest.SponsorSequence}",
+            StringComparison.OrdinalIgnoreCase);
 
     private static string FriendlySponsorName(string? displayName, string fallback)
     {

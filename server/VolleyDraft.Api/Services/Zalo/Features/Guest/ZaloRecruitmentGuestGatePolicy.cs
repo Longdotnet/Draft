@@ -13,8 +13,12 @@ internal enum ZaloRecruitmentGuestReplyAnchorKind
 internal static class ZaloRecruitmentGuestGatePolicy
 {
     internal const string GuestSelectedIntentPrefix = "RecruitmentGuest:";
+    internal const string GuestProfileContextIntentPrefix = "RecruitmentGuestProfile:";
     internal const string GuestConversationReplyOutcome = "guest_recruitment_reply";
     internal const string GuestSignupGuidanceReplyOutcome = "guest_signup_guidance";
+    internal const string GuestProfileChoiceReplyOutcome = "guest_profile_handoff_choice";
+    internal const string GuestProfileAdminPromptReplyOutcome = "guest_profile_admin_prompt";
+    internal const string GuestProfileSponsorPromptReplyOutcome = "guest_profile_sponsor_prompt";
 
     internal static TimeSpan GetSignupWindow(IConfiguration configuration) =>
         TimeSpan.FromHours(Math.Clamp(
@@ -38,6 +42,24 @@ internal static class ZaloRecruitmentGuestGatePolicy
 
     internal static string GuestSelectedIntent(string sessionId) =>
         $"{GuestSelectedIntentPrefix}{sessionId}";
+
+    internal static string GuestProfileContextSelectedIntent(string sessionId, string sourceMessageId) =>
+        $"{GuestProfileContextIntentPrefix}{sessionId}:{sourceMessageId}";
+
+    internal static (string SessionId, string SourceMessageId)? TryReadGuestProfileContext(string? selectedIntent)
+    {
+        if (string.IsNullOrWhiteSpace(selectedIntent) ||
+            !selectedIntent.StartsWith(GuestProfileContextIntentPrefix, StringComparison.Ordinal))
+            return null;
+        var value = selectedIntent[GuestProfileContextIntentPrefix.Length..].Trim();
+        var separator = value.IndexOf(':');
+        if (separator <= 0 || separator >= value.Length - 1) return null;
+        var sessionId = value[..separator].Trim();
+        var sourceMessageId = value[(separator + 1)..].Trim();
+        return sessionId.Length == 0 || sourceMessageId.Length == 0
+            ? null
+            : (sessionId, sourceMessageId);
+    }
 
     internal static string? TryReadGuestSessionId(string? selectedIntent)
     {

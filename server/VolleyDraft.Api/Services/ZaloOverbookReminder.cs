@@ -191,6 +191,14 @@ public sealed partial class ZaloOverbookService
                 {
                     await new ZaloMessageGraphStore(db)
                         .RememberIncomingQuoteAsync(draftConnection.Id, incoming, cancellationToken);
+                    if (await TryHandleRecruitmentGuestProfileHandoffAsync(
+                            draftConnection.Id,
+                            draftConnection.AccountZaloId,
+                            draftConnection.DisplayName,
+                            draftGroupId,
+                            incoming,
+                            cancellationToken))
+                        return true;
                     if (await TryHandleStatefulSemanticGuestFollowupAsync(
                             draftConnection.Id,
                             draftConnection.AccountZaloId,

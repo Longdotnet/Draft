@@ -575,7 +575,8 @@ public sealed partial class ZaloOverbookService
         string intent,
         CancellationToken cancellationToken,
         string? outboundSelectedIntent = null,
-        string? outboundReplyOutcome = null)
+        string? outboundReplyOutcome = null,
+        IReadOnlyList<BridgeOutgoingMention>? outboundMentions = null)
     {
         var storedIncoming = await EnsureV2IncomingMessageAsync(
             connectionId,
@@ -589,7 +590,7 @@ public sealed partial class ZaloOverbookService
             accountId,
             groupId,
             response,
-            [],
+            outboundMentions ?? [],
             idempotencyKey: idempotencyKey);
         var providerReplyId = NormalizeProviderMessageId(send.MessageId);
         var persistedReplyId = providerReplyId ?? $"local:{idempotencyKey}";

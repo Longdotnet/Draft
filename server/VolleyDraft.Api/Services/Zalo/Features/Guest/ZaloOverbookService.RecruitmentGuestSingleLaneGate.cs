@@ -71,6 +71,7 @@ public sealed partial class ZaloOverbookService
         var command = ZaloRecruitmentGuestPolicy.TryParse(incoming.Content);
         var parsedKind = command?.Kind;
         var anchorKind = ZaloRecruitmentGuestReplyAnchorKind.None;
+        string? groundedSessionId = null;
 
         if (parsedKind == ZaloRecruitmentGuestCommandKind.Add)
         {
@@ -81,6 +82,7 @@ public sealed partial class ZaloOverbookService
                 ZaloRecruitmentGuestCommandKind.Add,
                 cancellationToken);
             anchorKind = resolution.AnchorKind;
+            groundedSessionId = resolution.Session?.Id;
         }
 
         var decision = ZaloRecruitmentGuestMentionGatePolicy.Decide(
@@ -102,10 +104,23 @@ public sealed partial class ZaloOverbookService
                 cancellationToken);
             if (stored.BotReplySentAt is null)
             {
-                stored.ReplyOutcome = null;
-                stored.ProcessingStartedAt = null;
-                stored.ProcessingToken = null;
-                await db.SaveChangesAsync(cancellationToken);
+                var queuedSelectedIntent = groundedSessionId == null
+                    ? null
+                    : ZaloRecruitmentGuestGatePolicy.GuestSelectedIntent(groundedSessionId);
+                // Do this as a direct DB update rather than changing the tracked entity.
+                // The ingress coordinator claims the row with ExecuteUpdateAsync, so EF's
+                // tracked copy can still contain the pre-claim token. Mutating that stale
+                // entity does not release the real lease and CompletePreRouteAsync would
+                // otherwise overwrite the row as pre_route_handled, leaving the worker
+                // unable to see it (the production 12:31 silent +1 failure).
+                await db.ZaloGroupMessages
+                    .Where(item => item.Id == stored.Id && item.BotReplySentAt == null)
+                    .ExecuteUpdateAsync(updates => updates
+                        .SetProperty(item => item.ReplyOutcome, (string?)null)
+                        .SetProperty(item => item.ProcessingStartedAt, (DateTimeOffset?)null)
+                        .SetProperty(item => item.ProcessingToken, (string?)null)
+                        .SetProperty(item => item.SelectedIntent, queuedSelectedIntent),
+                        cancellationToken);
             }
             logger.LogInformation(
                 "Queued grounded recruitment guest reply for single mutation lane Group={GroupId} Message={MessageId} Sender={SenderId}",
