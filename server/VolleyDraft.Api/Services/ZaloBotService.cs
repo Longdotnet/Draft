@@ -266,7 +266,8 @@ public sealed partial class ZaloBotService(
 
         var explicitlyMentioned = incoming.MentionedBot && incoming.Mentions.Any(mention =>
             NormalizeId(mention.Uid) == NormalizeId(incoming.BotId));
-        if (!explicitlyMentioned || storedMessage.BotReplySentAt is not null) return;
+        var groupLeaveAction = ZaloGroupLeaveCommand.Parse(ExtractQuestion(incoming), explicitlyMentioned);
+        if ((!explicitlyMentioned && groupLeaveAction == ZaloGroupLeaveAction.None) || storedMessage.BotReplySentAt is not null) return;
 
         var processingToken = Guid.NewGuid().ToString("n");
         var leaseCutoff = DateTimeOffset.UtcNow.AddMinutes(-2);
@@ -289,7 +290,8 @@ public sealed partial class ZaloBotService(
 
         var exactCooldownSeconds = Math.Clamp(configuration.GetValue("ZaloBot:ExactCommandCooldownSeconds", 2), 0, 60);
         var incomingQuestion = ExtractQuestion(incoming);
-        var bypassCooldown = ZaloBotIntelligence.IsConfirmation(incomingQuestion) || ZaloBotIntelligence.IsCancel(incomingQuestion);
+        var bypassCooldown = groupLeaveAction != ZaloGroupLeaveAction.None ||
+                             ZaloBotIntelligence.IsConfirmation(incomingQuestion) || ZaloBotIntelligence.IsCancel(incomingQuestion);
         var cooldownCutoff = DateTimeOffset.UtcNow.AddSeconds(-exactCooldownSeconds);
         var tooSoon = !bypassCooldown && await db.ZaloGroupMessages.AsNoTracking().AnyAsync(message =>
                 message.Id != storedMessage.Id && message.ZaloConnectionId == connection.Id &&
@@ -304,7 +306,9 @@ public sealed partial class ZaloBotService(
         BotAnswer response;
         try
         {
-            response = await BuildAnswerAsync(connectionIds, connection.Id, groupId, incoming, cancellationToken);
+            response = groupLeaveAction != ZaloGroupLeaveAction.None
+                ? await BuildGroupLeaveCommandAnswerAsync(connection, groupId, incoming, groupLeaveAction, cancellationToken)
+                : await BuildAnswerAsync(connectionIds, connection.Id, groupId, incoming, cancellationToken);
         }
         catch (Exception exception)
         {
@@ -313,7 +317,7 @@ public sealed partial class ZaloBotService(
             throw;
         }
         if (!response.TextGeneratedByAi &&
-            response.Intent != ZaloBotIntent.GeneralChat &&
+            response.Intent is not (ZaloBotIntent.GeneralChat or ZaloBotIntent.GroupLeaveRequest or ZaloBotIntent.GroupLeaveConfirm) &&
             ZaloBotIntelligence.CanUseAiStyleRewrite(response.Intent) &&
             response.Mentions is not { Count: > 0 } &&
             ai.IsConfigured &&
@@ -380,6 +384,12 @@ public sealed partial class ZaloBotService(
         }
 
         await FinishMessageAsync(storedMessage.Id, processingToken, response.Intent, response.AiCalled, "sent", cancellationToken);
+
+        if (response.Intent == ZaloBotIntent.GroupLeaveConfirm)
+        {
+            await ExecuteGroupLeaveAfterGoodbyeAsync(connection, groupId, incoming);
+            return;
+        }
 
         if (response.Intent == ZaloBotIntent.GeneralChat)
         {
