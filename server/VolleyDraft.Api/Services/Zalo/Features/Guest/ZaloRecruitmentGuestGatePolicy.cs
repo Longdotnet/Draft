@@ -6,6 +6,7 @@ internal enum ZaloRecruitmentGuestReplyAnchorKind
 {
     None,
     RecruitmentBroadcast,
+    GuestSignupGuidance,
     GuestConversation
 }
 
@@ -13,6 +14,7 @@ internal static class ZaloRecruitmentGuestGatePolicy
 {
     internal const string GuestSelectedIntentPrefix = "RecruitmentGuest:";
     internal const string GuestConversationReplyOutcome = "guest_recruitment_reply";
+    internal const string GuestSignupGuidanceReplyOutcome = "guest_signup_guidance";
 
     internal static TimeSpan GetSignupWindow(IConfiguration configuration) =>
         TimeSpan.FromHours(Math.Clamp(
@@ -46,15 +48,27 @@ internal static class ZaloRecruitmentGuestGatePolicy
         return value.Length == 0 ? null : value;
     }
 
+    internal static bool LooksLikeSignupGuidance(string? content)
+    {
+        var normalized = ZaloBotIntelligence.Normalize(content ?? string.Empty);
+        if (normalized.Length == 0) return false;
+        return normalized.Contains("ban ngoai group", StringComparison.Ordinal) &&
+               normalized.Contains("cong slot", StringComparison.Ordinal) &&
+               (normalized.Contains("reply dung tin", StringComparison.Ordinal) ||
+                normalized.Contains("reply ngay tin nay", StringComparison.Ordinal));
+    }
+
     internal static bool CanHandleFromAnchor(
         ZaloRecruitmentGuestCommandKind commandKind,
         ZaloRecruitmentGuestReplyAnchorKind anchorKind) =>
         commandKind switch
         {
-            // Adding outside guests is deliberately stricter: the member must reply to
-            // the group-wide recruitment message where the bot offered the shortcut.
+            // Adding outside guests must stay on a grounded mutation lane. The user may
+            // reply either to the original recruitment broadcast or to a bot guidance
+            // message that has already grounded one exact session.
             ZaloRecruitmentGuestCommandKind.Add =>
-                anchorKind == ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast,
+                anchorKind is ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast or
+                              ZaloRecruitmentGuestReplyAnchorKind.GuestSignupGuidance,
 
             // Once a guest exists, profile/cancel follow-ups may reply to either the
             // original recruitment message or a bot reply in that guest conversation.

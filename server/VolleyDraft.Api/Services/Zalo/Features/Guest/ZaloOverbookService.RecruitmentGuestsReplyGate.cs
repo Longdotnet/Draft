@@ -303,6 +303,53 @@ public sealed partial class ZaloOverbookService
             recruitmentMessageId = anchor.MessageId;
             anchorKind = ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast;
         }
+        else if (anchor.ReplyOutcome == ZaloRecruitmentGuestGatePolicy.GuestSignupGuidanceReplyOutcome)
+        {
+            sessionId = ZaloRecruitmentGuestGatePolicy.TryReadGuestSessionId(anchor.SelectedIntent);
+            anchorKind = ZaloRecruitmentGuestReplyAnchorKind.GuestSignupGuidance;
+        }
+        else if (commandKind == ZaloRecruitmentGuestCommandKind.Add &&
+                 anchor.ReplyOutcome == "sent" &&
+                 ZaloRecruitmentGuestGatePolicy.LooksLikeSignupGuidance(anchor.Content))
+        {
+            // Compatibility for guidance sent before GuestSignupGuidance carried an
+            // explicit session id. Follow the bot-reply edge back to the original user
+            // request (which may contain "hôm nay"/weekday/date), then resolve exactly
+            // one session using the same guest-session resolver. Ambiguous recovery
+            // stays fail-closed.
+            var anchorRelation = await new ZaloMessageGraphStore(db)
+                .LoadRelationAsync(connectionId, groupId, anchor.MessageId, cancellationToken);
+            if (anchorRelation?.RelationType == "BotReply" &&
+                !string.IsNullOrWhiteSpace(anchorRelation.ToMessageId))
+            {
+                var source = await db.ZaloGroupMessages
+                    .AsNoTracking()
+                    .SingleOrDefaultAsync(item =>
+                        item.ZaloConnectionId == connectionId &&
+                        item.GroupId == groupId &&
+                        item.MessageId == anchorRelation.ToMessageId &&
+                        !item.IsFromBot,
+                        cancellationToken);
+                var sourceCommand = ZaloRecruitmentGuestPolicy.TryParse(source?.Content);
+                if (source is not null && sourceCommand?.Kind == ZaloRecruitmentGuestCommandKind.Add)
+                {
+                    var recovered = await ResolveRecruitmentGuestSessionAsync(
+                        connectionId,
+                        groupId,
+                        source.MessageId,
+                        source.Content,
+                        source.SenderId,
+                        sourceCommand,
+                        cancellationToken);
+                    if (recovered.Session is not null)
+                    {
+                        sessionId = recovered.Session.Id;
+                        recruitmentMessageId = recovered.RecruitmentMessageId;
+                        anchorKind = ZaloRecruitmentGuestReplyAnchorKind.GuestSignupGuidance;
+                    }
+                }
+            }
+        }
         else if (anchor.ReplyOutcome == ZaloRecruitmentGuestGatePolicy.GuestConversationReplyOutcome)
         {
             sessionId = ZaloRecruitmentGuestGatePolicy.TryReadGuestSessionId(anchor.SelectedIntent);

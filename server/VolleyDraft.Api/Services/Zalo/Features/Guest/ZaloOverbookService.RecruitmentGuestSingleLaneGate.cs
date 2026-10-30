@@ -22,7 +22,9 @@ internal static class ZaloRecruitmentGuestMentionGatePolicy
             return ZaloRecruitmentGuestMentionGateDecision.NotApplicable;
 
         return parsedKind == ZaloRecruitmentGuestCommandKind.Add &&
-               anchorKind == ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast
+               ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
+                   ZaloRecruitmentGuestCommandKind.Add,
+                   anchorKind)
             ? ZaloRecruitmentGuestMentionGateDecision.QueueReplyGatedMutation
             : ZaloRecruitmentGuestMentionGateDecision.RequireRecruitmentReply;
     }
@@ -31,9 +33,10 @@ internal static class ZaloRecruitmentGuestMentionGatePolicy
 public sealed partial class ZaloOverbookService
 {
     /// <summary>
-    /// Guest signup has exactly one mutation lane: a +1/+2 reply to a grounded
-    /// KeepRecruiting broadcast. Explicit @Npc guest requests are intercepted here
-    /// before the legacy bot/AI router can claim that it changed the roster.
+    /// Guest signup has exactly one grounded mutation lane: a +1/+2 reply to either
+    /// a KeepRecruiting broadcast or a bot guidance message bound to one exact session.
+    /// Explicit @Npc guest requests are intercepted here before the legacy bot/AI router
+    /// can claim that it changed the roster.
     /// </summary>
     private async Task<bool> TryHandleRecruitmentGuestSingleLaneGateAsync(
         ZaloIncomingMessageEvent incoming,
@@ -115,9 +118,27 @@ public sealed partial class ZaloOverbookService
         if (decision != ZaloRecruitmentGuestMentionGateDecision.RequireRecruitmentReply)
             return false;
 
+        MatchSession? guidanceSession = null;
+        if (command is { Kind: ZaloRecruitmentGuestCommandKind.Add })
+        {
+            var guidanceResolution = await ResolveRecruitmentGuestSessionAsync(
+                connection.Id,
+                groupId,
+                messageId,
+                incoming.Content,
+                incoming.SenderId,
+                command,
+                cancellationToken);
+            guidanceSession = guidanceResolution.Session;
+        }
+
         var guidance = command?.SponsorReference is { Length: > 0 } sponsorReference
-            ? $"Tui hiểu `+{command.Quantity} bạn @{sponsorReference}` là thêm {command.Quantity} bạn ngoài group do {sponsorReference} bảo lãnh, không phải thêm {sponsorReference} vào roster. Để cộng slot an toàn, reply đúng tin `@all` tuyển người của tui rồi gửi lại `+{command.Quantity} bạn @{sponsorReference}`."
-            : "Tui chưa cộng slot từ câu này nha. + bạn ngoài group chỉ chạy khi ông reply đúng tin `@all` tuyển người của tui và gửi `+1` hoặc `+2`. Khi mutation DB thành công tui mới báo roster tăng; nói trực tiếp với @Npc sẽ không tự cộng người.";
+            ? guidanceSession is not null
+                ? $"Tui hiểu `+{command.Quantity} bạn @{sponsorReference}` là thêm {command.Quantity} bạn ngoài group do {sponsorReference} bảo lãnh, không phải thêm {sponsorReference} vào roster. Kèo đã xác định là {guidanceSession.Name}; reply ngay tin này `+{command.Quantity} bạn @{sponsorReference}` là tui cộng slot."
+                : $"Tui hiểu `+{command.Quantity} bạn @{sponsorReference}` là thêm {command.Quantity} bạn ngoài group do {sponsorReference} bảo lãnh, không phải thêm {sponsorReference} vào roster. Tui chưa xác định chắc kèo nào; gửi lại kèm `hôm nay`, thứ hoặc ngày cụ thể nha."
+            : guidanceSession is not null
+                ? $"Tui hiểu ông muốn +{command!.Quantity} bạn ngoài group cho {guidanceSession.Name}. Reply ngay tin này `+{command.Quantity}` là tui cộng slot."
+                : "Tui chưa cộng slot từ câu này nha. Gửi lại kèm `hôm nay`, thứ hoặc ngày cụ thể để tui khóa đúng kèo trước khi + bạn ngoài group.";
 
         await SendDeterministicPreRouteResponseAsync(
             connection.Id,
@@ -127,7 +148,13 @@ public sealed partial class ZaloOverbookService
             incoming,
             guidance,
             "RecruitmentGuestReplyRequired",
-            cancellationToken);
+            cancellationToken,
+            guidanceSession is null
+                ? null
+                : ZaloRecruitmentGuestGatePolicy.GuestSelectedIntent(guidanceSession.Id),
+            guidanceSession is null
+                ? null
+                : ZaloRecruitmentGuestGatePolicy.GuestSignupGuidanceReplyOutcome);
         return true;
     }
 }

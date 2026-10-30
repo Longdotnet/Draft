@@ -132,10 +132,68 @@ public sealed class ZaloRecruitmentGuestSingleLaneIntegrationTests
             Assert.Contains("bạn ngoài group", message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Hmy Bk", message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("không phải thêm Hmy Bk", message, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("reply đúng tin", message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("reply ngay tin này", message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("+1", message, StringComparison.Ordinal);
         }
 
+        var guidance = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item =>
+                item.ZaloConnectionId == zalo.Id &&
+                item.MessageId == "provider-guest-gate-1");
+        Assert.Equal(
+            ZaloRecruitmentGuestGatePolicy.GuestSelectedIntent(session.Id),
+            guidance.SelectedIntent);
+        Assert.Equal(
+            ZaloRecruitmentGuestGatePolicy.GuestSignupGuidanceReplyOutcome,
+            guidance.ReplyOutcome);
+
+        // Simulate the exact production guidance sent before this hotfix: the bot
+        // message exists and points back to the original request, but carries no
+        // explicit guest-session metadata of its own.
+        var legacyGuidance = await db.ZaloGroupMessages
+            .SingleAsync(item =>
+                item.ZaloConnectionId == zalo.Id &&
+                item.MessageId == guidance.MessageId);
+        legacyGuidance.SelectedIntent = null;
+        legacyGuidance.ReplyOutcome = "sent";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        const string followupContent = "+1 bạn @Hmy Bk";
+        var followupHmyPos = followupContent.IndexOf("@Hmy Bk", StringComparison.Ordinal);
+        var followup = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "guest-guidance-followup-1",
+            senderId: "tan-chi",
+            senderName: "Tấn Chí",
+            content: followupContent,
+            mentions:
+            [
+                new ZaloBridgeMention("hmy-id", followupHmyPos, "@Hmy Bk".Length)
+            ],
+            mentionedBot: false,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            quote: new ZaloBridgeMessageQuote(
+                "provider-guest-gate-1",
+                "bot-account",
+                "Npc",
+                guidance.Content,
+                "chat",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                null));
+
+        Assert.True(await service.TryHandleZaloConfirmationAsync(followup));
+        Assert.Equal(1, bridgeHandler.SendCount);
+        var queued = await db.ZaloGroupMessages
+            .AsNoTracking()
+            .SingleAsync(item =>
+                item.ZaloConnectionId == zalo.Id &&
+                item.MessageId == followup.MessageId);
+        Assert.Null(queued.BotReplySentAt);
+        Assert.Null(queued.ReplyOutcome);
+        Assert.Null(queued.ProcessingToken);
         var presentCount = await db.SessionPlayers
             .AsNoTracking()
             .CountAsync(item => item.SessionId == "session-t7" && item.IsPresent);

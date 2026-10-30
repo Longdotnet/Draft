@@ -573,7 +573,9 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         string response,
         string intent,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? outboundSelectedIntent = null,
+        string? outboundReplyOutcome = null)
     {
         var storedIncoming = await EnsureV2IncomingMessageAsync(
             connectionId,
@@ -600,6 +602,23 @@ public sealed partial class ZaloOverbookService
             botName,
             response,
             cancellationToken);
+        if (!string.IsNullOrWhiteSpace(outboundSelectedIntent) ||
+            !string.IsNullOrWhiteSpace(outboundReplyOutcome))
+        {
+            var outbound = await db.ZaloGroupMessages
+                .SingleOrDefaultAsync(item =>
+                    item.ZaloConnectionId == connectionId &&
+                    item.GroupId == groupId &&
+                    item.MessageId == persistedReplyId,
+                    cancellationToken);
+            if (outbound is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(outboundSelectedIntent))
+                    outbound.SelectedIntent = outboundSelectedIntent;
+                if (!string.IsNullOrWhiteSpace(outboundReplyOutcome))
+                    outbound.ReplyOutcome = outboundReplyOutcome;
+            }
+        }
         if (providerReplyId is not null)
         {
             await new ZaloMessageGraphStore(db).RememberOutboundAsync(

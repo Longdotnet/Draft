@@ -38,6 +38,9 @@ public sealed class ZaloRecruitmentGuestGatePolicyTests
         Assert.True(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
             ZaloRecruitmentGuestCommandKind.Add,
             ZaloRecruitmentGuestReplyAnchorKind.RecruitmentBroadcast));
+        Assert.True(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
+            ZaloRecruitmentGuestCommandKind.Add,
+            ZaloRecruitmentGuestReplyAnchorKind.GuestSignupGuidance));
         Assert.False(ZaloRecruitmentGuestGatePolicy.CanHandleFromAnchor(
             ZaloRecruitmentGuestCommandKind.Add,
             ZaloRecruitmentGuestReplyAnchorKind.GuestConversation));
