@@ -66,7 +66,7 @@ public sealed partial class ZaloBotService
         if (action == ZaloGroupLeaveAction.Cancel)
             return new BotAnswer("Đã hủy lệnh out nhóm. Tui vẫn ở đây nha.", null);
 
-        return new BotAnswer("Oke, tui chào cả nhà nha. Tui out nhóm đây 👋", null, ZaloBotIntent.GroupLeaveConfirm);
+        return new BotAnswer(ZaloGroupLeaveCommand.FarewellText, null, ZaloBotIntent.GroupLeaveConfirm);
     }
 
     private async Task<bool> IsGroupLeaveOperatorAsync(
