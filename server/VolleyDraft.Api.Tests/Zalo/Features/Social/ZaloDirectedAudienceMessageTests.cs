@@ -146,6 +146,62 @@ public sealed class ZaloDirectedAudienceMessageTests
     }
 
     [Fact]
+    public void Explicit_all_audience_command_falls_back_to_all_grounded_targets_when_ai_rejects()
+    {
+        var rejected = new ZaloDirectedAudiencePlan(
+            ZaloDirectedAudiencePlanStatus.Rejected,
+            .51,
+            [],
+            null,
+            "low_confidence_or_invalid_route");
+        var audience = Audience(
+            new("u-bao", "Bảo Long"),
+            new("u-chu", "Chu Thuận Thành"),
+            new("u-long", "Thanh Long"));
+
+        var plan = ZaloDirectedAudienceComposer.PreserveExplicitAllAudienceIntent(
+            rejected,
+            "tag mấy người đó nhớ đem banh",
+            audience.Targets.Count);
+        var rendered = ZaloDirectedAudienceComposer.Render(plan, audience.Targets, "Thanh Long");
+
+        Assert.Equal(ZaloDirectedAudiencePlanStatus.Ready, plan.Status);
+        Assert.Equal("explicit_all_audience_fallback", plan.Reason);
+        Assert.Equal(new[] { 0, 1, 2 }, plan.TargetIndexes);
+        Assert.NotNull(rendered);
+        Assert.Equal(new[] { "u-bao", "u-chu", "u-long" }, rendered!.Mentions.Select(item => item.Uid));
+        Assert.Contains("nhớ đem banh", rendered.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("tag mấy người đó kêu họ đem banh hiểu chưa", "đem banh")]
+    [InlineData("nhắn họ tối nay nhớ đem banh", "tối nay nhớ đem banh")]
+    [InlineData("tui réo cả danh sách vừa rồi mai đi sớm", "mai đi sớm")]
+    public void Explicit_all_audience_parser_keeps_only_relay_payload(string instruction, string expected)
+    {
+        Assert.True(ZaloDirectedAudienceComposer.TryExtractExplicitAllAudienceRelay(instruction, out var relay));
+        Assert.Equal(expected, relay);
+    }
+
+    [Fact]
+    public void Explicit_all_audience_command_keeps_valid_ai_plan_when_ai_already_selected_everyone()
+    {
+        var aiPlan = new ZaloDirectedAudiencePlan(
+            ZaloDirectedAudiencePlanStatus.Ready,
+            .98,
+            [0, 1],
+            "[[AUD_0]] [[AUD_1]] ơi, [[REQUESTER]] nhờ tui nhắc nhớ đem banh nha.",
+            "ai_ready");
+
+        var resolved = ZaloDirectedAudienceComposer.PreserveExplicitAllAudienceIntent(
+            aiPlan,
+            "tag mấy người đó nhớ đem banh",
+            2);
+
+        Assert.Same(aiPlan, resolved);
+    }
+
+    [Fact]
     public async Task Audience_store_is_sender_scoped_and_empty_result_clears_stale_reference()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

@@ -171,6 +171,53 @@ internal sealed partial class ZaloDirectedAudienceComposer
         return ParsePlan(result.Content, audience.Targets.Count);
     }
 
+    internal static ZaloDirectedAudiencePlan PreserveExplicitAllAudienceIntent(
+        ZaloDirectedAudiencePlan plan,
+        string instruction,
+        int audienceCount)
+    {
+        if (audienceCount <= 0 || !TryExtractExplicitAllAudienceRelay(instruction, out var relayText))
+            return plan;
+
+        var selectsAll = plan.Status == ZaloDirectedAudiencePlanStatus.Ready &&
+                         plan.TargetIndexes.Count == audienceCount &&
+                         plan.TargetIndexes.OrderBy(index => index).SequenceEqual(Enumerable.Range(0, audienceCount));
+        if (selectsAll)
+            return plan;
+
+        var placeholders = string.Join(" ", Enumerable.Range(0, audienceCount).Select(index => $"[[AUD_{index}]]"));
+        var message = $"{placeholders} ơi, [[REQUESTER]] nhờ tui nhắc: {relayText.Trim().TrimEnd('.', '!', '?')} nha.";
+        return ValidateTemplate(message, Enumerable.Range(0, audienceCount).ToArray(), audienceCount)
+            ? new ZaloDirectedAudiencePlan(
+                ZaloDirectedAudiencePlanStatus.Ready,
+                1,
+                Enumerable.Range(0, audienceCount).ToArray(),
+                message,
+                "explicit_all_audience_fallback")
+            : plan;
+    }
+
+    internal static bool TryExtractExplicitAllAudienceRelay(string instruction, out string relayText)
+    {
+        relayText = string.Empty;
+        var text = Clean(instruction, 1000);
+        var match = ExplicitAllAudienceRegex().Match(text);
+        if (!match.Success) return false;
+
+        var payload = match.Groups["payload"].Value.Trim();
+        payload = RelayVerbPrefixRegex().Replace(payload, string.Empty).Trim();
+        payload = RelayTailFillerRegex().Replace(payload, string.Empty).Trim();
+        if (payload.Length == 0 ||
+            payload.Contains('@') ||
+            payload.Contains("http://", StringComparison.OrdinalIgnoreCase) ||
+            payload.Contains("https://", StringComparison.OrdinalIgnoreCase) ||
+            payload.Contains("```", StringComparison.Ordinal))
+            return false;
+
+        relayText = payload;
+        return true;
+    }
+
     internal static ZaloDirectedAudiencePlan ParsePlan(string? content, int audienceCount)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -336,6 +383,21 @@ internal sealed partial class ZaloDirectedAudienceComposer
 
     [GeneratedRegex(@"\[\[(REQUESTER|AUD_\d+)\]\]", RegexOptions.CultureInvariant)]
     private static partial Regex PlaceholderRegex();
+
+    [GeneratedRegex(
+        @"^\s*(?:(?:t|tui)\s+)?(?:tag|nhắn|nhan|réo|reo|kêu|keu|nhắc|nhac|mention)\s+(?:mấy người đó|những người đó|mấy ông đó|mấy bạn đó|mọi người đó|họ|cả danh sách(?: vừa rồi)?|danh sách vừa rồi)\s+(?<payload>.+?)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ExplicitAllAudienceRegex();
+
+    [GeneratedRegex(
+        @"^(?:(?:kêu|keu|nhắc|nhac|bảo|bao|nói|noi)\s+(?:họ|mấy người đó|những người đó)\s+)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RelayVerbPrefixRegex();
+
+    [GeneratedRegex(
+        @"\s+(?:hiểu chưa|hieu chua|nghe chưa|nghe chua|được chưa|duoc chua)\s*[.!?]*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RelayTailFillerRegex();
 }
 
 internal sealed partial class ZaloDirectedAudienceMessageService(
@@ -366,6 +428,21 @@ internal sealed partial class ZaloDirectedAudienceMessageService(
             instruction,
             audience,
             cancellationToken);
+        var originalPlan = plan;
+        plan = ZaloDirectedAudienceComposer.PreserveExplicitAllAudienceIntent(
+            plan,
+            instruction,
+            audience.Targets.Count);
+        if (!ReferenceEquals(originalPlan, plan) && plan.Reason == "explicit_all_audience_fallback")
+        {
+            logger.LogWarning(
+                "Directed audience AI plan overridden by explicit all-audience intent. Group={GroupId} Sender={SenderId} OriginalStatus={OriginalStatus} OriginalReason={OriginalReason} Confidence={Confidence}",
+                groupId,
+                senderId,
+                originalPlan.Status,
+                originalPlan.Reason,
+                originalPlan.Confidence);
+        }
         if (plan.Status is ZaloDirectedAudiencePlanStatus.None or ZaloDirectedAudiencePlanStatus.Unavailable)
             return null;
         if (plan.Status == ZaloDirectedAudiencePlanStatus.Rejected)
