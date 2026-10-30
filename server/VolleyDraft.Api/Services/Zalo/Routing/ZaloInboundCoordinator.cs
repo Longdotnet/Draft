@@ -43,6 +43,23 @@ public sealed class ZaloInboundCoordinator(
         // Deterministic lanes consume no budget.
         using var aiBudget = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 5);
 
+        // Explicit leave commands are wholly deterministic. Bypass other pre-route
+        // modules, some of which can call an AI model before the legacy bot router.
+        // Keep the normal ingress claim so duplicates cannot execute the command twice.
+        if (ZaloGroupLeaveCommand.Parse(
+                ZaloBotService.ExtractQuestion(incoming),
+                incoming.MentionedBot) != ZaloGroupLeaveAction.None)
+        {
+            return await DispatchClaimedAsync(
+                incoming,
+                TryClaimAsync,
+                static (_, _) => Task.FromResult(false),
+                async (message, token) => await botService.HandleIncomingAsync(message, token),
+                CompletePreRouteAsync,
+                ReleaseAsync,
+                cancellationToken);
+        }
+
         // A trusted no-mention continuation must enter the legacy bot before the
         // coordinator claims the shared ZaloGroupMessage row. ZaloBotService then uses
         // its own durable processing lease and normal authorization/revalidation path.

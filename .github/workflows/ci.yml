@@ -121,7 +121,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build API Docker image
-        run: docker build -t volley-draft-api:test server/VolleyDraft.Api
+        run: docker build -t volley-draft-api:test -f Dockerfile .
 
       - name: Build Zalo Bridge Docker image
         run: docker build -t volley-draft-zalo-bridge:test server/ZaloBridge

@@ -102,6 +102,18 @@ public sealed class ZaloBridgeClient
         return await ReadAsync<BridgeGroupRoles>(response);
     }
 
+    public async Task<BridgeLeaveGroupResponse> LeaveGroupAsync(
+        string accountId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            $"v1/groups/{Uri.EscapeDataString(groupId)}/leave",
+            new { accountId },
+            cancellationToken);
+        return await ReadAsync<BridgeLeaveGroupResponse>(response);
+    }
+
     public async Task<BridgePoll> GetPollAsync(JsonElement credentials, string pollId)
     {
         using var response = await httpClient.PostAsJsonAsync(
@@ -587,6 +599,7 @@ public sealed record BridgeGroupMemberDirectory(
     bool IsComplete,
     IReadOnlyList<BridgeMember> Members);
 public sealed record BridgeGroupRoles(string GroupId, string CreatorId, IReadOnlyList<string> AdminIds);
+public sealed record BridgeLeaveGroupResponse(bool Left, bool Mock);
 public sealed record BridgePollsResponse(IReadOnlyList<BridgePoll> Polls);
 public sealed record BridgeBoardPage(
     string GroupId,

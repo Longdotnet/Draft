@@ -67,5 +67,7 @@ public enum ZaloBotIntent
     SummarizeMemberConversation,
     SummarizeHotTopics,
     ConversationSummaryFollowUp,
+    GroupLeaveRequest,
+    GroupLeaveConfirm,
     GeneralChat
 }
