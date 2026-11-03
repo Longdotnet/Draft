@@ -14,8 +14,7 @@ public sealed class ZaloMemberIntegrationSettingsTests
         Assert.True(settings.Enabled);
         Assert.Equal(string.Empty, settings.GroupNameContains);
         Assert.Equal(28, settings.NewMemberWindowDays);
-        Assert.Equal(string.Empty, settings.BotCreatorName);
-        Assert.Equal(string.Empty, settings.GroupFounderName);
+        Assert.Equal(string.Empty, settings.GroupFoundersSummary);
         Assert.Equal(string.Empty, settings.GroupPurpose);
         Assert.Equal(string.Empty, settings.CultureSummary);
         Assert.Null(settings.NormalCourtFeeVnd);
@@ -61,11 +60,11 @@ public sealed class ZaloMemberIntegrationSettingsTests
     [Fact]
     public void FromConfiguration_trims_grounded_facts_and_discards_invalid_numbers_and_blank_lore()
     {
+        const string expectedFounders = "5 thành viên cốt cán";
         var values = new Dictionary<string, string?>
         {
             ["ZaloBot:MemberIntegration:GroupNameContains"] = "  Volley Draft  ",
-            ["ZaloBot:MemberIntegration:BotCreatorName"] = "  Thanh Long  ",
-            ["ZaloBot:MemberIntegration:GroupFounderName"] = "  Nick Tran  ",
+            ["ZaloBot:MemberIntegration:GroupFoundersSummary"] = $"  {expectedFounders}  ",
             ["ZaloBot:MemberIntegration:GroupPurpose"] = "  giao lưu  ",
             ["ZaloBot:MemberIntegration:CultureSummary"] = "  vui vẻ  ",
             ["ZaloBot:MemberIntegration:NormalCourtFeeVnd"] = "0",
@@ -78,8 +77,7 @@ public sealed class ZaloMemberIntegrationSettingsTests
         var settings = FromValues(values);
 
         Assert.Equal("Volley Draft", settings.GroupNameContains);
-        Assert.Equal("Thanh Long", settings.BotCreatorName);
-        Assert.Equal("Nick Tran", settings.GroupFounderName);
+        Assert.Equal(expectedFounders, settings.GroupFoundersSummary);
         Assert.Equal("giao lưu", settings.GroupPurpose);
         Assert.Equal("vui vẻ", settings.CultureSummary);
         Assert.Null(settings.NormalCourtFeeVnd);

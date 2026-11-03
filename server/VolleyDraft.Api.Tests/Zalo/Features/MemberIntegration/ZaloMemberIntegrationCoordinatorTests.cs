@@ -170,14 +170,12 @@ public sealed class ZaloMemberIntegrationCoordinatorTests
             Signals: new ZaloMemberIntegrationSignals(MessageCount: 1, ActiveMessageDays: 1, HasSpoken: true),
             Facts: new ZaloMemberIntegrationGroupFacts(
                 GroupName: "Volley Draft",
-                BotCreatorName: "Thanh Long",
-                GroupFounderName: "Nick Tran",
+                GroupFoundersSummary: "5 thành viên cốt cán",
                 GroupPurpose: "Giao lưu vui vẻ",
                 CultureSummary: "Vui vẻ, hòa đồng, không toxic hay blame",
                 NormalCourtFeeVnd: null,
                 MaxPlayersPerSession: 12,
                 ApprovedLore: []),
-            Roles: new ZaloMemberIntegrationRoleDirectory(Creator: null, Admins: []),
             PeerCandidates: [],
             LoreHints: []);
 

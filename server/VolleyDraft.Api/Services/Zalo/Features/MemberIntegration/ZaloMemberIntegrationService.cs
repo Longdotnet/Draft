@@ -92,7 +92,7 @@ internal sealed class ZaloMemberIntegrationService(
 
         var cooldown = suggestion.CapabilityKey switch
         {
-            "bot-identity" or "group-origins" or "role-introduction" => TimeSpan.FromDays(14),
+            "group-origins" => TimeSpan.FromDays(14),
             "group-culture" => TimeSpan.FromDays(10),
             "practical-guide" => TimeSpan.FromDays(7),
             _ => TimeSpan.FromDays(5)
@@ -107,9 +107,7 @@ internal sealed class ZaloMemberIntegrationService(
     private static IZaloMemberIntegrationCapability[] CreateCapabilities() =>
     [
         new ZaloMemberWelcomeCapability(),
-        new ZaloMemberBotIdentityCapability(),
         new ZaloMemberGroupOriginsCapability(),
-        new ZaloMemberRoleIntroductionCapability(),
         new ZaloMemberGroupCultureCapability(),
         new ZaloMemberPracticalGuideCapability(),
         new ZaloMemberSocialBridgeCapability(),

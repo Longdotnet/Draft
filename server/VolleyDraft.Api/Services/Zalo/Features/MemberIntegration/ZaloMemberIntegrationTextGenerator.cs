@@ -172,8 +172,7 @@ internal sealed class ZaloMemberIntegrationTextGenerator
         var requiredName = suggestion.CapabilityKey switch
         {
             "welcome" => context.Facts.GroupName,
-            "bot-identity" => context.Facts.BotCreatorName,
-            "group-origins" => context.Facts.GroupFounderName,
+            "group-origins" => context.Facts.GroupName,
             _ => string.Empty
         };
         return string.IsNullOrWhiteSpace(requiredName) ||

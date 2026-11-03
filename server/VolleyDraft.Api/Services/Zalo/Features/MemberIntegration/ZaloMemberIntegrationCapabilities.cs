@@ -89,34 +89,6 @@ public sealed class ZaloMemberWelcomeCapability : IZaloMemberIntegrationCapabili
     }
 }
 
-public sealed class ZaloMemberBotIdentityCapability : IZaloMemberIntegrationCapability
-{
-    public string Key => "bot-identity";
-    public int Priority => 90;
-
-    public ValueTask<ZaloMemberIntegrationSuggestion?> EvaluateAsync(
-        ZaloMemberIntegrationContext context,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var creator = context.Facts.BotCreatorName;
-        var origin = string.IsNullOrWhiteSpace(creator)
-            ? "Tui là NPC của group"
-            : $"Tui là NPC được {creator} làm ra để phụ group";
-        string[] variants =
-        [
-            $"🤖 @{context.DisplayName} giới thiệu thêm xíu: {origin} — nhắc kèo, vote, share slot, hỗ trợ anh em và lâu lâu réo mọi người cho group có nhiệt 😆 Có gì chưa rõ cứ hỏi tui.",
-            $"🤖 @{context.DisplayName} tiện nói luôn cho dễ xài tui nha 😆 {origin}. Tui phụ mấy vụ nhắc kèo, vote, share slot với hỗ trợ thông tin trong group; cần gì cứ gọi.",
-            $"😆 @{context.DisplayName} nếu chưa biết con bot này làm gì thì đây: {origin}. Việc chính là phụ anh em theo kèo, vote, share slot và nhắc mấy thứ cần thiết trong group."
-        ];
-        var text = variants[0];
-        return ZaloMemberIntegrationCapabilitySupport.Suggest(new(
-            Key, Priority, text, "member-integration:bot-identity", "new_member_needs_bot_orientation",
-            [ZaloMemberIntegrationCapabilitySupport.Subject(context)],
-            variants));
-    }
-}
-
 public sealed class ZaloMemberGroupOriginsCapability : IZaloMemberIntegrationCapability
 {
     public string Key => "group-origins";
@@ -130,54 +102,20 @@ public sealed class ZaloMemberGroupOriginsCapability : IZaloMemberIntegrationCap
         if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 1 ||
             string.IsNullOrWhiteSpace(context.Facts.GroupPurpose))
             return ZaloMemberIntegrationCapabilitySupport.None();
-        var founder = string.IsNullOrWhiteSpace(context.Facts.GroupFounderName)
-            ? string.Empty
-            : $"{context.Facts.GroupFounderName} lập group này. ";
+        var founder = string.IsNullOrWhiteSpace(context.Facts.GroupFoundersSummary)
+            ? "Nhóm được thành lập với mong muốn "
+            : $"{context.Facts.GroupFoundersSummary} cùng thành lập nhóm, mỗi người đều góp một vai trò quan trọng, với mong muốn ";
         string[] variants =
         [
-            $"📖 @{context.DisplayName} kể chút lịch sử hội nha: {founder}{context.Facts.GroupPurpose} Mục tiêu là quen nhau rồi chơi lâu dài, nên có gì cứ giao lưu thoải mái 😄",
-            $"🏐 @{context.DisplayName} thêm chút context về hội cho dễ bắt nhịp nè: {founder}{context.Facts.GroupPurpose} Cứ chơi rồi làm quen từ từ với anh em là đúng tinh thần group 😄",
-            $"😄 @{context.DisplayName} biết sơ nguồn gốc hội luôn cho vui: {founder}{context.Facts.GroupPurpose} Ở đây ưu tiên giao lưu lâu dài nên cứ sinh hoạt tự nhiên nha."
+            $"📖 @{context.DisplayName} kể chút về {context.Facts.GroupName} nha: {founder}{context.Facts.GroupPurpose} Tinh thần chung là vui vẻ, tôn trọng nhau, không blame hay trách móc; có gì thì góp ý nhẹ nhàng để cùng chơi tốt hơn 😄",
+            $"🏐 @{context.DisplayName} thêm chút context về {context.Facts.GroupName} cho dễ bắt nhịp nè: {founder}{context.Facts.GroupPurpose} Mọi người ưu tiên vui vẻ, hòa đồng, không blame nhau; có lỗi thì góp ý nhẹ nhàng rồi cùng chơi tiếp nha 😄",
+            $"😄 @{context.DisplayName} biết sơ về {context.Facts.GroupName} luôn nha: {founder}{context.Facts.GroupPurpose} Hội mình hướng đến giao lưu lâu dài, tôn trọng và động viên nhau, không trách móc hay blame khi chơi nha."
         ];
         var text = variants[0];
         return ZaloMemberIntegrationCapabilitySupport.Suggest(new(
             Key, Priority, text, "member-integration:group-origins", "new_member_group_context",
             [ZaloMemberIntegrationCapabilitySupport.Subject(context)],
             variants));
-    }
-}
-
-public sealed class ZaloMemberRoleIntroductionCapability : IZaloMemberIntegrationCapability
-{
-    public string Key => "role-introduction";
-    public int Priority => 75;
-
-    public ValueTask<ZaloMemberIntegrationSuggestion?> EvaluateAsync(
-        ZaloMemberIntegrationContext context,
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (ZaloMemberIntegrationCapabilitySupport.DaysSinceJoin(context) < 1)
-            return ZaloMemberIntegrationCapabilitySupport.None();
-        var people = new List<(string Role, ZaloMemberIntegrationMentionTarget Person)>();
-        if (context.Roles.Creator is { } creator) people.Add(("người tạo/đứng group", creator));
-        people.AddRange(context.Roles.Admins.Take(2).Select(item => ("admin/phó nhóm", item)));
-        if (people.Count == 0) return ZaloMemberIntegrationCapabilitySupport.None();
-
-        var intro = string.Join(", ", people.Select(item => $"@{item.Person.DisplayName} ({item.Role})"));
-        var mentions = new[] { ZaloMemberIntegrationCapabilitySupport.Subject(context) }
-            .Concat(people.Select(item => item.Person))
-            .DistinctBy(item => item.ZaloUserId)
-            .ToArray();
-        string[] variants =
-        [
-            $"👥 @{context.DisplayName} để dễ bắt nhịp, đây là mấy người đang giữ vai trò điều hành group: {intro}. Có chuyện về group/sân/kèo chưa rõ thì cứ hỏi mấy ông này nha 😄",
-            $"👥 @{context.DisplayName} lưu mấy gương mặt này cho dễ hỏi chuyện group nha: {intro}. Vướng gì về sân hay kèo thì réo trực tiếp mấy ông này cũng được 😄",
-            $"😄 @{context.DisplayName} khỏi phải đoán ai phụ trách gì nè: {intro}. Có chuyện của group chưa rõ thì cứ hỏi thẳng cho nhanh nha."
-        ];
-        var text = variants[0];
-        return ZaloMemberIntegrationCapabilitySupport.Suggest(new(
-            Key, Priority, text, "member-integration:roles", "provider_group_roles_available", mentions, variants));
     }
 }
 

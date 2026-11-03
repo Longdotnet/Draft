@@ -190,14 +190,12 @@ public sealed class ZaloMemberIntegrationLifecycleTests
             Signals: signals ?? new ZaloMemberIntegrationSignals(),
             Facts: new ZaloMemberIntegrationGroupFacts(
                 GroupName: "CLB Tân binh-The First Spike",
-                BotCreatorName: "Thanh Long",
-                GroupFounderName: "Nick Tran",
+                GroupFoundersSummary: "5 thành viên cốt cán",
                 GroupPurpose: "Giao lưu bóng chuyền vui vẻ",
                 CultureSummary: "Vui vẻ, hòa đồng",
-                NormalCourtFeeVnd: 28000,
+                NormalCourtFeeVnd: 30000,
                 MaxPlayersPerSession: 18,
                 ApprovedLore: []),
-            Roles: new ZaloMemberIntegrationRoleDirectory(null, []),
             PeerCandidates: [],
             LoreHints: []);
 

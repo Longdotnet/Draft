@@ -60,11 +60,9 @@ This also gives the feature a stable parent boundary for future work: adding one
 The first complete capability set is delivered through the dedicated `MemberIntegration` proactive lane:
 
 - `welcome` uses only verified join/rejoin evidence;
-- `bot-identity` introduces the NPC and its configured creator;
-- `group-origins` explains the configured founder and non-profit community purpose;
-- `role-introduction` uses live Zalo creator/admin roles when Bridge can resolve them;
+- `group-origins` uses the tracked Zalo group name and explains that five core members founded the group to build a friendly, long-term volleyball community;
 - `group-culture` reinforces configured community norms;
-- `practical-guide` surfaces configured normal court cost and capacity guidance;
+- `practical-guide` surfaces the configured normal court cost (currently 30,000 VND/person) and capacity guidance;
 - `social-bridge` links a newcomer with an established active member when human interaction is still low;
 - `group-lore` uses approved lore first, otherwise harmless activity-backed observations from message/poll history;
 - `integration-score` uses chat days, messages, votes and reply interactions to decide whether to encourage more conversation or recognize successful integration. The numeric score is never published to the group.

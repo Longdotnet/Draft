@@ -8,12 +8,11 @@ namespace VolleyDraft.Api.Tests;
 public sealed class ZaloMemberIntegrationTextGeneratorTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-10-26T14:00:00+07:00");
-
     [Fact]
     public void Similarity_detects_same_template_with_different_member_name()
     {
-        var first = "📖 @Hmy Bk kể chút lịch sử hội nha: Nick Tran lập group này. Group được tạo để mọi người giao lưu bóng chuyền vui vẻ.";
-        var second = "📖 @Anhkhoii kể chút lịch sử hội nha: Nick Tran lập group này. Group được tạo để mọi người giao lưu bóng chuyền vui vẻ.";
+        var first = "📖 @Hmy Bk kể chút về CLB Tân bình-The First Spike nha: 5 thành viên cốt cán cùng thành lập nhóm để giao lưu bóng chuyền vui vẻ và gắn kết lâu dài.";
+        var second = "📖 @Anhkhoii kể chút về CLB Tân bình-The First Spike nha: 5 thành viên cốt cán cùng thành lập nhóm để giao lưu bóng chuyền vui vẻ và gắn kết lâu dài.";
 
         Assert.True(ZaloMemberIntegrationTextGenerator.Similarity(first, second) > .75);
     }
@@ -22,7 +21,7 @@ public sealed class ZaloMemberIntegrationTextGeneratorTests
     public async Task Failed_ai_uses_least_repetitive_deterministic_variant()
     {
         var context = Context();
-        var suggestion = await new ZaloMemberBotIdentityCapability().EvaluateAsync(context);
+        var suggestion = await new ZaloMemberGroupOriginsCapability().EvaluateAsync(context);
         Assert.NotNull(suggestion);
         Assert.NotNull(suggestion!.TextVariants);
         Assert.True(suggestion.TextVariants!.Count >= 3);
@@ -36,16 +35,16 @@ public sealed class ZaloMemberIntegrationTextGeneratorTests
 
         Assert.NotEqual(suggestion.Text, rewritten.Text);
         Assert.Contains("@New Member", rewritten.Text);
-        Assert.Contains("Thanh Long", rewritten.Text);
+        Assert.Contains(context.Facts.GroupName, rewritten.Text);
     }
 
     [Fact]
-    public async Task Ai_rewrite_is_accepted_when_mentions_and_authoritative_name_are_preserved()
+    public async Task Ai_rewrite_for_group_origins_is_accepted_when_group_name_is_preserved()
     {
         var context = Context();
-        var suggestion = await new ZaloMemberBotIdentityCapability().EvaluateAsync(context);
+        var suggestion = await new ZaloMemberGroupOriginsCapability().EvaluateAsync(context);
         Assert.NotNull(suggestion);
-        const string candidate = "😄 @New Member nếu thắc mắc tui là ai thì: tui là NPC do Thanh Long làm để phụ group. Kèo, vote hay share slot cần nhắc thì cứ réo tui.";
+        var candidate = $"😄 @New Member kể chút về {context.Facts.GroupName} nha: 5 thành viên cốt cán cùng thành lập nhóm, mỗi người đều góp một vai trò quan trọng, với mong muốn tạo sân chơi bóng chuyền vui vẻ, giao lưu và gắn kết lâu dài. Tinh thần chung là vui vẻ, tôn trọng nhau, không blame hay trách móc.";
         var generator = new ZaloMemberIntegrationTextGenerator(
             new StubGateway(isConfigured: true, content: candidate),
             NullLogger.Instance);
@@ -59,16 +58,32 @@ public sealed class ZaloMemberIntegrationTextGeneratorTests
     public async Task Ai_rewrite_missing_required_mention_falls_back()
     {
         var context = Context();
-        var suggestion = await new ZaloMemberBotIdentityCapability().EvaluateAsync(context);
+        var suggestion = await new ZaloMemberGroupOriginsCapability().EvaluateAsync(context);
         Assert.NotNull(suggestion);
+        var candidate = $"CLB Tân bình-The First Spike được 5 thành viên cốt cán thành lập để giao lưu vui vẻ.";
+        var generator = new ZaloMemberIntegrationTextGenerator(new StubGateway(isConfigured: true, content: candidate), NullLogger.Instance);
+
+        var rewritten = await generator.RewriteAsync(context, suggestion!, []);
+
+        Assert.NotEqual(candidate, rewritten.Text);
+        Assert.Contains("@New Member", rewritten.Text);
+    }
+
+    [Fact]
+    public async Task Ai_rewrite_missing_live_zalo_group_name_falls_back_to_canonical_copy()
+    {
+        var context = Context();
+        var suggestion = await new ZaloMemberGroupOriginsCapability().EvaluateAsync(context);
+        Assert.NotNull(suggestion);
+        const string candidate = "👋 @New Member nhóm được 5 thành viên cốt cán thành lập để chơi bóng chuyền vui vẻ.";
         var generator = new ZaloMemberIntegrationTextGenerator(
-            new StubGateway(isConfigured: true, content: "Tui là NPC do Thanh Long làm để phụ group, cần gì cứ gọi nha 😄"),
+            new StubGateway(isConfigured: true, content: candidate),
             NullLogger.Instance);
 
         var rewritten = await generator.RewriteAsync(context, suggestion!, []);
 
-        Assert.NotEqual("Tui là NPC do Thanh Long làm để phụ group, cần gì cứ gọi nha 😄", rewritten.Text);
-        Assert.Contains("@New Member", rewritten.Text);
+        Assert.NotEqual(candidate, rewritten.Text);
+        Assert.Contains(context.Facts.GroupName, rewritten.Text);
     }
 
     private static ZaloMemberIntegrationContext Context() => new(
@@ -82,15 +97,13 @@ public sealed class ZaloMemberIntegrationTextGeneratorTests
         SnapshotAt: Now,
         Signals: new ZaloMemberIntegrationSignals(),
         Facts: new ZaloMemberIntegrationGroupFacts(
-            GroupName: "The First Spike",
-            BotCreatorName: "Thanh Long",
-            GroupFounderName: "Nick Tran",
-            GroupPurpose: "Giao lưu bóng chuyền vui vẻ.",
-            CultureSummary: "Vui vẻ, hòa đồng.",
-            NormalCourtFeeVnd: 28000,
+            GroupName: "CLB Tân bình-The First Spike",
+            GroupFoundersSummary: "5 thành viên cốt cán",
+            GroupPurpose: "tạo sân chơi bóng chuyền vui vẻ, giao lưu và gắn kết lâu dài.",
+            CultureSummary: "Vui vẻ, hòa đồng, tôn trọng nhau, không toxic, không blame.",
+            NormalCourtFeeVnd: 30000,
             MaxPlayersPerSession: 18,
             ApprovedLore: []),
-        Roles: new ZaloMemberIntegrationRoleDirectory(null, []),
         PeerCandidates: [],
         LoreHints: []);
 
@@ -100,8 +113,8 @@ public sealed class ZaloMemberIntegrationTextGeneratorTests
         GroupId: "group-1",
         LocalDate: "2026-10-26",
         Lane: ZaloProactiveLane.MemberIntegration,
-        Kind: "member_integration_bot-identity",
-        ContentKey: "member-integration:bot-identity",
+        Kind: "member_integration_group-origins",
+        ContentKey: "member-integration:group-origins",
         SubjectUserId: "someone-else",
         SubjectName: "Someone Else",
         MessageText: text,

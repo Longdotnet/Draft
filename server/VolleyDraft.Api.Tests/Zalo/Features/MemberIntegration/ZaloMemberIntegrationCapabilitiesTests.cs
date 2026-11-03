@@ -41,18 +41,6 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
     }
 
     [Fact]
-    public async Task Bot_identity_is_available_on_join_day_and_uses_configured_creator_when_available()
-    {
-        var capability = new ZaloMemberBotIdentityCapability();
-
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 0));
-        Assert.NotNull(suggestion);
-        Assert.Equal("bot-identity", suggestion!.CapabilityKey);
-        Assert.Contains("Thanh Long", suggestion.Text);
-        Assert.Equal("member-integration:bot-identity", suggestion.ContentKey);
-    }
-
-    [Fact]
     public async Task Group_origins_requires_age_and_grounded_group_purpose()
     {
         var capability = new ZaloMemberGroupOriginsCapability();
@@ -62,34 +50,19 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
             joinedDaysAgo: 1,
             facts: Facts(groupPurpose: string.Empty))));
 
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 1));
+        const string zaloGroupName = "CLB Tân bình-The First Spike";
+        var suggestion = await capability.EvaluateAsync(Context(
+            joinedDaysAgo: 1,
+            facts: Facts(groupName: zaloGroupName)));
         Assert.NotNull(suggestion);
-        Assert.Contains("Nick Tran", suggestion!.Text);
+        Assert.Contains(zaloGroupName, suggestion!.Text);
+        Assert.Contains("5 thành viên cốt cán", suggestion.Text);
+        Assert.Contains("vai trò quan trọng", suggestion.Text);
         Assert.Contains("giao lưu vui vẻ", suggestion.Text);
-    }
-
-    [Fact]
-    public async Task Role_introduction_requires_provider_roles_and_limits_admin_mentions_to_two()
-    {
-        var capability = new ZaloMemberRoleIntroductionCapability();
-
-        Assert.Null(await capability.EvaluateAsync(Context(joinedDaysAgo: 2, roles: new(null, []))));
-
-        var roles = new ZaloMemberIntegrationRoleDirectory(
-            new ZaloMemberIntegrationMentionTarget("creator", "Trưởng nhóm"),
-            [
-                new ZaloMemberIntegrationMentionTarget("admin-1", "Phó 1"),
-                new ZaloMemberIntegrationMentionTarget("admin-2", "Phó 2"),
-                new ZaloMemberIntegrationMentionTarget("admin-3", "Phó 3")
-            ]);
-        var suggestion = await capability.EvaluateAsync(Context(joinedDaysAgo: 2, roles: roles));
-
-        Assert.NotNull(suggestion);
-        Assert.Equal(4, suggestion!.MentionTargets.Count);
-        Assert.Contains(suggestion.MentionTargets, target => target.ZaloUserId == "creator");
-        Assert.Contains(suggestion.MentionTargets, target => target.ZaloUserId == "admin-1");
-        Assert.Contains(suggestion.MentionTargets, target => target.ZaloUserId == "admin-2");
-        Assert.DoesNotContain(suggestion.MentionTargets, target => target.ZaloUserId == "admin-3");
+        Assert.DoesNotContain("Pin (", suggestion.Text);
+        Assert.DoesNotContain("To An", suggestion.Text);
+        Assert.DoesNotContain("Dang The Nguyen", suggestion.Text);
+        Assert.DoesNotContain("Thanh Truc", suggestion.Text);
     }
 
     [Fact]
@@ -119,10 +92,10 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
 
         var suggestion = await capability.EvaluateAsync(Context(
             joinedDaysAgo: 3,
-            facts: Facts(normalCourtFeeVnd: 45000, maxPlayersPerSession: 12)));
+            facts: Facts(normalCourtFeeVnd: 30000, maxPlayersPerSession: 12)));
 
         Assert.NotNull(suggestion);
-        Assert.Contains("45k/người", suggestion!.Text);
+        Assert.Contains("30k/người", suggestion!.Text);
         Assert.Contains("12 người", suggestion.Text);
         Assert.Equal("grounded_group_practical_facts", suggestion.Reason);
     }
@@ -233,7 +206,6 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
         bool isRejoin = false,
         ZaloMemberIntegrationSignals? signals = null,
         ZaloMemberIntegrationGroupFacts? facts = null,
-        ZaloMemberIntegrationRoleDirectory? roles = null,
         IReadOnlyList<ZaloMemberIntegrationPeer>? peers = null,
         IReadOnlyList<ZaloMemberIntegrationLoreHint>? loreHints = null,
         int? integrationStartedDaysAgo = null,
@@ -249,7 +221,6 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
             SnapshotAt: Snapshot,
             Signals: signals ?? new ZaloMemberIntegrationSignals(),
             Facts: facts ?? Facts(),
-            Roles: roles ?? new ZaloMemberIntegrationRoleDirectory(null, []),
             PeerCandidates: peers ?? [],
             LoreHints: loreHints ?? [],
             IntegrationStartedAt: integrationStartedDaysAgo is null
@@ -258,15 +229,16 @@ public sealed class ZaloMemberIntegrationCapabilitiesTests
             IsRecoveredNewcomer: isRecoveredNewcomer);
 
     private static ZaloMemberIntegrationGroupFacts Facts(
-        string groupPurpose = "giao lưu vui vẻ, không phụ thu",
+        string groupName = "Volley Draft",
+        string groupFoundersSummary = "5 thành viên cốt cán",
+        string groupPurpose = "tạo sân chơi bóng chuyền để giao lưu vui vẻ và gắn kết lâu dài",
         string cultureSummary = "vui vẻ, hòa đồng, không toxic, không blame.",
         int? normalCourtFeeVnd = 50000,
         int? maxPlayersPerSession = 12,
         IReadOnlyList<string>? approvedLore = null) =>
         new(
-            GroupName: "Volley Draft",
-            BotCreatorName: "Thanh Long",
-            GroupFounderName: "Nick Tran",
+            GroupName: groupName,
+            GroupFoundersSummary: groupFoundersSummary,
             GroupPurpose: groupPurpose,
             CultureSummary: cultureSummary,
             NormalCourtFeeVnd: normalCourtFeeVnd,

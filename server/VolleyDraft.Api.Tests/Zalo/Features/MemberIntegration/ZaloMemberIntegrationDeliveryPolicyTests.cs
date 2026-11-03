@@ -162,8 +162,7 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
         SnapshotAt: Now,
         Signals: new ZaloMemberIntegrationSignals(),
         Facts: new ZaloMemberIntegrationGroupFacts(
-            "Group", "Thanh Long", "Nick Tran", "Purpose", "Culture", 28000, 18, []),
-        Roles: new ZaloMemberIntegrationRoleDirectory(null, []),
+            "Group", "5 thành viên cốt cán", "Purpose", "Culture", 30000, 18, []),
         PeerCandidates: [],
         LoreHints: []);
 

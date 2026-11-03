@@ -1,6 +1,5 @@
 using System.Data;
 using System.Data.Common;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using VolleyDraft.Api.Data;
@@ -125,7 +124,6 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
             .GroupBy(item => item.MessageId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => CleanId(group.First().SenderId), StringComparer.Ordinal);
 
-        var roles = await LoadRolesAsync(connection, groupId, names, cancellationToken);
         var botUserId = CleanId(connection.AccountZaloId);
         var recentMemberIds = recent.Members
             .Select(item => CleanId(item.ZaloUserId))
@@ -157,8 +155,7 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
         var loreHints = BuildLoreHints(peers);
         var facts = new ZaloMemberIntegrationGroupFacts(
             groupName,
-            settings.BotCreatorName,
-            settings.GroupFounderName,
+            settings.GroupFoundersSummary,
             settings.GroupPurpose,
             settings.CultureSummary,
             settings.NormalCourtFeeVnd,
@@ -270,7 +267,6 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
                 snapshotAt,
                 signals,
                 facts,
-                roles,
                 peers.Where(item => item.ZaloUserId != userId).Take(8).ToArray(),
                 loreHints,
                 candidate.IntegrationStartedAt,
@@ -324,48 +320,6 @@ internal sealed class ZaloMemberIntegrationContextBuilder(
                 confirmedAt: seed.FirstObservedAt,
                 cancellationToken: cancellationToken);
             existingIds.Add(userId);
-        }
-    }
-
-    private async Task<ZaloMemberIntegrationRoleDirectory> LoadRolesAsync(
-        ZaloConnection connection,
-        string groupId,
-        IReadOnlyDictionary<string, string> knownNames,
-        CancellationToken cancellationToken)
-    {
-        if (connection.Status != ZaloConnectionStatus.Connected || string.IsNullOrWhiteSpace(connection.EncryptedCredentials))
-            return new(null, []);
-        try
-        {
-            var protector = new ZaloCredentialProtector(configuration);
-            using var document = JsonDocument.Parse(protector.Unprotect(connection.EncryptedCredentials));
-            var credentials = document.RootElement.Clone();
-            var roles = await bridge.GetGroupRolesAsync(credentials, groupId);
-            var creatorId = CleanId(roles.CreatorId);
-            var adminIds = roles.AdminIds.Select(CleanId)
-                .Where(id => id.Length > 0 && id != creatorId)
-                .Distinct(StringComparer.Ordinal)
-                .Take(6)
-                .ToArray();
-            var missingIds = new[] { creatorId }.Concat(adminIds)
-                .Where(id => id.Length > 0 && !knownNames.ContainsKey(id))
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-            var bridgeNames = missingIds.Length == 0
-                ? new Dictionary<string, string>(StringComparer.Ordinal)
-                : (await bridge.GetMembersAsync(credentials, missingIds))
-                    .GroupBy(item => CleanId(item.ZaloUserId), StringComparer.Ordinal)
-                    .ToDictionary(group => group.Key, group => CleanName(group.First().DisplayName), StringComparer.Ordinal);
-            string NameOf(string id) => knownNames.GetValueOrDefault(id) ?? bridgeNames.GetValueOrDefault(id) ?? id;
-            var creator = creatorId.Length == 0
-                ? null
-                : new ZaloMemberIntegrationMentionTarget(creatorId, NameOf(creatorId));
-            var admins = adminIds.Select(id => new ZaloMemberIntegrationMentionTarget(id, NameOf(id))).ToArray();
-            return new ZaloMemberIntegrationRoleDirectory(creator, admins);
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or FormatException or System.Security.Cryptography.CryptographicException)
-        {
-            return new(null, []);
         }
     }
 

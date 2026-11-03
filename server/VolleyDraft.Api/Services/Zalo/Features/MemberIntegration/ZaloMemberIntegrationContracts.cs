@@ -25,17 +25,12 @@ public sealed record ZaloMemberIntegrationSignals(
 
 public sealed record ZaloMemberIntegrationGroupFacts(
     string GroupName,
-    string BotCreatorName,
-    string GroupFounderName,
+    string GroupFoundersSummary,
     string GroupPurpose,
     string CultureSummary,
     int? NormalCourtFeeVnd,
     int? MaxPlayersPerSession,
     IReadOnlyList<string> ApprovedLore);
-
-public sealed record ZaloMemberIntegrationRoleDirectory(
-    ZaloMemberIntegrationMentionTarget? Creator,
-    IReadOnlyList<ZaloMemberIntegrationMentionTarget> Admins);
 
 public sealed record ZaloMemberIntegrationPeer(
     string ZaloUserId,
@@ -64,7 +59,6 @@ public sealed record ZaloMemberIntegrationContext(
     DateTimeOffset SnapshotAt,
     ZaloMemberIntegrationSignals Signals,
     ZaloMemberIntegrationGroupFacts Facts,
-    ZaloMemberIntegrationRoleDirectory Roles,
     IReadOnlyList<ZaloMemberIntegrationPeer> PeerCandidates,
     IReadOnlyList<ZaloMemberIntegrationLoreHint> LoreHints,
     DateTimeOffset? IntegrationStartedAt = null,
