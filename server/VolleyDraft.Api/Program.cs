@@ -261,6 +261,61 @@ app.MapPost("/api/internal/zalo/presence-events", async (
     return Results.Accepted(value: new { accepted });
 });
 
+app.MapGet("/api/internal/zyro-mapping/groups", async (
+    HttpContext httpContext,
+    IConfiguration configuration,
+    ZaloIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    if (!ZyroMappingInternalAuthorization.IsConfigured(configuration))
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    if (!ZyroMappingInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+
+    httpContext.Response.Headers.CacheControl = "no-store";
+    return (await service.GetGroupsForZyroMappingAsync(cancellationToken)).ToHttpResult();
+});
+
+app.MapGet("/api/internal/zyro-mapping/groups/{connectionId}/{groupId}/members", async (
+    HttpContext httpContext,
+    string connectionId,
+    string groupId,
+    IConfiguration configuration,
+    ZaloIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    if (!ZyroMappingInternalAuthorization.IsConfigured(configuration))
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    if (!ZyroMappingInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+
+    httpContext.Response.Headers.CacheControl = "no-store";
+    return (await service.GetMemberDirectoryForZyroMappingAsync(
+        connectionId,
+        groupId,
+        cancellationToken)).ToHttpResult();
+});
+
+app.MapPost("/api/internal/zyro-mapping/profiles/sync", async (
+    HttpContext httpContext,
+    ZyroMappedProfileSyncRequest request,
+    IConfiguration configuration,
+    ZaloIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    if (!ZyroMappingInternalAuthorization.IsConfigured(configuration))
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    if (!ZyroMappingInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+
+    httpContext.Response.Headers.CacheControl = "no-store";
+    return (await service.SyncZyroMappedProfilesAsync(
+        request.ConnectionId,
+        request.GroupId,
+        request.Profiles ?? [],
+        cancellationToken)).ToHttpResult();
+});
+
 app.MapPost("/api/internal/zalo/poll-events", (
     HttpContext httpContext,
     ZaloPollBoardEvent incoming,

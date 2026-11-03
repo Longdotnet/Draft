@@ -146,6 +146,48 @@ public sealed record ZaloGroupResponse(
     string? AvatarUrl,
     int TotalMembers);
 
+public sealed record ZyroMappingGroupResponse(
+    string ConnectionId,
+    string AccountDisplayName,
+    string AccountZaloId,
+    string GroupId,
+    string GroupName,
+    string? AvatarUrl,
+    int TotalMembers);
+
+public sealed record ZyroMappingMemberResponse(
+    string ZaloUserId,
+    string DisplayName,
+    string? ZaloName,
+    string? AvatarUrl);
+
+public sealed record ZyroMappingMemberDirectoryResponse(
+    string ConnectionId,
+    string AccountDisplayName,
+    string GroupId,
+    string GroupName,
+    long GroupCreatedAtUnixMs,
+    int ExpectedMemberCount,
+    bool IsComplete,
+    IReadOnlyList<ZyroMappingMemberResponse> Members);
+
+public sealed record ZyroMappedProfileSyncRequest(
+    string ConnectionId,
+    string GroupId,
+    IReadOnlyList<ZyroMappedProfileSyncItem> Profiles);
+
+public sealed record ZyroMappedProfileSyncItem(
+    string ZaloUserId,
+    PlayerGender? Gender,
+    PlayerRole? Role,
+    PlayerLevel? Level);
+
+public sealed record ZyroMappingProfileSyncResult(
+    string ZaloUserId,
+    string DisplayName,
+    string Status,
+    IReadOnlyList<string> PreservedFields);
+
 public sealed record LinkZaloGroupRequest(
     string ConnectionId,
     string GroupId);

@@ -147,6 +147,7 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). For a larger behavior change, ope
 
 - 🇻🇳 [Detailed Vietnamese user guide](docs/USER_GUIDE_VI.md)
 - 🤖 [Zalo Member Intelligence](docs/ZALO_MEMBER_INTELLIGENCE.md)
+- 🔗 [ZYRO Form member mapping](docs/ZYRO_FORM_MAPPING_INTEGRATION.md)
 - 🚀 [Render deployment](docs/RENDER_DEPLOY.md)
 - 🧭 [Maintenance model](MAINTAINERS.md)
 - 🛡️ [Security policy](SECURITY.md)

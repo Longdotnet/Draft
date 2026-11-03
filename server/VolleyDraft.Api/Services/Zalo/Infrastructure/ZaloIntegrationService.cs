@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
@@ -12,7 +13,8 @@ public sealed class ZaloIntegrationService(
     ZaloCredentialProtector credentialProtector,
     ZaloQrLoginRegistry loginRegistry,
     ZaloListenerCoordinator listenerCoordinator,
-    ZaloActivityBackfillCoordinator activityBackfillCoordinator)
+    ZaloActivityBackfillCoordinator activityBackfillCoordinator,
+    IConfiguration? configuration = null)
 {
     public async Task<ServiceResult<StartZaloQrLoginResponse>> StartQrLoginAsync(string adminUserId)
     {
@@ -141,6 +143,343 @@ public sealed class ZaloIntegrationService(
         {
             return BridgeFailure<IReadOnlyList<ZaloGroupResponse>>(exception);
         }
+    }
+
+    public async Task<ServiceResult<IReadOnlyList<ZyroMappingGroupResponse>>> GetGroupsForZyroMappingAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var ownerResult = await ResolveZyroMappingAdminUserIdAsync(cancellationToken);
+        if (!ownerResult.IsSuccess)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingGroupResponse>>.Failure(
+                ownerResult.StatusCode,
+                ownerResult.Error ?? "Không xác định được tài khoản Draft được phép mapping.");
+        }
+
+        var adminUserId = ownerResult.Value!;
+        var connections = await db.ZaloConnections
+            .AsNoTracking()
+            .Where(connection => connection.AdminUserId == adminUserId &&
+                                 connection.Status == ZaloConnectionStatus.Connected)
+            .OrderByDescending(connection => connection.UpdatedAt)
+            .ToListAsync(cancellationToken);
+        if (connections.Count == 0)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingGroupResponse>>.Failure(
+                StatusCodes.Status404NotFound,
+                "Draft chưa có tài khoản Zalo nào đang kết nối.");
+        }
+
+        var result = new List<ZyroMappingGroupResponse>();
+        foreach (var connection in connections)
+        {
+            try
+            {
+                var groups = await bridge.GetGroupsAsync(ReadCredentials(connection));
+                result.AddRange(groups.Select(group => new ZyroMappingGroupResponse(
+                    connection.Id,
+                    connection.DisplayName,
+                    connection.AccountZaloId,
+                    group.Id,
+                    group.Name,
+                    group.AvatarUrl,
+                    group.TotalMembers)));
+            }
+            catch (Exception exception) when (IsZyroMappingBridgeFailure(exception))
+            {
+                return ZyroMappingBridgeFailure<IReadOnlyList<ZyroMappingGroupResponse>>(
+                    exception,
+                    "Không thể tải danh sách nhóm Zalo từ Draft.");
+            }
+        }
+
+        return ServiceResult<IReadOnlyList<ZyroMappingGroupResponse>>.Success(
+            result.OrderBy(group => group.GroupName, StringComparer.OrdinalIgnoreCase).ToList());
+    }
+
+    public async Task<ServiceResult<ZyroMappingMemberDirectoryResponse>> GetMemberDirectoryForZyroMappingAsync(
+        string connectionId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
+        var normalizedGroupId = NormalizeId(groupId ?? string.Empty);
+        if (normalizedConnectionId.Length == 0 || normalizedGroupId.Length == 0)
+        {
+            return ServiceResult<ZyroMappingMemberDirectoryResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Thiếu tài khoản hoặc mã nhóm Zalo.");
+        }
+
+        var ownerResult = await ResolveZyroMappingAdminUserIdAsync(cancellationToken);
+        if (!ownerResult.IsSuccess)
+        {
+            return ServiceResult<ZyroMappingMemberDirectoryResponse>.Failure(
+                ownerResult.StatusCode,
+                ownerResult.Error ?? "Không xác định được tài khoản Draft được phép mapping.");
+        }
+
+        var connection = await db.ZaloConnections
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item =>
+                item.Id == normalizedConnectionId &&
+                item.AdminUserId == ownerResult.Value &&
+                item.Status == ZaloConnectionStatus.Connected,
+                cancellationToken);
+        if (connection is null)
+        {
+            return ServiceResult<ZyroMappingMemberDirectoryResponse>.Failure(
+                StatusCodes.Status404NotFound,
+                "Không tìm thấy tài khoản Zalo đang kết nối trong Draft.");
+        }
+
+        var directoryResult = await GetZyroMappingGroupDirectoryAsync(
+            connection,
+            normalizedGroupId,
+            cancellationToken);
+        if (!directoryResult.IsSuccess)
+        {
+            return ServiceResult<ZyroMappingMemberDirectoryResponse>.Failure(
+                directoryResult.StatusCode,
+                directoryResult.Error ?? "Không thể đọc danh sách thành viên nhóm Zalo.");
+        }
+
+        var directory = directoryResult.Value!;
+        return ServiceResult<ZyroMappingMemberDirectoryResponse>.Success(
+            new ZyroMappingMemberDirectoryResponse(
+                connection.Id,
+                connection.DisplayName,
+                directory.GroupId,
+                directory.GroupName,
+                directory.GroupCreatedAtUnixMs,
+                directory.ExpectedMemberCount,
+                directory.IsComplete,
+                directory.Members.Select(member => new ZyroMappingMemberResponse(
+                    NormalizeId(member.ZaloUserId ?? string.Empty),
+                    !string.IsNullOrWhiteSpace(member.DisplayName)
+                        ? member.DisplayName.Trim()
+                        : member.ZaloName?.Trim() ?? string.Empty,
+                    member.ZaloName,
+                    member.AvatarUrl)).ToList()));
+    }
+
+    public async Task<ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>> SyncZyroMappedProfilesAsync(
+        string connectionId,
+        string groupId,
+        IReadOnlyList<ZyroMappedProfileSyncItem> requestedProfiles,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedConnectionId = connectionId?.Trim() ?? string.Empty;
+        var normalizedGroupId = NormalizeId(groupId ?? string.Empty);
+        if (normalizedConnectionId.Length == 0 || normalizedGroupId.Length == 0)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Thiếu tài khoản hoặc mã nhóm Zalo.");
+        }
+
+        if (requestedProfiles is null || requestedProfiles.Count is < 1 or > 200 ||
+            requestedProfiles.Any(item => item is null))
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Mỗi lần đồng bộ cần có từ 1 đến 200 hồ sơ.");
+        }
+
+        var profiles = requestedProfiles.Select(item => new
+        {
+            ZaloUserId = NormalizeId(item?.ZaloUserId ?? string.Empty),
+            Gender = item?.Gender,
+            Role = item?.Role,
+            Level = item?.Level
+        }).ToList();
+
+        if (profiles.Any(item =>
+                item.ZaloUserId.Length == 0 ||
+                (item.Gender is not null && !Enum.IsDefined(item.Gender.Value)) ||
+                (item.Role is not null && !Enum.IsDefined(item.Role.Value)) ||
+                (item.Level is not null && !Enum.IsDefined(item.Level.Value))) ||
+            profiles.Select(item => item.ZaloUserId).Distinct(StringComparer.Ordinal).Count() != profiles.Count)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Danh sách hồ sơ có UID trống/trùng hoặc thông tin giới tính, vị trí, trình độ không hợp lệ.");
+        }
+
+        var ownerResult = await ResolveZyroMappingAdminUserIdAsync(cancellationToken);
+        if (!ownerResult.IsSuccess)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                ownerResult.StatusCode,
+                ownerResult.Error ?? "Không xác định được tài khoản Draft được phép mapping.");
+        }
+        var adminUserId = ownerResult.Value!;
+
+        var connection = await db.ZaloConnections
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item =>
+                item.Id == normalizedConnectionId &&
+                item.AdminUserId == ownerResult.Value &&
+                item.Status == ZaloConnectionStatus.Connected,
+                cancellationToken);
+        if (connection is null)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status404NotFound,
+                "Không tìm thấy tài khoản Zalo đang kết nối trong Draft.");
+        }
+
+        var directoryResult = await GetZyroMappingGroupDirectoryAsync(
+            connection,
+            normalizedGroupId,
+            cancellationToken);
+        if (!directoryResult.IsSuccess)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                directoryResult.StatusCode,
+                directoryResult.Error ?? "Không thể đọc danh sách thành viên nhóm Zalo.");
+        }
+
+        var directory = directoryResult.Value!;
+        if (!directory.IsComplete)
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status409Conflict,
+                "Danh sách thành viên Zalo chưa đầy đủ. Hãy đồng bộ lại danh sách nhóm trước khi mapping.");
+        }
+
+        var memberGroups = directory.Members
+            .Where(member => !string.IsNullOrWhiteSpace(member.ZaloUserId))
+            .GroupBy(member => NormalizeId(member.ZaloUserId ?? string.Empty), StringComparer.Ordinal)
+            .ToList();
+        if (memberGroups.Any(group => group.Count() > 1))
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status502BadGateway,
+                "Danh bạ Zalo trả về UID trùng. Draft chưa thể xác minh mapping an toàn.");
+        }
+
+        var memberById = memberGroups.ToDictionary(
+            group => group.Key,
+            group => group.Single(),
+            StringComparer.Ordinal);
+        if (profiles.Any(item => !memberById.ContainsKey(item.ZaloUserId)))
+        {
+            return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Có UID không thuộc nhóm Zalo đã chọn. Draft không ghi hồ sơ cho thành viên ngoài nhóm.");
+        }
+
+        var ids = profiles.Select(item => item.ZaloUserId).ToList();
+        var existingProfiles = await db.PlayerProfiles
+            .Where(profile => ids.Contains(profile.ZaloUserId))
+            .ToDictionaryAsync(profile => profile.ZaloUserId, StringComparer.Ordinal, cancellationToken);
+        var results = new List<ZyroMappingProfileSyncResult>(profiles.Count);
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var item in profiles)
+        {
+            var member = memberById[item.ZaloUserId];
+            var displayName = !string.IsNullOrWhiteSpace(member.DisplayName)
+                ? member.DisplayName.Trim()
+                : !string.IsNullOrWhiteSpace(member.ZaloName)
+                    ? member.ZaloName.Trim()
+                    : $"Zalo {item.ZaloUserId}";
+            var gender = item.Gender is PlayerGender.Unknown ? null : item.Gender;
+            var role = item.Role is PlayerRole.New ? null : item.Role;
+
+            if (!existingProfiles.TryGetValue(item.ZaloUserId, out var profile))
+            {
+                profile = new PlayerProfile
+                {
+                    ZaloUserId = item.ZaloUserId,
+                    DisplayName = displayName,
+                    AvatarUrl = member.AvatarUrl,
+                    Gender = gender,
+                    DefaultRole = role,
+                    DefaultLevel = item.Level,
+                    GenderUpdatedAt = gender is null ? null : now,
+                    GenderUpdatedByUserId = gender is null ? null : adminUserId,
+                    LastSyncedAt = now,
+                    UpdatedAt = now
+                };
+                db.PlayerProfiles.Add(profile);
+                results.Add(new ZyroMappingProfileSyncResult(
+                    item.ZaloUserId,
+                    displayName,
+                    "created",
+                    []));
+                continue;
+            }
+
+            var preserved = new List<string>();
+            var changed = false;
+            if (string.IsNullOrWhiteSpace(profile.DisplayName) ||
+                profile.DisplayName.StartsWith("Zalo ", StringComparison.OrdinalIgnoreCase))
+            {
+                if (profile.DisplayName != displayName)
+                {
+                    profile.DisplayName = displayName;
+                    changed = true;
+                }
+            }
+            else if (!string.Equals(profile.DisplayName, displayName, StringComparison.OrdinalIgnoreCase))
+            {
+                preserved.Add("displayName");
+            }
+
+            if (profile.AvatarUrl is null && !string.IsNullOrWhiteSpace(member.AvatarUrl))
+            {
+                profile.AvatarUrl = member.AvatarUrl;
+                changed = true;
+            }
+            else if (!string.IsNullOrWhiteSpace(member.AvatarUrl) &&
+                     !string.Equals(profile.AvatarUrl, member.AvatarUrl, StringComparison.Ordinal))
+            {
+                preserved.Add("avatar");
+            }
+
+            if ((profile.Gender is null or PlayerGender.Unknown) && gender is not null)
+            {
+                profile.Gender = gender;
+                profile.GenderUpdatedAt = now;
+                profile.GenderUpdatedByUserId = adminUserId;
+                changed = true;
+            }
+            else if (gender is not null && profile.Gender != gender)
+            {
+                preserved.Add("gender");
+            }
+            if ((profile.DefaultRole is null or PlayerRole.New) && role is not null)
+            {
+                profile.DefaultRole = role;
+                changed = true;
+            }
+            else if (role is not null && profile.DefaultRole != role)
+            {
+                preserved.Add("role");
+            }
+            if (profile.DefaultLevel is null && item.Level is not null)
+            {
+                profile.DefaultLevel = item.Level;
+                changed = true;
+            }
+            else if (item.Level is not null && profile.DefaultLevel != item.Level)
+            {
+                preserved.Add("level");
+            }
+
+            profile.LastSyncedAt = now;
+            profile.UpdatedAt = now;
+            results.Add(new ZyroMappingProfileSyncResult(
+                item.ZaloUserId,
+                profile.DisplayName,
+                preserved.Count > 0 ? "existing_values_preserved" : changed ? "updated_missing_fields" : "already_present",
+                preserved));
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return ServiceResult<IReadOnlyList<ZyroMappingProfileSyncResult>>.Success(results);
     }
 
     public async Task<ServiceResult<SessionResponse>> LinkGroupAsync(
@@ -1013,6 +1352,99 @@ public sealed class ZaloIntegrationService(
             _ => 2
         };
         return role == PlayerRole.FullStack ? baseScore + 0.5 : baseScore;
+    }
+
+    private async Task<ServiceResult<string>> ResolveZyroMappingAdminUserIdAsync(
+        CancellationToken cancellationToken)
+    {
+        var configuredAdminUserId = configuration?["ZyroMapping:AdminUserId"]?.Trim();
+        if (!string.IsNullOrWhiteSpace(configuredAdminUserId))
+        {
+            var hasConnectedAccount = await db.ZaloConnections
+                .AsNoTracking()
+                .AnyAsync(connection =>
+                    connection.AdminUserId == configuredAdminUserId &&
+                    connection.Status == ZaloConnectionStatus.Connected,
+                    cancellationToken);
+            return hasConnectedAccount
+                ? ServiceResult<string>.Success(configuredAdminUserId)
+                : ServiceResult<string>.Failure(
+                    StatusCodes.Status503ServiceUnavailable,
+                    "ZyroMapping:AdminUserId chưa sở hữu tài khoản Zalo nào đang kết nối trong Draft.");
+        }
+
+        var ownerIds = await db.ZaloConnections
+            .AsNoTracking()
+            .Where(connection => connection.Status == ZaloConnectionStatus.Connected)
+            .Select(connection => connection.AdminUserId)
+            .Distinct()
+            .Take(2)
+            .ToListAsync(cancellationToken);
+
+        return ownerIds.Count switch
+        {
+            0 => ServiceResult<string>.Failure(
+                StatusCodes.Status404NotFound,
+                "Draft chưa có tài khoản Zalo nào đang kết nối."),
+            1 => ServiceResult<string>.Success(ownerIds[0]),
+            _ => ServiceResult<string>.Failure(
+                StatusCodes.Status503ServiceUnavailable,
+                "Draft có nhiều tài khoản quản trị Zalo. Hãy cấu hình ZyroMapping:AdminUserId để giới hạn tài khoản được chia sẻ với Form.")
+        };
+    }
+
+    private async Task<ServiceResult<BridgeGroupMemberDirectory>> GetZyroMappingGroupDirectoryAsync(
+        ZaloConnection connection,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var credentials = ReadCredentials(connection);
+            var groups = await bridge.GetGroupsAsync(credentials);
+            if (!groups.Any(group => NormalizeId(group.Id ?? string.Empty) == groupId))
+            {
+                return ServiceResult<BridgeGroupMemberDirectory>.Failure(
+                    StatusCodes.Status404NotFound,
+                    "Tài khoản Draft không còn trong nhóm Zalo đã chọn.");
+            }
+
+            var directory = await bridge.GetGroupMemberDirectoryAsync(
+                credentials,
+                groupId,
+                cancellationToken);
+            if (!string.Equals(NormalizeId(directory.GroupId ?? string.Empty), groupId, StringComparison.Ordinal))
+            {
+                return ServiceResult<BridgeGroupMemberDirectory>.Failure(
+                    StatusCodes.Status502BadGateway,
+                    "Zalo Bridge trả về danh bạ của nhóm khác với nhóm đã yêu cầu.");
+            }
+
+            return ServiceResult<BridgeGroupMemberDirectory>.Success(directory);
+        }
+        catch (Exception exception) when (IsZyroMappingBridgeFailure(exception))
+        {
+            return ZyroMappingBridgeFailure<BridgeGroupMemberDirectory>(
+                exception,
+                "Không thể đọc danh sách thành viên nhóm Zalo từ Draft Bridge.");
+        }
+    }
+
+    private static bool IsZyroMappingBridgeFailure(Exception exception) =>
+        exception is HttpRequestException or TaskCanceledException or
+            CryptographicException or FormatException or JsonException;
+
+    private static ServiceResult<T> ZyroMappingBridgeFailure<T>(Exception exception, string fallbackMessage)
+    {
+        if (exception is ZaloBridgeRequestException bridgeException)
+        {
+            var statusCode = bridgeException.StatusCode == System.Net.HttpStatusCode.TooManyRequests
+                ? StatusCodes.Status429TooManyRequests
+                : StatusCodes.Status502BadGateway;
+            return ServiceResult<T>.Failure(statusCode, bridgeException.Message);
+        }
+
+        return ServiceResult<T>.Failure(StatusCodes.Status502BadGateway, fallbackMessage);
     }
 
     private static ServiceResult<T> Unauthorized<T>() =>

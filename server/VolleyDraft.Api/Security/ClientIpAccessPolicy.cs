@@ -53,7 +53,13 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
              path.Equals("/api/internal/zalo/events", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/zalo/membership-events", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/zalo/presence-events", StringComparison.OrdinalIgnoreCase) ||
-             path.Equals("/api/internal/zalo/poll-events", StringComparison.OrdinalIgnoreCase)))
+             path.Equals("/api/internal/zalo/poll-events", StringComparison.OrdinalIgnoreCase) ||
+             path.Equals("/api/internal/zyro-mapping/profiles/sync", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (HttpMethods.IsGet(httpContext.Request.Method) && IsZyroMappingGroupReadPath(path))
         {
             return true;
         }
@@ -138,4 +144,21 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
 
     private static IPAddress Normalize(IPAddress address) =>
         address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
+    private static bool IsZyroMappingGroupReadPath(PathString path)
+    {
+        if (path.Equals("/api/internal/zyro-mapping/groups", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var segments = (path.Value ?? string.Empty)
+            .Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 7 &&
+               segments[0].Equals("api", StringComparison.OrdinalIgnoreCase) &&
+               segments[1].Equals("internal", StringComparison.OrdinalIgnoreCase) &&
+               segments[2].Equals("zyro-mapping", StringComparison.OrdinalIgnoreCase) &&
+               segments[3].Equals("groups", StringComparison.OrdinalIgnoreCase) &&
+               !string.IsNullOrWhiteSpace(segments[4]) &&
+               !string.IsNullOrWhiteSpace(segments[5]) &&
+               segments[6].Equals("members", StringComparison.OrdinalIgnoreCase);
+    }
 }

@@ -47,6 +47,8 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/health/scheduler")]
     [InlineData("/api/public/bot-images/asset-1")]
     [InlineData("/api/public/sessions/session-1/team-card.png")]
+    [InlineData("/api/internal/zyro-mapping/groups")]
+    [InlineData("/api/internal/zyro-mapping/groups/connection-1/group-1/members")]
     public void InfrastructureGetPathsBypassBrowserIpGate(string path)
     {
         var context = CreateRequest(path, HttpMethods.Get);
@@ -59,6 +61,7 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/api/internal/zalo/membership-events")]
     [InlineData("/api/internal/zalo/presence-events")]
     [InlineData("/api/internal/zalo/poll-events")]
+    [InlineData("/api/internal/zyro-mapping/profiles/sync")]
     public void ExactInternalPostPathsBypassBrowserIpGate(string path)
     {
         var context = CreateRequest(path, HttpMethods.Post);
@@ -75,6 +78,7 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/api/sessions")]
     [InlineData("/api/zalo/connections")]
     [InlineData("/api/internal/unknown")]
+    [InlineData("/api/internal/zyro-mapping/groups/connection-1/group-1/unknown")]
     public void UserFacingGetPathsRequireAllowedIp(string path)
     {
         var context = CreateRequest(path, HttpMethods.Get);
@@ -94,6 +98,15 @@ public sealed class ClientIpAccessPolicyTests
     public void UnknownInternalPostPathDoesNotBypassIpGate()
     {
         var context = CreateRequest("/api/internal/unknown", HttpMethods.Post);
+        Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Fact]
+    public void ZyroMappingGroupDirectoryPostDoesNotBypassIpGate()
+    {
+        var context = CreateRequest(
+            "/api/internal/zyro-mapping/groups/connection-1/group-1/members",
+            HttpMethods.Post);
         Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
     }
 

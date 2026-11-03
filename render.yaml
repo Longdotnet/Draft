@@ -35,6 +35,10 @@ services:
         sync: false
       - key: Zalo__WebhookKey
         sync: false
+      - key: ZyroMapping__InternalKey
+        sync: false
+      - key: ZyroMapping__AdminUserId
+        sync: false
       - key: Public__BaseUrl
         sync: false
       - key: AdminWeb__BaseUrl
