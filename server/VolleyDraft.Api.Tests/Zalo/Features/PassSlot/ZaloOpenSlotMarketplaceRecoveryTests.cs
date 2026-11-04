@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -36,7 +37,7 @@ public sealed class ZaloOpenSlotMarketplaceRecoveryTests
     }
 
     [Fact]
-    public async Task Rescue_keeps_open_offer_active_when_owner_already_unvoted()
+    public async Task Rescue_suppresses_nudges_but_keeps_offer_claimable_when_owner_is_already_unvoted()
     {
         await using var fixture = await Fixture.CreateFinishedAsync();
         var now = DateTimeOffset.UtcNow;
@@ -54,11 +55,106 @@ public sealed class ZaloOpenSlotMarketplaceRecoveryTests
         var result = await CreateService(fixture.Db, handler).RunDueAsync(now);
 
         Assert.Equal(0, result.ClosedCount);
-        Assert.Equal(1, result.NudgedCount);
-        Assert.Equal(1, handler.SendCount);
+        Assert.Equal(0, result.NudgedCount);
+        Assert.Equal(0, handler.SendCount);
         var active = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
         Assert.Equal(ZaloOpenSlotOfferStatus.Open, active.Status);
+        Assert.Equal(0, active.NudgeCount);
+        Assert.Null(active.NextNudgeAt);
+        Assert.Empty(await store.ListDueRescueAsync(now.AddMinutes(1)));
+        Assert.True(await store.TryClaimAsync(
+            active,
+            "someone",
+            "Người nhận",
+            "claim-after-owner-unvoted",
+            now.AddMinutes(20)));
+        Assert.NotNull(await store.LoadPendingClaimAsync("conn", "g1", "someone"));
+    }
+
+    [Fact]
+    public async Task Rescue_uses_live_selected_poll_option_when_session_roster_is_stale()
+    {
+        await using var fixture = await Fixture.CreateFinishedAsync();
+        var now = DateTimeOffset.UtcNow;
+        await AddPollSourceAsync(fixture, now);
+
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        await store.OpenAsync(
+            "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T5", "m1",
+            now.AddHours(2), now.AddMinutes(-1));
+
+        // The persisted roster still has the owner, but the live T5 option no longer does.
+        var handler = new RecordingHandler(
+            sent: true,
+            pollOptions:
+            [
+                new BridgePollOption("option-t5", "Thứ 5", 1, ["claimant"]),
+                new BridgePollOption("option-t6", "Thứ 6", 1, ["owner"])
+            ],
+            uniqueVoteCount: 2);
+        var result = await CreateService(fixture.Db, handler).RunDueAsync(now);
+
+        Assert.Equal(1, handler.PollFetchCount);
+        Assert.Equal(0, handler.SendCount);
+        Assert.Equal(0, result.NudgedCount);
+        Assert.Equal(0, result.FailedCount);
+        var active = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
+        Assert.Equal(ZaloOpenSlotOfferStatus.Open, active.Status);
+        Assert.Equal(0, active.NudgeCount);
+        Assert.Null(active.NextNudgeAt);
+    }
+
+    [Fact]
+    public async Task Rescue_sends_nudge_when_owner_still_votes_in_the_selected_poll_option()
+    {
+        await using var fixture = await Fixture.CreateFinishedAsync();
+        var now = DateTimeOffset.UtcNow;
+        await AddPollSourceAsync(fixture, now);
+
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        await store.OpenAsync(
+            "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T5", "m1",
+            now.AddHours(2), now.AddMinutes(-1));
+
+        var handler = new RecordingHandler(
+            sent: true,
+            pollOptions:
+            [
+                new BridgePollOption("option-t5", "Thứ 5", 2, ["owner", "claimant"]),
+                new BridgePollOption("option-t6", "Thứ 6", 0, [])
+            ],
+            uniqueVoteCount: 2);
+        var result = await CreateService(fixture.Db, handler).RunDueAsync(now);
+
+        Assert.Equal(1, handler.PollFetchCount);
+        Assert.Equal(1, handler.SendCount);
+        Assert.Equal(1, result.NudgedCount);
+        var active = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
         Assert.Equal(1, active.NudgeCount);
+    }
+
+    [Fact]
+    public async Task Rescue_retries_without_sending_when_live_poll_cannot_be_verified()
+    {
+        await using var fixture = await Fixture.CreateFinishedAsync();
+        var now = DateTimeOffset.UtcNow;
+        await AddPollSourceAsync(fixture, now);
+
+        var store = new ZaloOpenSlotOfferStore(fixture.Db);
+        await store.OpenAsync(
+            "conn", "g1", "owner", "Hoàng Nguyên", "s1", "T5", "m1",
+            now.AddHours(2), now.AddMinutes(-1));
+
+        var handler = new RecordingHandler(sent: true, pollStatus: HttpStatusCode.BadGateway);
+        var result = await CreateService(fixture.Db, handler).RunDueAsync(now);
+
+        Assert.Equal(1, handler.PollFetchCount);
+        Assert.Equal(0, handler.SendCount);
+        Assert.Equal(0, result.NudgedCount);
+        Assert.Equal(1, result.FailedCount);
+        var active = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
+        Assert.Equal(ZaloOpenSlotOfferStatus.Open, active.Status);
+        Assert.True(active.NextNudgeAt > now);
     }
 
     [Fact]
@@ -82,15 +178,19 @@ public sealed class ZaloOpenSlotMarketplaceRecoveryTests
         await fixture.Db.SaveChangesAsync();
         fixture.Db.ChangeTracker.Clear();
 
-        var result = await CreateService(fixture.Db, new RecordingHandler(sent: true))
+        var handler = new RecordingHandler(sent: true);
+        var result = await CreateService(fixture.Db, handler)
             .RunDueAsync(baseNow.AddMinutes(2));
 
         Assert.Equal(0, result.ClosedCount);
         Assert.Equal(1, result.ClaimReleasedCount);
+        Assert.Equal(0, result.NudgedCount);
+        Assert.Equal(0, handler.SendCount);
         Assert.Null(await store.LoadPendingClaimAsync("conn", "g1", "claimant"));
         var reopened = Assert.Single(await store.ListClaimableAsync("conn", "g1", "someone"));
         Assert.Equal(ZaloOpenSlotOfferStatus.Open, reopened.Status);
         Assert.Null(reopened.ClaimantZaloUserId);
+        Assert.Null(reopened.NextNudgeAt);
     }
 
     [Fact]
@@ -212,9 +312,16 @@ public sealed class ZaloOpenSlotMarketplaceRecoveryTests
                 ["ZaloBot:Ambient:MemberAssist:Rescue:MaxNudges"] = "3",
                 ["ZaloBot:Ambient:MemberAssist:Rescue:GroupCooldownMinutes"] = "10",
                 ["ZaloBot:Ambient:MemberAssist:Rescue:RetryMinutes"] = "10",
-                ["ZaloBot:Ambient:MemberAssist:Rescue:ApplyingStaleMinutes"] = "5"
+                ["ZaloBot:Ambient:MemberAssist:Rescue:ApplyingStaleMinutes"] = "5",
+                ["Zalo:CredentialEncryptionKey"] = "open-slot-rescue-test-key"
             })
             .Build();
+        var connection = db.ZaloConnections.SingleOrDefault();
+        if (connection is not null)
+        {
+            connection.EncryptedCredentials = new ZaloCredentialProtector(configuration).Protect("{}");
+            db.SaveChanges();
+        }
         var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
         return new ZaloOpenSlotRescueService(
             db,
@@ -223,14 +330,72 @@ public sealed class ZaloOpenSlotMarketplaceRecoveryTests
             NullLogger<ZaloOpenSlotRescueService>.Instance);
     }
 
-    private sealed class RecordingHandler(bool sent) : HttpMessageHandler
+    private static async Task AddPollSourceAsync(Fixture fixture, DateTimeOffset now)
+    {
+        var owner = await fixture.Db.SessionPlayers.SingleAsync(item => item.Id == "owner-player");
+        owner.SourcePollId = "poll-1";
+        owner.SourceOptionIdsJson = """["option-t5"]""";
+        fixture.Db.PollImports.Add(new PollImport
+        {
+            SessionId = "s1",
+            ImportedByUserId = "admin",
+            ZaloGroupId = "g1",
+            PollId = "poll-1",
+            PollQuestion = "Poll test",
+            SelectedOptionIdsJson = """["option-t5"]""",
+            ImportedPlayerCount = 0,
+            ImportedAt = now.AddMinutes(-20)
+        });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+    }
+
+    private sealed class RecordingHandler(
+        bool sent,
+        IReadOnlyList<BridgePollOption>? pollOptions = null,
+        int uniqueVoteCount = 0,
+        HttpStatusCode pollStatus = HttpStatusCode.OK) : HttpMessageHandler
     {
         public int SendCount { get; private set; }
+        public int PollFetchCount { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (request.RequestUri?.AbsolutePath.StartsWith("/v1/polls/", StringComparison.Ordinal) == true)
+            {
+                PollFetchCount += 1;
+                if (pollStatus != HttpStatusCode.OK)
+                {
+                    return Task.FromResult(new HttpResponseMessage(pollStatus)
+                    {
+                        Content = new StringContent("""{"error":"poll unavailable"}""", Encoding.UTF8, "application/json")
+                    });
+                }
+
+                var poll = new BridgePoll(
+                    "poll-1",
+                    "Poll test",
+                    "creator",
+                    pollOptions ?? [],
+                    false,
+                    false,
+                    false,
+                    false,
+                    uniqueVoteCount,
+                    1,
+                    1,
+                    0);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(poll, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                        Encoding.UTF8,
+                        "application/json")
+                });
+            }
+
             SendCount += 1;
             var body = sent
                 ? "{\"sent\":true,\"mock\":true,\"messageId\":\"rescue-message\"}"

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
@@ -24,6 +25,13 @@ public sealed class ZaloOpenSlotRescueService(
     IConfiguration configuration,
     ILogger<ZaloOpenSlotRescueService> logger)
 {
+    private enum OwnerVoteState
+    {
+        Present,
+        Absent,
+        Unknown
+    }
+
     public Task<ZaloOpenSlotRescueRunResult> RunDueAsync(CancellationToken cancellationToken = default) =>
         RunDueAsync(DateTimeOffset.UtcNow, cancellationToken);
 
@@ -234,12 +242,43 @@ public sealed class ZaloOpenSlotRescueService(
                 }
 
                 // Owner absence is expected during the documented pre-draft handoff:
-                // the owner may remove their poll vote before a claimant has completed
-                // the replacement. Only the Applying recovery path may infer completion,
-                // and only after proving the exact claimant in canonical roster/team state.
+                // keep the offer claimable, but do not keep calling out an owner who has
+                // already left the session's selected poll option. Applying recovery
+                // still requires proof of the exact claimant in canonical roster/team state.
                 if (session.ZaloConnection is null || session.ZaloConnection.Status != ZaloConnectionStatus.Connected)
                 {
                     await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, now.Add(retryDelay), cancellationToken);
+                    skipped += 1;
+                    continue;
+                }
+
+                var ownerVoteState = await GetOwnerVoteStateAsync(session, candidate, cancellationToken);
+                if (ownerVoteState == OwnerVoteState.Absent)
+                {
+                    if (candidate.Status == ZaloOpenSlotOfferStatus.Open)
+                    {
+                        if (await store.SuppressNudgesAsync(candidate.Id, leaseToken, now, cancellationToken))
+                        {
+                            logger.LogInformation(
+                                "Open-slot rescue nudges suppressed because owner is no longer in the selected poll option Offer={OfferId} Session={SessionId} Owner={OwnerId}",
+                                candidate.Id,
+                                candidate.SessionId,
+                                candidate.OwnerZaloUserId);
+                        }
+                    }
+                    else if (candidate.Status == ZaloOpenSlotOfferStatus.ClaimPending &&
+                             candidate.ClaimExpiresAt is { } expiredClaimAt && expiredClaimAt <= now)
+                    {
+                        // The owner has already left this poll option. Release an expired
+                        // claimant reservation silently and permanently stop owner nudges.
+                        if (await store.ReleaseTimedOutClaimAsync(
+                                candidate.Id, leaseToken, now, nextNudgeAt: null, cancellationToken: cancellationToken))
+                            released += 1;
+                    }
+                    else
+                    {
+                        await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, null, cancellationToken);
+                    }
                     skipped += 1;
                     continue;
                 }
@@ -278,6 +317,18 @@ public sealed class ZaloOpenSlotRescueService(
                 if (await HasRecentBotMessageAsync(candidate.ConnectionId, candidate.GroupId, now - groupCooldown, cancellationToken))
                 {
                     await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, now.Add(groupCooldown), cancellationToken);
+                    skipped += 1;
+                    continue;
+                }
+
+                if (ownerVoteState == OwnerVoteState.Unknown)
+                {
+                    await store.ReleaseReminderLeaseAsync(candidate.Id, leaseToken, now.Add(retryDelay), cancellationToken);
+                    logger.LogDebug(
+                        "Open-slot rescue deferred because the owner's current poll vote could not be verified Offer={OfferId} Session={SessionId} Owner={OwnerId}",
+                        candidate.Id,
+                        candidate.SessionId,
+                        candidate.OwnerZaloUserId);
                     skipped += 1;
                     continue;
                 }
@@ -379,6 +430,99 @@ public sealed class ZaloOpenSlotRescueService(
                 link.DraftSlot.SessionId == session.Id &&
                 link.DraftSlot.AssignedTeamId != null,
                 cancellationToken);
+    }
+
+    private async Task<OwnerVoteState> GetOwnerVoteStateAsync(
+        MatchSession session,
+        ZaloOpenSlotOfferSnapshot offer,
+        CancellationToken cancellationToken)
+    {
+        var ownerId = NormalizeId(offer.OwnerZaloUserId);
+        var ownerPlayer = session.Players.FirstOrDefault(player =>
+            ownerId.Length > 0 &&
+            NormalizeId(player.PlayerProfile?.ZaloUserId) == ownerId);
+
+        if (ownerPlayer is null && ownerId.Length == 0)
+        {
+            var ownerName = ZaloBotIntelligence.Normalize(offer.OwnerDisplayName);
+            var nameMatches = session.Players
+                .Where(player =>
+                    string.IsNullOrWhiteSpace(player.PlayerProfile?.ZaloUserId) &&
+                    ZaloBotIntelligence.Normalize(player.DisplayName) == ownerName)
+                .Take(2)
+                .ToList();
+            ownerPlayer = nameMatches.Count == 1 ? nameMatches[0] : null;
+        }
+
+        var latestImport = await db.PollImports
+            .AsNoTracking()
+            .Where(item => item.SessionId == session.Id)
+            .OrderByDescending(item => item.ImportedAt)
+            .Select(item => new { item.PollId, item.SelectedOptionIdsJson })
+            .FirstOrDefaultAsync(cancellationToken);
+        var sourcePollId = latestImport?.PollId?.Trim();
+        var selectedOptionIds = ParseStringList(latestImport?.SelectedOptionIdsJson);
+        var hasSessionOptionMapping = !string.IsNullOrWhiteSpace(sourcePollId) && selectedOptionIds.Count > 0;
+        var ownerSourcePollId = ownerPlayer?.SourcePollId?.Trim();
+
+        if (string.IsNullOrWhiteSpace(sourcePollId))
+        {
+            sourcePollId = ownerSourcePollId;
+            if (!string.IsNullOrWhiteSpace(sourcePollId))
+                selectedOptionIds = ParseStringList(ownerPlayer?.SourceOptionIdsJson);
+        }
+        else if (selectedOptionIds.Count == 0 &&
+                 string.Equals(sourcePollId, ownerSourcePollId, StringComparison.Ordinal))
+        {
+            selectedOptionIds = ParseStringList(ownerPlayer?.SourceOptionIdsJson);
+        }
+
+        if (string.IsNullOrWhiteSpace(sourcePollId))
+            return ownerPlayer is null || !ownerPlayer.IsPresent
+                ? OwnerVoteState.Absent
+                : OwnerVoteState.Present;
+
+        if (ownerId.Length == 0)
+            return ownerPlayer is null || !ownerPlayer.IsPresent
+                ? OwnerVoteState.Absent
+                : OwnerVoteState.Unknown;
+
+        // Without an import record, a multi-option vote does not tell us which option
+        // was used to create this session. Do not guess and send a nudge.
+        if (selectedOptionIds.Count == 0 ||
+            !hasSessionOptionMapping && selectedOptionIds.Count != 1)
+            return OwnerVoteState.Unknown;
+
+        if (session.ZaloConnection is null ||
+            string.IsNullOrWhiteSpace(session.ZaloConnection.EncryptedCredentials))
+            return OwnerVoteState.Unknown;
+
+        var plaintext = new ZaloCredentialProtector(configuration)
+            .Unprotect(session.ZaloConnection.EncryptedCredentials);
+        using var credentialsDocument = JsonDocument.Parse(plaintext);
+        var poll = await bridge.GetPollAsync(credentialsDocument.RootElement.Clone(), sourcePollId);
+        if (poll.IsAnonymous || poll.HideVotePreview || poll.Options.Count == 0)
+            return OwnerVoteState.Unknown;
+
+        var selectedOptionSet = selectedOptionIds.ToHashSet(StringComparer.Ordinal);
+        var selectedOptions = poll.Options
+            .Where(option => selectedOptionSet.Contains(option.Id))
+            .ToList();
+        if (selectedOptions.Count == 0)
+            return OwnerVoteState.Unknown;
+
+        var allVoterIds = poll.Options
+            .SelectMany(option => option.VoterIds ?? Array.Empty<string>())
+            .Select(NormalizeId)
+            .Where(id => id.Length > 0)
+            .ToList();
+        if (poll.UniqueVoteCount > 0 && allVoterIds.Count == 0)
+            return OwnerVoteState.Unknown;
+
+        var ownerStillVotes = selectedOptions
+            .SelectMany(option => option.VoterIds ?? Array.Empty<string>())
+            .Any(voterId => NormalizeId(voterId) == ownerId);
+        return ownerStillVotes ? OwnerVoteState.Present : OwnerVoteState.Absent;
     }
 
     private async Task<bool> HasRecentBotMessageAsync(
@@ -509,5 +653,22 @@ public sealed class ZaloOpenSlotRescueService(
     {
         var text = (value ?? string.Empty).Trim();
         return text.EndsWith("_0", StringComparison.Ordinal) ? text[..^2] : text;
+    }
+
+    private static IReadOnlyList<string> ParseStringList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json)?
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList() ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 }

@@ -497,6 +497,31 @@ public sealed class ZaloOpenSlotOfferStore(VolleyDraftDbContext db)
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
+    public async Task<bool> SuppressNudgesAsync(
+        string offerId,
+        string leaseToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        var connection = db.Database.GetDbConnection();
+        await OpenIfNeededAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE "ZaloOpenSlotOffers"
+            SET "NextNudgeAt" = NULL,
+                "ReminderLeaseToken" = NULL,
+                "ReminderLeaseUntil" = NULL,
+                "Version" = "Version" + 1,
+                "UpdatedAt" = @updatedAt
+            WHERE "Id" = @id AND "ReminderLeaseToken" = @leaseToken AND "Status" = 'Open';
+            """;
+        Add(command, "@updatedAt", now);
+        Add(command, "@id", Clean(offerId, 100));
+        Add(command, "@leaseToken", Clean(leaseToken, 100));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<bool> ReleaseTimedOutClaimAsync(
         string offerId,
         string leaseToken,
