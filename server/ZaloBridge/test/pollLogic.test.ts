@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   normalizeMemberId,
   normalizePoll,
+  shouldLoadGroupLinkDirectory,
   shouldIncludeOwnAccount,
   uniqueVoterIds,
 } from "../src/pollLogic.js";
@@ -30,4 +31,13 @@ test("fills only the exact group total gap with the authenticated account", () =
   assert.equal(shouldIncludeOwnAccount(100, 98, "bot-uid", false), false);
   assert.equal(shouldIncludeOwnAccount(100, 99, "bot-uid", true), false);
   assert.equal(shouldIncludeOwnAccount(0, 0, "bot-uid", false), false);
+});
+
+test("uses the invite-link directory only when group info does not provide enough member UIDs", () => {
+  assert.equal(shouldLoadGroupLinkDirectory(false, 100, 100), true);
+  assert.equal(shouldLoadGroupLinkDirectory(true, 100, 0), true);
+  assert.equal(shouldLoadGroupLinkDirectory(true, 100, 99), true);
+  assert.equal(shouldLoadGroupLinkDirectory(true, 100, 100), false);
+  assert.equal(shouldLoadGroupLinkDirectory(true, 80, 100), false);
+  assert.equal(shouldLoadGroupLinkDirectory(true, 0, 0), false);
 });

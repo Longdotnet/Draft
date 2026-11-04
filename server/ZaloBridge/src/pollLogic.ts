@@ -24,6 +24,14 @@ export function shouldIncludeOwnAccount(
   );
 }
 
+export function shouldLoadGroupLinkDirectory(
+  hasGroupInfo: boolean,
+  expectedMemberCount: number,
+  knownMemberCount: number,
+): boolean {
+  return !hasGroupInfo || knownMemberCount < Math.max(0, expectedMemberCount);
+}
+
 export function uniqueVoterIds(options: BridgePollOption[], selectedOptionIds: string[]): string[] {
   const selected = new Set(selectedOptionIds.map(normalizeId));
   const voterIds = new Set<string>();

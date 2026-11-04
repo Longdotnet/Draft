@@ -49,6 +49,7 @@ import {
   normalizeMember,
   normalizeMemberId,
   normalizePoll,
+  shouldLoadGroupLinkDirectory,
   shouldIncludeOwnAccount,
 } from "./pollLogic.js";
 import {
@@ -918,7 +919,37 @@ export async function getGroupMemberDirectory(
   let groupCreatedAtUnixMs = normalizeUnixMs(info?.createdTime);
   let linkDirectoryComplete = false;
 
-  if (!info || directMembers.length < expectedMemberCount) {
+  // Zalo's group member payload commonly excludes the connected account
+  // while totalMember includes it. Fill that exact one-member gap before
+  // deciding whether the invite-link directory is still needed.
+  const ownId = normalizeMemberId(api.getOwnId());
+  if (shouldIncludeOwnAccount(
+    expectedMemberCount,
+    memberIds.size,
+    ownId,
+    memberIds.has(ownId),
+  )) {
+    try {
+      const account = await api.fetchAccountInfo();
+      const ownMember = normalizeMember(ownId, {
+        id: ownId,
+        displayName: account.displayName,
+        zaloName: account.zaloName,
+        avatar: account.avatar,
+      });
+      memberIds.add(ownId);
+      directMembers.push(ownMember);
+    } catch (error) {
+      logZaloOperationFailure("fetchAccountInfo.members", error, {
+        groupId: normalizedGroupId,
+      });
+    }
+  }
+
+  // getGroupInfo.memberIds is the authoritative UID directory. currentMems is
+  // often only a hydrated subset, so comparing it with totalMember incorrectly
+  // calls the invite-link endpoint even when every UID is already known.
+  if (shouldLoadGroupLinkDirectory(Boolean(info), expectedMemberCount, memberIds.size)) {
     try {
       const linked = await getMembersFromGroupLink(api, normalizedGroupId);
       for (const member of linked.members) {
@@ -943,33 +974,6 @@ export async function getGroupMemberDirectory(
       if (!info && memberIds.size === 0) {
         throw primaryError instanceof Error ? primaryError : error;
       }
-    }
-  }
-
-  // Zalo's group member payload commonly excludes the connected account
-  // while totalMember includes it. Only fill that exact one-member gap with
-  // the authenticated account itself; never invent any other directory entry.
-  const ownId = normalizeMemberId(api.getOwnId());
-  if (shouldIncludeOwnAccount(
-    expectedMemberCount,
-    memberIds.size,
-    ownId,
-    memberIds.has(ownId),
-  )) {
-    try {
-      const account = await api.fetchAccountInfo();
-      const ownMember = normalizeMember(ownId, {
-        id: ownId,
-        displayName: account.displayName,
-        zaloName: account.zaloName,
-        avatar: account.avatar,
-      });
-      memberIds.add(ownId);
-      directMembers.push(ownMember);
-    } catch (error) {
-      logZaloOperationFailure("fetchAccountInfo.members", error, {
-        groupId: normalizedGroupId,
-      });
     }
   }
 
