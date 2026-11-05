@@ -675,6 +675,7 @@ public sealed partial class ZaloBotService(
             var selected = await SelectSessionAsync(sessions, normalizedQuestion, activeConnectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (selected.Clarification is not null) return new BotAnswer(selected.Clarification, null, decision.Intent);
             var session = selected.Session!;
+            var displayName = ZaloSessionDisplayName.WithCanonicalStartTime(session.Name, session.StartTime);
             var state = await draftService.GetDraftStateAsync(session.AdminUserId, session.Id);
             if (!state.IsSuccess || state.Value is null)
                 return new BotAnswer(state.Error ?? "Mình chưa đọc được đội hình của buổi này.", null, decision.Intent);
@@ -682,7 +683,7 @@ public sealed partial class ZaloBotService(
                 .BuildAsync(session.Id, cancellationToken: cancellationToken);
             var lineup = await ZaloTeamLineupAudienceBuilder.BuildAsync(
                 db,
-                session.Name,
+                displayName,
                 state.Value.TeamPreview,
                 ZaloTeamLineupFormatter.WantsPlayerMentions(question),
                 cancellationToken,
@@ -691,7 +692,7 @@ public sealed partial class ZaloBotService(
                 ? await TryGenerateCourtIndexImageAsync(session.Id, cancellationToken)
                 : null;
             var text = decision.Intent == ZaloBotIntent.TeamImage && image is null
-                ? lineup.Text + BuildTeamImageRecoveryText(session.Name)
+                ? lineup.Text + BuildTeamImageRecoveryText(displayName)
                 : lineup.Text;
             return new BotAnswer(
                 text,
@@ -4779,13 +4780,14 @@ public sealed partial class ZaloBotService(
             var teamSelection = await SelectSessionAsync(sessions, selector, connectionId, groupId, incoming.SenderId, decision.Intent, cancellationToken);
             if (teamSelection.Clarification is not null) return new BotAnswer(teamSelection.Clarification, null, decision.Intent, true);
             var teamSession = teamSelection.Session!;
+            var displayName = ZaloSessionDisplayName.WithCanonicalStartTime(teamSession.Name, teamSession.StartTime);
             var state = await draftService.GetDraftStateAsync(teamSession.AdminUserId, teamSession.Id);
             if (!state.IsSuccess || state.Value is null) return new BotAnswer(state.Error ?? "Không đọc được đội hình.", null, decision.Intent, true);
             var readiness = await new ZaloDraftReadinessService(db)
                 .BuildAsync(teamSession.Id, cancellationToken: cancellationToken);
             var lineup = await ZaloTeamLineupAudienceBuilder.BuildAsync(
                 db,
-                teamSession.Name,
+                displayName,
                 state.Value.TeamPreview,
                 ZaloTeamLineupFormatter.WantsPlayerMentions(ExtractQuestion(incoming)),
                 cancellationToken,
@@ -4794,7 +4796,7 @@ public sealed partial class ZaloBotService(
                 ? await TryGenerateCourtIndexImageAsync(teamSession.Id, cancellationToken)
                 : null;
             var text = decision.Intent == ZaloBotIntent.TeamImage && image is null
-                ? lineup.Text + BuildTeamImageRecoveryText(teamSession.Name)
+                ? lineup.Text + BuildTeamImageRecoveryText(displayName)
                 : lineup.Text;
             return new BotAnswer(
                 text,

@@ -185,11 +185,12 @@ public sealed class ZaloTeamCardService(
                 slots);
         }).ToList();
 
+        var displayName = ZaloSessionDisplayName.WithCanonicalStartTime(session.Name, session.StartTime);
         var poster = RenderPosterOrFallback(
             templateOverride,
             () => TeamPosterRendererRegistry.Render(
                 posterTemplateId,
-                session.Name,
+                displayName,
                 session.StartTime,
                 session.Location,
                 teams),
@@ -203,7 +204,7 @@ public sealed class ZaloTeamCardService(
                     "Tournament team poster render failed for Session={SessionId} Template={TemplateId}; falling back to legacy card",
                     session.Id,
                     posterTemplateId);
-                return SimpleTeamCardPng.Render(session.Name, session.StartTime, session.Location, teams);
+                return SimpleTeamCardPng.Render(displayName, session.StartTime, session.Location, teams);
             });
 
         return new GeneratedTeamCard(poster, "image/png");
