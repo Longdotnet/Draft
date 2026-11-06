@@ -29,7 +29,7 @@ The repository defaults currently try these OpenRouter slots in order:
 5. nvidia/nemotron-3-ultra-550b-a55b:free
 ```
 
-Workloads that require JSON output (`IntentClassification` and `StructuredExtraction`) are pinned to the Super VL / Gemma pair because those OpenRouter models support `response_format`. Chat, social reply, rewrite and narration can fail over across the wider five-model pool.
+Workloads that require JSON output (`IntentClassification`, `StructuredExtraction` and `DomainNarration`) are pinned to the Super VL / Gemma pair because those OpenRouter models support `response_format`. General chat, social reply and safe rewrite can fail over across the wider five-model pool.
 
 Each pool slot can have an independent API key. When a slot key is blank, the gateway inherits the legacy `Ai:ApiKey`. Exact duplicate endpoint/key/model slots are collapsed automatically, so a deployment with only one shared key does not waste calls retrying the exact same model credential twice. Once separate keys are configured, repeated model slots remain distinct failover credentials.
 
