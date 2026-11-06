@@ -32,6 +32,26 @@ export function shouldLoadGroupLinkDirectory(
   return !hasGroupInfo || knownMemberCount < Math.max(0, expectedMemberCount);
 }
 
+export function isGroupMemberDirectoryComplete(
+  hasGroupInfo: boolean,
+  linkDirectoryComplete: boolean,
+  expectedMemberCount: number,
+  actualMemberCount: number,
+  hasMoreMember: number,
+): boolean {
+  if (linkDirectoryComplete) return true;
+  if (expectedMemberCount > 0) return actualMemberCount >= expectedMemberCount;
+  return hasGroupInfo && hasMoreMember === 0;
+}
+
+export function shouldPropagateGroupMemberDirectoryFailure(
+  primaryLookupFailed: boolean,
+  hasGroupInfo: boolean,
+  knownMemberCount: number,
+): boolean {
+  return primaryLookupFailed && !hasGroupInfo && knownMemberCount === 0;
+}
+
 export function uniqueVoterIds(options: BridgePollOption[], selectedOptionIds: string[]): string[] {
   const selected = new Set(selectedOptionIds.map(normalizeId));
   const voterIds = new Set<string>();

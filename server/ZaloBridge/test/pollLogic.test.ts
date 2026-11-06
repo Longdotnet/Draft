@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isGroupMemberDirectoryComplete,
   normalizeMemberId,
   normalizePoll,
   shouldLoadGroupLinkDirectory,
+  shouldPropagateGroupMemberDirectoryFailure,
   shouldIncludeOwnAccount,
   uniqueVoterIds,
 } from "../src/pollLogic.js";
@@ -40,4 +42,19 @@ test("uses the invite-link directory only when group info does not provide enoug
   assert.equal(shouldLoadGroupLinkDirectory(true, 100, 100), false);
   assert.equal(shouldLoadGroupLinkDirectory(true, 80, 100), false);
   assert.equal(shouldLoadGroupLinkDirectory(true, 0, 0), false);
+});
+
+test("never marks a missing provider directory complete just because it is empty", () => {
+  assert.equal(isGroupMemberDirectoryComplete(false, false, 0, 0, 0), false);
+  assert.equal(isGroupMemberDirectoryComplete(true, false, 0, 0, 0), true);
+  assert.equal(isGroupMemberDirectoryComplete(true, false, 10, 9, 0), false);
+  assert.equal(isGroupMemberDirectoryComplete(true, false, 10, 10, 1), true);
+  assert.equal(isGroupMemberDirectoryComplete(false, true, 0, 0, 0), true);
+});
+
+test("only retries member-directory fallback when the primary lookup itself failed", () => {
+  assert.equal(shouldPropagateGroupMemberDirectoryFailure(true, false, 0), true);
+  assert.equal(shouldPropagateGroupMemberDirectoryFailure(false, false, 0), false);
+  assert.equal(shouldPropagateGroupMemberDirectoryFailure(true, true, 0), false);
+  assert.equal(shouldPropagateGroupMemberDirectoryFailure(true, false, 1), false);
 });

@@ -49,7 +49,9 @@ import {
   normalizeMember,
   normalizeMemberId,
   normalizePoll,
+  isGroupMemberDirectoryComplete,
   shouldLoadGroupLinkDirectory,
+  shouldPropagateGroupMemberDirectoryFailure,
   shouldIncludeOwnAccount,
 } from "./pollLogic.js";
 import {
@@ -971,8 +973,19 @@ export async function getGroupMemberDirectory(
       logZaloOperationFailure("getGroupLinkInfo.members", error, {
         groupId: normalizedGroupId,
       });
-      if (!info && memberIds.size === 0) {
-        throw primaryError instanceof Error ? primaryError : error;
+      // A successful getGroupInfo call can legitimately return no usable group
+      // directory for privacy-restricted/unsupported groups. In that case the
+      // invite-link endpoint may also reject the lookup (for example Zalo code
+      // 114). That is a coverage limitation, not a bridge outage: return an
+      // incomplete directory so callers preserve existing membership state and
+      // do not hammer the provider with transport retries. If getGroupInfo itself
+      // failed, retain the original retryable failure semantics.
+      if (shouldPropagateGroupMemberDirectoryFailure(
+        primaryError !== null,
+        Boolean(info),
+        memberIds.size,
+      )) {
+        throw primaryError;
       }
     }
   }
@@ -980,10 +993,13 @@ export async function getGroupMemberDirectory(
   const uniqueIds = [...memberIds];
   const members = await resolveMembers(api, uniqueIds, directMembers);
   const hasMoreMember = Number(info?.hasMoreMember ?? 0);
-  const isComplete =
-    linkDirectoryComplete ||
-    (expectedMemberCount > 0 && members.length >= expectedMemberCount) ||
-    (expectedMemberCount === 0 && hasMoreMember === 0);
+  const isComplete = isGroupMemberDirectoryComplete(
+    Boolean(info),
+    linkDirectoryComplete,
+    expectedMemberCount,
+    members.length,
+    hasMoreMember,
+  );
   return {
     groupId: normalizedGroupId,
     groupName,
