@@ -23,18 +23,41 @@ public sealed class ZaloListenerWorkerCadenceTests
     }
 
     [Fact]
-    public void Listener_reconcile_defaults_to_five_minutes()
+    public void Listener_reconcile_defaults_to_short_worker_cadence_for_bridge_restart_recovery()
     {
         var configuration = new ConfigurationBuilder().Build();
 
         var interval = ZaloListenerWorkerCadence.ResolveInterval(
             configuration,
             "Zalo:ListenerReconcileSeconds",
-            defaultSeconds: 300,
-            minSeconds: 120,
-            maxSeconds: 1800);
+            defaultSeconds: 45,
+            minSeconds: 30,
+            maxSeconds: 300);
 
-        Assert.Equal(TimeSpan.FromMinutes(5), interval);
+        Assert.Equal(TimeSpan.FromSeconds(45), interval);
+    }
+
+    [Theory]
+    [InlineData("1", 30)]
+    [InlineData("600", 300)]
+    [InlineData("90", 90)]
+    public void Listener_recovery_interval_is_bounded(string configuredSeconds, int expectedSeconds)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Zalo:ListenerReconcileSeconds"] = configuredSeconds
+            })
+            .Build();
+
+        var interval = ZaloListenerWorkerCadence.ResolveInterval(
+            configuration,
+            "Zalo:ListenerReconcileSeconds",
+            defaultSeconds: 45,
+            minSeconds: 30,
+            maxSeconds: 300);
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), interval);
     }
 
     [Theory]

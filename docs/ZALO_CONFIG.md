@@ -73,13 +73,13 @@ Default reconciliation cadences are:
 
 ```text
 Zalo__WorkerLoopSeconds=45
-Zalo__ListenerReconcileSeconds=300
+Zalo__ListenerReconcileSeconds=45
 AutoSession__SafetyReconcileSeconds=900
 ```
 
-`Zalo__ListenerReconcileSeconds` is a bridge/listener cold-start recovery safety net. `AutoSession__SafetyReconcileSeconds` is a missed-poll-event safety net that performs the expensive full poll-board reconciliation. Poll board websocket events are still processed immediately and do not wait 15 minutes.
+`Zalo__ListenerReconcileSeconds` is a lightweight bridge/listener recovery check. The bridge reuses an already-active listener with the same credential fingerprint, so the 45-second default does not log in to Zalo again or poll provider data when the listener is healthy. `AutoSession__SafetyReconcileSeconds` is the expensive missed-poll-event safety net. Poll board websocket events are still processed immediately and do not wait 15 minutes.
 
-The values are deliberately bounded in code: the short worker loop cannot be configured below 30 seconds, listener reconciliation below 2 minutes, and full Auto Session safety reconciliation below 5 minutes. Do not reduce these intervals merely to make the bot appear more realtime; realtime behavior belongs to the listener/event path. This protects connected accounts from unnecessary provider traffic while still recovering after Render sleep/restart or a missed websocket event.
+The values are deliberately bounded in code: the short worker loop and listener recovery check cannot be configured below 30 seconds, and full Auto Session safety reconciliation cannot be configured below 5 minutes. Realtime behavior still belongs to the listener/event path; the short listener check only re-establishes a missing bridge listener and does not poll Zalo data while the listener is healthy.
 
 ## Render environment variables
 
@@ -92,7 +92,7 @@ Zalo__CredentialEncryptionKey=<stable-secret>
 Zalo__WebhookUrl=https://volley-draft.onrender.com/api/internal/zalo/events
 Zalo__WebhookKey=<webhook-shared-secret>
 Zalo__WorkerLoopSeconds=45
-Zalo__ListenerReconcileSeconds=300
+Zalo__ListenerReconcileSeconds=45
 AutoSession__SafetyReconcileSeconds=900
 
 # Existing shared OpenRouter credential. Pool slots inherit this when their own key is blank.

@@ -25,6 +25,17 @@ public sealed partial class ZaloBotService
         if (connection is null || string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(messageId)) return;
         var connectionIds = connections.Select(item => item.Id).ToList();
 
+        var recoveredIncoming = RecoverTextualBotMention(incoming, connection.DisplayName);
+        if (recoveredIncoming.MentionedBot && !incoming.MentionedBot)
+        {
+            logger.LogInformation(
+                "Recovered textual Zalo bot mention Account={AccountId} Group={GroupId} Message={MessageId}",
+                accountId,
+                groupId,
+                messageId);
+        }
+        incoming = recoveredIncoming;
+
         var storedMessage = await db.ZaloGroupMessages.SingleOrDefaultAsync(message =>
             message.ZaloConnectionId == connection.Id && message.MessageId == messageId, cancellationToken);
         if (storedMessage is null)
@@ -234,5 +245,80 @@ public sealed partial class ZaloBotService
         logger.LogInformation(
             "Zalo bot replied Account={AccountId} Group={GroupId} Message={MessageId} Intent={Intent} AiCalled={AiCalled}",
             accountId, groupId, messageId, response.Intent, response.AiCalled);
+    }
+
+    internal static ZaloIncomingMessageEvent RecoverTextualBotMention(
+        ZaloIncomingMessageEvent incoming,
+        string? botDisplayName)
+    {
+        var normalizedBotId = NormalizeId(incoming.BotId);
+        if (normalizedBotId.Length == 0) return incoming;
+
+        var hasStructuredBotMention = incoming.Mentions.Any(mention =>
+            NormalizeId(mention.Uid) == normalizedBotId);
+        if (hasStructuredBotMention)
+        {
+            return incoming.MentionedBot
+                ? incoming
+                : incoming with { MentionedBot = true };
+        }
+
+        if (incoming.MentionedBot)
+        {
+            // Trust the bridge-owned addressed flag even if a provider version omitted
+            // the raw mention span. Add a metadata-only marker so downstream lanes use
+            // the same explicit-addressing semantics as structured mentions.
+            return incoming with
+            {
+                Mentions = incoming.Mentions
+                    .Concat([new ZaloBridgeMention(normalizedBotId, -1, 0)])
+                    .ToList()
+            };
+        }
+
+        if (!TryFindLeadingBotMention(incoming.Content, botDisplayName, out var position, out var length))
+            return incoming;
+
+        return incoming with
+        {
+            MentionedBot = true,
+            Mentions = incoming.Mentions
+                .Concat([new ZaloBridgeMention(normalizedBotId, position, length)])
+                .ToList()
+        };
+    }
+
+    private static bool TryFindLeadingBotMention(
+        string? content,
+        string? botDisplayName,
+        out int position,
+        out int length)
+    {
+        position = -1;
+        length = 0;
+        if (string.IsNullOrWhiteSpace(content) || string.IsNullOrWhiteSpace(botDisplayName))
+            return false;
+
+        var displayName = botDisplayName.Trim().TrimStart('@').Trim();
+        if (displayName.Length == 0) return false;
+
+        var namePattern = string.Join(
+            @"\s+",
+            Regex.Split(displayName, @"\s+")
+                .Where(token => token.Length > 0)
+                .Select(Regex.Escape));
+        if (namePattern.Length == 0) return false;
+
+        var match = Regex.Match(
+            content,
+            $@"^\s*@{namePattern}(?=$|[\s:,.!?;\-])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return false;
+
+        var atOffset = match.Value.IndexOf('@');
+        if (atOffset < 0) return false;
+        position = match.Index + atOffset;
+        length = match.Length - atOffset;
+        return length > 1;
     }
 }

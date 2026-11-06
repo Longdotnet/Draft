@@ -301,9 +301,9 @@ public sealed class ZaloListenerWorker(
         var listenerReconcileInterval = ZaloListenerWorkerCadence.ResolveInterval(
             configuration,
             "Zalo:ListenerReconcileSeconds",
-            defaultSeconds: 300,
-            minSeconds: 120,
-            maxSeconds: 1800);
+            defaultSeconds: 45,
+            minSeconds: 30,
+            maxSeconds: 300);
         var pollSafetyReconcileInterval = ZaloListenerWorkerCadence.ResolveInterval(
             configuration,
             "AutoSession:SafetyReconcileSeconds",
@@ -354,8 +354,9 @@ public sealed class ZaloListenerWorker(
                 var now = DateTimeOffset.UtcNow;
                 if (ZaloListenerWorkerCadence.IsDue(now, nextListenerReconcileAt))
                 {
-                    // Bridge restart/cold-start recovery. The active websocket listener is
-                    // otherwise left alone instead of re-ensuring it every short worker tick.
+                    // Bridge restart/cold-start recovery. On a healthy bridge StartListener
+                    // returns the existing listener generation without another Zalo login,
+                    // so this short control-plane check does not become provider polling.
                     nextListenerReconcileAt = ZaloListenerWorkerCadence.Next(now, listenerReconcileInterval);
                     await scope.ServiceProvider.GetRequiredService<ZaloListenerCoordinator>()
                         .EnsureAllAsync(stoppingToken);
