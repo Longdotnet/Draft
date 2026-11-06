@@ -11,6 +11,7 @@ public enum SettlementActionKind
     Reminder,
     Thanks,
     Summary,
+    PaymentQr,
     Custom
 }
 
@@ -97,6 +98,8 @@ public sealed class SettlementMessage
     public string SelectedEntryIdsJson { get; set; } = "[]";
     public string? Message { get; set; }
     public bool IncludePaymentQr { get; set; }
+    public string? PaymentQrImageUrlSnapshot { get; set; }
+    public byte[]? PreparedImageData { get; set; }
     public DateTimeOffset DueAt { get; set; }
     public SettlementMessageStatus Status { get; set; } = SettlementMessageStatus.Pending;
     public int FailureCount { get; set; }

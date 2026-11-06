@@ -6,7 +6,6 @@ import {
   CircleDollarSign,
   Clock3,
   MessageSquareText,
-  MoreHorizontal,
   Copy,
   KeyRound,
   QrCode,
@@ -14,11 +13,13 @@ import {
   Send,
   ShieldCheck,
   Users,
+  Volleyball,
   X,
 } from "lucide-react";
 import {
   ApiRequestError,
   apiFetch,
+  apiUpload,
   type MatchSettlementActionResponse,
   type MatchSettlementActionKind,
   type MatchSettlementActionRequest,
@@ -66,7 +67,7 @@ const quickPresets = [
     label: "Tổng kết",
     kind: "Summary" as MatchSettlementActionKind,
     audience: "all" as ComposerAudience,
-    message: "Tổng kết tiền sân hôm nay đã cập nhật. Anh em xem lại giúp tui, ai còn thiếu thì chuyển khoản để mình chốt trận nha.",
+    message: "",
   },
 ];
 
@@ -96,6 +97,15 @@ function newClientRequestId() {
   return globalThis.crypto?.randomUUID?.() ?? `settlement-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function ZyroBrand({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`settlement-zyro-brand ${compact ? "compact" : ""}`} aria-label="ZYRO Volleyball Club">
+      <span className="settlement-zyro-mark" aria-hidden="true"><Volleyball size={compact ? 20 : 24} /></span>
+      <span className="settlement-zyro-wordmark"><strong>ZYRO</strong><small>VOLLEYBALL CLUB</small></span>
+    </div>
+  );
+}
+
 export function MatchSettlementFocus({ token, sessionId }: { token: string | null; sessionId: string }) {
   const [accessMode, setAccessMode] = useState<SettlementAccessMode>("checking");
   const [challenge, setChallenge] = useState<SettlementAccessChallengeResponse | null>(null);
@@ -119,9 +129,14 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   const [customDelayValue, setCustomDelayValue] = useState(2);
   const [customDelayUnit, setCustomDelayUnit] = useState<DelayUnit>("hours");
   const [attachQr, setAttachQr] = useState(true);
+  const [qrUploading, setQrUploading] = useState(false);
+  const [qrSending, setQrSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const actionRequestIdRef = useRef(newClientRequestId());
   const pollingChallengeRef = useRef(false);
+  const composerDialogRef = useRef<HTMLElement | null>(null);
+  const composerReturnFocusRef = useRef<HTMLElement | null>(null);
+  const qrFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const effectiveDelayMinutes = delayPreset === "custom"
     ? Math.min(43_200, Math.max(1, Math.round(customDelayValue * (customDelayUnit === "hours" ? 60 : 1))))
@@ -424,28 +439,151 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     await updateEntry(entry, { actualPaidAmount: value });
   }
 
-  function openComposer(mode: "remind" | "compose" | "schedule") {
+  async function uploadPaymentQr(file: File) {
+    if (!settlement) return;
+    const allowedTypes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+    if (!allowedTypes.has(file.type)) {
+      setError("Chỉ hỗ trợ ảnh QR dạng JPG, PNG hoặc WEBP.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError("Ảnh QR không được lớn hơn 10 MB.");
+      return;
+    }
+
+    setQrUploading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const mode = accessMode === "admin" ? "admin" : "zalo";
+      const next = await apiUpload<MatchSettlementResponse>(
+        settlementPath(mode, "/payment-qr"),
+        file,
+        tokenFor(mode),
+      );
+      applySettlementSnapshot(next);
+      setAttachQr(true);
+      setNotice("Đã lưu QR cho trận này. Bạn có thể đính kèm vào tin hoặc gửi ngay lên nhóm Zalo.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không tải được ảnh QR.");
+    } finally {
+      setQrUploading(false);
+      if (qrFileInputRef.current) qrFileInputRef.current.value = "";
+    }
+  }
+
+  async function sendPaymentQrNow() {
+    if (!settlement?.paymentQrImageUrl || qrSending) return;
+    setQrSending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const mode = accessMode === "admin" ? "admin" : "zalo";
+      const action = await apiFetch<MatchSettlementActionResponse>(settlementPath(mode, "/actions"), {
+        method: "POST",
+        token: tokenFor(mode),
+        body: {
+          kind: "PaymentQr",
+          audience: "All",
+          includePaymentQr: true,
+          clientRequestId: newClientRequestId(),
+        } satisfies MatchSettlementActionRequest,
+      });
+      if (action.status === "Failed") {
+        setError(action.lastError || "Gửi QR lên Zalo thất bại.");
+      } else if (action.status === "Sent") {
+        setNotice("Đã gửi QR thanh toán lên nhóm Zalo, không tag @all.");
+      } else {
+        setNotice("QR đã vào hàng đợi gửi và bot sẽ tự thử lại nếu cần.");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không gửi được QR lên Zalo.");
+    } finally {
+      setQrSending(false);
+    }
+  }
+
+  function openComposer(mode: "remind" | "compose" | "schedule" | "summary") {
     setNotice(null);
     setError(null);
     actionRequestIdRef.current = newClientRequestId();
+    composerReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSelectedIds([]);
+    setDelayPreset(30);
     if (mode === "remind") {
       const preset = quickPresets[0];
       setActionKind(preset.kind);
       setAudience(preset.audience);
       setMessage(preset.message);
       setDeliveryMode("now");
+      setAttachQr(Boolean(settlement?.paymentQrImageUrl));
     } else if (mode === "compose") {
       setActionKind("Custom");
-    } else {
+      setAudience("unpaid");
+      setMessage("");
+      setDeliveryMode("now");
+      setAttachQr(false);
+    } else if (mode === "schedule") {
+      const preset = quickPresets[0];
+      setActionKind(preset.kind);
+      setAudience(preset.audience);
+      setMessage(preset.message);
       setDeliveryMode("delay");
+      setAttachQr(Boolean(settlement?.paymentQrImageUrl));
+    } else {
+      const preset = quickPresets[2];
+      setActionKind(preset.kind);
+      setAudience(preset.audience);
+      setMessage(preset.message);
+      setDeliveryMode("now");
+      setAttachQr(false);
     }
     setComposerOpen(true);
   }
+
+  function closeComposer() {
+    setComposerOpen(false);
+    window.setTimeout(() => composerReturnFocusRef.current?.focus(), 0);
+  }
+
+  useEffect(() => {
+    if (!composerOpen) return;
+    const dialog = composerDialogRef.current;
+    if (!dialog) return;
+
+    const focusables = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => !element.hasAttribute("hidden"));
+    window.requestAnimationFrame(() => focusables()[0]?.focus());
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeComposer();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [composerOpen]);
 
   function applyPreset(preset: typeof quickPresets[number]) {
     setActionKind(preset.kind);
     setAudience(preset.audience);
     setMessage(preset.message);
+    setAttachQr(preset.kind === "Summary" ? false : Boolean(settlement?.paymentQrImageUrl));
   }
 
   function toggleSelected(id: string) {
@@ -453,13 +591,14 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   }
 
   async function submitComposer() {
-    if (!settlement || !message.trim()) return;
+    if (!settlement || (actionKind !== "Summary" && !message.trim())) return;
+    const isSummary = actionKind === "Summary";
     const request: MatchSettlementActionRequest = {
       kind: actionKind,
-      audience: backendAudience(audience),
-      selectedEntryIds: audience === "selected" ? selectedIds : undefined,
-      message: message.trim(),
-      includePaymentQr: attachQr && Boolean(settlement.paymentQrImageUrl),
+      audience: isSummary ? "All" : backendAudience(audience),
+      selectedEntryIds: !isSummary && audience === "selected" ? selectedIds : undefined,
+      message: message.trim() || undefined,
+      includePaymentQr: !isSummary && attachQr && Boolean(settlement.paymentQrImageUrl),
       delayMinutes: deliveryMode === "delay" ? effectiveDelayMinutes : undefined,
       clientRequestId: actionRequestIdRef.current,
     };
@@ -478,13 +617,13 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       } else if (action.status === "Skipped") {
         setNotice("Không có người phù hợp với nhóm nhận đã chọn nên bot không gửi tin.");
       } else if (action.status === "Sent") {
-        setNotice("Đã gửi tin trên Zalo.");
+        setNotice(isSummary ? "Đã gửi ảnh tổng kết lên nhóm Zalo, không tag @all." : "Đã gửi tin trên Zalo.");
       } else if (deliveryMode === "now") {
         setNotice("Bot chưa gửi được ngay; tin đã vào hàng đợi và sẽ tự thử lại.");
       } else {
         setNotice(`Đã hẹn gửi sau ${delayLabel}.`);
       }
-      setComposerOpen(false);
+      closeComposer();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không gửi được tin settlement.");
     } finally {
@@ -501,6 +640,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     return (
       <section className="settlement-access-shell">
         <div className="settlement-access-card">
+          <ZyroBrand />
           <div className="settlement-access-icon"><KeyRound size={26} aria-hidden="true" /></div>
           <span className="settlement-kicker">Xác minh Zalo một lần</span>
           <h2>Mở Sổ tiền không cần đăng nhập</h2>
@@ -545,6 +685,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     return (
       <section className="settlement-access-shell">
         <div className="settlement-access-card settlement-access-denied">
+          <ZyroBrand />
           <div className="settlement-access-icon"><ShieldCheck size={26} aria-hidden="true" /></div>
           <span className="settlement-kicker">Sổ tiền trận</span>
           <h2>Bạn chưa có quyền thao tác</h2>
@@ -583,6 +724,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     return (
       <section className="settlement-shell settlement-create-shell">
         <div className="settlement-hero">
+          <ZyroBrand />
           <div className="settlement-kicker"><CircleDollarSign size={16} aria-hidden="true" /> Chốt tiền sau trận</div>
           <h2>{session.name}</h2>
           <p>{session.startTime ? new Date(session.startTime).toLocaleString("vi-VN") : "Chưa có giờ thi đấu"}</p>
@@ -612,6 +754,10 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   return (
     <section className="settlement-shell">
       <div className="settlement-hero">
+        <div className="settlement-brand-row">
+          <ZyroBrand />
+          <span className="settlement-brand-tag">SỔ TIỀN TRẬN</span>
+        </div>
         <div className="settlement-hero-row">
           <div>
             <div className="settlement-kicker"><CircleDollarSign size={16} aria-hidden="true" /> Chốt tiền sau trận</div>
@@ -629,11 +775,15 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
         </div>
         <div className="settlement-progress" aria-label={`${progress}% đã thu`}><span style={{ width: `${progress}%` }} /></div>
 
+        <div className="settlement-fund-highlight">
+          <div><span>QUỸ ZYRO</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
+          <small>{settlement.settlementSurplus > 0 ? `+${formatMoney(settlement.settlementSurplus)} từ trận này` : "Trận này chưa phát sinh tiền dư"}</small>
+        </div>
+
         <div className="settlement-money-grid">
           <div><span>Cần thu</span><strong>{formatMoney(settlement.totalDue)}</strong></div>
           <div><span>Đã nhận</span><strong>{formatMoney(settlement.totalReceived)}</strong></div>
           <div className="fund"><span>Dư trận này</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
-          <div className="fund"><span>Tổng quỹ nhóm</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
         </div>
 
         <label className="settlement-fee-field">
@@ -649,7 +799,39 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       </div>
 
       {error && !composerOpen ? <div className="settlement-notice settlement-error-notice" role="alert">{error}</div> : null}
-      {notice ? <div className="settlement-notice" role="status">{notice}</div> : null}
+      {notice && !composerOpen ? <div className="settlement-notice" role="status">{notice}</div> : null}
+
+      <input
+        ref={qrFileInputRef}
+        className="settlement-hidden-file"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) void uploadPaymentQr(file);
+        }}
+      />
+
+      <section className="settlement-qr-card" aria-label="QR thanh toán">
+        <div className="settlement-qr-preview">
+          {settlement.paymentQrImageUrl
+            ? <img src={settlement.paymentQrImageUrl} alt="QR thanh toán của trận" />
+            : <QrCode size={34} aria-hidden="true" />}
+        </div>
+        <div className="settlement-qr-copy">
+          <span>QR thanh toán</span>
+          <strong>{settlement.paymentQrImageUrl ? "Đã sẵn sàng" : "Chưa có QR"}</strong>
+          <small>{settlement.paymentQrImageUrl ? "Dùng lại cho tin nhắc hoặc gửi riêng ngay lên nhóm." : "Chọn ảnh ngay tại đây, không cần vào cài đặt bot."}</small>
+        </div>
+        <div className="settlement-qr-actions">
+          <button type="button" disabled={qrUploading || qrSending} onClick={() => qrFileInputRef.current?.click()}>
+            <QrCode size={17} aria-hidden="true" /> {qrUploading ? "Đang tải…" : settlement.paymentQrImageUrl ? "Đổi QR" : "Thêm QR"}
+          </button>
+          <button className="primary" type="button" disabled={!settlement.paymentQrImageUrl || qrUploading || qrSending} onClick={() => void sendPaymentQrNow()}>
+            <Send size={17} aria-hidden="true" /> {qrSending ? "Đang gửi…" : "Gửi QR ngay"}
+          </button>
+        </div>
+      </section>
 
       <div className="settlement-section-heading">
         <div><span>Danh sách người chơi</span><strong>{unpaidCount} chưa đóng</strong></div>
@@ -719,29 +901,27 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           if (unpaidCount > 0) {
             openComposer("remind");
           } else {
-            actionRequestIdRef.current = newClientRequestId();
-            applyPreset(quickPresets[1]);
-            setDeliveryMode("now");
-            setComposerOpen(true);
+            openComposer("summary");
           }
         }}>
-          {unpaidCount > 0 ? <BellRing size={19} aria-hidden="true" /> : <Send size={19} aria-hidden="true" />}
-          <span>{unpaidCount > 0 ? "Réo chưa đóng" : "Cảm ơn"}</span>
+          {unpaidCount > 0 ? <BellRing size={19} aria-hidden="true" /> : <Volleyball size={19} aria-hidden="true" />}
+          <span>{unpaidCount > 0 ? "Réo chưa đóng" : "Tổng kết"}</span>
         </button>
         <button type="button" onClick={() => openComposer("compose")}><MessageSquareText size={19} aria-hidden="true" /><span>Soạn tin</span></button>
-        <button type="button" onClick={() => openComposer("schedule")}><MoreHorizontal size={20} aria-hidden="true" /><span>Hẹn giờ</span></button>
+        <button type="button" onClick={() => openComposer("schedule")}><Clock3 size={19} aria-hidden="true" /><span>Hẹn giờ</span></button>
       </div>
 
       {composerOpen ? (
-        <div className="settlement-sheet-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setComposerOpen(false); }}>
-          <section className="settlement-sheet" role="dialog" aria-modal="true" aria-labelledby="settlement-composer-title">
+        <div className="settlement-sheet-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) closeComposer(); }}>
+          <section ref={composerDialogRef} className="settlement-sheet" role="dialog" aria-modal="true" aria-labelledby="settlement-composer-title">
             <div className="settlement-sheet-handle" />
             <div className="settlement-sheet-heading">
-              <div><span className="settlement-kicker"><MessageSquareText size={15} aria-hidden="true" /> Tin nhắn Zalo</span><h3 id="settlement-composer-title">Soạn tin nhắn</h3></div>
-              <button className="settlement-icon-button" type="button" aria-label="Đóng" onClick={() => setComposerOpen(false)}><X size={20} /></button>
+              <div><span className="settlement-kicker"><MessageSquareText size={15} aria-hidden="true" /> ZYRO • Zalo</span><h3 id="settlement-composer-title">{actionKind === "Summary" ? "Gửi ảnh tổng kết" : "Soạn tin nhắn"}</h3></div>
+              <button className="settlement-icon-button" type="button" aria-label="Đóng" onClick={closeComposer}><X size={20} /></button>
             </div>
 
             {error ? <div className="settlement-notice settlement-error-notice" role="alert">{error}</div> : null}
+            {notice ? <div className="settlement-notice" role="status">{notice}</div> : null}
 
             <div className="settlement-presets" aria-label="Mẫu tin nhanh">
               {quickPresets.map((preset) => {
@@ -750,21 +930,37 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
               })}
             </div>
 
-            <label className="settlement-composer-field">
-              <span>Gửi cho</span>
-              <div className="settlement-select-wrap">
-                <Users size={18} aria-hidden="true" />
-                <select value={audience} onChange={(event) => setAudience(event.target.value as ComposerAudience)}>
-                  <option value="unpaid">Chưa đóng ({unpaidCount})</option>
-                  <option value="paid">Đã đóng ({settlement.paidCount})</option>
-                  <option value="all">Tất cả ({settlement.totalCount})</option>
-                  <option value="selected">Tự chọn ({selectedIds.length})</option>
-                </select>
-                <ChevronDown size={17} aria-hidden="true" />
+            {actionKind === "Summary" ? (
+              <div className="settlement-summary-preview">
+                <div className="settlement-summary-preview-head">
+                  <span className="settlement-zyro-mark" aria-hidden="true"><Volleyball size={22} /></span>
+                  <div><strong>Ảnh tổng kết ZYRO</strong><small>Gửi vào nhóm, không @all và không mention thành viên.</small></div>
+                </div>
+                <div className="settlement-summary-preview-grid">
+                  <div><span>Đã đóng</span><strong>{settlement.paidCount}/{settlement.totalCount}</strong></div>
+                  <div><span>Thực nhận</span><strong>{formatMoney(settlement.totalReceived)}</strong></div>
+                  <div><span>Dư trận</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
+                  <div><span>Quỹ Zyro</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
+                </div>
+                <p>Ảnh được render lại từ dữ liệu mới nhất đúng lúc bot gửi, kể cả khi bạn hẹn giờ.</p>
               </div>
-            </label>
+            ) : (
+              <label className="settlement-composer-field">
+                <span>Gửi cho</span>
+                <div className="settlement-select-wrap">
+                  <Users size={18} aria-hidden="true" />
+                  <select value={audience} onChange={(event) => setAudience(event.target.value as ComposerAudience)}>
+                    <option value="unpaid">Chưa đóng ({unpaidCount})</option>
+                    <option value="paid">Đã đóng ({settlement.paidCount})</option>
+                    <option value="all">Tất cả ({settlement.totalCount})</option>
+                    <option value="selected">Tự chọn ({selectedIds.length})</option>
+                  </select>
+                  <ChevronDown size={17} aria-hidden="true" />
+                </div>
+              </label>
+            )}
 
-            {audience === "selected" ? (
+            {actionKind !== "Summary" && audience === "selected" ? (
               <div className="settlement-selected-list">
                 {sortedEntries.map((entry) => (
                   <label key={entry.id}><input type="checkbox" checked={selectedIds.includes(entry.id)} onChange={() => toggleSelected(entry.id)} /><span>{entryName(entry)}</span></label>
@@ -772,17 +968,28 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
               </div>
             ) : null}
 
-            <label className="settlement-composer-field">
-              <span>Nội dung</span>
-              <textarea rows={5} value={message} onChange={(event) => { setActionKind("Custom"); setMessage(event.target.value); }} placeholder="Nhập lời nhắn…" />
-            </label>
+            {actionKind !== "Summary" ? (
+              <label className="settlement-composer-field">
+                <span>Nội dung</span>
+                <textarea rows={5} value={message} onChange={(event) => { setActionKind("Custom"); setMessage(event.target.value); }} placeholder="Nhập lời nhắn…" />
+              </label>
+            ) : null}
 
-            <div className="settlement-composer-options">
-              <button type="button" aria-pressed={attachQr} className={attachQr ? "active" : ""} onClick={() => setAttachQr((value) => !value)} disabled={!settlement.paymentQrImageUrl}>
-                <QrCode size={18} aria-hidden="true" /> QR chuyển khoản
-                {attachQr && settlement.paymentQrImageUrl ? <Check size={16} aria-hidden="true" /> : null}
+            {actionKind !== "Summary" ? <div className="settlement-composer-options">
+              {settlement.paymentQrImageUrl ? (
+                <button type="button" aria-pressed={attachQr} className={attachQr ? "active" : ""} onClick={() => setAttachQr((value) => !value)}>
+                  <QrCode size={18} aria-hidden="true" /> Đính kèm QR
+                  {attachQr ? <Check size={16} aria-hidden="true" /> : null}
+                </button>
+              ) : (
+                <button type="button" disabled={qrUploading} onClick={() => qrFileInputRef.current?.click()}>
+                  <QrCode size={18} aria-hidden="true" /> {qrUploading ? "Đang tải QR…" : "Thêm QR để đính kèm"}
+                </button>
+              )}
+              <button type="button" disabled={!settlement.paymentQrImageUrl || qrUploading || qrSending} onClick={() => void sendPaymentQrNow()}>
+                <Send size={18} aria-hidden="true" /> {qrSending ? "Đang gửi…" : "Gửi QR ngay"}
               </button>
-            </div>
+            </div> : null}
 
             <div className="settlement-delivery-grid">
               <button type="button" aria-pressed={deliveryMode === "now"} className={deliveryMode === "now" ? "active" : ""} onClick={() => setDeliveryMode("now")}><Send size={18} aria-hidden="true" /><span><strong>Gửi ngay</strong><small>Gửi khi bấm nút bên dưới</small></span></button>
@@ -841,9 +1048,9 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
               </div>
             ) : null}
 
-            <button className="settlement-submit" type="button" disabled={busy || !message.trim() || (audience === "selected" && selectedIds.length === 0)} onClick={() => void submitComposer()}>
-              {deliveryMode === "now" ? <Send size={18} aria-hidden="true" /> : <Clock3 size={18} aria-hidden="true" />}
-              {busy ? "Đang gửi…" : deliveryMode === "now" ? "Gửi ngay" : `Hẹn sau ${delayLabel}`}
+            <button className={`settlement-submit ${actionKind === "Summary" ? "summary" : ""}`} type="button" disabled={busy || (actionKind !== "Summary" && !message.trim()) || (actionKind !== "Summary" && audience === "selected" && selectedIds.length === 0)} onClick={() => void submitComposer()}>
+              {actionKind === "Summary" ? <Volleyball size={18} aria-hidden="true" /> : deliveryMode === "now" ? <Send size={18} aria-hidden="true" /> : <Clock3 size={18} aria-hidden="true" />}
+              {busy ? "Đang gửi…" : actionKind === "Summary" ? (deliveryMode === "now" ? "Gửi ảnh tổng kết" : `Hẹn ảnh sau ${delayLabel}`) : deliveryMode === "now" ? "Gửi ngay" : `Hẹn sau ${delayLabel}`}
             </button>
           </section>
         </div>

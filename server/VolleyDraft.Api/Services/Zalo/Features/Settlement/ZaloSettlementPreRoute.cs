@@ -387,7 +387,11 @@ public sealed partial class ZaloOverbookService
             }
         }
 
-        var settlementService = new SettlementService(db, bridge, NullLogger<SettlementService>.Instance);
+        var settlementService = new SettlementService(
+            db,
+            bridge,
+            new SettlementSummaryCardRenderer(),
+            NullLogger<SettlementService>.Instance);
         var existing = await db.MatchSettlements.AsNoTracking()
             .SingleOrDefaultAsync(item => item.SessionId == session.Id, cancellationToken);
         ServiceResult<SettlementResponse> result;

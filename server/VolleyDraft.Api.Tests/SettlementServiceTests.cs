@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using SkiaSharp;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
@@ -34,6 +35,14 @@ public sealed class SettlementServiceTests
         await using var column = connection.CreateCommand();
         column.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SettlementEntries') WHERE name = 'ActualPaidAmount'";
         Assert.Equal(1L, Convert.ToInt64(await column.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+
+        await using var preparedColumn = connection.CreateCommand();
+        preparedColumn.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SettlementMessages') WHERE name = 'PreparedImageData'";
+        Assert.Equal(1L, Convert.ToInt64(await preparedColumn.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+
+        await using var qrSnapshotColumn = connection.CreateCommand();
+        qrSnapshotColumn.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SettlementMessages') WHERE name = 'PaymentQrImageUrlSnapshot'";
+        Assert.Equal(1L, Convert.ToInt64(await qrSnapshotColumn.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
 
         await using var table = connection.CreateCommand();
         table.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'GroupFundTransactions'";
@@ -650,6 +659,348 @@ public sealed class SettlementServiceTests
     }
 
     [Fact]
+    public async Task Summary_action_never_tags_all_and_attaches_zyro_png()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        await fixture.Service.UpdateEntryAsync(
+            "admin",
+            "session",
+            full.Id,
+            new UpdateSettlementEntryRequest(1m, true, 25_000m));
+
+        var result = await fixture.Service.QueueActionAsync(
+            "admin",
+            "session",
+            new CreateSettlementActionRequest(
+                SettlementActionKind.Summary,
+                SettlementAudience.All,
+                [full.Id],
+                null,
+                true,
+                0,
+                "summary-no-all"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(SettlementMessageStatus.Sent, result.Value!.Status);
+        Assert.False(result.Value.IncludePaymentQr);
+
+        var body = Assert.Single(fixture.Handler.RequestBodies);
+        using var payload = JsonDocument.Parse(body);
+        var root = payload.RootElement;
+        var message = root.GetProperty("message").GetString();
+        Assert.NotNull(message);
+        Assert.DoesNotContain("@all", message!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Tổng kết tiền sân", message!, StringComparison.Ordinal);
+        Assert.Empty(root.GetProperty("mentions").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("imageUrl").ValueKind);
+        Assert.Equal("image/png", root.GetProperty("imageContentType").GetString());
+        Assert.EndsWith(".png", root.GetProperty("imageFileName").GetString(), StringComparison.OrdinalIgnoreCase);
+
+        var base64 = root.GetProperty("imageBase64").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(base64));
+        var bytes = Convert.FromBase64String(base64!);
+        Assert.True(bytes.Length > 20_000);
+        using var bitmap = SKBitmap.Decode(bytes);
+        Assert.NotNull(bitmap);
+        Assert.Equal(1080, bitmap!.Width);
+        Assert.InRange(bitmap.Height, 1220, 2100);
+    }
+
+    [Fact]
+    public async Task Legacy_pending_summary_ignores_stale_qr_flag_at_send_time()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var session = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        session.PaymentQrImageUrl = null;
+        var legacy = new SettlementMessage
+        {
+            SettlementId = created.Id,
+            ZaloAccountIdSnapshot = "bot-account",
+            ZaloGroupIdSnapshot = "group",
+            Kind = SettlementActionKind.Summary,
+            Audience = SettlementAudience.All,
+            SelectedEntryIdsJson = "[]",
+            IncludePaymentQr = true,
+            DueAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            Status = SettlementMessageStatus.Pending
+        };
+        fixture.Db.SettlementMessages.Add(legacy);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.True(await fixture.Service.ProcessActionAsync(legacy.Id));
+
+        var body = Assert.Single(fixture.Handler.RequestBodies);
+        using var payload = JsonDocument.Parse(body);
+        Assert.Equal(JsonValueKind.Null, payload.RootElement.GetProperty("imageUrl").ValueKind);
+        Assert.False(string.IsNullOrWhiteSpace(payload.RootElement.GetProperty("imageBase64").GetString()));
+        Assert.Empty(payload.RootElement.GetProperty("mentions").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Payment_qr_action_broadcasts_without_mentions_and_reuses_snapshotted_qr_on_retry()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Service.CreateAsync("admin", "session", new CreateSettlementRequest(22_000m));
+        var session = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        session.PaymentInstructions = "Nội dung CK: ZYRO + tên Zalo";
+        session.PaymentQrImageUrl = "https://example.test/qr-original.png";
+        await fixture.Db.SaveChangesAsync();
+
+        var queued = await fixture.Service.QueueActionAsync(
+            "admin",
+            "session",
+            new CreateSettlementActionRequest(
+                SettlementActionKind.PaymentQr,
+                SettlementAudience.All,
+                null,
+                null,
+                false,
+                1,
+                "qr-retry-stable"));
+        Assert.True(queued.IsSuccess);
+        Assert.True(queued.Value!.IncludePaymentQr);
+
+        var action = await fixture.Db.SettlementMessages.SingleAsync(item => item.Id == queued.Value.Id);
+        Assert.Equal("https://example.test/qr-original.png", action.PaymentQrImageUrlSnapshot);
+        action.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        fixture.Handler.FailuresRemaining = 1;
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.False(await fixture.Service.ProcessActionAsync(action.Id));
+        var firstBody = Assert.Single(fixture.Handler.RequestBodies);
+        using (var firstPayload = JsonDocument.Parse(firstBody))
+        {
+            var root = firstPayload.RootElement;
+            Assert.Equal("https://example.test/qr-original.png", root.GetProperty("imageUrl").GetString());
+            Assert.Empty(root.GetProperty("mentions").EnumerateArray());
+            Assert.DoesNotContain("@all", root.GetProperty("message").GetString() ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Nội dung CK", root.GetProperty("message").GetString() ?? string.Empty, StringComparison.Ordinal);
+        }
+
+        session = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        session.PaymentQrImageUrl = "https://example.test/qr-new.png";
+        session.Name = "Tên trận đã đổi";
+        session.PaymentInstructions = "Hướng dẫn đã đổi sau lần gửi lỗi";
+        action = await fixture.Db.SettlementMessages.SingleAsync(item => item.Id == action.Id);
+        action.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.True(await fixture.Service.ProcessActionAsync(action.Id));
+        Assert.Equal(2, fixture.Handler.RequestBodies.Count);
+        Assert.Equal(fixture.Handler.RequestBodies[0], fixture.Handler.RequestBodies[1]);
+    }
+
+    [Fact]
+    public async Task Payment_qr_action_requires_qr_and_update_is_scoped_to_owned_session()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Service.CreateAsync("admin", "session", new CreateSettlementRequest(22_000m));
+        var session = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        session.PaymentQrImageUrl = null;
+        await fixture.Db.SaveChangesAsync();
+
+        var missingQr = await fixture.Service.QueueActionAsync(
+            "admin",
+            "session",
+            new CreateSettlementActionRequest(
+                SettlementActionKind.PaymentQr,
+                SettlementAudience.All,
+                null,
+                null,
+                true,
+                0));
+        Assert.False(missingQr.IsSuccess);
+        Assert.Equal(StatusCodes.Status400BadRequest, missingQr.StatusCode);
+
+        var forbiddenOwner = await fixture.Service.UpdatePaymentQrAsync(
+            "different-admin",
+            "session",
+            "https://example.test/forbidden.png");
+        Assert.False(forbiddenOwner.IsSuccess);
+        Assert.Equal(StatusCodes.Status404NotFound, forbiddenOwner.StatusCode);
+
+        var updated = await fixture.Service.UpdatePaymentQrAsync(
+            "admin",
+            "session",
+            "https://example.test/uploaded.png");
+        Assert.True(updated.IsSuccess);
+        Assert.Equal("https://example.test/uploaded.png", updated.Value!.PaymentQrImageUrl);
+    }
+
+    [Fact]
+    public async Task Settlement_qr_upload_reuses_bot_image_validation_limits()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var imageService = new ZaloBotImageService(fixture.Db);
+
+        var invalidType = new FormFile(new MemoryStream([1, 2, 3]), 0, 3, "file", "qr.txt")
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = "text/plain"
+        };
+        var invalid = await imageService.UploadAsync("admin", invalidType, "https://example.test");
+        Assert.False(invalid.IsSuccess);
+        Assert.Equal(StatusCodes.Status400BadRequest, invalid.StatusCode);
+
+        const int oversizedLength = 10 * 1024 * 1024 + 1;
+        var oversized = new FormFile(Stream.Null, 0, oversizedLength, "file", "qr.png")
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = "image/png"
+        };
+        var tooLarge = await imageService.UploadAsync("admin", oversized, "https://example.test");
+        Assert.False(tooLarge.IsSuccess);
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, tooLarge.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delayed_summary_renders_latest_payment_and_fund_state_at_send_time()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+
+        var queued = await fixture.Service.QueueActionAsync(
+            "admin",
+            "session",
+            new CreateSettlementActionRequest(
+                SettlementActionKind.Summary,
+                SettlementAudience.All,
+                null,
+                null,
+                false,
+                1,
+                "summary-latest-state"));
+        Assert.True(queued.IsSuccess);
+        Assert.Empty(fixture.Handler.RequestBodies);
+
+        await fixture.Service.UpdateEntryAsync(
+            "admin",
+            "session",
+            full.Id,
+            new UpdateSettlementEntryRequest(1m, true, 25_000m));
+        var relinkedSession = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        relinkedSession.ZaloGroupId = "group-new";
+        var pending = await fixture.Db.SettlementMessages.SingleAsync(item => item.Id == queued.Value!.Id);
+        pending.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.Equal(1, await fixture.Service.ProcessDueAsync());
+        var sentBody = Assert.Single(fixture.Handler.RequestBodies);
+        using var payload = JsonDocument.Parse(sentBody);
+        Assert.Equal("group", payload.RootElement.GetProperty("groupId").GetString());
+        var actualBytes = Convert.FromBase64String(payload.RootElement.GetProperty("imageBase64").GetString()!);
+
+        var latest = await fixture.Db.MatchSettlements.AsNoTracking()
+            .Include(item => item.Session)
+            .Include(item => item.Entries)
+            .SingleAsync(item => item.Id == created.Id);
+        var expectedBytes = new SettlementSummaryCardRenderer().Render(latest.Session, latest, 3_000m);
+
+        Assert.Equal(expectedBytes, actualBytes);
+        Assert.Empty(payload.RootElement.GetProperty("mentions").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Summary_retry_reuses_prepared_image_when_money_changes_after_ambiguous_failure()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var queued = await fixture.Service.QueueActionAsync(
+            "admin",
+            "session",
+            new CreateSettlementActionRequest(
+                SettlementActionKind.Summary,
+                SettlementAudience.All,
+                null,
+                null,
+                false,
+                1,
+                "summary-retry-stable"));
+        Assert.True(queued.IsSuccess);
+
+        var action = await fixture.Db.SettlementMessages.SingleAsync(item => item.Id == queued.Value!.Id);
+        action.Message = null; // emulate a Summary queued by the previous release
+        action.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+        fixture.Handler.FailuresRemaining = 1;
+
+        Assert.False(await fixture.Service.ProcessActionAsync(action.Id));
+        var preparedAfterFailure = await fixture.Db.SettlementMessages.AsNoTracking()
+            .SingleAsync(item => item.Id == action.Id);
+        Assert.NotNull(preparedAfterFailure.PreparedImageData);
+
+        await fixture.Service.UpdateEntryAsync(
+            "admin",
+            "session",
+            full.Id,
+            new UpdateSettlementEntryRequest(1m, true, 25_000m));
+        var renamedSession = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        renamedSession.Name = "Tên trận đã đổi sau lần gửi lỗi";
+        action = await fixture.Db.SettlementMessages.SingleAsync(item => item.Id == action.Id);
+        action.DueAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.True(await fixture.Service.ProcessActionAsync(action.Id));
+        Assert.Equal(2, fixture.Handler.RequestBodies.Count);
+        Assert.Equal(fixture.Handler.RequestBodies[0], fixture.Handler.RequestBodies[1]);
+        var sent = await fixture.Db.SettlementMessages.AsNoTracking().SingleAsync(item => item.Id == action.Id);
+        Assert.Equal(SettlementMessageStatus.Sent, sent.Status);
+        Assert.Null(sent.PreparedImageData);
+    }
+
+    [Fact]
+    public void Summary_renderer_scales_height_for_large_rosters()
+    {
+        var session = new MatchSession
+        {
+            Id = "large-session",
+            Name = "ZYRO tối thứ 6",
+            StartTime = new DateTimeOffset(2026, 11, 6, 20, 0, 0, TimeSpan.FromHours(7))
+        };
+        var settlement = new MatchSettlement
+        {
+            Session = session,
+            SessionId = session.Id,
+            AmountPerFullSlot = 22_000m,
+            Entries = Enumerable.Range(1, 500)
+                .Select(index => new SettlementEntry
+                {
+                    Id = $"entry-{index}",
+                    DisplayNameSnapshot = $"Thành viên {index:00}",
+                    SlotFactor = index % 7 == 0 ? .5m : 1m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = index % 5 == 0 ? 25_000m : 22_000m
+                })
+                .ToList()
+        };
+
+        var bytes = new SettlementSummaryCardRenderer().Render(session, settlement, 75_000m);
+
+        Assert.True(bytes.Length < 10 * 1024 * 1024);
+        using var bitmap = SKBitmap.Decode(bytes);
+        Assert.NotNull(bitmap);
+        Assert.Equal(1080, bitmap!.Width);
+        Assert.InRange(bitmap.Height, 4_201, 8_000);
+    }
+
+    [Fact]
     public async Task Delayed_unpaid_action_resolves_payment_status_at_send_time()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -930,7 +1281,11 @@ public sealed class SettlementServiceTests
             var handler = new CaptureHandler();
             var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://bridge.test/") };
             var bridge = new ZaloBridgeClient(httpClient);
-            var service = new SettlementService(db, bridge, NullLogger<SettlementService>.Instance);
+            var service = new SettlementService(
+                db,
+                bridge,
+                new SettlementSummaryCardRenderer(),
+                NullLogger<SettlementService>.Instance);
             return new Fixture(connection, db, handler, service);
         }
 
@@ -944,6 +1299,7 @@ public sealed class SettlementServiceTests
     public sealed class CaptureHandler : HttpMessageHandler
     {
         public List<string> RequestBodies { get; } = [];
+        public int FailuresRemaining { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -952,6 +1308,14 @@ public sealed class SettlementServiceTests
             RequestBodies.Add(request.Content is null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken));
+            if (FailuresRemaining > 0)
+            {
+                FailuresRemaining -= 1;
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("{\"error\":\"temporary\"}", Encoding.UTF8, "application/json")
+                };
+            }
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(

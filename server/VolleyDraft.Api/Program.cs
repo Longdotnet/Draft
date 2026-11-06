@@ -79,6 +79,7 @@ builder.Services.AddScoped<ZaloActivityBackfillCoordinator>();
 builder.Services.AddScoped<ZaloMemberActivityService>();
 builder.Services.AddScoped<ZaloMembershipHistoryService>();
 builder.Services.AddScoped<ZaloMemberIntelligenceBotService>();
+builder.Services.AddSingleton<SettlementSummaryCardRenderer>();
 builder.Services.AddScoped<SettlementService>();
 builder.Services.AddScoped<SettlementAccessService>();
 builder.Services.AddMemoryCache();
@@ -609,6 +610,36 @@ settlementAccess.MapPost("/sessions/{sessionId}/settlement/actions", async (
         ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
         : (await settlementService.QueueActionAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
 });
+settlementAccess.MapPost("/sessions/{sessionId}/settlement/payment-qr", async (
+    HttpContext httpContext,
+    string sessionId,
+    IFormFile file,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    ZaloBotImageService imageService,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    if (!access.IsSuccess)
+        return Results.Json(new { message = access.Error }, statusCode: access.StatusCode);
+
+    var existing = await settlementService.GetAsync(access.Value!.AdminUserId, sessionId, cancellationToken);
+    if (!existing.IsSuccess) return existing.ToHttpResult();
+
+    var uploaded = await imageService.UploadAsync(
+        access.Value.AdminUserId,
+        file,
+        GetPublicOrigin(httpContext, configuration),
+        cancellationToken);
+    if (!uploaded.IsSuccess) return uploaded.ToHttpResult();
+
+    return (await settlementService.UpdatePaymentQrAsync(
+        access.Value.AdminUserId,
+        sessionId,
+        uploaded.Value!.Url,
+        cancellationToken)).ToHttpResult();
+}).DisableAntiforgery();
 settlementAccess.MapPost("/sessions/{sessionId}/settlement/close", async (
     HttpContext httpContext,
     string sessionId,
@@ -1059,6 +1090,34 @@ sessions.MapPost("/{sessionId}/settlement/actions", async (
         ? Results.Unauthorized()
         : (await service.QueueActionAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
 });
+sessions.MapPost("/{sessionId}/settlement/payment-qr", async (
+    HttpContext httpContext,
+    string sessionId,
+    IFormFile file,
+    SettlementService settlementService,
+    ZaloBotImageService imageService,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
+    var existing = await settlementService.GetAsync(userId, sessionId, cancellationToken);
+    if (!existing.IsSuccess) return existing.ToHttpResult();
+
+    var uploaded = await imageService.UploadAsync(
+        userId,
+        file,
+        GetPublicOrigin(httpContext, configuration),
+        cancellationToken);
+    if (!uploaded.IsSuccess) return uploaded.ToHttpResult();
+
+    return (await settlementService.UpdatePaymentQrAsync(
+        userId,
+        sessionId,
+        uploaded.Value!.Url,
+        cancellationToken)).ToHttpResult();
+}).DisableAntiforgery();
 sessions.MapPost("/{sessionId}/settlement/close", async (
     HttpContext httpContext,
     string sessionId,

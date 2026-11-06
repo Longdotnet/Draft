@@ -486,6 +486,8 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(message => message.Status).HasConversion<string>();
             entity.Property(message => message.SelectedEntryIdsJson).HasMaxLength(8000);
             entity.Property(message => message.Message).HasMaxLength(4000);
+            entity.Property(message => message.PaymentQrImageUrlSnapshot).HasMaxLength(2000);
+            entity.Property(message => message.PreparedImageData);
             entity.Property(message => message.LastError).HasMaxLength(1000);
             entity.Property(message => message.LeaseToken).HasMaxLength(80);
             entity.HasIndex(message => new { message.Status, message.DueAt });

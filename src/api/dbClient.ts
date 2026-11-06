@@ -280,7 +280,7 @@ export type SessionPlayerResponse = {
 
 export type MatchSettlementSlotFactor = 1 | 0.5;
 export type MatchSettlementPaymentStatus = "Unpaid" | "Paid";
-export type MatchSettlementActionKind = "Reminder" | "Thanks" | "Summary" | "Custom";
+export type MatchSettlementActionKind = "Reminder" | "Thanks" | "Summary" | "PaymentQr" | "Custom";
 export type MatchSettlementAudience = "Unpaid" | "Paid" | "All" | "Selected";
 export type MatchSettlementMessageStatus = "Pending" | "Sending" | "Sent" | "Skipped" | "Failed";
 
@@ -621,14 +621,13 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}) {
   return payload as T;
 }
 
-export async function apiUpload<T>(path: string, file: File, token: string) {
+export async function apiUpload<T>(path: string, file: File, token?: string | null) {
   const formData = new FormData();
   formData.append("file", file);
   const response = await fetch(`${apiBaseUrl}/api${path}`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    credentials: "include",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: formData,
   });
 

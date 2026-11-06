@@ -382,6 +382,8 @@ public static class DatabaseSchemaPatch
                     "SelectedEntryIdsJson" TEXT NOT NULL DEFAULT '[]',
                     "Message" TEXT NULL,
                     "IncludePaymentQr" INTEGER NOT NULL DEFAULT 0,
+                    "PaymentQrImageUrlSnapshot" TEXT NULL,
+                    "PreparedImageData" BLOB NULL,
                     "DueAt" TEXT NOT NULL,
                     "Status" TEXT NOT NULL DEFAULT 'Pending',
                     "FailureCount" INTEGER NOT NULL DEFAULT 0,
@@ -506,6 +508,8 @@ public static class DatabaseSchemaPatch
                     "SelectedEntryIdsJson" text NOT NULL DEFAULT '[]',
                     "Message" text NULL,
                     "IncludePaymentQr" boolean NOT NULL DEFAULT FALSE,
+                    "PaymentQrImageUrlSnapshot" text NULL,
+                    "PreparedImageData" bytea NULL,
                     "DueAt" timestamp with time zone NOT NULL,
                     "Status" text NOT NULL DEFAULT 'Pending',
                     "FailureCount" integer NOT NULL DEFAULT 0,
@@ -576,6 +580,8 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" TEXT NULL");
             await EnsureSqliteColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" TEXT NULL");
             await EnsureSqliteColumn(db, "SettlementMessages", "ZaloGroupIdSnapshot", "\"ZaloGroupIdSnapshot\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SettlementMessages", "PaymentQrImageUrlSnapshot", "\"PaymentQrImageUrlSnapshot\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SettlementMessages", "PreparedImageData", "\"PreparedImageData\" BLOB NULL");
             await EnsureSqliteColumn(db, "SettlementAccessChallenges", "RedemptionSecretHash", "\"RedemptionSecretHash\" TEXT NOT NULL DEFAULT ''");
             await EnsureSqliteColumn(db, "SettlementAccessChallenges", "RequesterKeyHash", "\"RequesterKeyHash\" TEXT NOT NULL DEFAULT ''");
             await EnsureSqliteColumn(db, "SettlementAccessChallenges", "AuthorizedViaConfiguredOperator", "\"AuthorizedViaConfiguredOperator\" INTEGER NOT NULL DEFAULT 0");
@@ -588,6 +594,8 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" text NULL");
             await EnsurePostgresColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" text NULL");
             await EnsurePostgresColumn(db, "SettlementMessages", "ZaloGroupIdSnapshot", "\"ZaloGroupIdSnapshot\" text NULL");
+            await EnsurePostgresColumn(db, "SettlementMessages", "PaymentQrImageUrlSnapshot", "\"PaymentQrImageUrlSnapshot\" text NULL");
+            await EnsurePostgresColumn(db, "SettlementMessages", "PreparedImageData", "\"PreparedImageData\" bytea NULL");
             await EnsurePostgresColumn(db, "SettlementAccessChallenges", "RedemptionSecretHash", "\"RedemptionSecretHash\" text NOT NULL DEFAULT ''");
             await EnsurePostgresColumn(db, "SettlementAccessChallenges", "RequesterKeyHash", "\"RequesterKeyHash\" text NOT NULL DEFAULT ''");
             await EnsurePostgresColumn(db, "SettlementAccessChallenges", "AuthorizedViaConfiguredOperator", "\"AuthorizedViaConfiguredOperator\" boolean NOT NULL DEFAULT FALSE");

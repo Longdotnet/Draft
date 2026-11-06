@@ -11,6 +11,7 @@ namespace VolleyDraft.Api.Services;
 public sealed class SettlementService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
+    SettlementSummaryCardRenderer summaryCardRenderer,
     ILogger<SettlementService> logger)
 {
     private const int MaxMessageLength = 4000;
@@ -239,6 +240,34 @@ public sealed class SettlementService(
         return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
 
+    public async Task<ServiceResult<SettlementResponse>> UpdatePaymentQrAsync(
+        string adminUserId,
+        string sessionId,
+        string paymentQrImageUrl,
+        CancellationToken cancellationToken = default)
+    {
+        var normalized = paymentQrImageUrl?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized) ||
+            !Uri.TryCreate(normalized, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return ServiceResult<SettlementResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "QR thanh toán phải là URL ảnh HTTP/HTTPS hợp lệ.");
+        }
+
+        var settlement = await LoadOwnedSettlementAsync(adminUserId, sessionId, cancellationToken, tracking: true);
+        if (settlement is null)
+            return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status404NotFound, "Chưa có sổ tiền cho trận này.");
+
+        var now = DateTimeOffset.UtcNow;
+        settlement.Session.PaymentQrImageUrl = normalized;
+        settlement.Session.UpdatedAt = now;
+        settlement.UpdatedAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+        return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
+    }
+
     public async Task<ServiceResult<SettlementActionResponse>> QueueActionAsync(
         string adminUserId,
         string sessionId,
@@ -275,6 +304,9 @@ public sealed class SettlementService(
                 $"delayMinutes phải từ 0 đến {MaxDelayMinutes}.");
         }
 
+        var isSummary = request.Kind == SettlementActionKind.Summary;
+        var isPaymentQr = request.Kind == SettlementActionKind.PaymentQr;
+        var isNoMentionBroadcast = isSummary || isPaymentQr;
         var customMessage = CleanMessage(request.Message);
         if (request.Kind == SettlementActionKind.Custom && customMessage is null)
         {
@@ -308,7 +340,7 @@ public sealed class SettlementService(
             if (existingAction is not null)
                 return ServiceResult<SettlementActionResponse>.Success(ToActionResponse(existingAction));
         }
-        if (request.IncludePaymentQr && string.IsNullOrWhiteSpace(settlement.Session.PaymentQrImageUrl))
+        if ((isPaymentQr || (!isSummary && request.IncludePaymentQr)) && string.IsNullOrWhiteSpace(settlement.Session.PaymentQrImageUrl))
         {
             return ServiceResult<SettlementActionResponse>.Failure(
                 StatusCodes.Status400BadRequest,
@@ -320,7 +352,8 @@ public sealed class SettlementService(
             .Select(id => id.Trim())
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        if (request.Audience == SettlementAudience.Selected)
+        var effectiveAudience = isNoMentionBroadcast ? SettlementAudience.All : request.Audience;
+        if (effectiveAudience == SettlementAudience.Selected)
         {
             if (selectedIds.Count == 0)
             {
@@ -342,6 +375,12 @@ public sealed class SettlementService(
         }
 
         var now = DateTimeOffset.UtcNow;
+        var storedMessage = isSummary
+            ? customMessage ?? $"🏐 Tổng kết tiền sân {settlement.Session.Name}. Sổ hiện tại như ảnh bên dưới."
+            : isPaymentQr
+                ? customMessage ?? BuildPaymentQrBody(settlement.Session)
+                : customMessage;
+        var includePaymentQr = isPaymentQr || (!isSummary && request.IncludePaymentQr);
         var action = new SettlementMessage
         {
             SettlementId = settlement.Id,
@@ -349,10 +388,11 @@ public sealed class SettlementService(
             ZaloAccountIdSnapshot = settlement.Session.ZaloConnection.AccountZaloId.Trim(),
             ZaloGroupIdSnapshot = settlement.Session.ZaloGroupId.Trim(),
             Kind = request.Kind,
-            Audience = request.Audience,
+            Audience = effectiveAudience,
             SelectedEntryIdsJson = JsonSerializer.Serialize(selectedIds),
-            Message = customMessage,
-            IncludePaymentQr = request.IncludePaymentQr,
+            Message = storedMessage,
+            IncludePaymentQr = includePaymentQr,
+            PaymentQrImageUrlSnapshot = includePaymentQr ? settlement.Session.PaymentQrImageUrl?.Trim() : null,
             DueAt = now.AddMinutes(delayMinutes),
             Status = SettlementMessageStatus.Pending,
             CreatedAt = now,
@@ -456,16 +496,54 @@ public sealed class SettlementService(
                 ?? CleanZaloUserId(session.ZaloGroupId);
             if (accountId is null || groupId is null)
                 throw new InvalidOperationException("Settlement message has no Zalo target snapshot.");
-            if (action.IncludePaymentQr && string.IsNullOrWhiteSpace(session.PaymentQrImageUrl))
+            var isSummary = action.Kind == SettlementActionKind.Summary;
+            var isPaymentQr = action.Kind == SettlementActionKind.PaymentQr;
+            var isNoMentionBroadcast = isSummary || isPaymentQr;
+            var paymentQrImageUrl = action.PaymentQrImageUrlSnapshot?.Trim();
+            if (string.IsNullOrWhiteSpace(paymentQrImageUrl))
+                paymentQrImageUrl = session.PaymentQrImageUrl?.Trim();
+            if (!isSummary && action.IncludePaymentQr && string.IsNullOrWhiteSpace(paymentQrImageUrl))
                 throw new InvalidOperationException("Payment QR is no longer configured for this session.");
 
             var selectedIds = ParseSelectedIds(action.SelectedEntryIdsJson);
             var body = BuildActionBody(action, session, action.Settlement);
-            var audience = BuildAudienceMessage(action.Audience, action.Settlement.Entries, selectedIds, body);
-            if (action.Audience != SettlementAudience.All && audience.TargetEntryIds.Count == 0)
+            if (isSummary && string.IsNullOrWhiteSpace(action.Message))
+            {
+                // Legacy queued summaries did not persist the generated caption. Freeze it
+                // before the first send so retries keep the exact same idempotency payload.
+                action.Message = body.Trim();
+                action.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+                body = action.Message;
+            }
+            var audience = isNoMentionBroadcast
+                ? new SettlementAudienceMessage(
+                    body.Trim(),
+                    [],
+                    action.Settlement.Entries.Select(item => item.Id).ToList())
+                : BuildAudienceMessage(action.Audience, action.Settlement.Entries, selectedIds, body);
+            if (!isNoMentionBroadcast && action.Audience != SettlementAudience.All && audience.TargetEntryIds.Count == 0)
             {
                 await MarkTerminalAsync(actionId, leaseToken, SettlementMessageStatus.Skipped, now, cancellationToken);
                 return true;
+            }
+
+            byte[]? summaryCard = null;
+            if (isSummary)
+            {
+                summaryCard = action.PreparedImageData;
+                if (summaryCard is null)
+                {
+                    var groupFundBalance = await GetGroupFundBalanceForSnapshotAsync(
+                        action.Settlement,
+                        accountId,
+                        groupId,
+                        cancellationToken);
+                    summaryCard = summaryCardRenderer.Render(session, action.Settlement, groupFundBalance);
+                    action.PreparedImageData = summaryCard;
+                    action.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.SaveChangesAsync(cancellationToken);
+                }
             }
 
             var send = await bridge.SendGroupMessageAsync(
@@ -473,8 +551,11 @@ public sealed class SettlementService(
                 groupId,
                 audience.Message,
                 audience.Mentions,
-                imageUrl: action.IncludePaymentQr ? session.PaymentQrImageUrl : null,
-                idempotencyKey: $"settlement:{action.Id}");
+                imageUrl: !isSummary && action.IncludePaymentQr ? paymentQrImageUrl : null,
+                idempotencyKey: $"settlement:{action.Id}",
+                imageBase64: summaryCard is null ? null : Convert.ToBase64String(summaryCard),
+                imageContentType: summaryCard is null ? null : "image/png",
+                imageFileName: summaryCard is null ? null : $"zyro-settlement-{session.Id}.png");
             if (!send.Sent)
                 throw new InvalidOperationException("Zalo bridge did not confirm settlement message send.");
 
@@ -628,6 +709,29 @@ public sealed class SettlementService(
         return amounts.Sum();
     }
 
+    private async Task<decimal> GetGroupFundBalanceForSnapshotAsync(
+        MatchSettlement settlement,
+        string accountId,
+        string groupId,
+        CancellationToken cancellationToken)
+    {
+        var cleanAccountId = accountId.Trim();
+        var cleanGroupId = groupId.Trim();
+        var connectionIds = await db.ZaloConnections.AsNoTracking()
+            .Where(item => item.AdminUserId == settlement.Session.AdminUserId &&
+                           item.AccountZaloId == cleanAccountId)
+            .Select(item => item.Id)
+            .ToListAsync(cancellationToken);
+
+        var query = db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.GroupId == cleanGroupId);
+        if (connectionIds.Count > 0)
+            query = query.Where(item => connectionIds.Contains(item.ZaloConnectionId));
+
+        var amounts = await query.Select(item => item.Amount).ToListAsync(cancellationToken);
+        return amounts.Sum();
+    }
+
     private static string? CleanZaloUserId(string? value)
     {
         var cleaned = value?.Trim();
@@ -659,20 +763,20 @@ public sealed class SettlementService(
         MatchSettlement settlement)
     {
         if (!string.IsNullOrWhiteSpace(action.Message)) return action.Message.Trim();
-        var culture = CultureInfo.GetCultureInfo("vi-VN");
-        var totalDue = settlement.Entries.Sum(entry => settlement.AmountPerFullSlot * entry.SlotFactor);
-        var totalCollected = settlement.Entries
-            .Where(entry => entry.PaymentStatus == SettlementPaymentStatus.Paid)
-            .Sum(entry => settlement.AmountPerFullSlot * entry.SlotFactor);
-        var paidCount = settlement.Entries.Count(entry => entry.PaymentStatus == SettlementPaymentStatus.Paid);
         return action.Kind switch
         {
             SettlementActionKind.Reminder => $"Nhắc tiền sân {session.Name}: ai chưa thanh toán vui lòng chuyển khoản giúp mình nhé.",
             SettlementActionKind.Thanks => $"Cảm ơn mọi người đã thanh toán tiền sân {session.Name} nhé!",
-            SettlementActionKind.Summary => $"Tổng kết {session.Name}: đã thu {totalCollected.ToString("N0", culture)}/{totalDue.ToString("N0", culture)}đ, {paidCount}/{settlement.Entries.Count} người đã thanh toán.",
+            SettlementActionKind.Summary => $"🏐 Tổng kết tiền sân {session.Name}. Sổ hiện tại như ảnh bên dưới.",
+            SettlementActionKind.PaymentQr => BuildPaymentQrBody(session),
             _ => $"Cập nhật tiền sân {session.Name}."
         };
     }
+
+    private static string BuildPaymentQrBody(MatchSession session) =>
+        string.IsNullOrWhiteSpace(session.PaymentInstructions)
+            ? $"💳 QR thanh toán tiền sân {session.Name}. Khi chuyển khoản nhớ ghi tên Zalo của bạn nhé."
+            : $"💳 Thanh toán tiền sân {session.Name}\n{session.PaymentInstructions.Trim()}";
 
     private async Task MarkTerminalAsync(
         string actionId,
@@ -689,6 +793,7 @@ public sealed class SettlementService(
                 .SetProperty(item => item.LeaseToken, (string?)null)
                 .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
                 .SetProperty(item => item.LastError, (string?)null)
+                .SetProperty(item => item.PreparedImageData, (byte[]?)null)
                 .SetProperty(item => item.UpdatedAt, now), cancellationToken);
     }
 
@@ -713,6 +818,7 @@ public sealed class SettlementService(
                 .SetProperty(item => item.DueAt, terminal ? current.DueAt : now.AddMinutes(Math.Min(15, failures * 2)))
                 .SetProperty(item => item.LeaseToken, (string?)null)
                 .SetProperty(item => item.LeaseUntil, (DateTimeOffset?)null)
+                .SetProperty(item => item.PreparedImageData, terminal ? (byte[]?)null : current.PreparedImageData)
                 .SetProperty(item => item.UpdatedAt, now), cancellationToken);
     }
 
