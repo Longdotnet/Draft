@@ -19,7 +19,6 @@ public sealed class SettlementSummaryCardRenderer
     private const int RosterOverviewHeight = 174;
     private const int RosterListTop = 452;
     private const int RosterFooterHeight = 96;
-    private const int RosterSectionGap = 22;
 
     private static readonly SKColor Navy = new(5, 28, 68);
     private static readonly SKColor Red = new(205, 12, 42);
@@ -111,46 +110,22 @@ public sealed class SettlementSummaryCardRenderer
         MatchSession session,
         MatchSettlement settlement)
     {
-        var rows = settlement.Entries
-            .Select(entry =>
-            {
-                var due = settlement.AmountPerFullSlot * entry.SlotFactor;
-                var received = entry.PaymentStatus == SettlementPaymentStatus.Paid
-                    ? (entry.ActualPaidAmount > 0 ? entry.ActualPaidAmount : due)
-                    : 0m;
-                return new SummaryRow(
-                    entry.DisplayNameSnapshot.Trim(),
-                    entry.PaymentStatus == SettlementPaymentStatus.Paid,
-                    due,
-                    received,
-                    Math.Max(0m, received - due),
-                    entry.SlotFactor);
-            })
-            .OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-
-        var paid = rows.Where(row => row.IsPaid).ToList();
-        var unpaid = rows.Where(row => !row.IsPaid).ToList();
-        var sections = new List<(bool Paid, IReadOnlyList<SummaryRow> Rows)>();
-        if (unpaid.Count > 0) sections.Add((false, unpaid));
-        if (paid.Count > 0) sections.Add((true, paid));
-        if (sections.Count == 0) sections.Add((true, paid));
-
-        var preferredRowHeight = rows.Count switch
+        var roster = BuildPaymentRosterSnapshot(settlement);
+        var paid = roster.PaidRows;
+        var preferredRowHeight = roster.TotalCount switch
         {
             <= 24 => 54,
             <= 48 => 48,
             <= 100 => 42,
             _ => 34
         };
-        var totalGridRows = sections.Sum(section => GridRowCount(section.Rows.Count, section.Paid));
-        var sectionChromeHeight = sections.Count * 92 + Math.Max(0, sections.Count - 1) * RosterSectionGap;
+        var totalGridRows = GridRowCount(paid.Count, true);
+        var sectionChromeHeight = 92;
         var availableForRows = MaxHeight - RosterListTop - RosterFooterHeight - sectionChromeHeight - 24;
         var fitRowHeight = totalGridRows == 0 ? preferredRowHeight : Math.Max(26, availableForRows / totalGridRows);
         var rowHeight = Math.Min(preferredRowHeight, fitRowHeight);
-        var sectionsHeight = sections.Sum(section => SectionHeight(section.Rows.Count, section.Paid, rowHeight)) +
-                             Math.Max(0, sections.Count - 1) * RosterSectionGap;
-        var height = Math.Clamp(RosterListTop + sectionsHeight + RosterFooterHeight + 24, 980, MaxHeight);
+        var sectionHeight = SectionHeight(paid.Count, true, rowHeight);
+        var height = Math.Clamp(RosterListTop + sectionHeight + RosterFooterHeight + 24, 980, MaxHeight);
 
         using var surface = SKSurface.Create(new SKImageInfo(Width, height, SKColorType.Rgba8888, SKAlphaType.Premul))
             ?? throw new InvalidOperationException("Could not create settlement roster canvas.");
@@ -158,25 +133,36 @@ public sealed class SettlementSummaryCardRenderer
         canvas.Clear(Canvas);
 
         DrawRosterHeader(canvas, session);
-        DrawRosterOverview(canvas, settlement.AmountPerFullSlot, paid.Count, rows.Count);
-        var sectionTop = RosterListTop;
-        foreach (var section in sections)
-        {
-            var sectionHeight = SectionHeight(section.Rows.Count, section.Paid, rowHeight);
-            DrawRosterStatusSection(
-                canvas,
-                new SKRect(SidePadding, sectionTop, Width - SidePadding, sectionTop + sectionHeight),
-                section.Rows,
-                section.Paid,
-                rowHeight);
-            sectionTop += sectionHeight + RosterSectionGap;
-        }
+        DrawRosterOverview(canvas, settlement.AmountPerFullSlot, roster.TotalReceived, paid.Count, roster.TotalCount);
+        DrawRosterPaidSection(
+            canvas,
+            new SKRect(SidePadding, RosterListTop, Width - SidePadding, RosterListTop + sectionHeight),
+            paid,
+            rowHeight);
 
-        DrawRosterFooter(canvas, height, paid.Count, rows.Count);
+        DrawRosterFooter(canvas, height, paid.Count, roster.TotalCount);
 
         using var image = surface.Snapshot();
         using var data = image.Encode(SKEncodedImageFormat.Png, 94);
         return data.ToArray();
+    }
+
+    internal static PaymentRosterSnapshot BuildPaymentRosterSnapshot(MatchSettlement settlement)
+    {
+        var paidRows = settlement.Entries
+            .Where(entry => entry.PaymentStatus == SettlementPaymentStatus.Paid)
+            .Select(entry =>
+            {
+                var due = settlement.AmountPerFullSlot * entry.SlotFactor;
+                var received = entry.ActualPaidAmount > 0 ? entry.ActualPaidAmount : due;
+                return new PaymentRosterRow(entry.DisplayNameSnapshot.Trim(), received, entry.SlotFactor);
+            })
+            .OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return new PaymentRosterSnapshot(
+            paidRows,
+            settlement.Entries.Count,
+            paidRows.Sum(row => row.Received));
     }
 
     private static int GridColumnCount(int rowCount, bool paid) =>
@@ -332,6 +318,7 @@ public sealed class SettlementSummaryCardRenderer
     private static void DrawRosterOverview(
         SKCanvas canvas,
         decimal amountPerFullSlot,
+        decimal totalReceived,
         int paidCount,
         int totalCount)
     {
@@ -364,28 +351,35 @@ public sealed class SettlementSummaryCardRenderer
         if (progress > 0)
             DrawRoundedRect(canvas, new SKRect(outer.Left + 32, outer.Top + 82, outer.Left + 32 + progressWidth * progress, outer.Top + 92), 5, settled ? Success : Red);
 
-        var dividerX = outer.MidX;
-        using (var divider = new SKPaint { Color = new SKColor(230, 235, 242), StrokeWidth = 1.2f, IsAntialias = true })
+        var metricsLeft = outer.Left + 32;
+        var metricsRight = outer.Right - 32;
+        var metricWidth = (metricsRight - metricsLeft) / 3f;
+        for (var index = 1; index <= 2; index++)
+        {
+            var dividerX = metricsLeft + metricWidth * index;
+            using var divider = new SKPaint { Color = new SKColor(230, 235, 242), StrokeWidth = 1.2f, IsAntialias = true };
             canvas.DrawLine(dividerX, outer.Top + 112, dividerX, outer.Bottom - 22, divider);
+        }
 
-        DrawText(canvas, "1 SLOT", outer.Left + 32, outer.Top + 127, 13, Muted, true, 100, BlackTypeface);
-        DrawText(canvas, Money(amountPerFullSlot), outer.Left + 32, outer.Top + 157, 24, Navy, true, 180, BlackTypeface);
-        DrawText(canvas, "1/2 SLOT", dividerX + 28, outer.Top + 127, 13, Muted, true, 100, BlackTypeface);
-        DrawText(canvas, Money(amountPerFullSlot / 2m), dividerX + 28, outer.Top + 157, 24, Navy, true, 180, BlackTypeface);
+        DrawText(canvas, "1 SLOT", metricsLeft, outer.Top + 127, 13, Muted, true, 100, BlackTypeface);
+        DrawText(canvas, Money(amountPerFullSlot), metricsLeft, outer.Top + 157, 24, Navy, true, metricWidth - 20, BlackTypeface);
+        DrawText(canvas, "1/2 SLOT", metricsLeft + metricWidth + 24, outer.Top + 127, 13, Muted, true, 100, BlackTypeface);
+        DrawText(canvas, Money(amountPerFullSlot / 2m), metricsLeft + metricWidth + 24, outer.Top + 157, 24, Navy, true, metricWidth - 44, BlackTypeface);
+        DrawText(canvas, "TỔNG ĐÃ THU", metricsLeft + metricWidth * 2 + 24, outer.Top + 127, 13, Muted, true, 140, BlackTypeface);
+        DrawText(canvas, Money(totalReceived), metricsLeft + metricWidth * 2 + 24, outer.Top + 157, 24, Success, true, metricWidth - 44, BlackTypeface);
     }
 
-    private static void DrawRosterStatusSection(
+    private static void DrawRosterPaidSection(
         SKCanvas canvas,
         SKRect rect,
-        IReadOnlyList<SummaryRow> rows,
-        bool paid,
+        IReadOnlyList<PaymentRosterRow> rows,
         int rowHeight)
     {
         DrawRoundedRect(canvas, rect, 28, Surface, Border);
         var header = new SKRect(rect.Left + 18, rect.Top + 16, rect.Right - 18, rect.Top + 72);
-        DrawRoundedRect(canvas, header, 18, paid ? SuccessSoft : RedSoft);
-        DrawStatusIcon(canvas, header.Left + 28, header.MidY, 11, paid);
-        DrawText(canvas, paid ? "ĐÃ ĐÓNG" : "CHƯA ĐÓNG", header.Left + 52, header.Top + 36, 18, paid ? Success : Red, true, 210, BlackTypeface);
+        DrawRoundedRect(canvas, header, 18, SuccessSoft);
+        DrawStatusIcon(canvas, header.Left + 28, header.MidY, 11, true);
+        DrawText(canvas, "ĐÃ ĐÓNG", header.Left + 52, header.Top + 36, 18, Success, true, 210, BlackTypeface);
         DrawText(canvas, $"{rows.Count} người", header.Right - 18, header.Top + 36, 16, Muted, true, 120, null, SKTextAlign.Right);
 
         if (rows.Count == 0)
@@ -394,7 +388,7 @@ public sealed class SettlementSummaryCardRenderer
             return;
         }
 
-        var columns = GridColumnCount(rows.Count, paid);
+        var columns = GridColumnCount(rows.Count, true);
         var rowsPerColumn = (int)Math.Ceiling(rows.Count / (double)columns);
         const float columnGap = 32f;
         var innerLeft = rect.Left + 28;
@@ -420,7 +414,7 @@ public sealed class SettlementSummaryCardRenderer
             }
 
             var iconRadius = rowHeight < 40 ? 8f : 10f;
-            DrawStatusIcon(canvas, left + 12, centerY, iconRadius, paid);
+            DrawStatusIcon(canvas, left + 12, centerY, iconRadius, true);
             var hasHalfSlotLabel = row.SlotFactor == .5m && rowHeight >= 46;
             var nameSize = rowHeight >= 50 ? 18 : rowHeight >= 42 ? 16 : 14;
             var amountSize = rowHeight >= 50 ? 17 : rowHeight >= 42 ? 15 : 13;
@@ -428,7 +422,7 @@ public sealed class SettlementSummaryCardRenderer
             DrawText(canvas, row.Name, left + 34, nameBaseline, nameSize, Text, true, columnWidth - 190);
             if (hasHalfSlotLabel)
                 DrawText(canvas, "1/2 slot", left + 34, nameBaseline + 17, 11, Muted, false, 70);
-            DrawText(canvas, Money(row.Due), left + columnWidth, centerY + 6, amountSize, paid ? Navy : Red, true, 140, null, SKTextAlign.Right);
+            DrawText(canvas, Money(row.Received), left + columnWidth, centerY + 6, amountSize, Navy, true, 140, null, SKTextAlign.Right);
         }
     }
 
@@ -616,4 +610,11 @@ public sealed class SettlementSummaryCardRenderer
         decimal Received,
         decimal Surplus,
         decimal SlotFactor);
+
+    internal sealed record PaymentRosterRow(string Name, decimal Received, decimal SlotFactor);
+
+    internal sealed record PaymentRosterSnapshot(
+        IReadOnlyList<PaymentRosterRow> PaidRows,
+        int TotalCount,
+        decimal TotalReceived);
 }

@@ -1179,6 +1179,60 @@ public sealed class SettlementServiceTests
     }
 
     [Fact]
+    public void Payment_roster_uses_actual_received_amounts_hides_unpaid_rows_and_totals_received_cash()
+    {
+        var settlement = new MatchSettlement
+        {
+            AmountPerFullSlot = 22_000m,
+            Entries =
+            [
+                new SettlementEntry
+                {
+                    Id = "paid-25",
+                    DisplayNameSnapshot = "Đặng Thế Nguyễn",
+                    SlotFactor = 1m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = 25_000m
+                },
+                new SettlementEntry
+                {
+                    Id = "paid-23",
+                    DisplayNameSnapshot = "Trần Hải Nam",
+                    SlotFactor = 1m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = 23_000m
+                },
+                new SettlementEntry
+                {
+                    Id = "legacy-paid",
+                    DisplayNameSnapshot = "Legacy Paid",
+                    SlotFactor = .5m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = 0m
+                },
+                new SettlementEntry
+                {
+                    Id = "unpaid",
+                    DisplayNameSnapshot = "Chưa đóng",
+                    SlotFactor = 1m,
+                    PaymentStatus = SettlementPaymentStatus.Unpaid,
+                    ActualPaidAmount = 0m
+                }
+            ]
+        };
+
+        var roster = SettlementSummaryCardRenderer.BuildPaymentRosterSnapshot(settlement);
+
+        Assert.Equal(4, roster.TotalCount);
+        Assert.Equal(3, roster.PaidRows.Count);
+        Assert.DoesNotContain(roster.PaidRows, row => row.Name == "Chưa đóng");
+        Assert.Equal(25_000m, roster.PaidRows.Single(row => row.Name == "Đặng Thế Nguyễn").Received);
+        Assert.Equal(23_000m, roster.PaidRows.Single(row => row.Name == "Trần Hải Nam").Received);
+        Assert.Equal(11_000m, roster.PaidRows.Single(row => row.Name == "Legacy Paid").Received);
+        Assert.Equal(59_000m, roster.TotalReceived);
+    }
+
+    [Fact]
     public async Task Delayed_unpaid_action_resolves_payment_status_at_send_time()
     {
         await using var fixture = await Fixture.CreateAsync();
