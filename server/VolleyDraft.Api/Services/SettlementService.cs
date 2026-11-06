@@ -23,9 +23,9 @@ public sealed class SettlementService(
         CancellationToken cancellationToken = default)
     {
         var settlement = await LoadOwnedSettlementAsync(adminUserId, sessionId, cancellationToken);
-        return settlement is null
-            ? ServiceResult<SettlementResponse>.Failure(StatusCodes.Status404NotFound, "Chưa có sổ tiền cho trận này.")
-            : ServiceResult<SettlementResponse>.Success(ToResponse(settlement));
+        if (settlement is null)
+            return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status404NotFound, "Chưa có sổ tiền cho trận này.");
+        return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
 
     public async Task<ServiceResult<SettlementResponse>> CreateAsync(
@@ -70,6 +70,7 @@ public sealed class SettlementService(
                 ZaloUserIdSnapshot = CleanZaloUserId(player.PlayerProfile?.ZaloUserId),
                 SlotFactor = player.IsInsideSharedSlot ? 0.5m : 1m,
                 PaymentStatus = SettlementPaymentStatus.Unpaid,
+                ActualPaidAmount = 0m,
                 CreatedAt = now,
                 UpdatedAt = now
             });
@@ -91,7 +92,7 @@ public sealed class SettlementService(
         }
 
         await db.Entry(settlement).Collection(item => item.Messages).LoadAsync(cancellationToken);
-        return ServiceResult<SettlementResponse>.Created(ToResponse(settlement));
+        return ServiceResult<SettlementResponse>.Created(await ToResponseAsync(settlement, cancellationToken));
     }
 
     public async Task<ServiceResult<SettlementResponse>> UpdateAsync(
@@ -109,10 +110,44 @@ public sealed class SettlementService(
         if (settlement.IsClosed)
             return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status409Conflict, "Sổ tiền đang đóng. Mở lại trước khi sửa.");
 
+        var now = DateTimeOffset.UtcNow;
+        var updates = new List<(SettlementEntry Entry, decimal ActualPaidAmount, decimal Before, decimal After)>();
+        foreach (var entry in settlement.Entries)
+        {
+            var oldDue = settlement.AmountPerFullSlot * entry.SlotFactor;
+            var oldActual = EffectiveActualPaidAmount(entry, oldDue);
+            var oldSurplus = CalculateSurplus(entry.PaymentStatus, oldDue, oldActual);
+            if (entry.PaymentStatus != SettlementPaymentStatus.Paid)
+            {
+                updates.Add((entry, 0m, oldSurplus, 0m));
+                continue;
+            }
+
+            var newDue = request.AmountPerFullSlot * entry.SlotFactor;
+            // Money already received is cash history. Changing the fee must not rewrite it.
+            // If the new fee is higher than what was actually received, require an explicit
+            // reconciliation instead of silently inventing additional payment.
+            var newActual = oldActual;
+            if (newActual < newDue)
+            {
+                return ServiceResult<SettlementResponse>.Failure(
+                    StatusCodes.Status400BadRequest,
+                    $"{entry.DisplayNameSnapshot} đã thực nhận {oldActual.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ, thấp hơn mức mới {newDue.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ. Cập nhật tiền thực nhận trước hoặc giữ mức phí cũ.");
+            }
+
+            var newSurplus = Math.Max(0m, newActual - newDue);
+            updates.Add((entry, newActual, oldSurplus, newSurplus));
+        }
+
         settlement.AmountPerFullSlot = request.AmountPerFullSlot;
-        settlement.UpdatedAt = DateTimeOffset.UtcNow;
+        settlement.UpdatedAt = now;
+        foreach (var update in updates)
+        {
+            update.Entry.ActualPaidAmount = update.ActualPaidAmount;
+            AddFundAdjustment(settlement, update.Entry, update.Before, update.After, now);
+        }
         await db.SaveChangesAsync(cancellationToken);
-        return ServiceResult<SettlementResponse>.Success(ToResponse(settlement));
+        return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
 
     public async Task<ServiceResult<SettlementResponse>> UpdateEntryAsync(
@@ -139,12 +174,51 @@ public sealed class SettlementService(
         if (entry is null)
             return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status404NotFound, "Không tìm thấy dòng thu tiền.");
 
+        var oldDue = settlement.AmountPerFullSlot * entry.SlotFactor;
+        var oldActual = EffectiveActualPaidAmount(entry, oldDue);
+        var oldSurplus = CalculateSurplus(entry.PaymentStatus, oldDue, oldActual);
+        var newDue = settlement.AmountPerFullSlot * request.SlotFactor;
+        decimal newActual;
+        if (!request.IsPaid)
+        {
+            newActual = 0m;
+        }
+        else if (request.ActualPaidAmount is { } requestedActual)
+        {
+            if (!IsValidReceivedAmount(requestedActual))
+            {
+                return ServiceResult<SettlementResponse>.Failure(
+                    StatusCodes.Status400BadRequest,
+                    "actualPaidAmount phải từ 0 trở lên, tối đa 16 chữ số phần nguyên và 2 chữ số thập phân.");
+            }
+            newActual = requestedActual;
+        }
+        else if (entry.PaymentStatus == SettlementPaymentStatus.Paid)
+        {
+            newActual = oldActual;
+        }
+        else
+        {
+            newActual = newDue;
+        }
+
+        if (request.IsPaid && newActual < newDue)
+        {
+            return ServiceResult<SettlementResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                $"Tiền thực nhận phải ít nhất bằng số phải đóng ({newDue.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ). Sổ tiền không dùng trạng thái đóng một phần.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
         entry.SlotFactor = request.SlotFactor;
         entry.PaymentStatus = request.IsPaid ? SettlementPaymentStatus.Paid : SettlementPaymentStatus.Unpaid;
-        entry.UpdatedAt = DateTimeOffset.UtcNow;
-        settlement.UpdatedAt = entry.UpdatedAt;
+        entry.ActualPaidAmount = newActual;
+        entry.UpdatedAt = now;
+        settlement.UpdatedAt = now;
+        var newSurplus = CalculateSurplus(entry.PaymentStatus, newDue, newActual);
+        AddFundAdjustment(settlement, entry, oldSurplus, newSurplus, now);
         await db.SaveChangesAsync(cancellationToken);
-        return ServiceResult<SettlementResponse>.Success(ToResponse(settlement));
+        return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
 
     public async Task<ServiceResult<SettlementResponse>> SetClosedAsync(
@@ -162,7 +236,7 @@ public sealed class SettlementService(
         settlement.ClosedAt = isClosed ? now : null;
         settlement.UpdatedAt = now;
         await db.SaveChangesAsync(cancellationToken);
-        return ServiceResult<SettlementResponse>.Success(ToResponse(settlement));
+        return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
 
     public async Task<ServiceResult<SettlementActionResponse>> QueueActionAsync(
@@ -486,7 +560,73 @@ public sealed class SettlementService(
         amount <= 9_999_999_999_999_999.99m &&
         decimal.Round(amount, 2) == amount;
 
+    private static bool IsValidReceivedAmount(decimal amount) =>
+        amount >= 0m &&
+        amount <= 9_999_999_999_999_999.99m &&
+        decimal.Round(amount, 2) == amount;
+
     private static bool IsValidSlotFactor(decimal slotFactor) => slotFactor == 1m || slotFactor == 0.5m;
+
+    private static decimal EffectiveActualPaidAmount(SettlementEntry entry, decimal amountDue)
+    {
+        if (entry.PaymentStatus != SettlementPaymentStatus.Paid) return 0m;
+        // ActualPaidAmount was introduced after the first Settlement release. Existing paid
+        // rows have the database default 0, which historically meant "paid the full due".
+        return entry.ActualPaidAmount > 0m ? entry.ActualPaidAmount : amountDue;
+    }
+
+    private static decimal CalculateSurplus(
+        SettlementPaymentStatus status,
+        decimal amountDue,
+        decimal actualPaidAmount) =>
+        status == SettlementPaymentStatus.Paid
+            ? Math.Max(0m, actualPaidAmount - amountDue)
+            : 0m;
+
+    private void AddFundAdjustment(
+        MatchSettlement settlement,
+        SettlementEntry entry,
+        decimal oldSurplus,
+        decimal newSurplus,
+        DateTimeOffset createdAt)
+    {
+        if (oldSurplus == newSurplus) return;
+        var connectionId = settlement.Session.ZaloConnectionId?.Trim();
+        var groupId = settlement.Session.ZaloGroupId?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionId) || string.IsNullOrWhiteSpace(groupId)) return;
+
+        db.GroupFundTransactions.Add(new GroupFundTransaction
+        {
+            ZaloConnectionId = connectionId,
+            GroupId = groupId,
+            SettlementId = settlement.Id,
+            Settlement = settlement,
+            SettlementEntryId = entry.Id,
+            DisplayNameSnapshot = entry.DisplayNameSnapshot,
+            Kind = GroupFundTransactionKind.SettlementSurplusAdjustment,
+            Amount = newSurplus - oldSurplus,
+            SurplusBefore = oldSurplus,
+            SurplusAfter = newSurplus,
+            CreatedAt = createdAt
+        });
+    }
+
+    private async Task<decimal> GetGroupFundBalanceAsync(
+        MatchSettlement settlement,
+        CancellationToken cancellationToken)
+    {
+        var connectionId = settlement.Session.ZaloConnectionId?.Trim();
+        var groupId = settlement.Session.ZaloGroupId?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionId) || string.IsNullOrWhiteSpace(groupId)) return 0m;
+
+        // Materialize before summing: SQLite stores decimal values as TEXT and cannot
+        // translate every decimal aggregate reliably, while PostgreSQL can.
+        var amounts = await db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.ZaloConnectionId == connectionId && item.GroupId == groupId)
+            .Select(item => item.Amount)
+            .ToListAsync(cancellationToken);
+        return amounts.Sum();
+    }
 
     private static string? CleanZaloUserId(string? value)
     {
@@ -584,23 +724,35 @@ public sealed class SettlementService(
             StatusCodes.Status400BadRequest,
             "amountPerFullSlot phải lớn hơn 0, tối đa 16 chữ số phần nguyên và 2 chữ số thập phân.");
 
-    private static SettlementResponse ToResponse(MatchSettlement settlement)
+    private async Task<SettlementResponse> ToResponseAsync(
+        MatchSettlement settlement,
+        CancellationToken cancellationToken)
     {
         var entries = settlement.Entries
             .OrderBy(item => item.DisplayNameSnapshot, StringComparer.OrdinalIgnoreCase)
-            .Select(item => new SettlementEntryResponse(
-                item.Id,
-                item.SessionPlayerId,
-                item.DisplayNameSnapshot,
-                item.ZaloUserIdSnapshot,
-                item.SlotFactor,
-                item.PaymentStatus,
-                item.PaymentStatus == SettlementPaymentStatus.Paid,
-                settlement.AmountPerFullSlot * item.SlotFactor,
-                item.UpdatedAt))
+            .Select(item =>
+            {
+                var amountDue = settlement.AmountPerFullSlot * item.SlotFactor;
+                var actualPaid = EffectiveActualPaidAmount(item, amountDue);
+                return new SettlementEntryResponse(
+                    item.Id,
+                    item.SessionPlayerId,
+                    item.DisplayNameSnapshot,
+                    item.ZaloUserIdSnapshot,
+                    item.SlotFactor,
+                    item.PaymentStatus,
+                    item.PaymentStatus == SettlementPaymentStatus.Paid,
+                    amountDue,
+                    actualPaid,
+                    CalculateSurplus(item.PaymentStatus, amountDue, actualPaid),
+                    item.UpdatedAt);
+            })
             .ToList();
         var totalDue = entries.Sum(item => item.AmountDue);
         var totalCollected = entries.Where(item => item.IsPaid).Sum(item => item.AmountDue);
+        var totalReceived = entries.Where(item => item.IsPaid).Sum(item => item.ActualPaidAmount);
+        var settlementSurplus = entries.Sum(item => item.SurplusAmount);
+        var groupFundBalance = await GetGroupFundBalanceAsync(settlement, cancellationToken);
         var pending = settlement.Messages
             .Where(item => item.Status is SettlementMessageStatus.Pending or SettlementMessageStatus.Sending)
             .OrderBy(item => item.DueAt)
@@ -616,6 +768,9 @@ public sealed class SettlementService(
             settlement.ClosedAt,
             totalDue,
             totalCollected,
+            totalReceived,
+            settlementSurplus,
+            groupFundBalance,
             entries.Count(item => item.IsPaid),
             entries.Count,
             entries,

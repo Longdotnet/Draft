@@ -6,7 +6,10 @@ public sealed record CreateSettlementRequest(decimal AmountPerFullSlot);
 
 public sealed record UpdateSettlementRequest(decimal AmountPerFullSlot);
 
-public sealed record UpdateSettlementEntryRequest(decimal SlotFactor, bool IsPaid);
+public sealed record UpdateSettlementEntryRequest(
+    decimal SlotFactor,
+    bool IsPaid,
+    decimal? ActualPaidAmount = null);
 
 public sealed record CreateSettlementActionRequest(
     SettlementActionKind Kind,
@@ -26,6 +29,8 @@ public sealed record SettlementEntryResponse(
     SettlementPaymentStatus PaymentStatus,
     bool IsPaid,
     decimal AmountDue,
+    decimal ActualPaidAmount,
+    decimal SurplusAmount,
     DateTimeOffset UpdatedAt);
 
 public sealed record SettlementActionResponse(
@@ -50,6 +55,9 @@ public sealed record SettlementResponse(
     DateTimeOffset? ClosedAt,
     decimal TotalDue,
     decimal TotalCollected,
+    decimal TotalReceived,
+    decimal SettlementSurplus,
+    decimal GroupFundBalance,
     int PaidCount,
     int TotalCount,
     IReadOnlyList<SettlementEntryResponse> Entries,

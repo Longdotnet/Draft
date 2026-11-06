@@ -104,6 +104,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   const [settlement, setSettlement] = useState<MatchSettlementResponse | null>(null);
   const [missingSettlement, setMissingSettlement] = useState(false);
   const [amountInput, setAmountInput] = useState("");
+  const [receivedInputs, setReceivedInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(true);
   const [entryBusyId, setEntryBusyId] = useState<string | null>(null);
   const [savingAmount, setSavingAmount] = useState(false);
@@ -148,6 +149,12 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     return mode === "admin" ? token : null;
   }
 
+  function applySettlementSnapshot(next: MatchSettlementResponse) {
+    setSettlement(next);
+    setAmountInput(String(next.amountPerFullSlot || ""));
+    setReceivedInputs(Object.fromEntries(next.entries.map((entry) => [entry.id, String(entry.actualPaidAmount || entry.amountDue || "")])));
+  }
+
   async function loadSettlement(showSpinner = true, mode: "admin" | "zalo" = accessMode === "admin" ? "admin" : "zalo") {
     if (showSpinner) setBusy(true);
     setError(null);
@@ -161,13 +168,13 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       }
       try {
         const next = await apiFetch<MatchSettlementResponse>(settlementPath(mode), { token: tokenFor(mode) });
-        setSettlement(next);
-        setAmountInput(String(next.amountPerFullSlot || ""));
+        applySettlementSnapshot(next);
         setAttachQr(Boolean(next.paymentQrImageUrl));
         setMissingSettlement(false);
       } catch (caught) {
         if (caught instanceof ApiRequestError && caught.status === 404) {
           setSettlement(null);
+          setReceivedInputs({});
           setMissingSettlement(true);
           setAmountInput("");
         } else {
@@ -317,9 +324,8 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
         token: tokenFor(mode),
         body: { amountPerFullSlot: amount },
       });
-      setSettlement(next);
+      applySettlementSnapshot(next);
       setMissingSettlement(false);
-      setAmountInput(String(next.amountPerFullSlot));
       setAttachQr(Boolean(next.paymentQrImageUrl));
       setNotice("Đã tạo sổ chốt tiền cho trận này.");
     } catch (caught) {
@@ -342,8 +348,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
         token: tokenFor(mode),
         body: { amountPerFullSlot: amount },
       });
-      setSettlement(next);
-      setAmountInput(String(next.amountPerFullSlot));
+      applySettlementSnapshot(next);
       setNotice("Đã cập nhật phí 1 slot.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không cập nhật được phí 1 slot.");
@@ -353,32 +358,52 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     }
   }
 
-  async function updateEntry(entry: MatchSettlementEntryResponse, patch: { slotFactor?: MatchSettlementSlotFactor; isPaid?: boolean }) {
+  async function updateEntry(entry: MatchSettlementEntryResponse, patch: { slotFactor?: MatchSettlementSlotFactor; isPaid?: boolean; actualPaidAmount?: number }) {
     if (!settlement || entryBusyId) return;
     const slotFactor = patch.slotFactor ?? entry.slotFactor;
     const isPaid = patch.isPaid ?? entry.isPaid;
+    const amountDue = settlement.amountPerFullSlot * slotFactor;
+    let actualPaidAmount = 0;
+    if (isPaid) {
+      if (patch.actualPaidAmount !== undefined) {
+        actualPaidAmount = patch.actualPaidAmount;
+      } else if (!entry.isPaid) {
+        actualPaidAmount = amountDue;
+      } else {
+        actualPaidAmount = entry.actualPaidAmount;
+      }
+      if (!Number.isFinite(actualPaidAmount) || actualPaidAmount < amountDue) {
+        setError(`Tiền thực nhận phải ít nhất ${formatMoney(amountDue)}. Sổ không dùng trạng thái đóng một phần.`);
+        return;
+      }
+    }
     setEntryBusyId(entry.id);
     setError(null);
     const nextEntries = settlement.entries.map((item) => item.id === entry.id
-      ? { ...item, slotFactor, isPaid, amountDue: settlement.amountPerFullSlot * slotFactor }
+      ? { ...item, slotFactor, isPaid, paymentStatus: isPaid ? "Paid" as const : "Unpaid" as const, amountDue, actualPaidAmount, surplusAmount: isPaid ? Math.max(0, actualPaidAmount - amountDue) : 0 }
       : item);
+    const oldSurplus = entry.surplusAmount;
+    const newSurplus = isPaid ? Math.max(0, actualPaidAmount - amountDue) : 0;
     setSettlement({
       ...settlement,
       entries: nextEntries,
       paidCount: nextEntries.filter((item) => item.isPaid).length,
       totalDue: nextEntries.reduce((total, item) => total + item.amountDue, 0),
       totalCollected: nextEntries.reduce((total, item) => total + (item.isPaid ? item.amountDue : 0), 0),
+      totalReceived: nextEntries.reduce((total, item) => total + (item.isPaid ? item.actualPaidAmount : 0), 0),
+      settlementSurplus: nextEntries.reduce((total, item) => total + item.surplusAmount, 0),
+      groupFundBalance: settlement.groupFundBalance + (newSurplus - oldSurplus),
     });
+    setReceivedInputs((current) => ({ ...current, [entry.id]: isPaid ? String(actualPaidAmount) : "" }));
     try {
       const mode = accessMode === "admin" ? "admin" : "zalo";
       await apiFetch(settlementPath(mode, `/entries/${encodeURIComponent(entry.id)}`), {
         method: "PUT",
         token: tokenFor(mode),
-        body: { slotFactor, isPaid },
+        body: { slotFactor, isPaid, actualPaidAmount },
       });
       const refreshed = await apiFetch<MatchSettlementResponse>(settlementPath(mode), { token: tokenFor(mode) });
-      setSettlement(refreshed);
-      setAmountInput(String(refreshed.amountPerFullSlot));
+      applySettlementSnapshot(refreshed);
     } catch (caught) {
       const updateError = caught instanceof Error ? caught.message : "Không cập nhật được người chơi.";
       await loadSettlement(false);
@@ -386,6 +411,17 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     } finally {
       setEntryBusyId(null);
     }
+  }
+
+  async function saveReceivedAmount(entry: MatchSettlementEntryResponse) {
+    if (!settlement || !entry.isPaid) return;
+    const value = Number(receivedInputs[entry.id]);
+    if (!Number.isFinite(value) || value < entry.amountDue) {
+      setError(`Tiền thực nhận của ${entryName(entry)} phải ít nhất ${formatMoney(entry.amountDue)}.`);
+      return;
+    }
+    if (value === entry.actualPaidAmount) return;
+    await updateEntry(entry, { actualPaidAmount: value });
   }
 
   function openComposer(mode: "remind" | "compose" | "schedule") {
@@ -595,7 +631,9 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
 
         <div className="settlement-money-grid">
           <div><span>Cần thu</span><strong>{formatMoney(settlement.totalDue)}</strong></div>
-          <div><span>Đã thu</span><strong>{formatMoney(settlement.totalCollected)}</strong></div>
+          <div><span>Đã nhận</span><strong>{formatMoney(settlement.totalReceived)}</strong></div>
+          <div className="fund"><span>Dư trận này</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
+          <div className="fund"><span>Tổng quỹ nhóm</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
         </div>
 
         <label className="settlement-fee-field">
@@ -642,6 +680,33 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
                   <button aria-pressed={entry.slotFactor === 0.5} disabled={isUpdating} type="button" className={entry.slotFactor === 0.5 ? "active" : ""} onClick={() => void updateEntry(entry, { slotFactor: 0.5 })}>1/2 slot</button>
                 </div>
               </div>
+
+              {entry.isPaid ? (
+                <div className="settlement-received-row">
+                  <div className="settlement-received-copy">
+                    <span>Thực nhận</span>
+                    <small>{entry.surplusAmount > 0 ? `Dư vào quỹ +${formatMoney(entry.surplusAmount)}` : "Đúng số tiền phải đóng"}</small>
+                  </div>
+                  <div className="settlement-received-input">
+                    <input
+                      inputMode="numeric"
+                      aria-label={`Tiền thực nhận của ${name}`}
+                      value={receivedInputs[entry.id] ?? String(entry.actualPaidAmount)}
+                      onChange={(event) => setReceivedInputs((current) => ({ ...current, [entry.id]: event.target.value.replace(/\D/g, "") }))}
+                      onKeyDown={(event) => { if (event.key === "Enter") void saveReceivedAmount(entry); }}
+                      disabled={isUpdating}
+                    />
+                    <span>đ</span>
+                    <button
+                      type="button"
+                      disabled={isUpdating || Number(receivedInputs[entry.id]) === entry.actualPaidAmount}
+                      onClick={() => void saveReceivedAmount(entry)}
+                    >
+                      Lưu
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </article>
           );
         })}

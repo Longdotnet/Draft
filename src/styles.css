@@ -2019,7 +2019,8 @@
   font-variant-numeric: tabular-nums;
 }
 
-.settlement-money-grid > div:last-child strong {
+.settlement-money-grid > div:nth-child(2) strong,
+.settlement-money-grid > div.fund strong {
   color: var(--settlement-success);
 }
 
@@ -2479,6 +2480,81 @@
   color: var(--settlement-success);
 }
 
+.settlement-received-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--settlement-border-soft);
+}
+
+.settlement-received-copy span,
+.settlement-received-copy small {
+  display: block;
+}
+
+.settlement-received-copy span {
+  color: var(--settlement-text);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.settlement-received-copy small {
+  margin-top: 2px;
+  color: var(--settlement-success);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.settlement-received-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+}
+
+.settlement-received-input input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  outline: 0;
+  padding: 0 8px 0 10px;
+  background: transparent;
+  color: var(--settlement-text);
+  font-size: 14px;
+  font-weight: 850;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-received-input > span {
+  color: var(--settlement-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settlement-received-input button {
+  min-height: 44px;
+  margin-left: 6px;
+  border: 0;
+  border-left: 1px solid var(--settlement-border);
+  padding: 0 10px;
+  background: transparent;
+  color: var(--settlement-accent);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.settlement-received-input button:disabled {
+  opacity: 0.45;
+}
+
 .settlement-sticky-actions {
   position: fixed;
   z-index: 35;
@@ -2825,6 +2901,10 @@
   }
 
   .settlement-card-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-received-row {
     grid-template-columns: 1fr;
   }
 

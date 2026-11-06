@@ -42,6 +42,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<MatchSettlement> MatchSettlements => Set<MatchSettlement>();
     public DbSet<SettlementEntry> SettlementEntries => Set<SettlementEntry>();
     public DbSet<SettlementMessage> SettlementMessages => Set<SettlementMessage>();
+    public DbSet<GroupFundTransaction> GroupFundTransactions => Set<GroupFundTransaction>();
     public DbSet<SettlementAccessChallenge> SettlementAccessChallenges => Set<SettlementAccessChallenge>();
     public DbSet<SettlementAccessSession> SettlementAccessSessions => Set<SettlementAccessSession>();
 
@@ -435,6 +436,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.Property(entry => entry.DisplayNameSnapshot).HasMaxLength(160);
             entity.Property(entry => entry.ZaloUserIdSnapshot).HasMaxLength(100);
             entity.Property(entry => entry.SlotFactor).HasPrecision(3, 2);
+            entity.Property(entry => entry.ActualPaidAmount).HasPrecision(18, 2);
             entity.Property(entry => entry.PaymentStatus).HasConversion<string>();
             entity.HasIndex(entry => new { entry.SettlementId, entry.SessionPlayerId }).IsUnique();
             entity.HasOne(entry => entry.Settlement)
@@ -454,6 +456,24 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
                     "CK_SettlementEntries_PaymentStatus",
                     "\"PaymentStatus\" IN ('Paid', 'Unpaid')");
             });
+        });
+
+        modelBuilder.Entity<GroupFundTransaction>(entity =>
+        {
+            entity.Property(transaction => transaction.ZaloConnectionId).HasMaxLength(100);
+            entity.Property(transaction => transaction.GroupId).HasMaxLength(100);
+            entity.Property(transaction => transaction.SettlementEntryId).HasMaxLength(100);
+            entity.Property(transaction => transaction.DisplayNameSnapshot).HasMaxLength(160);
+            entity.Property(transaction => transaction.Kind).HasConversion<string>();
+            entity.Property(transaction => transaction.Amount).HasPrecision(18, 2);
+            entity.Property(transaction => transaction.SurplusBefore).HasPrecision(18, 2);
+            entity.Property(transaction => transaction.SurplusAfter).HasPrecision(18, 2);
+            entity.HasIndex(transaction => new { transaction.ZaloConnectionId, transaction.GroupId, transaction.CreatedAt });
+            entity.HasIndex(transaction => new { transaction.SettlementEntryId, transaction.CreatedAt });
+            entity.HasOne(transaction => transaction.Settlement)
+                .WithMany()
+                .HasForeignKey(transaction => transaction.SettlementId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<SettlementMessage>(entity =>

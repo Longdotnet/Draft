@@ -342,6 +342,7 @@ public static class DatabaseSchemaPatch
                     "ZaloUserIdSnapshot" TEXT NULL,
                     "SlotFactor" TEXT NOT NULL DEFAULT '1.0',
                     "PaymentStatus" TEXT NOT NULL DEFAULT 'Unpaid',
+                    "ActualPaidAmount" TEXT NOT NULL DEFAULT '0',
                     "CreatedAt" TEXT NOT NULL,
                     "UpdatedAt" TEXT NOT NULL,
                     CONSTRAINT "CK_SettlementEntries_SlotFactor" CHECK ("SlotFactor" IN (1.0, 0.5)),
@@ -350,6 +351,23 @@ public static class DatabaseSchemaPatch
                         FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE,
                     CONSTRAINT "FK_SettlementEntries_SessionPlayers_SessionPlayerId"
                         FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE SET NULL
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "GroupFundTransactions" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_GroupFundTransactions" PRIMARY KEY,
+                    "ZaloConnectionId" TEXT NOT NULL,
+                    "GroupId" TEXT NOT NULL,
+                    "SettlementId" TEXT NOT NULL,
+                    "SettlementEntryId" TEXT NOT NULL,
+                    "DisplayNameSnapshot" TEXT NOT NULL,
+                    "Kind" TEXT NOT NULL DEFAULT 'SettlementSurplusAdjustment',
+                    "Amount" TEXT NOT NULL,
+                    "SurplusBefore" TEXT NOT NULL,
+                    "SurplusAfter" TEXT NOT NULL,
+                    "CreatedAt" TEXT NOT NULL,
+                    CONSTRAINT "FK_GroupFundTransactions_MatchSettlements_SettlementId"
+                        FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE
                 );
                 """);
             await db.Database.ExecuteSqlRawAsync("""
@@ -448,6 +466,7 @@ public static class DatabaseSchemaPatch
                     "ZaloUserIdSnapshot" text NULL,
                     "SlotFactor" numeric(3,2) NOT NULL DEFAULT 1.0,
                     "PaymentStatus" text NOT NULL DEFAULT 'Unpaid',
+                    "ActualPaidAmount" numeric(18,2) NOT NULL DEFAULT 0,
                     "CreatedAt" timestamp with time zone NOT NULL,
                     "UpdatedAt" timestamp with time zone NOT NULL,
                     CONSTRAINT "CK_SettlementEntries_SlotFactor" CHECK ("SlotFactor" IN (1.0, 0.5)),
@@ -456,6 +475,23 @@ public static class DatabaseSchemaPatch
                         FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE,
                     CONSTRAINT "FK_SettlementEntries_SessionPlayers_SessionPlayerId"
                         FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE SET NULL
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "GroupFundTransactions" (
+                    "Id" text NOT NULL CONSTRAINT "PK_GroupFundTransactions" PRIMARY KEY,
+                    "ZaloConnectionId" text NOT NULL,
+                    "GroupId" text NOT NULL,
+                    "SettlementId" text NOT NULL,
+                    "SettlementEntryId" text NOT NULL,
+                    "DisplayNameSnapshot" text NOT NULL,
+                    "Kind" text NOT NULL DEFAULT 'SettlementSurplusAdjustment',
+                    "Amount" numeric(18,2) NOT NULL,
+                    "SurplusBefore" numeric(18,2) NOT NULL,
+                    "SurplusAfter" numeric(18,2) NOT NULL,
+                    "CreatedAt" timestamp with time zone NOT NULL,
+                    CONSTRAINT "FK_GroupFundTransactions_MatchSettlements_SettlementId"
+                        FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE
                 );
                 """);
             await db.Database.ExecuteSqlRawAsync("""
@@ -536,6 +572,7 @@ public static class DatabaseSchemaPatch
 
         if (provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
         {
+            await EnsureSqliteColumn(db, "SettlementEntries", "ActualPaidAmount", "\"ActualPaidAmount\" TEXT NOT NULL DEFAULT '0'");
             await EnsureSqliteColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" TEXT NULL");
             await EnsureSqliteColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" TEXT NULL");
             await EnsureSqliteColumn(db, "SettlementMessages", "ZaloGroupIdSnapshot", "\"ZaloGroupIdSnapshot\" TEXT NULL");
@@ -547,6 +584,7 @@ public static class DatabaseSchemaPatch
         }
         else if (provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
         {
+            await EnsurePostgresColumn(db, "SettlementEntries", "ActualPaidAmount", "\"ActualPaidAmount\" numeric(18,2) NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" text NULL");
             await EnsurePostgresColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" text NULL");
             await EnsurePostgresColumn(db, "SettlementMessages", "ZaloGroupIdSnapshot", "\"ZaloGroupIdSnapshot\" text NULL");
@@ -559,6 +597,8 @@ public static class DatabaseSchemaPatch
 
         await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_MatchSettlements_SessionId" ON "MatchSettlements" ("SessionId");""");
         await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementEntries_Settlement_SessionPlayer" ON "SettlementEntries" ("SettlementId", "SessionPlayerId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_GroupFundTransactions_Group_CreatedAt" ON "GroupFundTransactions" ("ZaloConnectionId", "GroupId", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_GroupFundTransactions_Entry_CreatedAt" ON "GroupFundTransactions" ("SettlementEntryId", "CreatedAt");""");
         await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_SettlementMessages_SettlementId" ON "SettlementMessages" ("SettlementId");""");
         await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_SettlementMessages_Status_DueAt" ON "SettlementMessages" ("Status", "DueAt");""");
         await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementMessages_Settlement_ClientRequestId" ON "SettlementMessages" ("SettlementId", "ClientRequestId");""");

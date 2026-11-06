@@ -293,6 +293,8 @@ export type MatchSettlementEntryResponse = {
   paymentStatus: MatchSettlementPaymentStatus;
   isPaid: boolean;
   amountDue: number;
+  actualPaidAmount: number;
+  surplusAmount: number;
   updatedAt: string;
 };
 
@@ -319,6 +321,9 @@ export type MatchSettlementResponse = {
   closedAt: string | null;
   totalDue: number;
   totalCollected: number;
+  totalReceived: number;
+  settlementSurplus: number;
+  groupFundBalance: number;
   paidCount: number;
   totalCount: number;
   entries: MatchSettlementEntryResponse[];

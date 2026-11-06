@@ -31,6 +31,11 @@ public enum SettlementMessageStatus
     Failed
 }
 
+public enum GroupFundTransactionKind
+{
+    SettlementSurplusAdjustment
+}
+
 public sealed class MatchSettlement
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
@@ -55,11 +60,29 @@ public sealed class SettlementEntry
     public string? ZaloUserIdSnapshot { get; set; }
     public decimal SlotFactor { get; set; } = 1m;
     public SettlementPaymentStatus PaymentStatus { get; set; } = SettlementPaymentStatus.Unpaid;
+    public decimal ActualPaidAmount { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public MatchSettlement Settlement { get; set; } = null!;
     public SessionPlayer? SessionPlayer { get; set; }
+}
+
+public sealed class GroupFundTransaction
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("n");
+    public string ZaloConnectionId { get; set; } = string.Empty;
+    public string GroupId { get; set; } = string.Empty;
+    public string SettlementId { get; set; } = string.Empty;
+    public string SettlementEntryId { get; set; } = string.Empty;
+    public string DisplayNameSnapshot { get; set; } = string.Empty;
+    public GroupFundTransactionKind Kind { get; set; } = GroupFundTransactionKind.SettlementSurplusAdjustment;
+    public decimal Amount { get; set; }
+    public decimal SurplusBefore { get; set; }
+    public decimal SurplusAfter { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public MatchSettlement Settlement { get; set; } = null!;
 }
 
 public sealed class SettlementMessage

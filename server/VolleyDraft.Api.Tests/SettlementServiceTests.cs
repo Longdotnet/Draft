@@ -1,4 +1,5 @@
 using System.Net;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
@@ -16,6 +17,29 @@ namespace VolleyDraft.Api.Tests;
 
 public sealed class SettlementServiceTests
 {
+    [Fact]
+    public async Task Settlement_schema_patch_is_idempotent_with_actual_paid_and_group_fund_tables()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        await DatabaseSchemaPatch.EnsureLatestAsync(db);
+        await DatabaseSchemaPatch.EnsureLatestAsync(db);
+
+        await using var column = connection.CreateCommand();
+        column.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SettlementEntries') WHERE name = 'ActualPaidAmount'";
+        Assert.Equal(1L, Convert.ToInt64(await column.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+
+        await using var table = connection.CreateCommand();
+        table.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'GroupFundTransactions'";
+        Assert.Equal(1L, Convert.ToInt64(await table.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+    }
+
     [Fact]
     public void Settlement_deep_link_prefers_same_origin_api_host()
     {
@@ -57,6 +81,113 @@ public sealed class SettlementServiceTests
 
         Assert.NotNull(parsed);
         Assert.Equal(expected, parsed!.AmountPerFullSlot);
+    }
+
+    [Fact]
+    public void Settlement_command_parser_reads_explicit_date_and_time_without_confusing_year_for_amount()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot",
+            botId: "bot",
+            groupId: "group",
+            messageId: "m-date",
+            senderId: "admin",
+            senderName: "Admin",
+            content: "@bot thu tiền 22k/người ngày 6/11/2026 20h30",
+            mentions: [],
+            mentionedBot: true,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloSettlementCommandParser.TryParse(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.Equal(22_000m, parsed!.AmountPerFullSlot);
+        Assert.Equal(new ZaloSettlementDateReference(6, 11, 2026), parsed.DateReference);
+        Assert.Equal(new TimeOnly(20, 30), parsed.LocalTime);
+    }
+
+    [Fact]
+    public void Settlement_command_parser_keeps_yearless_date_yearless_and_supports_yesterday()
+    {
+        var now = new DateTimeOffset(2026, 11, 11, 12, 0, 0, TimeSpan.FromHours(7));
+        var dated = new ZaloIncomingMessageEvent(
+            "bot", "bot", "group", "m-date", "admin", "Admin",
+            "@bot thu tiền 22000/người ngày 6/11", [], true, now.ToUnixTimeMilliseconds());
+        var yesterday = dated with { Content = "@bot thu tiền 22k/người hôm qua" };
+
+        var datedParsed = ZaloSettlementCommandParser.TryParse(dated, now);
+        var yesterdayParsed = ZaloSettlementCommandParser.TryParse(yesterday, now);
+
+        Assert.Equal(new ZaloSettlementDateReference(6, 11, null), datedParsed!.DateReference);
+        Assert.Equal(new ZaloSettlementDateReference(10, 11, 2026), yesterdayParsed!.DateReference);
+    }
+
+    [Fact]
+    public void Settlement_command_parser_never_treats_date_year_as_payment_amount_and_flags_invalid_date()
+    {
+        var now = new DateTimeOffset(2026, 11, 11, 12, 0, 0, TimeSpan.FromHours(7));
+        var dateOnly = new ZaloIncomingMessageEvent(
+            "bot", "bot", "group", "m-date-only", "admin", "Admin",
+            "@bot thu tiền ngày 6-11-2026", [], true, now.ToUnixTimeMilliseconds());
+        var invalidDate = dateOnly with { Content = "@bot thu tiền 22k/người ngày 31/02/2026" };
+
+        Assert.Null(ZaloSettlementCommandParser.TryParse(dateOnly, now));
+        var parsedInvalid = ZaloSettlementCommandParser.TryParse(invalidDate, now);
+        Assert.NotNull(parsedInvalid);
+        Assert.NotNull(parsedInvalid!.SelectorError);
+    }
+
+    [Fact]
+    public void Settlement_session_selector_uses_explicit_date_and_requires_time_when_that_day_is_ambiguous()
+    {
+        var now = new DateTimeOffset(2026, 11, 11, 20, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime();
+        var candidates = new List<MatchSession>
+        {
+            new() { Id = "past", Name = "T6 cũ", StartTime = new DateTimeOffset(2026, 11, 6, 18, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime() },
+            new() { Id = "target-18", Name = "T6 18h", StartTime = new DateTimeOffset(2026, 11, 6, 18, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime() },
+            new() { Id = "target-2030", Name = "T6 20h30", StartTime = new DateTimeOffset(2026, 11, 6, 20, 30, 0, TimeSpan.FromHours(7)).ToUniversalTime() },
+            new() { Id = "future", Name = "T7", StartTime = new DateTimeOffset(2026, 11, 12, 19, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime() }
+        };
+        // Keep one 06/11 candidate from a different year to prove a yearless reference is
+        // deliberately ambiguous across matching group history instead of silently guessing.
+        candidates[0].StartTime = new DateTimeOffset(2025, 11, 6, 18, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime();
+
+        var ambiguous = ZaloSettlementSessionSelector.Select(
+            candidates,
+            new ZaloSettlementOpenCommand(22_000m, new ZaloSettlementDateReference(6, 11, 2026)),
+            now);
+        Assert.False(ambiguous.IsSuccess);
+        Assert.Contains("có 2 trận", ambiguous.Error);
+
+        var selected = ZaloSettlementSessionSelector.Select(
+            candidates,
+            new ZaloSettlementOpenCommand(22_000m, new ZaloSettlementDateReference(6, 11, 2026), new TimeOnly(20, 30)),
+            now);
+        Assert.True(selected.IsSuccess);
+        Assert.Equal("target-2030", selected.Session!.Id);
+
+        var wrongClock = ZaloSettlementSessionSelector.Select(
+            candidates,
+            new ZaloSettlementOpenCommand(22_000m, new ZaloSettlementDateReference(6, 11, 2026), new TimeOnly(20, 0)),
+            now);
+        Assert.False(wrongClock.IsSuccess);
+        Assert.Contains("Không có trận lúc 20:00", wrongClock.Error);
+    }
+
+    [Fact]
+    public void Settlement_session_selector_without_date_prefers_latest_started_match_over_future_match()
+    {
+        var now = new DateTimeOffset(2026, 11, 11, 20, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime();
+        var candidates = new List<MatchSession>
+        {
+            new() { Id = "yesterday", Name = "Hôm qua", StartTime = new DateTimeOffset(2026, 11, 10, 22, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime() },
+            new() { Id = "tomorrow", Name = "Ngày mai", StartTime = new DateTimeOffset(2026, 11, 12, 19, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime() }
+        };
+
+        var selected = ZaloSettlementSessionSelector.Select(candidates, new ZaloSettlementOpenCommand(22_000m), now);
+
+        Assert.True(selected.IsSuccess);
+        Assert.Equal("yesterday", selected.Session!.Id);
     }
 
     [Fact]
@@ -367,6 +498,112 @@ public sealed class SettlementServiceTests
         Assert.Equal(1, updated.Value.PaidCount);
         Assert.Equal(SettlementPaymentStatus.Paid,
             updated.Value.Entries.Single(item => item.Id == full.Id).PaymentStatus);
+    }
+
+    [Fact]
+    public async Task Actual_paid_amount_tracks_surplus_and_group_fund_across_matches_without_double_counting()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(60_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var half = created.Entries.Single(item => item.SessionPlayerId == "player-half");
+
+        var first = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 65_000m));
+        Assert.True(first.IsSuccess);
+        Assert.Equal(60_000m, first.Value!.TotalCollected);
+        Assert.Equal(65_000m, first.Value.TotalReceived);
+        Assert.Equal(5_000m, first.Value.SettlementSurplus);
+        Assert.Equal(5_000m, first.Value.GroupFundBalance);
+
+        var second = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", half.Id, new UpdateSettlementEntryRequest(0.5m, true, 35_000m));
+        Assert.Equal(10_000m, second.Value!.SettlementSurplus);
+        Assert.Equal(10_000m, second.Value.GroupFundBalance);
+
+        var corrected = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 62_000m));
+        Assert.Equal(7_000m, corrected.Value!.SettlementSurplus);
+        Assert.Equal(7_000m, corrected.Value.GroupFundBalance);
+
+        var profile = await fixture.Db.PlayerProfiles.SingleAsync(item => item.Id == "profile-full");
+        var nextSession = new MatchSession
+        {
+            Id = "session-2",
+            Name = "T7",
+            AdminUserId = "admin",
+            ZaloConnectionId = "connection",
+            ZaloGroupId = "group"
+        };
+        nextSession.Players.Add(new SessionPlayer
+        {
+            Id = "player-next",
+            SessionId = nextSession.Id,
+            DisplayName = "Full",
+            PlayerProfileId = profile.Id,
+            PlayerProfile = profile,
+            IsPresent = true
+        });
+        fixture.Db.MatchSessions.Add(nextSession);
+        await fixture.Db.SaveChangesAsync();
+
+        var next = (await fixture.Service.CreateAsync("admin", "session-2", new CreateSettlementRequest(50_000m))).Value!;
+        var nextEntry = Assert.Single(next.Entries);
+        var nextPaid = await fixture.Service.UpdateEntryAsync(
+            "admin", "session-2", nextEntry.Id, new UpdateSettlementEntryRequest(1m, true, 55_000m));
+
+        Assert.Equal(5_000m, nextPaid.Value!.SettlementSurplus);
+        Assert.Equal(12_000m, nextPaid.Value.GroupFundBalance);
+        var deltas = await fixture.Db.GroupFundTransactions.AsNoTracking()
+            .OrderBy(item => item.CreatedAt)
+            .Select(item => item.Amount)
+            .ToListAsync();
+        Assert.Equal([5_000m, 5_000m, -3_000m, 5_000m], deltas);
+    }
+
+    [Fact]
+    public async Task Paid_entry_rejects_actual_amount_below_due()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync("admin", "session", new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+
+        var result = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 20_000m));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(StatusCodes.Status400BadRequest, result.StatusCode);
+        Assert.Empty(await fixture.Db.GroupFundTransactions.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
+    public async Task Changing_fee_preserves_received_cash_and_adjusts_surplus_instead_of_rewriting_payment()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync("admin", "session", new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 25_000m));
+
+        var lowered = await fixture.Service.UpdateAsync("admin", "session", new UpdateSettlementRequest(20_000m));
+
+        Assert.True(lowered.IsSuccess);
+        var loweredEntry = lowered.Value!.Entries.Single(item => item.Id == full.Id);
+        Assert.Equal(25_000m, loweredEntry.ActualPaidAmount);
+        Assert.Equal(5_000m, loweredEntry.SurplusAmount);
+        Assert.Equal(5_000m, lowered.Value.GroupFundBalance);
+
+        var raisedTooFar = await fixture.Service.UpdateAsync("admin", "session", new UpdateSettlementRequest(30_000m));
+        Assert.False(raisedTooFar.IsSuccess);
+        Assert.Equal(StatusCodes.Status400BadRequest, raisedTooFar.StatusCode);
+
+        var unchanged = await fixture.Service.GetAsync("admin", "session");
+        Assert.Equal(20_000m, unchanged.Value!.AmountPerFullSlot);
+        Assert.Equal(25_000m, unchanged.Value.Entries.Single(item => item.Id == full.Id).ActualPaidAmount);
+        Assert.Equal(5_000m, unchanged.Value.GroupFundBalance);
     }
 
     [Fact]
