@@ -7,6 +7,7 @@ import {
   Clock3,
   MessageSquareText,
   Copy,
+  Download,
   KeyRound,
   QrCode,
   RefreshCw,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   ApiRequestError,
+  apiDownload,
   apiFetch,
   apiUpload,
   type MatchSettlementActionResponse,
@@ -131,6 +133,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   const [attachQr, setAttachQr] = useState(true);
   const [qrUploading, setQrUploading] = useState(false);
   const [qrSending, setQrSending] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const actionRequestIdRef = useRef(newClientRequestId());
   const pollingChallengeRef = useRef(false);
@@ -200,6 +203,29 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       setError(caught instanceof Error ? caught.message : "Không mở được dữ liệu chốt tiền trận này.");
     } finally {
       if (showSpinner) setBusy(false);
+    }
+  }
+
+  async function exportExcel() {
+    const mode: "admin" | "zalo" = accessMode === "admin" ? "admin" : "zalo";
+    setExportingExcel(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const { blob, fileName } = await apiDownload(settlementPath(mode, "/export"), tokenFor(mode));
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setNotice("Đã xuất Excel đối soát. File có Tổng quan, Thu tiền, Sổ quỹ và Nhật ký Zalo.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không xuất được Excel. Bạn thử lại nhé.");
+    } finally {
+      setExportingExcel(false);
     }
   }
 
@@ -764,9 +790,14 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
             <h2>{settlement.sessionName}</h2>
             <p>{session.startTime ? new Date(session.startTime).toLocaleString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "Chưa có giờ thi đấu"}</p>
           </div>
-          <button className="settlement-icon-button" type="button" aria-label="Làm mới" onClick={() => void loadSettlement()} disabled={busy}>
-            <RefreshCw size={19} aria-hidden="true" />
-          </button>
+          <div className="settlement-hero-actions">
+            <button className="settlement-export-button" type="button" onClick={() => void exportExcel()} disabled={busy || exportingExcel}>
+              <Download size={18} aria-hidden="true" /> {exportingExcel ? "Đang xuất…" : "Xuất Excel"}
+            </button>
+            <button className="settlement-icon-button" type="button" aria-label="Làm mới" onClick={() => void loadSettlement()} disabled={busy}>
+              <RefreshCw size={19} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         <div className="settlement-progress-copy">

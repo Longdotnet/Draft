@@ -2034,6 +2034,39 @@
   align-items: flex-start;
 }
 
+.settlement-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.settlement-export-button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: #fff;
+  color: var(--settlement-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.settlement-export-button:hover:not(:disabled) {
+  border-color: #b9c5d5;
+  background: #f7f9fc;
+}
+
+.settlement-export-button:disabled {
+  opacity: .55;
+}
+
 .settlement-kicker {
   display: inline-flex;
   align-items: center;
@@ -3296,6 +3329,15 @@
 }
 
 @media (max-width: 520px) {
+  .settlement-hero-row {
+    flex-wrap: wrap;
+  }
+
+  .settlement-hero-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
   .settlement-brand-tag {
     display: none;
   }

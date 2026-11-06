@@ -2,6 +2,7 @@ using System.Net;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using ClosedXML.Excel;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -235,6 +236,80 @@ public sealed class SettlementServiceTests
 
         Assert.Equal("AB23CD", ZaloSettlementCommandParser.TryParseVerification(addressed));
         Assert.Null(ZaloSettlementCommandParser.TryParseVerification(ambient));
+    }
+
+    [Theory]
+    [InlineData("@bot ai đóng tiền rồi?", "PaymentRoster")]
+    [InlineData("@bot danh sách đóng tiền", "PaymentRoster")]
+    [InlineData("@bot ai chưa đóng tiền", "PaymentRoster")]
+    [InlineData("@bot tổng kết tiền", "FinancialSummary")]
+    [InlineData("@bot báo cáo sổ tiền", "FinancialSummary")]
+    public void Settlement_view_parser_reads_customer_friendly_commands(
+        string content,
+        string expectedKind)
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "bot-account", "bot-account", "group", "view-1", "member", "Member",
+            content, [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloSettlementCommandParser.TryParseView(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.Equal(expectedKind, parsed!.Kind.ToString());
+    }
+
+    [Fact]
+    public void Settlement_view_parser_supports_date_time_and_requires_bot_mention()
+    {
+        var now = new DateTimeOffset(2026, 11, 11, 12, 0, 0, TimeSpan.FromHours(7));
+        var addressed = new ZaloIncomingMessageEvent(
+            "bot-account", "bot-account", "group", "view-date", "member", "Member",
+            "@bot danh sách đóng tiền ngày 6/11/2026 20h30", [], true, now.ToUnixTimeMilliseconds());
+        var ambient = addressed with { MentionedBot = false };
+
+        var parsed = ZaloSettlementCommandParser.TryParseView(addressed, now);
+
+        Assert.NotNull(parsed);
+        Assert.Equal(new ZaloSettlementDateReference(6, 11, 2026), parsed!.DateReference);
+        Assert.Equal(new TimeOnly(20, 30), parsed.LocalTime);
+        Assert.Null(ZaloSettlementCommandParser.TryParseView(ambient, now));
+    }
+
+    [Fact]
+    public void Settlement_view_parser_matches_the_customer_command_from_production()
+    {
+        var now = new DateTimeOffset(2026, 11, 7, 0, 24, 0, TimeSpan.FromHours(7));
+        var incoming = new ZaloIncomingMessageEvent(
+            "bot-account", "bot-account", "group", "view-production", "member", "Member",
+            "@Bott danh sách đóng tiền ngày 5/11", [], true, now.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloSettlementCommandParser.TryParseView(incoming, now);
+
+        Assert.NotNull(parsed);
+        Assert.Equal(ZaloSettlementViewKind.PaymentRoster, parsed!.Kind);
+        Assert.Equal(new ZaloSettlementDateReference(5, 11, null), parsed.DateReference);
+        Assert.Null(parsed.LocalTime);
+        Assert.Null(parsed.SelectorError);
+    }
+
+    [Fact]
+    public void Settlement_view_selector_with_time_only_uses_latest_started_exact_clock_match()
+    {
+        var now = new DateTimeOffset(2026, 11, 11, 22, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime();
+        var candidates = new List<MatchSession>
+        {
+            new() { Id = "old-2030", Name = "Cũ 20h30", StartTime = new DateTimeOffset(2026, 11, 6, 20, 30, 0, TimeSpan.FromHours(7)).ToUniversalTime() },
+            new() { Id = "latest-2030", Name = "Mới 20h30", StartTime = new DateTimeOffset(2026, 11, 10, 20, 30, 0, TimeSpan.FromHours(7)).ToUniversalTime() },
+            new() { Id = "latest-other", Name = "Mới 19h", StartTime = new DateTimeOffset(2026, 11, 11, 19, 0, 0, TimeSpan.FromHours(7)).ToUniversalTime() }
+        };
+        var command = new ZaloSettlementViewCommand(
+            ZaloSettlementViewKind.PaymentRoster,
+            LocalTime: new TimeOnly(20, 30));
+
+        var selected = ZaloSettlementSessionSelector.Select(candidates, command, now);
+
+        Assert.True(selected.IsSuccess);
+        Assert.Equal("latest-2030", selected.Session!.Id);
     }
 
     [Fact]
@@ -571,6 +646,55 @@ public sealed class SettlementServiceTests
             .Select(item => item.Amount)
             .ToListAsync();
         Assert.Equal([5_000m, 5_000m, -3_000m, 5_000m], deltas);
+    }
+
+    [Fact]
+    public async Task Settlement_excel_export_is_office_friendly_and_keeps_fund_provenance()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var session = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
+        session.StartTime = new DateTimeOffset(2026, 11, 6, 20, 30, 0, TimeSpan.FromHours(7)).ToUniversalTime();
+        session.Location = "Sân ZYRO";
+        session.ZaloGroupName = "ZYRO Volleyball";
+        await fixture.Db.SaveChangesAsync();
+
+        var created = (await fixture.Service.CreateAsync("admin", "session", new CreateSettlementRequest(60_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var half = created.Entries.Single(item => item.SessionPlayerId == "player-half");
+        await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 65_000m));
+        await fixture.Service.UpdateEntryAsync(
+            "admin", "session", half.Id, new UpdateSettlementEntryRequest(.5m, true, 30_000m));
+
+        var exporter = new SettlementExcelExporter(fixture.Db);
+        var result = await exporter.ExportAsync("admin", "session");
+
+        Assert.True(result.IsSuccess);
+        Assert.EndsWith(".xlsx", result.Value!.FileName, StringComparison.OrdinalIgnoreCase);
+        Assert.True(result.Value.Content.Length > 5_000);
+
+        using var workbook = new XLWorkbook(new MemoryStream(result.Value.Content));
+        Assert.NotNull(workbook.Worksheet("01_TONG_QUAN"));
+        Assert.NotNull(workbook.Worksheet("02_THU_TIEN"));
+        Assert.NotNull(workbook.Worksheet("03_SO_QUY"));
+        Assert.NotNull(workbook.Worksheet("04_NHAT_KY"));
+        Assert.Equal(XLWorksheetVisibility.Hidden, workbook.Worksheet("99_NGUON_DU_LIEU").Visibility);
+
+        var payment = workbook.Worksheet("02_THU_TIEN");
+        var fullRow = payment.Column(2).CellsUsed().Single(cell => cell.GetString() == "Full").Address.RowNumber;
+        Assert.Equal("Đã đóng", payment.Cell(fullRow, 8).GetString());
+        Assert.Contains("MAX(0", payment.Cell(fullRow, 7).FormulaA1, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vào quỹ", payment.Cell(fullRow, 9).GetString(), StringComparison.OrdinalIgnoreCase);
+
+        var fund = workbook.Worksheet("03_SO_QUY");
+        Assert.Contains(fund.Column(3).CellsUsed(), cell => cell.GetString() == "Full");
+        Assert.Contains(fund.Column(7).CellsUsed(), cell => cell.GetString().Contains("quỹ tăng", StringComparison.OrdinalIgnoreCase));
+        var fullFundRow = fund.Column(3).CellsUsed().Single(cell => cell.GetString() == "Full").Address.RowNumber;
+        Assert.Contains("HYPERLINK", fund.Cell(fullFundRow, 9).FormulaA1, StringComparison.OrdinalIgnoreCase);
+
+        var overview = workbook.Worksheet("01_TONG_QUAN");
+        Assert.Contains("ZYRO", overview.Cell("B2").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Quỹ này được hình thành", overview.Cell("E11").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

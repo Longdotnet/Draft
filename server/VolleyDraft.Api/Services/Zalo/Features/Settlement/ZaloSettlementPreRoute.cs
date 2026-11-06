@@ -23,6 +23,18 @@ internal sealed record ZaloSettlementOpenCommand(
     TimeOnly? LocalTime = null,
     string? SelectorError = null);
 
+internal enum ZaloSettlementViewKind
+{
+    PaymentRoster,
+    FinancialSummary
+}
+
+internal sealed record ZaloSettlementViewCommand(
+    ZaloSettlementViewKind Kind,
+    ZaloSettlementDateReference? DateReference = null,
+    TimeOnly? LocalTime = null,
+    string? SelectorError = null);
+
 internal sealed record ZaloSettlementSessionSelection(MatchSession? Session, string? Error)
 {
     internal bool IsSuccess => Session is not null;
@@ -102,6 +114,40 @@ internal static partial class ZaloSettlementCommandParser
             selectorError);
     }
 
+    internal static ZaloSettlementViewCommand? TryParseView(
+        ZaloIncomingMessageEvent incoming,
+        DateTimeOffset? currentTime = null)
+    {
+        if (!incoming.MentionedBot) return null;
+
+        var normalized = ZaloBotIntelligence.Normalize(ZaloBotService.ExtractQuestion(incoming));
+        var kind = normalized.Contains("tong ket tien", StringComparison.Ordinal) ||
+                   normalized.Contains("tong ket so tien", StringComparison.Ordinal) ||
+                   normalized.Contains("bao cao tien", StringComparison.Ordinal) ||
+                   normalized.Contains("bao cao so tien", StringComparison.Ordinal)
+            ? ZaloSettlementViewKind.FinancialSummary
+            : normalized.Contains("danh sach dong tien", StringComparison.Ordinal) ||
+              normalized.Contains("danh sach da dong", StringComparison.Ordinal) ||
+              normalized.Contains("ai dong tien roi", StringComparison.Ordinal) ||
+              normalized.Contains("ai da dong tien", StringComparison.Ordinal) ||
+              normalized.Contains("ai chua dong tien", StringComparison.Ordinal) ||
+              normalized.Contains("dong tien het chua", StringComparison.Ordinal)
+                ? ZaloSettlementViewKind.PaymentRoster
+                : (ZaloSettlementViewKind?)null;
+        if (kind is null) return null;
+
+        var localNow = (currentTime ?? DateTimeOffset.UtcNow).ToOffset(VietnamOffset);
+        var dateReference = TryReadDateReference(normalized, localNow);
+        var selectorError = DateLike.IsMatch(normalized) && dateReference is null
+            ? "Ngày cần xem không hợp lệ. Ghi theo dạng ngày 6/11 hoặc 6/11/2026."
+            : null;
+        return new ZaloSettlementViewCommand(
+            kind.Value,
+            dateReference,
+            TryReadClock(normalized),
+            selectorError);
+    }
+
     internal static string? TryParseVerification(ZaloIncomingMessageEvent incoming)
     {
         if (!incoming.MentionedBot) return null;
@@ -168,12 +214,36 @@ internal static class ZaloSettlementSessionSelector
     internal static ZaloSettlementSessionSelection Select(
         IReadOnlyList<MatchSession> candidates,
         ZaloSettlementOpenCommand command,
-        DateTimeOffset now)
+        DateTimeOffset now) =>
+        SelectInternal(
+            candidates,
+            command.DateReference,
+            command.LocalTime,
+            now,
+            date => $"@bot thu tiền 22k/người ngày {date} 20h30");
+
+    internal static ZaloSettlementSessionSelection Select(
+        IReadOnlyList<MatchSession> candidates,
+        ZaloSettlementViewCommand command,
+        DateTimeOffset now) =>
+        SelectInternal(
+            candidates,
+            command.DateReference,
+            command.LocalTime,
+            now,
+            date => $"@bot danh sách đóng tiền ngày {date} 20h30");
+
+    private static ZaloSettlementSessionSelection SelectInternal(
+        IReadOnlyList<MatchSession> candidates,
+        ZaloSettlementDateReference? dateReference,
+        TimeOnly? localTime,
+        DateTimeOffset now,
+        Func<string, string> ambiguityExample)
     {
         if (candidates.Count == 0)
             return new ZaloSettlementSessionSelection(null, "Mình chưa thấy trận nào đang gắn với nhóm này để mở sổ tiền.");
 
-        if (command.DateReference is { } dateReference)
+        if (dateReference is not null)
         {
             var onDate = candidates
                 .Where(item => item.StartTime is not null &&
@@ -203,7 +273,7 @@ internal static class ZaloSettlementSessionSelector
                 }
             }
 
-            if (command.LocalTime is { } targetTime)
+            if (localTime is { } targetTime)
             {
                 var exactTime = onDate
                     .Where(item => TimeOnly.FromDateTime(item.StartTime!.Value.ToOffset(VietnamOffset).DateTime) == targetTime)
@@ -231,12 +301,26 @@ internal static class ZaloSettlementSessionSelector
             }));
             return new ZaloSettlementSessionSelection(
                 null,
-                $"Ngày {dateReference.Display} có {onDate.Count} trận ({choices}). Ghi thêm giờ, ví dụ `@bot thu tiền 22k/người ngày {dateReference.Display} 20h30`.");
+                $"Ngày {dateReference.Display} có {onDate.Count} trận ({choices}). Ghi thêm giờ, ví dụ `{ambiguityExample(dateReference.Display)}`.");
+        }
+
+        var noDateCandidates = candidates.AsEnumerable();
+        if (localTime is { } timeOnly)
+        {
+            noDateCandidates = noDateCandidates
+                .Where(item => item.StartTime is not null &&
+                               TimeOnly.FromDateTime(item.StartTime.Value.ToOffset(VietnamOffset).DateTime) == timeOnly);
+            if (!noDateCandidates.Any())
+            {
+                return new ZaloSettlementSessionSelection(
+                    null,
+                    $"Không có trận lúc {timeOnly.ToString("HH:mm", CultureInfo.InvariantCulture)} trong lịch của nhóm này.");
+            }
         }
 
         // Settlement is a post-match workflow. Without an explicit date, prefer the latest
         // session that has already started; only fall forward when the group has no past/current match.
-        var started = candidates
+        var started = noDateCandidates
             .Where(item => item.StartTime is not null && item.StartTime.Value <= now)
             .OrderByDescending(item => item.StartTime)
             .ThenByDescending(item => item.UpdatedAt)
@@ -244,7 +328,7 @@ internal static class ZaloSettlementSessionSelector
         if (started is not null)
             return new ZaloSettlementSessionSelection(started, null);
 
-        var future = candidates
+        var future = noDateCandidates
             .Where(item => item.StartTime is not null)
             .OrderBy(item => item.StartTime)
             .ThenByDescending(item => item.UpdatedAt)
@@ -253,7 +337,7 @@ internal static class ZaloSettlementSessionSelector
             return new ZaloSettlementSessionSelection(future, null);
 
         return new ZaloSettlementSessionSelection(
-            candidates.OrderByDescending(item => item.UpdatedAt).First(),
+            noDateCandidates.OrderByDescending(item => item.UpdatedAt).First(),
             null);
     }
 }
@@ -321,6 +405,110 @@ public sealed partial class ZaloOverbookService
         var referenceNow = incoming.SentAtUnixMs > 0
             ? DateTimeOffset.FromUnixTimeMilliseconds(incoming.SentAtUnixMs)
             : DateTimeOffset.UtcNow;
+        var viewCommand = ZaloSettlementCommandParser.TryParseView(incoming, referenceNow);
+        if (viewCommand is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(viewCommand.SelectorError))
+            {
+                await SendSettlementReplyAsync(incoming, viewCommand.SelectorError, cancellationToken);
+                return true;
+            }
+
+            var viewAccountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+            var viewGroupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
+            var viewSenderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+            if (viewAccountId.Length == 0 || viewGroupId.Length == 0 || viewSenderId.Length == 0) return false;
+
+            var viewCandidates = await db.MatchSessions
+                .AsNoTracking()
+                .Where(session => session.ZaloConnection != null &&
+                                  session.ZaloConnection.AccountZaloId == viewAccountId &&
+                                  session.ZaloGroupId == viewGroupId &&
+                                  session.BotEnabled &&
+                                  session.Status != SessionStatus.Cancelled)
+                .ToListAsync(cancellationToken);
+            var viewSelection = ZaloSettlementSessionSelector.Select(viewCandidates, viewCommand, referenceNow);
+            if (!viewSelection.IsSuccess)
+            {
+                await SendSettlementReplyAsync(
+                    incoming,
+                    viewSelection.Error ?? "Chưa xác định được trận cần xem sổ tiền.",
+                    cancellationToken);
+                return true;
+            }
+
+            var viewSession = viewSelection.Session!;
+            if (viewCommand.Kind == ZaloSettlementViewKind.FinancialSummary)
+            {
+                var viewConfiguredOperators = ZaloOperatorPermissionCommandService.ParseOperatorIds(viewSession.BotOperatorZaloUserIdsJson);
+                if (!viewConfiguredOperators.Contains(viewSenderId))
+                {
+                    var authorization = await integration.GetGroupRoleAuthorizationAsync(
+                        viewSession.AdminUserId,
+                        viewSession.Id,
+                        viewSenderId);
+                    if (!authorization.IsSuccess || authorization.Value?.CanOperateBot != true)
+                    {
+                        await SendSettlementReplyAsync(
+                            incoming,
+                            "Ảnh tổng kết tài chính chỉ dành cho trưởng nhóm, phó nhóm hoặc Zalo operator. Bạn vẫn có thể hỏi `@bot danh sách đóng tiền` để xem ai đã/chưa đóng.",
+                            cancellationToken);
+                        return true;
+                    }
+                }
+            }
+
+            var viewSettlement = await db.MatchSettlements
+                .AsNoTracking()
+                .Include(item => item.Session)
+                .Include(item => item.Entries)
+                .SingleOrDefaultAsync(item => item.SessionId == viewSession.Id, cancellationToken);
+            if (viewSettlement is null)
+            {
+                await SendSettlementReplyAsync(
+                    incoming,
+                    $"Trận {viewSession.Name} chưa mở sổ tiền nên chưa có danh sách đóng tiền.",
+                    cancellationToken);
+                return true;
+            }
+
+            var renderer = new SettlementSummaryCardRenderer();
+            byte[] card;
+            string caption;
+            if (viewCommand.Kind == ZaloSettlementViewKind.FinancialSummary)
+            {
+                var groupFundBalance = 0m;
+                var connectionId = viewSession.ZaloConnectionId?.Trim();
+                var viewFundGroupId = viewSession.ZaloGroupId?.Trim();
+                if (!string.IsNullOrWhiteSpace(connectionId) && !string.IsNullOrWhiteSpace(viewFundGroupId))
+                {
+                    var fundRows = await db.GroupFundTransactions.AsNoTracking()
+                        .Where(item => item.ZaloConnectionId == connectionId && item.GroupId == viewFundGroupId)
+                        .Select(item => item.Amount)
+                        .ToListAsync(cancellationToken);
+                    groupFundBalance = fundRows.Sum();
+                }
+                card = renderer.Render(viewSession, viewSettlement, groupFundBalance);
+                caption = $"📊 Tổng kết sổ tiền • {viewSession.Name}";
+            }
+            else
+            {
+                card = renderer.RenderPaymentRoster(viewSession, viewSettlement);
+                caption = $"📋 Danh sách đóng tiền • {viewSession.Name}\nAi chưa đóng có thể chuyển theo mức thu hiển thị trên ảnh nhé.";
+            }
+
+            await bridge.SendGroupMessageAsync(
+                incoming.AccountId,
+                incoming.GroupId,
+                caption,
+                [],
+                idempotencyKey: $"settlement-view:{incoming.MessageId}:{viewCommand.Kind}",
+                imageBase64: Convert.ToBase64String(card),
+                imageContentType: "image/png",
+                imageFileName: $"zyro-{(viewCommand.Kind == ZaloSettlementViewKind.FinancialSummary ? "settlement-summary" : "payment-roster")}-{viewSession.Id}.png");
+            return true;
+        }
+
         var command = ZaloSettlementCommandParser.TryParse(incoming, referenceNow);
         if (command is null) return false;
         if (!string.IsNullOrWhiteSpace(command.SelectorError))

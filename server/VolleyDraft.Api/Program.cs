@@ -82,6 +82,7 @@ builder.Services.AddScoped<ZaloMemberIntelligenceBotService>();
 builder.Services.AddSingleton<SettlementSummaryCardRenderer>();
 builder.Services.AddScoped<SettlementService>();
 builder.Services.AddScoped<SettlementAccessService>();
+builder.Services.AddScoped<SettlementExcelExporter>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<ZaloSchedulerTrigger>();
 builder.Services.AddSingleton<ZaloPollEventQueue>();
@@ -610,6 +611,25 @@ settlementAccess.MapPost("/sessions/{sessionId}/settlement/actions", async (
         ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
         : (await settlementService.QueueActionAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
 });
+settlementAccess.MapGet("/sessions/{sessionId}/settlement/export", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementAccessService accessService,
+    SettlementExcelExporter exporter,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    if (!access.IsSuccess)
+        return Results.Json(new { message = access.Error }, statusCode: access.StatusCode);
+
+    var exported = await exporter.ExportAsync(access.Value!.AdminUserId, sessionId, cancellationToken);
+    return exported.IsSuccess
+        ? Results.File(
+            exported.Value!.Content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            exported.Value.FileName)
+        : Results.Json(new { message = exported.Error }, statusCode: exported.StatusCode);
+});
 settlementAccess.MapPost("/sessions/{sessionId}/settlement/payment-qr", async (
     HttpContext httpContext,
     string sessionId,
@@ -1089,6 +1109,22 @@ sessions.MapPost("/{sessionId}/settlement/actions", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.QueueActionAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapGet("/{sessionId}/settlement/export", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementExcelExporter exporter,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    var exported = await exporter.ExportAsync(userId, sessionId, cancellationToken);
+    return exported.IsSuccess
+        ? Results.File(
+            exported.Value!.Content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            exported.Value.FileName)
+        : Results.Json(new { message = exported.Error }, statusCode: exported.StatusCode);
 });
 sessions.MapPost("/{sessionId}/settlement/payment-qr", async (
     HttpContext httpContext,

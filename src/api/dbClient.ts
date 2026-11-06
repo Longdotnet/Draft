@@ -639,3 +639,30 @@ export async function apiUpload<T>(path: string, file: File, token?: string | nu
   }
   return payload as T;
 }
+
+export async function apiDownload(path: string, token?: string | null) {
+  const response = await fetch(`${apiBaseUrl}/api${path}`, {
+    method: "GET",
+    credentials: "include",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") ?? "";
+    const payload = contentType.includes("application/json") ? await response.json() : null;
+    const message = payload?.message ?? `Download failed with status ${response.status}`;
+    throw new ApiRequestError(message, response.status);
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
+  const encodedName = utf8Match?.[1] ?? plainMatch?.[1] ?? "ZYRO_SoTien.xlsx";
+  let fileName = encodedName;
+  try {
+    fileName = decodeURIComponent(encodedName);
+  } catch {
+    // Keep the server supplied name if it is not URI encoded.
+  }
+  return { blob: await response.blob(), fileName };
+}
