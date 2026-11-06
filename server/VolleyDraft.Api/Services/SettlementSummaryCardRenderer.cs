@@ -201,26 +201,27 @@ public sealed class SettlementSummaryCardRenderer
 
     private static void DrawRosterHeader(SKCanvas canvas, MatchSession session)
     {
-        using (var fill = new SKPaint { Color = Navy, IsAntialias = true })
+        using (var fill = new SKPaint { Color = Surface, IsAntialias = true })
             canvas.DrawRect(new SKRect(0, 0, Width, RosterHeaderHeight), fill);
 
-        using (var red = new SKPaint { Color = Red, IsAntialias = true })
-        {
-            using var path = new SKPath();
-            path.MoveTo(730, 0);
-            path.LineTo(Width, 0);
-            path.LineTo(Width, 82);
-            path.LineTo(860, 58);
-            path.Close();
-            canvas.DrawPath(path, red);
-        }
+        using (var topBar = new SKPaint { Color = Navy, IsAntialias = true })
+            canvas.DrawRect(new SKRect(0, 0, Width, 9), topBar);
+        using (var accent = new SKPaint { Color = Red, IsAntialias = true })
+            canvas.DrawRect(new SKRect(SidePadding, 34, SidePadding + 106, 38), accent);
 
         var copy = BuildRosterHeaderCopy(session);
-        DrawBrand(canvas, 64, 60);
-        DrawText(canvas, "DANH SÁCH ĐÓNG TIỀN", 64, 118, 20, new SKColor(201, 215, 236), true, 520, BlackTypeface);
-        DrawText(canvas, copy.Headline, 64, 166, 38, SKColors.White, true, 720, BlackTypeface);
-        DrawText(canvas, copy.Metadata, 64, 201, 18, new SKColor(183, 200, 225), false, 730);
-        DrawVolleyballMark(canvas, 930, 128, 54);
+        DrawText(canvas, "ZYRO • SỔ TIỀN", SidePadding, 66, 18, Navy, true, 240, BlackTypeface);
+
+        var badge = new SKRect(820, 37, Width - SidePadding, 82);
+        DrawRoundedRect(canvas, badge, 23, SuccessSoft);
+        DrawText(canvas, "THEO THỰC NHẬN", badge.MidX, 65, 14, Success, true, badge.Width - 28, BlackTypeface, SKTextAlign.Center);
+
+        DrawText(canvas, "DANH SÁCH ĐÓNG TIỀN", SidePadding, 126, 35, Navy, true, 700, BlackTypeface);
+        DrawText(canvas, copy.Headline, SidePadding, 169, 24, Text, true, 700, BoldTypeface);
+        DrawText(canvas, copy.Metadata, SidePadding, 203, 17, Muted, false, 760);
+
+        using var divider = new SKPaint { Color = Border, StrokeWidth = 1f, IsAntialias = true };
+        canvas.DrawLine(SidePadding, RosterHeaderHeight - 1, Width - SidePadding, RosterHeaderHeight - 1, divider);
     }
 
     private static void DrawHeader(SKCanvas canvas, MatchSession session, string title)
@@ -325,48 +326,37 @@ public sealed class SettlementSummaryCardRenderer
         var outer = new SKRect(SidePadding, RosterOverviewTop, Width - SidePadding, RosterOverviewTop + RosterOverviewHeight);
         DrawRoundedRect(canvas, outer, 28, Surface, Border);
 
-        var progressWidth = outer.Width - 64;
-        var progress = totalCount == 0 ? 0f : Math.Clamp(paidCount / (float)totalCount, 0f, 1f);
-        var settled = totalCount > 0 && paidCount == totalCount;
-        DrawText(canvas, "TIẾN ĐỘ", outer.Left + 32, outer.Top + 28, 13, Muted, true, 120, BlackTypeface);
-        DrawText(canvas, $"{paidCount}/{totalCount}", outer.Left + 32, outer.Top + 64, 34, Navy, true, 150, BlackTypeface);
-        DrawText(canvas, "đã đóng", outer.Left + 151, outer.Top + 62, 18, Muted, false, 120);
+        DrawText(canvas, "TỔNG ĐÃ THU", outer.Left + 32, outer.Top + 39, 14, Muted, true, 180, BlackTypeface);
+        DrawText(canvas, Money(totalReceived), outer.Left + 32, outer.Top + 91, 46, Success, true, 440, BlackTypeface);
+        DrawText(canvas, "Thực nhận đã ghi nhận trong Sổ tiền", outer.Left + 32, outer.Top + 119, 14, Muted, false, 430);
 
-        var statusWidth = settled ? 226f : 246f;
-        var statusRect = new SKRect(outer.Right - 32 - statusWidth, outer.Top + 20, outer.Right - 32, outer.Top + 68);
-        DrawRoundedRect(canvas, statusRect, 24, settled ? SuccessSoft : RedSoft);
-        DrawStatusIcon(canvas, statusRect.Left + 25, statusRect.MidY, 11, settled);
+        var splitX = outer.Left + 526;
+        using (var split = new SKPaint { Color = Border, StrokeWidth = 1f, IsAntialias = true })
+            canvas.DrawLine(splitX, outer.Top + 24, splitX, outer.Top + 116, split);
+
+        var progressLeft = splitX + 32;
+        var progressRight = outer.Right - 32;
+        var progress = totalCount == 0 ? 0f : Math.Clamp(paidCount / (float)totalCount, 0f, 1f);
+        DrawText(canvas, "TIẾN ĐỘ GHI NHẬN", progressLeft, outer.Top + 39, 14, Muted, true, 240, BlackTypeface);
+        DrawText(canvas, $"{paidCount}/{totalCount}", progressLeft, outer.Top + 79, 31, Navy, true, 150, BlackTypeface);
+        DrawText(canvas, "đã ghi nhận", progressLeft + 112, outer.Top + 76, 16, Muted, false, 160);
+        DrawRoundedRect(canvas, new SKRect(progressLeft, outer.Top + 102, progressRight, outer.Top + 112), 5, new SKColor(231, 235, 242));
+        if (progress > 0)
+            DrawRoundedRect(canvas, new SKRect(progressLeft, outer.Top + 102, progressLeft + (progressRight - progressLeft) * progress, outer.Top + 112), 5, Success);
+
+        using (var lowerDivider = new SKPaint { Color = new SKColor(235, 238, 243), StrokeWidth = 1f, IsAntialias = true })
+            canvas.DrawLine(outer.Left + 32, outer.Top + 136, outer.Right - 32, outer.Top + 136, lowerDivider);
+
+        DrawText(canvas, "MỨC THU THAM KHẢO", outer.Left + 32, outer.Top + 158, 12, Muted, true, 190, BlackTypeface);
         DrawText(
             canvas,
-            settled ? "ĐÃ ĐÓNG ĐỦ" : $"CÒN {Math.Max(0, totalCount - paidCount)} CHƯA ĐÓNG",
-            statusRect.Left + 48,
-            statusRect.Top + 31,
+            $"1 slot {Money(amountPerFullSlot)}   •   1/2 slot {Money(amountPerFullSlot / 2m)}",
+            outer.Left + 235,
+            outer.Top + 158,
             15,
-            settled ? Success : Red,
-            true,
-            statusWidth - 58,
-            BlackTypeface);
-
-        DrawRoundedRect(canvas, new SKRect(outer.Left + 32, outer.Top + 82, outer.Right - 32, outer.Top + 92), 5, new SKColor(231, 235, 242));
-        if (progress > 0)
-            DrawRoundedRect(canvas, new SKRect(outer.Left + 32, outer.Top + 82, outer.Left + 32 + progressWidth * progress, outer.Top + 92), 5, settled ? Success : Red);
-
-        var metricsLeft = outer.Left + 32;
-        var metricsRight = outer.Right - 32;
-        var metricWidth = (metricsRight - metricsLeft) / 3f;
-        for (var index = 1; index <= 2; index++)
-        {
-            var dividerX = metricsLeft + metricWidth * index;
-            using var divider = new SKPaint { Color = new SKColor(230, 235, 242), StrokeWidth = 1.2f, IsAntialias = true };
-            canvas.DrawLine(dividerX, outer.Top + 112, dividerX, outer.Bottom - 22, divider);
-        }
-
-        DrawText(canvas, "1 SLOT", metricsLeft, outer.Top + 127, 13, Muted, true, 100, BlackTypeface);
-        DrawText(canvas, Money(amountPerFullSlot), metricsLeft, outer.Top + 157, 24, Navy, true, metricWidth - 20, BlackTypeface);
-        DrawText(canvas, "1/2 SLOT", metricsLeft + metricWidth + 24, outer.Top + 127, 13, Muted, true, 100, BlackTypeface);
-        DrawText(canvas, Money(amountPerFullSlot / 2m), metricsLeft + metricWidth + 24, outer.Top + 157, 24, Navy, true, metricWidth - 44, BlackTypeface);
-        DrawText(canvas, "TỔNG ĐÃ THU", metricsLeft + metricWidth * 2 + 24, outer.Top + 127, 13, Muted, true, 140, BlackTypeface);
-        DrawText(canvas, Money(totalReceived), metricsLeft + metricWidth * 2 + 24, outer.Top + 157, 24, Success, true, metricWidth - 44, BlackTypeface);
+            Text,
+            false,
+            outer.Width - 280);
     }
 
     private static void DrawRosterPaidSection(
@@ -376,15 +366,15 @@ public sealed class SettlementSummaryCardRenderer
         int rowHeight)
     {
         DrawRoundedRect(canvas, rect, 28, Surface, Border);
-        var header = new SKRect(rect.Left + 18, rect.Top + 16, rect.Right - 18, rect.Top + 72);
-        DrawRoundedRect(canvas, header, 18, SuccessSoft);
-        DrawStatusIcon(canvas, header.Left + 28, header.MidY, 11, true);
-        DrawText(canvas, "ĐÃ ĐÓNG", header.Left + 52, header.Top + 36, 18, Success, true, 210, BlackTypeface);
-        DrawText(canvas, $"{rows.Count} người", header.Right - 18, header.Top + 36, 16, Muted, true, 120, null, SKTextAlign.Right);
+        DrawText(canvas, "CHI TIẾT THỰC NHẬN", rect.Left + 28, rect.Top + 43, 18, Navy, true, 280, BlackTypeface);
+        DrawText(canvas, $"{rows.Count} người", rect.Right - 28, rect.Top + 43, 15, Muted, false, 120, null, SKTextAlign.Right);
+
+        using (var headerDivider = new SKPaint { Color = Border, StrokeWidth = 1f, IsAntialias = true })
+            canvas.DrawLine(rect.Left + 28, rect.Top + 66, rect.Right - 28, rect.Top + 66, headerDivider);
 
         if (rows.Count == 0)
         {
-            DrawText(canvas, "Chưa có dữ liệu đóng tiền", rect.Left + 34, rect.Top + 124, 18, Muted, false, rect.Width - 68);
+            DrawText(canvas, "Chưa có khoản thu nào được ghi nhận", rect.Left + 28, rect.Top + 122, 18, Muted, false, rect.Width - 56);
             return;
         }
 
@@ -396,7 +386,14 @@ public sealed class SettlementSummaryCardRenderer
         var columnWidth = columns == 1
             ? innerRight - innerLeft
             : (innerRight - innerLeft - columnGap) / 2f;
-        var gridTop = rect.Top + 88;
+        var gridTop = rect.Top + 82;
+
+        if (columns > 1)
+        {
+            var dividerX = innerLeft + columnWidth + columnGap / 2f;
+            using var centerDivider = new SKPaint { Color = new SKColor(237, 240, 245), StrokeWidth = 1f, IsAntialias = true };
+            canvas.DrawLine(dividerX, gridTop, dividerX, rect.Bottom - 18, centerDivider);
+        }
 
         for (var index = 0; index < rows.Count; index++)
         {
@@ -413,16 +410,19 @@ public sealed class SettlementSummaryCardRenderer
                 canvas.DrawLine(left, top, left + columnWidth, top, divider);
             }
 
-            var iconRadius = rowHeight < 40 ? 8f : 10f;
-            DrawStatusIcon(canvas, left + 12, centerY, iconRadius, true);
+            var numberSize = rowHeight < 42 ? 24f : 30f;
+            var numberRect = new SKRect(left, centerY - numberSize / 2f, left + numberSize, centerY + numberSize / 2f);
+            DrawRoundedRect(canvas, numberRect, numberSize / 2f, new SKColor(240, 244, 249));
+            DrawText(canvas, (index + 1).ToString("00", CultureInfo.InvariantCulture), numberRect.MidX, centerY + 4, rowHeight < 42 ? 9 : 11, Navy, true, numberSize - 4, BlackTypeface, SKTextAlign.Center);
+
             var hasHalfSlotLabel = row.SlotFactor == .5m && rowHeight >= 46;
-            var nameSize = rowHeight >= 50 ? 18 : rowHeight >= 42 ? 16 : 14;
+            var nameSize = rowHeight >= 50 ? 17 : rowHeight >= 42 ? 15 : 13;
             var amountSize = rowHeight >= 50 ? 17 : rowHeight >= 42 ? 15 : 13;
             var nameBaseline = centerY + (hasHalfSlotLabel ? -1 : 6);
-            DrawText(canvas, row.Name, left + 34, nameBaseline, nameSize, Text, true, columnWidth - 190);
+            DrawText(canvas, row.Name, left + numberSize + 12, nameBaseline, nameSize, Text, true, columnWidth - numberSize - 170);
             if (hasHalfSlotLabel)
-                DrawText(canvas, "1/2 slot", left + 34, nameBaseline + 17, 11, Muted, false, 70);
-            DrawText(canvas, Money(row.Received), left + columnWidth, centerY + 6, amountSize, Navy, true, 140, null, SKTextAlign.Right);
+                DrawText(canvas, "1/2 slot", left + numberSize + 12, nameBaseline + 17, 11, Muted, false, 70);
+            DrawText(canvas, Money(row.Received), left + columnWidth, centerY + 6, amountSize, Success, true, 140, BlackTypeface, SKTextAlign.Right);
         }
     }
 
@@ -501,11 +501,17 @@ public sealed class SettlementSummaryCardRenderer
         using var line = new SKPaint { Color = new SKColor(223, 228, 236), StrokeWidth = 1.3f, IsAntialias = true };
         canvas.DrawLine(SidePadding, height - 70, Width - SidePadding, height - 70, line);
         DrawText(canvas, "ZYRO • SỔ TIỀN", SidePadding, height - 32, 15, Navy, true, 230, BlackTypeface);
-        var remaining = Math.Max(0, totalCount - paidCount);
-        var status = totalCount > 0 && remaining == 0
-            ? $"{paidCount}/{totalCount} đã đóng • Cập nhật từ Sổ tiền"
-            : $"Còn {remaining} chưa đóng • Cập nhật từ Sổ tiền";
-        DrawText(canvas, status, Width - SidePadding, height - 32, 14, Muted, false, 430, null, SKTextAlign.Right);
+        DrawText(
+            canvas,
+            $"{paidCount}/{totalCount} đã ghi nhận • Số tiền hiển thị = thực nhận",
+            Width - SidePadding,
+            height - 32,
+            14,
+            Muted,
+            false,
+            470,
+            null,
+            SKTextAlign.Right);
     }
 
     private static void DrawStatusIcon(

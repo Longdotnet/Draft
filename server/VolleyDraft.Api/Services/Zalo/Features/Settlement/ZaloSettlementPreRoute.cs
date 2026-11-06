@@ -494,7 +494,7 @@ public sealed partial class ZaloOverbookService
             else
             {
                 card = renderer.RenderPaymentRoster(viewSession, viewSettlement);
-                caption = $"📋 Danh sách đóng tiền • {viewSession.Name}\nAi chưa đóng có thể chuyển theo mức thu hiển thị trên ảnh nhé.";
+                caption = "📋 Danh sách đóng tiền\nSố tiền trên ảnh là thực nhận đã ghi nhận trong Sổ tiền.";
             }
 
             await bridge.SendGroupMessageAsync(
@@ -502,10 +502,12 @@ public sealed partial class ZaloOverbookService
                 incoming.GroupId,
                 caption,
                 [],
-                idempotencyKey: $"settlement-view:{incoming.MessageId}:{viewCommand.Kind}",
+                idempotencyKey: $"settlement-view:v2:{incoming.MessageId}:{viewCommand.Kind}",
                 imageBase64: Convert.ToBase64String(card),
                 imageContentType: "image/png",
-                imageFileName: $"zyro-{(viewCommand.Kind == ZaloSettlementViewKind.FinancialSummary ? "settlement-summary" : "payment-roster")}-{viewSession.Id}.png");
+                imageFileName: viewCommand.Kind == ZaloSettlementViewKind.FinancialSummary
+                    ? $"zyro-settlement-summary-{viewSession.Id}.png"
+                    : $"zyro-payment-roster-v2-{incoming.MessageId}-{viewSession.Id}.png");
             return true;
         }
 
