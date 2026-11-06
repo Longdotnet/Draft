@@ -64,6 +64,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteWaitlistAndActionHistoryTables(db);
             await EnsureSqliteMemberIntelligenceTables(db);
             await EnsureSqliteScheduledDraftTables(db);
+            await EnsureSettlementTables(db);
             await EnsureSqliteColumn(db, "ZaloActivityBackfillJobs", "IsFullBackfill", "\"IsFullBackfill\" INTEGER NOT NULL DEFAULT 1");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" INTEGER NOT NULL DEFAULT 0");
             await EnsureSqliteColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" INTEGER NOT NULL DEFAULT 0");
@@ -157,6 +158,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresWaitlistAndActionHistoryTables(db);
             await EnsurePostgresMemberIntelligenceTables(db);
             await EnsurePostgresScheduledDraftTables(db);
+            await EnsureSettlementTables(db);
             await EnsurePostgresColumn(db, "ZaloActivityBackfillJobs", "IsFullBackfill", "\"IsFullBackfill\" boolean NOT NULL DEFAULT TRUE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "StopWhenFull", "\"StopWhenFull\" boolean NOT NULL DEFAULT FALSE");
             await EnsurePostgresColumn(db, "ZaloReminderSchedules", "AllowAfterSessionStart", "\"AllowAfterSessionStart\" boolean NOT NULL DEFAULT FALSE");
@@ -310,6 +312,261 @@ public static class DatabaseSchemaPatch
         await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftDecisions_Session" ON "ZaloScheduledDraftDecisions" ("SessionId");""");
         await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftRuns_Session" ON "ZaloScheduledDraftRuns" ("SessionId");""");
         await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_ZaloScheduledDraftRuns_Due" ON "ZaloScheduledDraftRuns" ("State", "DraftDueAt");""");
+    }
+
+    private static async Task EnsureSettlementTables(VolleyDraftDbContext db)
+    {
+        var provider = db.Database.ProviderName ?? string.Empty;
+        if (provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "MatchSettlements" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_MatchSettlements" PRIMARY KEY,
+                    "SessionId" TEXT NOT NULL,
+                    "AmountPerFullSlot" TEXT NOT NULL,
+                    "IsClosed" INTEGER NOT NULL DEFAULT 0,
+                    "ClosedAt" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL,
+                    "UpdatedAt" TEXT NOT NULL,
+                    CONSTRAINT "CK_MatchSettlements_AmountPerFullSlot" CHECK ("AmountPerFullSlot" > 0),
+                    CONSTRAINT "FK_MatchSettlements_MatchSessions_SessionId"
+                        FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementEntries" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_SettlementEntries" PRIMARY KEY,
+                    "SettlementId" TEXT NOT NULL,
+                    "SessionPlayerId" TEXT NULL,
+                    "DisplayNameSnapshot" TEXT NOT NULL,
+                    "ZaloUserIdSnapshot" TEXT NULL,
+                    "SlotFactor" TEXT NOT NULL DEFAULT '1.0',
+                    "PaymentStatus" TEXT NOT NULL DEFAULT 'Unpaid',
+                    "CreatedAt" TEXT NOT NULL,
+                    "UpdatedAt" TEXT NOT NULL,
+                    CONSTRAINT "CK_SettlementEntries_SlotFactor" CHECK ("SlotFactor" IN (1.0, 0.5)),
+                    CONSTRAINT "CK_SettlementEntries_PaymentStatus" CHECK ("PaymentStatus" IN ('Paid', 'Unpaid')),
+                    CONSTRAINT "FK_SettlementEntries_MatchSettlements_SettlementId"
+                        FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE,
+                    CONSTRAINT "FK_SettlementEntries_SessionPlayers_SessionPlayerId"
+                        FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE SET NULL
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementMessages" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_SettlementMessages" PRIMARY KEY,
+                    "SettlementId" TEXT NOT NULL,
+                    "ClientRequestId" TEXT NULL,
+                    "ZaloAccountIdSnapshot" TEXT NULL,
+                    "ZaloGroupIdSnapshot" TEXT NULL,
+                    "Kind" TEXT NOT NULL,
+                    "Audience" TEXT NOT NULL,
+                    "SelectedEntryIdsJson" TEXT NOT NULL DEFAULT '[]',
+                    "Message" TEXT NULL,
+                    "IncludePaymentQr" INTEGER NOT NULL DEFAULT 0,
+                    "DueAt" TEXT NOT NULL,
+                    "Status" TEXT NOT NULL DEFAULT 'Pending',
+                    "FailureCount" INTEGER NOT NULL DEFAULT 0,
+                    "LastError" TEXT NULL,
+                    "LeaseToken" TEXT NULL,
+                    "LeaseUntil" TEXT NULL,
+                    "SentAt" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL,
+                    "UpdatedAt" TEXT NOT NULL,
+                    CONSTRAINT "FK_SettlementMessages_MatchSettlements_SettlementId"
+                        FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementAccessChallenges" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_SettlementAccessChallenges" PRIMARY KEY,
+                    "SessionId" TEXT NOT NULL,
+                    "ZaloConnectionId" TEXT NOT NULL,
+                    "GroupIdSnapshot" TEXT NOT NULL,
+                    "AccountIdSnapshot" TEXT NOT NULL,
+                    "RequesterKeyHash" TEXT NOT NULL,
+                    "CodeHash" TEXT NOT NULL,
+                    "RedemptionSecretHash" TEXT NOT NULL,
+                    "Status" TEXT NOT NULL DEFAULT 'Pending',
+                    "AuthorizedZaloUserId" TEXT NULL,
+                    "AuthorizedDisplayName" TEXT NULL,
+                    "AuthorizedViaConfiguredOperator" INTEGER NOT NULL DEFAULT 0,
+                    "DeniedZaloUserId" TEXT NULL,
+                    "ExpiresAt" TEXT NOT NULL,
+                    "ApprovedAt" TEXT NULL,
+                    "DeniedAt" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL,
+                    "UpdatedAt" TEXT NOT NULL,
+                    CONSTRAINT "FK_SettlementAccessChallenges_MatchSessions_SessionId"
+                        FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                    CONSTRAINT "FK_SettlementAccessChallenges_ZaloConnections_ZaloConnectionId"
+                        FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementAccessSessions" (
+                    "Id" TEXT NOT NULL CONSTRAINT "PK_SettlementAccessSessions" PRIMARY KEY,
+                    "SourceChallengeId" TEXT NULL,
+                    "TokenHash" TEXT NOT NULL,
+                    "ZaloConnectionId" TEXT NOT NULL,
+                    "GroupId" TEXT NOT NULL,
+                    "ZaloUserId" TEXT NOT NULL,
+                    "DisplayName" TEXT NULL,
+                    "AuthorizedViaConfiguredOperator" INTEGER NOT NULL DEFAULT 0,
+                    "ExpiresAt" TEXT NOT NULL,
+                    "LastRoleVerifiedAt" TEXT NOT NULL,
+                    "RevokedAt" TEXT NULL,
+                    "CreatedAt" TEXT NOT NULL,
+                    "UpdatedAt" TEXT NOT NULL,
+                    CONSTRAINT "FK_SettlementAccessSessions_ZaloConnections_ZaloConnectionId"
+                        FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+                );
+                """);
+        }
+        else if (provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "MatchSettlements" (
+                    "Id" text NOT NULL CONSTRAINT "PK_MatchSettlements" PRIMARY KEY,
+                    "SessionId" text NOT NULL,
+                    "AmountPerFullSlot" numeric(18,2) NOT NULL,
+                    "IsClosed" boolean NOT NULL DEFAULT FALSE,
+                    "ClosedAt" timestamp with time zone NULL,
+                    "CreatedAt" timestamp with time zone NOT NULL,
+                    "UpdatedAt" timestamp with time zone NOT NULL,
+                    CONSTRAINT "CK_MatchSettlements_AmountPerFullSlot" CHECK ("AmountPerFullSlot" > 0),
+                    CONSTRAINT "FK_MatchSettlements_MatchSessions_SessionId"
+                        FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementEntries" (
+                    "Id" text NOT NULL CONSTRAINT "PK_SettlementEntries" PRIMARY KEY,
+                    "SettlementId" text NOT NULL,
+                    "SessionPlayerId" text NULL,
+                    "DisplayNameSnapshot" text NOT NULL,
+                    "ZaloUserIdSnapshot" text NULL,
+                    "SlotFactor" numeric(3,2) NOT NULL DEFAULT 1.0,
+                    "PaymentStatus" text NOT NULL DEFAULT 'Unpaid',
+                    "CreatedAt" timestamp with time zone NOT NULL,
+                    "UpdatedAt" timestamp with time zone NOT NULL,
+                    CONSTRAINT "CK_SettlementEntries_SlotFactor" CHECK ("SlotFactor" IN (1.0, 0.5)),
+                    CONSTRAINT "CK_SettlementEntries_PaymentStatus" CHECK ("PaymentStatus" IN ('Paid', 'Unpaid')),
+                    CONSTRAINT "FK_SettlementEntries_MatchSettlements_SettlementId"
+                        FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE,
+                    CONSTRAINT "FK_SettlementEntries_SessionPlayers_SessionPlayerId"
+                        FOREIGN KEY ("SessionPlayerId") REFERENCES "SessionPlayers" ("Id") ON DELETE SET NULL
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementMessages" (
+                    "Id" text NOT NULL CONSTRAINT "PK_SettlementMessages" PRIMARY KEY,
+                    "SettlementId" text NOT NULL,
+                    "ClientRequestId" text NULL,
+                    "ZaloAccountIdSnapshot" text NULL,
+                    "ZaloGroupIdSnapshot" text NULL,
+                    "Kind" text NOT NULL,
+                    "Audience" text NOT NULL,
+                    "SelectedEntryIdsJson" text NOT NULL DEFAULT '[]',
+                    "Message" text NULL,
+                    "IncludePaymentQr" boolean NOT NULL DEFAULT FALSE,
+                    "DueAt" timestamp with time zone NOT NULL,
+                    "Status" text NOT NULL DEFAULT 'Pending',
+                    "FailureCount" integer NOT NULL DEFAULT 0,
+                    "LastError" text NULL,
+                    "LeaseToken" text NULL,
+                    "LeaseUntil" timestamp with time zone NULL,
+                    "SentAt" timestamp with time zone NULL,
+                    "CreatedAt" timestamp with time zone NOT NULL,
+                    "UpdatedAt" timestamp with time zone NOT NULL,
+                    CONSTRAINT "FK_SettlementMessages_MatchSettlements_SettlementId"
+                        FOREIGN KEY ("SettlementId") REFERENCES "MatchSettlements" ("Id") ON DELETE CASCADE
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementAccessChallenges" (
+                    "Id" text NOT NULL CONSTRAINT "PK_SettlementAccessChallenges" PRIMARY KEY,
+                    "SessionId" text NOT NULL,
+                    "ZaloConnectionId" text NOT NULL,
+                    "GroupIdSnapshot" text NOT NULL,
+                    "AccountIdSnapshot" text NOT NULL,
+                    "RequesterKeyHash" text NOT NULL,
+                    "CodeHash" text NOT NULL,
+                    "RedemptionSecretHash" text NOT NULL,
+                    "Status" text NOT NULL DEFAULT 'Pending',
+                    "AuthorizedZaloUserId" text NULL,
+                    "AuthorizedDisplayName" text NULL,
+                    "AuthorizedViaConfiguredOperator" boolean NOT NULL DEFAULT FALSE,
+                    "DeniedZaloUserId" text NULL,
+                    "ExpiresAt" timestamp with time zone NOT NULL,
+                    "ApprovedAt" timestamp with time zone NULL,
+                    "DeniedAt" timestamp with time zone NULL,
+                    "CreatedAt" timestamp with time zone NOT NULL,
+                    "UpdatedAt" timestamp with time zone NOT NULL,
+                    CONSTRAINT "FK_SettlementAccessChallenges_MatchSessions_SessionId"
+                        FOREIGN KEY ("SessionId") REFERENCES "MatchSessions" ("Id") ON DELETE CASCADE,
+                    CONSTRAINT "FK_SettlementAccessChallenges_ZaloConnections_ZaloConnectionId"
+                        FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+                );
+                """);
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS "SettlementAccessSessions" (
+                    "Id" text NOT NULL CONSTRAINT "PK_SettlementAccessSessions" PRIMARY KEY,
+                    "SourceChallengeId" text NULL,
+                    "TokenHash" text NOT NULL,
+                    "ZaloConnectionId" text NOT NULL,
+                    "GroupId" text NOT NULL,
+                    "ZaloUserId" text NOT NULL,
+                    "DisplayName" text NULL,
+                    "AuthorizedViaConfiguredOperator" boolean NOT NULL DEFAULT FALSE,
+                    "ExpiresAt" timestamp with time zone NOT NULL,
+                    "LastRoleVerifiedAt" timestamp with time zone NOT NULL,
+                    "RevokedAt" timestamp with time zone NULL,
+                    "CreatedAt" timestamp with time zone NOT NULL,
+                    "UpdatedAt" timestamp with time zone NOT NULL,
+                    CONSTRAINT "FK_SettlementAccessSessions_ZaloConnections_ZaloConnectionId"
+                        FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE
+                );
+                """);
+        }
+        else
+        {
+            return;
+        }
+
+        if (provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+        {
+            await EnsureSqliteColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SettlementMessages", "ZaloGroupIdSnapshot", "\"ZaloGroupIdSnapshot\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SettlementAccessChallenges", "RedemptionSecretHash", "\"RedemptionSecretHash\" TEXT NOT NULL DEFAULT ''");
+            await EnsureSqliteColumn(db, "SettlementAccessChallenges", "RequesterKeyHash", "\"RequesterKeyHash\" TEXT NOT NULL DEFAULT ''");
+            await EnsureSqliteColumn(db, "SettlementAccessChallenges", "AuthorizedViaConfiguredOperator", "\"AuthorizedViaConfiguredOperator\" INTEGER NOT NULL DEFAULT 0");
+            await EnsureSqliteColumn(db, "SettlementAccessSessions", "SourceChallengeId", "\"SourceChallengeId\" TEXT NULL");
+            await EnsureSqliteColumn(db, "SettlementAccessSessions", "AuthorizedViaConfiguredOperator", "\"AuthorizedViaConfiguredOperator\" INTEGER NOT NULL DEFAULT 0");
+        }
+        else if (provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+        {
+            await EnsurePostgresColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" text NULL");
+            await EnsurePostgresColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" text NULL");
+            await EnsurePostgresColumn(db, "SettlementMessages", "ZaloGroupIdSnapshot", "\"ZaloGroupIdSnapshot\" text NULL");
+            await EnsurePostgresColumn(db, "SettlementAccessChallenges", "RedemptionSecretHash", "\"RedemptionSecretHash\" text NOT NULL DEFAULT ''");
+            await EnsurePostgresColumn(db, "SettlementAccessChallenges", "RequesterKeyHash", "\"RequesterKeyHash\" text NOT NULL DEFAULT ''");
+            await EnsurePostgresColumn(db, "SettlementAccessChallenges", "AuthorizedViaConfiguredOperator", "\"AuthorizedViaConfiguredOperator\" boolean NOT NULL DEFAULT FALSE");
+            await EnsurePostgresColumn(db, "SettlementAccessSessions", "SourceChallengeId", "\"SourceChallengeId\" text NULL");
+            await EnsurePostgresColumn(db, "SettlementAccessSessions", "AuthorizedViaConfiguredOperator", "\"AuthorizedViaConfiguredOperator\" boolean NOT NULL DEFAULT FALSE");
+        }
+
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_MatchSettlements_SessionId" ON "MatchSettlements" ("SessionId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementEntries_Settlement_SessionPlayer" ON "SettlementEntries" ("SettlementId", "SessionPlayerId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_SettlementMessages_SettlementId" ON "SettlementMessages" ("SettlementId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_SettlementMessages_Status_DueAt" ON "SettlementMessages" ("Status", "DueAt");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementMessages_Settlement_ClientRequestId" ON "SettlementMessages" ("SettlementId", "ClientRequestId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementAccessChallenges_CodeHash" ON "SettlementAccessChallenges" ("CodeHash");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_SettlementAccessChallenges_Session_Status_ExpiresAt" ON "SettlementAccessChallenges" ("SessionId", "Status", "ExpiresAt");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementAccessSessions_TokenHash" ON "SettlementAccessSessions" ("TokenHash");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE UNIQUE INDEX IF NOT EXISTS "IX_SettlementAccessSessions_SourceChallengeId" ON "SettlementAccessSessions" ("SourceChallengeId");""");
+        await db.Database.ExecuteSqlRawAsync("""CREATE INDEX IF NOT EXISTS "IX_SettlementAccessSessions_Scope" ON "SettlementAccessSessions" ("ZaloConnectionId", "GroupId", "ZaloUserId", "ExpiresAt");""");
     }
 
     private static async Task<bool> EnsureSqliteColumn(

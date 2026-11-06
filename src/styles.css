@@ -1847,3 +1847,1056 @@
     padding-right: 0.75rem;
   }
 }
+
+/* Match settlement is intentionally card-first on every viewport. On phones this avoids
+   squeezing an accounting table into a spreadsheet-like surface. */
+.settlement-shell,
+.settlement-state {
+  --settlement-surface: #0f172a;
+  --settlement-surface-2: #111c30;
+  --settlement-border: #334155;
+  --settlement-border-soft: rgba(148, 163, 184, 0.22);
+  --settlement-text: #f8fafc;
+  --settlement-text-muted: #94a3b8;
+  --settlement-text-subtle: #64748b;
+  --settlement-accent: #f97316;
+  --settlement-accent-soft: rgba(249, 115, 22, 0.12);
+  --settlement-success: #86efac;
+  --settlement-success-soft: rgba(34, 197, 94, 0.12);
+  --settlement-warning: #fcd34d;
+  --settlement-warning-soft: rgba(245, 158, 11, 0.12);
+  --settlement-danger: #fecaca;
+  --settlement-danger-soft: rgba(127, 29, 29, 0.18);
+  --settlement-radius: 12px;
+  --settlement-radius-lg: 16px;
+  --settlement-focus: rgba(249, 115, 22, 0.28);
+}
+
+.settlement-shell {
+  width: min(100%, 760px);
+  max-width: 100%;
+  margin: 0 auto;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: calc(88px + env(safe-area-inset-bottom));
+  overflow-x: clip;
+  color: var(--settlement-text);
+}
+
+.settlement-hero {
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius-lg);
+  background: var(--settlement-surface);
+}
+
+.settlement-hero-row,
+.settlement-progress-copy,
+.settlement-sheet-heading,
+.settlement-player-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settlement-hero-row {
+  align-items: flex-start;
+}
+
+.settlement-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settlement-hero h2 {
+  margin: 7px 0 4px;
+  color: var(--settlement-text);
+  font-size: clamp(24px, 7vw, 32px);
+  font-weight: 900;
+  line-height: 1.08;
+}
+
+.settlement-hero p {
+  margin: 0;
+  color: var(--settlement-text-muted);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.settlement-icon-button,
+.settlement-touch-button,
+.settlement-sticky-actions button,
+.settlement-segment button,
+.settlement-slot-control button,
+.settlement-presets button,
+.settlement-composer-options button,
+.settlement-delivery-grid button,
+.settlement-submit,
+.settlement-selected-list label {
+  min-height: 44px;
+}
+
+.settlement-icon-button {
+  display: inline-grid;
+  width: 44px;
+  min-width: 44px;
+  place-items: center;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+}
+
+.settlement-icon-button:disabled {
+  opacity: 0.5;
+}
+
+.settlement-progress-copy {
+  margin-top: 16px;
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+}
+
+.settlement-progress-copy strong {
+  color: var(--settlement-text);
+}
+
+.settlement-progress {
+  height: 8px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--settlement-border);
+}
+
+.settlement-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--settlement-accent);
+  transition: width 180ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settlement-money-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.settlement-money-grid > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+}
+
+.settlement-money-grid span,
+.settlement-fee-field > span {
+  display: block;
+  color: var(--settlement-text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.055em;
+}
+
+.settlement-money-grid strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--settlement-text);
+  font-size: clamp(17px, 5vw, 22px);
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-money-grid > div:last-child strong {
+  color: var(--settlement-success);
+}
+
+.settlement-fee-field {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.settlement-fee-field > button {
+  min-height: 44px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  padding: 0 14px;
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.settlement-fee-field > button:disabled {
+  opacity: 0.4;
+}
+
+.settlement-fee-field > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 44px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+}
+
+.settlement-fee-field input {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 0 10px;
+  color: var(--settlement-text);
+  font-size: 16px;
+  font-weight: 800;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-fee-field > div > span {
+  padding-right: 12px;
+  color: var(--settlement-text-muted);
+  font-weight: 800;
+}
+
+.settlement-notice,
+.settlement-empty,
+.settlement-state {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.settlement-error-notice {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: var(--settlement-danger-soft);
+  color: var(--settlement-danger);
+}
+
+.settlement-create-shell {
+  padding-bottom: 20px;
+}
+
+.settlement-create-card {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius-lg);
+  background: var(--settlement-surface);
+}
+
+.settlement-create-icon {
+  display: grid;
+  width: 50px;
+  height: 50px;
+  place-items: center;
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-accent);
+}
+
+.settlement-create-card h3 {
+  margin: 5px 0 4px;
+  color: var(--settlement-text);
+  font-size: 21px;
+  font-weight: 900;
+}
+
+.settlement-create-card p {
+  margin: 0;
+  color: var(--settlement-text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.settlement-create-amount {
+  display: grid;
+  gap: 8px;
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.settlement-create-amount > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  min-height: 50px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+}
+
+.settlement-create-amount input {
+  min-width: 0;
+  height: 48px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 0 12px;
+  color: var(--settlement-text);
+  font-size: 18px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-create-amount > div > span {
+  padding-right: 13px;
+  color: var(--settlement-text-subtle);
+  font-weight: 900;
+}
+
+.settlement-state {
+  width: min(100%, 760px);
+  margin: 0 auto;
+}
+
+.settlement-state-error {
+  border-color: rgba(248, 113, 113, 0.25);
+  background: var(--settlement-danger-soft);
+  color: var(--settlement-danger);
+}
+
+.settlement-access-shell {
+  width: min(100%, 560px);
+  margin: 0 auto;
+  padding: max(20px, env(safe-area-inset-top)) 12px calc(32px + env(safe-area-inset-bottom));
+  color: var(--settlement-text);
+}
+
+.settlement-access-card {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius-lg);
+  background: var(--settlement-surface);
+}
+
+.settlement-access-card h2,
+.settlement-access-card p {
+  margin: 0;
+}
+
+.settlement-access-card h2 {
+  font-size: clamp(22px, 7vw, 30px);
+  line-height: 1.08;
+}
+
+.settlement-access-lead,
+.settlement-access-card > small {
+  color: var(--settlement-text-muted);
+  line-height: 1.55;
+}
+
+.settlement-access-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-accent);
+}
+
+.settlement-access-session {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-soft);
+}
+
+.settlement-access-session span {
+  color: var(--settlement-text-subtle);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.settlement-access-code {
+  padding: 14px 10px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-strong);
+  font-size: clamp(28px, 11vw, 42px);
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .16em;
+  text-align: center;
+}
+
+.settlement-access-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+  align-items: center;
+}
+
+.settlement-access-command code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-soft);
+  color: var(--settlement-text);
+  font: inherit;
+  font-weight: 850;
+}
+
+.settlement-access-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px;
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-text);
+  line-height: 1.45;
+}
+
+.settlement-access-status svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--settlement-accent);
+}
+
+.settlement-access-denied .settlement-access-icon {
+  background: var(--settlement-danger-soft);
+  color: var(--settlement-danger);
+}
+
+.settlement-access-shell button {
+  min-height: 44px;
+  touch-action: manipulation;
+  transition:
+    background-color 140ms cubic-bezier(.2,.8,.2,1),
+    border-color 140ms cubic-bezier(.2,.8,.2,1),
+    color 140ms cubic-bezier(.2,.8,.2,1),
+    opacity 140ms cubic-bezier(.2,.8,.2,1),
+    transform 90ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settlement-access-shell button:active:not(:disabled) {
+  transform: translateY(1px) scale(.985);
+}
+
+.settlement-access-shell button:focus-visible {
+  outline: 2px solid var(--settlement-accent);
+  outline-offset: 2px;
+}
+
+.settlement-touch-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: var(--settlement-radius);
+  padding: 0 14px;
+  background: var(--settlement-accent);
+  color: white;
+  font-weight: 850;
+}
+
+.settlement-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 24px 0 8px;
+}
+
+.settlement-section-heading > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.settlement-section-heading span {
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settlement-section-heading strong {
+  color: var(--settlement-text);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.settlement-player-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settlement-player-card {
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface);
+  scroll-margin-bottom: calc(104px + env(safe-area-inset-bottom));
+}
+
+.settlement-player-card.is-paid {
+  border-color: rgba(74, 222, 128, 0.2);
+}
+
+.settlement-avatar {
+  display: grid;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.settlement-player-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.settlement-player-copy strong,
+.settlement-player-copy span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settlement-player-copy strong {
+  color: var(--settlement-text);
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.settlement-player-copy span {
+  margin-top: 2px;
+  color: var(--settlement-text-muted);
+  font-size: 14px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-status-pill {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.settlement-status-pill.paid {
+  background: var(--settlement-success-soft);
+  color: var(--settlement-success);
+}
+
+.settlement-status-pill.unpaid {
+  background: var(--settlement-warning-soft);
+  color: var(--settlement-warning);
+}
+
+.settlement-card-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settlement-segment,
+.settlement-slot-control {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 4px;
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+}
+
+.settlement-segment button,
+.settlement-slot-control button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.settlement-segment button:disabled,
+.settlement-slot-control button:disabled {
+  opacity: 0.55;
+}
+
+.settlement-segment button.active,
+.settlement-slot-control button.active {
+  background: var(--settlement-border);
+  color: var(--settlement-text);
+}
+
+.settlement-segment button.active.paid {
+  background: var(--settlement-success-soft);
+  color: var(--settlement-success);
+}
+
+.settlement-sticky-actions {
+  position: fixed;
+  z-index: 35;
+  right: max(12px, calc((100vw - 760px) / 2));
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  left: max(12px, calc((100vw - 760px) / 2));
+  display: grid;
+  grid-template-columns: 1.25fr 1fr 0.85fr;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius-lg);
+  background: var(--settlement-surface);
+}
+
+.settlement-sticky-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.settlement-sticky-actions button.primary {
+  background: var(--settlement-accent);
+  color: #fff;
+}
+
+.settlement-sheet-backdrop {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.settlement-sheet {
+  width: min(100%, 600px);
+  max-width: calc(100vw - 24px);
+  max-height: min(88vh, 820px);
+  max-height: min(88dvh, 820px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 16px 16px;
+  border: 1px solid var(--settlement-border-soft);
+  border-radius: var(--settlement-radius-lg);
+  background: var(--settlement-surface);
+}
+
+.settlement-sheet-handle {
+  width: 42px;
+  height: 4px;
+  margin: 0 auto 16px;
+  border-radius: 999px;
+  background: var(--settlement-border);
+}
+
+.settlement-sheet-heading h3 {
+  margin: 4px 0 0;
+  color: var(--settlement-text);
+  font-size: 21px;
+  font-weight: 900;
+}
+
+.settlement-presets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.settlement-presets button,
+.settlement-composer-options button {
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.settlement-presets button.active {
+  border-color: var(--settlement-accent);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-text);
+}
+
+.settlement-composer-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.settlement-select-wrap {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text-muted);
+}
+
+.settlement-select-wrap select {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  appearance: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--settlement-text);
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.settlement-composer-field textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  outline: 0;
+  background: var(--settlement-surface-2);
+  padding: 12px;
+  color: var(--settlement-text);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.settlement-composer-field textarea:focus,
+.settlement-select-wrap:focus-within {
+  border-color: var(--settlement-accent);
+  box-shadow: 0 0 0 3px var(--settlement-focus);
+}
+
+.settlement-selected-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settlement-selected-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settlement-selected-list label span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settlement-selected-list input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--settlement-accent);
+}
+
+.settlement-composer-options {
+  margin-top: 8px;
+}
+
+.settlement-composer-options button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.settlement-composer-options button.active {
+  border-color: var(--settlement-accent);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-text);
+}
+
+.settlement-composer-options button:disabled {
+  opacity: 0.42;
+}
+
+.settlement-delivery-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.settlement-delivery-grid button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  padding: 8px 10px;
+  color: var(--settlement-text-muted);
+  text-align: left;
+}
+
+.settlement-delivery-grid button.active {
+  border-color: var(--settlement-accent);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-text);
+}
+
+.settlement-delivery-grid button span,
+.settlement-delivery-grid button strong,
+.settlement-delivery-grid button small {
+  display: block;
+}
+
+.settlement-delivery-grid button strong {
+  color: var(--settlement-text);
+  font-size: 13px;
+}
+
+.settlement-delivery-grid button small {
+  margin-top: 2px;
+  color: var(--settlement-text-muted);
+  font-size: 12px;
+}
+
+.settlement-delay-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settlement-delay-label {
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.settlement-delay-presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settlement-delay-presets button {
+  min-height: 44px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+  padding: 0 8px;
+  color: var(--settlement-text-muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.settlement-delay-presets button.active {
+  border-color: var(--settlement-accent);
+  background: var(--settlement-accent-soft);
+  color: var(--settlement-text);
+}
+
+.settlement-delay-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  align-items: center;
+  gap: 8px;
+}
+
+.settlement-delay-custom input,
+.settlement-delay-custom select {
+  width: 100%;
+  height: 44px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  outline: 0;
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text);
+  padding: 0 10px;
+  font-size: 16px;
+  font-weight: 850;
+}
+
+.settlement-delay-custom input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-delay-summary {
+  color: var(--settlement-text-muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+@media (max-width: 520px) {
+  .settlement-delay-presets {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.settlement-submit {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+  border: 0;
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.settlement-submit:disabled {
+  opacity: 0.45;
+}
+
+@media (max-width: 520px) {
+  .settlement-fee-field {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .settlement-card-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-selected-list {
+    grid-template-columns: 1fr;
+  }
+
+  .settlement-sticky-actions button span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (min-width: 641px) {
+  .settlement-sheet-backdrop {
+    align-items: center;
+  }
+
+  .settlement-sheet {
+    border-radius: var(--settlement-radius-lg);
+  }
+}
+
+.settlement-shell button,
+.settlement-shell input,
+.settlement-shell select,
+.settlement-shell textarea,
+.settlement-state button {
+  transition:
+    background-color 140ms cubic-bezier(.2,.8,.2,1),
+    border-color 140ms cubic-bezier(.2,.8,.2,1),
+    color 140ms cubic-bezier(.2,.8,.2,1),
+    opacity 140ms cubic-bezier(.2,.8,.2,1),
+    transform 90ms cubic-bezier(.2,.8,.2,1);
+}
+
+.settlement-shell button,
+.settlement-shell select,
+.settlement-selected-list label,
+.settlement-state button {
+  touch-action: manipulation;
+}
+
+.settlement-shell button:active:not(:disabled),
+.settlement-state button:active:not(:disabled) {
+  transform: translateY(1px) scale(.985);
+}
+
+.settlement-shell button:focus-visible,
+.settlement-shell input:focus-visible,
+.settlement-shell select:focus-visible,
+.settlement-shell textarea:focus-visible,
+.settlement-state button:focus-visible {
+  outline: 2px solid var(--settlement-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settlement-shell button,
+  .settlement-shell input,
+  .settlement-shell select,
+  .settlement-shell textarea,
+  .settlement-state button,
+  .settlement-access-shell button,
+  .settlement-progress span {
+    transition: none;
+  }
+
+  .settlement-shell button:active:not(:disabled),
+  .settlement-state button:active:not(:disabled),
+  .settlement-access-shell button:active:not(:disabled) {
+    transform: none;
+  }
+}

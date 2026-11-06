@@ -41,6 +41,25 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
     public static bool IsInfrastructureRequest(HttpContext httpContext)
     {
         var path = httpContext.Request.Path;
+        if (path.StartsWithSegments("/api/settlement-access", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (HttpMethods.IsGet(httpContext.Request.Method) && IsSettlementWebEntry(httpContext))
+        {
+            return true;
+        }
+
+        if (HttpMethods.IsGet(httpContext.Request.Method) &&
+            path.StartsWithSegments("/assets", StringComparison.OrdinalIgnoreCase))
+        {
+            // The settlement mobile entry is served by the same compiled React bundle as
+            // the admin UI. Static assets contain no protected state; data/API access is
+            // still enforced independently below the IP gate.
+            return true;
+        }
+
         if (HttpMethods.IsGet(httpContext.Request.Method) &&
             (path.Equals("/health", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/health/scheduler", StringComparison.OrdinalIgnoreCase)))
@@ -144,6 +163,17 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
 
     private static IPAddress Normalize(IPAddress address) =>
         address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+
+    private static bool IsSettlementWebEntry(HttpContext httpContext)
+    {
+        if (!httpContext.Request.Path.Equals("/app", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var focus = httpContext.Request.Query["focus"].FirstOrDefault();
+        var sessionId = httpContext.Request.Query["sessionId"].FirstOrDefault();
+        return string.Equals(focus, "match-settlement", StringComparison.OrdinalIgnoreCase) &&
+               !string.IsNullOrWhiteSpace(sessionId);
+    }
 
     private static bool IsZyroMappingGroupReadPath(PathString path)
     {

@@ -278,6 +278,94 @@ export type SessionPlayerResponse = {
   isInsideSharedSlot: boolean;
 };
 
+export type MatchSettlementSlotFactor = 1 | 0.5;
+export type MatchSettlementPaymentStatus = "Unpaid" | "Paid";
+export type MatchSettlementActionKind = "Reminder" | "Thanks" | "Summary" | "Custom";
+export type MatchSettlementAudience = "Unpaid" | "Paid" | "All" | "Selected";
+export type MatchSettlementMessageStatus = "Pending" | "Sending" | "Sent" | "Skipped" | "Failed";
+
+export type MatchSettlementEntryResponse = {
+  id: string;
+  sessionPlayerId: string | null;
+  displayName: string;
+  zaloUserId: string | null;
+  slotFactor: MatchSettlementSlotFactor;
+  paymentStatus: MatchSettlementPaymentStatus;
+  isPaid: boolean;
+  amountDue: number;
+  updatedAt: string;
+};
+
+export type MatchSettlementActionResponse = {
+  id: string;
+  kind: MatchSettlementActionKind;
+  audience: MatchSettlementAudience;
+  message: string | null;
+  includePaymentQr: boolean;
+  dueAt: string;
+  status: MatchSettlementMessageStatus;
+  failureCount: number;
+  lastError: string | null;
+  sentAt: string | null;
+};
+
+export type MatchSettlementResponse = {
+  id: string;
+  sessionId: string;
+  sessionName: string;
+  amountPerFullSlot: number;
+  paymentQrImageUrl: string | null;
+  isClosed: boolean;
+  closedAt: string | null;
+  totalDue: number;
+  totalCollected: number;
+  paidCount: number;
+  totalCount: number;
+  entries: MatchSettlementEntryResponse[];
+  pendingActions: MatchSettlementActionResponse[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SettlementAccessChallengeStatus = "Pending" | "Approved" | "Denied";
+
+export type SettlementAccessChallengeResponse = {
+  challengeId: string;
+  redemptionSecret: string;
+  code: string;
+  verificationCommand: string;
+  sessionName: string;
+  expiresAt: string;
+};
+
+export type SettlementAccessChallengeStatusResponse = {
+  status: SettlementAccessChallengeStatus;
+  authorized: boolean;
+  displayName: string | null;
+  message: string;
+  expiresAt: string;
+};
+
+export type SettlementAccessStatusResponse = {
+  authorized: boolean;
+  sessionId: string;
+  sessionName: string;
+  startTime: string | null;
+  zaloUserId: string;
+  displayName: string | null;
+  expiresAt: string;
+};
+
+export type MatchSettlementActionRequest = {
+  kind: MatchSettlementActionKind;
+  audience: MatchSettlementAudience;
+  selectedEntryIds?: string[];
+  message?: string;
+  includePaymentQr: boolean;
+  delayMinutes?: number;
+  clientRequestId?: string;
+};
+
 export type ZaloConnectionResponse = {
   id: string;
   accountZaloId: string;
@@ -509,6 +597,7 @@ export class ApiRequestError extends Error {
 export async function apiFetch<T>(path: string, options: ApiOptions = {}) {
   const response = await fetch(`${apiBaseUrl}/api${path}`, {
     method: options.method ?? "GET",
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),

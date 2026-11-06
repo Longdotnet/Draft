@@ -31,7 +31,8 @@ builder.Services.AddCors(options =>
         policy
             .WithOrigins(origins)
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 builder.Services.AddDbContext<VolleyDraftDbContext>(options =>
@@ -78,6 +79,8 @@ builder.Services.AddScoped<ZaloActivityBackfillCoordinator>();
 builder.Services.AddScoped<ZaloMemberActivityService>();
 builder.Services.AddScoped<ZaloMembershipHistoryService>();
 builder.Services.AddScoped<ZaloMemberIntelligenceBotService>();
+builder.Services.AddScoped<SettlementService>();
+builder.Services.AddScoped<SettlementAccessService>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<ZaloSchedulerTrigger>();
 builder.Services.AddSingleton<ZaloPollEventQueue>();
@@ -91,6 +94,7 @@ builder.Services.AddHostedService<ZaloSchedulerWorker>();
 builder.Services.AddHostedService<ZaloPollEventWorker>();
 builder.Services.AddHostedService<ZaloOverbookWorker>();
 builder.Services.AddHostedService<ZaloActivityBackfillWorker>();
+builder.Services.AddHostedService<SettlementMessageWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
@@ -508,6 +512,128 @@ publicSessions.MapPost("/{sessionId}/blind-bags/{bagId}/open", async (
     SessionDraftService service) =>
     (await service.OpenPublicBagAsync(sessionId, bagId)).ToHttpResult());
 
+var settlementAccess = app.MapGroup("/api/settlement-access");
+settlementAccess.MapPost("/challenges", async (
+    HttpContext httpContext,
+    CreateSettlementAccessChallengeRequest request,
+    SettlementAccessService service,
+    CancellationToken cancellationToken) =>
+{
+    var requesterKey = ClientIpAccessPolicy.GetClientIp(httpContext)?.ToString() ?? "unknown";
+    return (await service.CreateChallengeAsync(request.SessionId, requesterKey, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPost("/challenges/redeem", async (
+    HttpContext httpContext,
+    RedeemSettlementAccessChallengeRequest request,
+    SettlementAccessService service,
+    CancellationToken cancellationToken) =>
+{
+    var redemption = await service.RedeemChallengeAsync(request.ChallengeId, request.RedemptionSecret, cancellationToken);
+    if (!redemption.IsSuccess)
+        return Results.Json(new { message = redemption.Error }, statusCode: redemption.StatusCode);
+
+    if (!string.IsNullOrWhiteSpace(redemption.Value!.AccessToken) && redemption.Value.AccessExpiresAt is { } expiresAt)
+    {
+        SetSettlementAccessCookie(httpContext, redemption.Value.AccessToken, expiresAt);
+    }
+    return Results.Ok(redemption.Value.Response);
+});
+settlementAccess.MapGet("/sessions/{sessionId}/status", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementAccessService service,
+    CancellationToken cancellationToken) =>
+    (await service.GetStatusAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken)).ToHttpResult());
+settlementAccess.MapGet("/sessions/{sessionId}/settlement", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.GetAsync(access.Value!.AdminUserId, sessionId, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPost("/sessions/{sessionId}/settlement", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateSettlementRequest request,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.CreateAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPut("/sessions/{sessionId}/settlement", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateSettlementRequest request,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.UpdateAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPut("/sessions/{sessionId}/settlement/entries/{entryId}", async (
+    HttpContext httpContext,
+    string sessionId,
+    string entryId,
+    UpdateSettlementEntryRequest request,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.UpdateEntryAsync(access.Value!.AdminUserId, sessionId, entryId, request, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPost("/sessions/{sessionId}/settlement/actions", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateSettlementActionRequest request,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.QueueActionAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPost("/sessions/{sessionId}/settlement/close", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.SetClosedAsync(access.Value!.AdminUserId, sessionId, true, cancellationToken)).ToHttpResult();
+});
+settlementAccess.MapPost("/sessions/{sessionId}/settlement/open", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.SetClosedAsync(access.Value!.AdminUserId, sessionId, false, cancellationToken)).ToHttpResult();
+});
+
 var sessions = app.MapGroup("/api/sessions").RequireAuthorization();
 sessions.MapPost("/", async (
     HttpContext httpContext,
@@ -873,6 +999,88 @@ sessions.MapPost("/{sessionId}/action-history/{actionId}/undo", async (
         ? Results.Unauthorized()
         : (await service.UndoAsync(userId, sessionId, actionId, userId, cancellationToken)).ToHttpResult();
 });
+sessions.MapGet("/{sessionId}/settlement", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.GetAsync(userId, sessionId, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/settlement", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateSettlementRequest request,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.CreateAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/settlement", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateSettlementRequest request,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/settlement/entries/{entryId}", async (
+    HttpContext httpContext,
+    string sessionId,
+    string entryId,
+    UpdateSettlementEntryRequest request,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateEntryAsync(userId, sessionId, entryId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/settlement/actions", async (
+    HttpContext httpContext,
+    string sessionId,
+    CreateSettlementActionRequest request,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.QueueActionAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/settlement/close", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.SetClosedAsync(userId, sessionId, true, cancellationToken)).ToHttpResult();
+});
+sessions.MapPost("/{sessionId}/settlement/open", async (
+    HttpContext httpContext,
+    string sessionId,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.SetClosedAsync(userId, sessionId, false, cancellationToken)).ToHttpResult();
+});
 sessions.MapPost("/{sessionId}/players", async (
     HttpContext httpContext,
     string sessionId,
@@ -1199,4 +1407,27 @@ static string GetPublicOrigin(HttpContext httpContext, IConfiguration configurat
     var scheme = string.IsNullOrWhiteSpace(forwardedProto) ? httpContext.Request.Scheme : forwardedProto;
     var host = string.IsNullOrWhiteSpace(forwardedHost) ? httpContext.Request.Host.Value : forwardedHost;
     return $"{scheme}://{host}".TrimEnd('/');
+}
+
+static string? GetSettlementAccessToken(HttpContext httpContext) =>
+    httpContext.Request.Cookies.TryGetValue(SettlementAccessService.CookieName, out var token)
+        ? token
+        : null;
+
+static void SetSettlementAccessCookie(HttpContext httpContext, string token, DateTimeOffset expiresAt)
+{
+    var forwardedProto = httpContext.Request.Headers["X-Forwarded-Proto"].FirstOrDefault();
+    var secure = httpContext.Request.IsHttps || string.Equals(forwardedProto, "https", StringComparison.OrdinalIgnoreCase);
+    httpContext.Response.Cookies.Append(
+        SettlementAccessService.CookieName,
+        token,
+        new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = secure,
+            SameSite = SameSiteMode.Strict,
+            Path = "/api/settlement-access",
+            Expires = expiresAt,
+            IsEssential = true
+        });
 }

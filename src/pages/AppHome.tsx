@@ -11,12 +11,13 @@ import { ZaloCommunityTipSettingsPanel } from "../components/ZaloCommunityTipSet
 import { ZaloGreetingTestPanel } from "../components/ZaloGreetingTestPanel";
 import { ZaloOverbookAdminPanel } from "../components/ZaloOverbookAdminPanel";
 
-type ExceptionFocus = "bot-overbook-control" | "auto-session-control" | "draft-workspace";
+type ExceptionFocus = "bot-overbook-control" | "auto-session-control" | "draft-workspace" | "match-settlement";
 
 const exceptionFocusValues = new Set<ExceptionFocus>([
   "bot-overbook-control",
   "auto-session-control",
   "draft-workspace",
+  "match-settlement",
 ]);
 
 function getIsMobileViewport() {
@@ -47,7 +48,7 @@ export function AppHome() {
 
   return (
     <main className="app-shell">
-      <header className="app-header">
+      {exceptionTarget?.focus !== "match-settlement" ? <header className="app-header">
         <div className="brand-lockup">
           <div className="brand-mark">
             <Volleyball size={26} aria-hidden="true" />
@@ -60,7 +61,7 @@ export function AppHome() {
         <div className="header-meta">
           <span>{exceptionTarget ? "Exception từ Zalo" : "Chúc mọi người chơi vui vẻ"}</span>
         </div>
-      </header>
+      </header> : null}
 
       {exceptionTarget ? (
         <AdminExceptionFocus focus={exceptionTarget.focus} sessionId={exceptionTarget.sessionId} />

@@ -56,6 +56,59 @@ public sealed class ClientIpAccessPolicyTests
     }
 
     [Theory]
+    [InlineData("/api/settlement-access/challenges", "POST")]
+    [InlineData("/api/settlement-access/challenges/redeem", "POST")]
+    [InlineData("/api/settlement-access/sessions/session-1/settlement", "PUT")]
+    public void SettlementAccessApiBypassesIpGateBecauseItHasItsOwnScopedAuthorization(string path, string method)
+    {
+        var context = CreateRequest(path, method);
+        Assert.True(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Fact]
+    public void SettlementDeepLinkCanLoadOutsideAdminIpAllowlist()
+    {
+        var context = CreateRequest("/app", HttpMethods.Get);
+        context.Request.QueryString = new QueryString("?focus=match-settlement&sessionId=session-1");
+
+        Assert.True(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Fact]
+    public void OrdinaryAppRouteStillRequiresAllowedIp()
+    {
+        var context = CreateRequest("/app", HttpMethods.Get);
+        context.Request.QueryString = new QueryString("?focus=draft-workspace&sessionId=session-1");
+
+        Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Fact]
+    public void SettlementAppWithoutSessionIdStillRequiresAllowedIp()
+    {
+        var context = CreateRequest("/app", HttpMethods.Get);
+        context.Request.QueryString = new QueryString("?focus=match-settlement");
+
+        Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Theory]
+    [InlineData("/api/settlement-access-evil/challenges")]
+    [InlineData("/assets-evil/index.js")]
+    public void LookalikePrefixesDoNotBypassIpGate(string path)
+    {
+        var context = CreateRequest(path, HttpMethods.Get);
+        Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Fact]
+    public void CompiledAssetsCanLoadForSettlementEntry()
+    {
+        var context = CreateRequest("/assets/index-abc123.js", HttpMethods.Get);
+        Assert.True(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Theory]
     [InlineData("/api/internal/scheduler/tick")]
     [InlineData("/api/internal/zalo/events")]
     [InlineData("/api/internal/zalo/membership-events")]

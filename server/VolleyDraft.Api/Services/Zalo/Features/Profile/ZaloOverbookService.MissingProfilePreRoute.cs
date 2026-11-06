@@ -48,6 +48,9 @@ public sealed partial class ZaloOverbookService
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        if (await TryHandleSettlementCommandPreRouteAsync(incoming, cancellationToken))
+            return true;
+
         if (await TryHandleTargetedMissingProfileReplyAsync(incoming, cancellationToken))
             return true;
 

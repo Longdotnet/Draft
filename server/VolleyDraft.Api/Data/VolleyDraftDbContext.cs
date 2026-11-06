@@ -39,6 +39,11 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<ZaloScheduledDraftPolicy> ZaloScheduledDraftPolicies => Set<ZaloScheduledDraftPolicy>();
     public DbSet<ZaloScheduledDraftDecision> ZaloScheduledDraftDecisions => Set<ZaloScheduledDraftDecision>();
     public DbSet<ZaloScheduledDraftRun> ZaloScheduledDraftRuns => Set<ZaloScheduledDraftRun>();
+    public DbSet<MatchSettlement> MatchSettlements => Set<MatchSettlement>();
+    public DbSet<SettlementEntry> SettlementEntries => Set<SettlementEntry>();
+    public DbSet<SettlementMessage> SettlementMessages => Set<SettlementMessage>();
+    public DbSet<SettlementAccessChallenge> SettlementAccessChallenges => Set<SettlementAccessChallenge>();
+    public DbSet<SettlementAccessSession> SettlementAccessSessions => Set<SettlementAccessSession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -408,6 +413,108 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.HasOne(action => action.Session)
                 .WithMany(session => session.BotActionHistory)
                 .HasForeignKey(action => action.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<MatchSettlement>(entity =>
+        {
+            entity.Property(settlement => settlement.AmountPerFullSlot).HasPrecision(18, 2);
+            entity.HasIndex(settlement => settlement.SessionId).IsUnique();
+            entity.HasOne(settlement => settlement.Session)
+                .WithMany()
+                .HasForeignKey(settlement => settlement.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.ToTable("MatchSettlements", table =>
+                table.HasCheckConstraint(
+                    "CK_MatchSettlements_AmountPerFullSlot",
+                    "\"AmountPerFullSlot\" > 0"));
+        });
+
+        modelBuilder.Entity<SettlementEntry>(entity =>
+        {
+            entity.Property(entry => entry.DisplayNameSnapshot).HasMaxLength(160);
+            entity.Property(entry => entry.ZaloUserIdSnapshot).HasMaxLength(100);
+            entity.Property(entry => entry.SlotFactor).HasPrecision(3, 2);
+            entity.Property(entry => entry.PaymentStatus).HasConversion<string>();
+            entity.HasIndex(entry => new { entry.SettlementId, entry.SessionPlayerId }).IsUnique();
+            entity.HasOne(entry => entry.Settlement)
+                .WithMany(settlement => settlement.Entries)
+                .HasForeignKey(entry => entry.SettlementId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(entry => entry.SessionPlayer)
+                .WithMany()
+                .HasForeignKey(entry => entry.SessionPlayerId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.ToTable("SettlementEntries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_SettlementEntries_SlotFactor",
+                    "\"SlotFactor\" IN (1.0, 0.5)");
+                table.HasCheckConstraint(
+                    "CK_SettlementEntries_PaymentStatus",
+                    "\"PaymentStatus\" IN ('Paid', 'Unpaid')");
+            });
+        });
+
+        modelBuilder.Entity<SettlementMessage>(entity =>
+        {
+            entity.Property(message => message.ClientRequestId).HasMaxLength(100);
+            entity.Property(message => message.ZaloAccountIdSnapshot).HasMaxLength(100);
+            entity.Property(message => message.ZaloGroupIdSnapshot).HasMaxLength(100);
+            entity.Property(message => message.Kind).HasConversion<string>();
+            entity.Property(message => message.Audience).HasConversion<string>();
+            entity.Property(message => message.Status).HasConversion<string>();
+            entity.Property(message => message.SelectedEntryIdsJson).HasMaxLength(8000);
+            entity.Property(message => message.Message).HasMaxLength(4000);
+            entity.Property(message => message.LastError).HasMaxLength(1000);
+            entity.Property(message => message.LeaseToken).HasMaxLength(80);
+            entity.HasIndex(message => new { message.Status, message.DueAt });
+            entity.HasIndex(message => message.SettlementId);
+            entity.HasIndex(message => new { message.SettlementId, message.ClientRequestId }).IsUnique();
+            entity.HasOne(message => message.Settlement)
+                .WithMany(settlement => settlement.Messages)
+                .HasForeignKey(message => message.SettlementId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SettlementAccessChallenge>(entity =>
+        {
+            entity.Property(challenge => challenge.ZaloConnectionId).HasMaxLength(100);
+            entity.Property(challenge => challenge.GroupIdSnapshot).HasMaxLength(100);
+            entity.Property(challenge => challenge.AccountIdSnapshot).HasMaxLength(100);
+            entity.Property(challenge => challenge.RequesterKeyHash).HasMaxLength(64);
+            entity.Property(challenge => challenge.CodeHash).HasMaxLength(64);
+            entity.Property(challenge => challenge.RedemptionSecretHash).HasMaxLength(64);
+            entity.Property(challenge => challenge.Status).HasConversion<string>();
+            entity.Property(challenge => challenge.AuthorizedZaloUserId).HasMaxLength(100);
+            entity.Property(challenge => challenge.AuthorizedDisplayName).HasMaxLength(160);
+            entity.Property(challenge => challenge.DeniedZaloUserId).HasMaxLength(100);
+            entity.HasIndex(challenge => challenge.CodeHash).IsUnique();
+            entity.HasIndex(challenge => new { challenge.SessionId, challenge.Status, challenge.ExpiresAt });
+            entity.HasOne(challenge => challenge.Session)
+                .WithMany()
+                .HasForeignKey(challenge => challenge.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(challenge => challenge.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(challenge => challenge.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SettlementAccessSession>(entity =>
+        {
+            entity.Property(access => access.SourceChallengeId).HasMaxLength(100);
+            entity.Property(access => access.TokenHash).HasMaxLength(64);
+            entity.Property(access => access.ZaloConnectionId).HasMaxLength(100);
+            entity.Property(access => access.GroupId).HasMaxLength(100);
+            entity.Property(access => access.ZaloUserId).HasMaxLength(100);
+            entity.Property(access => access.DisplayName).HasMaxLength(160);
+            entity.HasIndex(access => access.SourceChallengeId).IsUnique();
+            entity.HasIndex(access => access.TokenHash).IsUnique();
+            entity.HasIndex(access => new { access.ZaloConnectionId, access.GroupId, access.ZaloUserId, access.ExpiresAt });
+            entity.HasOne(access => access.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(access => access.ZaloConnectionId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

@@ -118,7 +118,8 @@ public sealed class ZaloDraftReminderDeliveryStateContractTests
             while (directory is not null)
             {
                 if (File.Exists(Path.Combine(directory.FullName, "VolleyDraft.sln")) ||
-                    Directory.Exists(Path.Combine(directory.FullName, ".git")))
+                    Directory.Exists(Path.Combine(directory.FullName, ".git")) ||
+                    File.Exists(Path.Combine(directory.FullName, ".git")))
                     return directory.FullName;
                 directory = directory.Parent;
             }

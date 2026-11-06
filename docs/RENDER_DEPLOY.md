@@ -22,7 +22,7 @@ This repo includes:
    - `Public__BaseUrl`: set the API public origin, for example `https://volley-draft-api.onrender.com`.
    - Keep the existing Zalo, AI, scheduler, and credential secrets configured as before.
 
-`AccessControl__Enabled=true` is set by the Blueprint. Browser/UI/API requests are allowed only when the `CF-Connecting-IP` address belongs to the configured CIDR list. Health checks, the exact scheduler/Zalo internal endpoints, and the public image endpoints used by Zalo remain reachable without the browser IP allowlist and retain their existing key or route-level protections.
+`AccessControl__Enabled=true` is set by the Blueprint. Browser/UI/API requests are allowed only when the `CF-Connecting-IP` address belongs to the configured CIDR list. Health checks, the exact scheduler/Zalo internal endpoints, the public image endpoints used by Zalo, and the dedicated Match Settlement passwordless entry remain reachable without the browser IP allowlist. Settlement is not anonymous: only `/app?focus=match-settlement&sessionId=...`, compiled `/assets/*`, and `/api/settlement-access/*` bypass the IP gate; the Settlement API then requires a Zalo-verified HttpOnly device session scoped to the linked Zalo group (or the normal admin JWT path). The rest of the admin website and `/api/sessions/*` remain behind the IP allowlist and existing authorization.
 
 If this Blueprint previously managed a separate `volley-draft-web` static site, removing that service from `render.yaml` does not delete the existing Render service. After the API deployment is verified, delete the old static site so it cannot remain as a second public entry point.
 

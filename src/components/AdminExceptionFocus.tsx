@@ -6,9 +6,10 @@ import {
   type AuthResponse,
   type SessionResponse,
 } from "../api/dbClient";
+import { MatchSettlementFocus } from "./MatchSettlementFocus";
 import { ZaloPollImportPanel } from "./ZaloPollImportPanel";
 
-type ExceptionFocus = "bot-overbook-control" | "auto-session-control" | "draft-workspace";
+type ExceptionFocus = "bot-overbook-control" | "auto-session-control" | "draft-workspace" | "match-settlement";
 type MessageSource = "AdminPool" | "Ai";
 type StageKey = "light" | "callout" | "sarcastic" | "stubborn";
 
@@ -50,6 +51,7 @@ const focusLabels: Record<ExceptionFocus, string> = {
   "bot-overbook-control": "Xác nhận dư slot",
   "auto-session-control": "Sửa liên kết Zalo / Auto Session",
   "draft-workspace": "Kiểm tra dữ liệu session",
+  "match-settlement": "Chốt tiền sau trận",
 };
 
 function cardStyle() {
@@ -106,9 +108,19 @@ export function AdminExceptionFocus({
     }
   }
 
+  const isSettlement = focus === "match-settlement";
+
+  if (isSettlement) {
+    return (
+      <section style={{ padding: "0 0 40px" }}>
+        <MatchSettlementFocus token={token} sessionId={sessionId} />
+      </section>
+    );
+  }
+
   return (
     <section style={{ padding: "16px 12px 40px" }}>
-      <div style={cardStyle()}>
+      {!isSettlement ? <div style={cardStyle()}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
           <AlertTriangle size={24} aria-hidden="true" />
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -121,7 +133,7 @@ export function AdminExceptionFocus({
             </p>
           </div>
         </div>
-      </div>
+      </div> : null}
 
       {!token ? (
         <form onSubmit={login} style={{ ...cardStyle(), marginTop: 12 }}>
@@ -161,10 +173,10 @@ export function AdminExceptionFocus({
         <FocusedSessionException token={token} sessionId={sessionId} />
       )}
 
-      <div style={{ width: "min(100%, 760px)", margin: "14px auto 0", opacity: 0.76, fontSize: 14 }}>
+      {!isSettlement ? <div style={{ width: "min(100%, 760px)", margin: "14px auto 0", opacity: 0.76, fontSize: 14 }}>
         <ArrowLeft size={15} style={{ verticalAlign: "middle", marginRight: 5 }} aria-hidden="true" />
         Sau khi xử lý xong, quay lại Zalo. Bot sẽ đọc state mới ở lượt tiếp theo.
-      </div>
+      </div> : null}
     </section>
   );
 }
