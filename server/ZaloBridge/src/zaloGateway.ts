@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 // The published 2.1.0 package points TypeScript at an invalid declaration entrypoint.
 // Keep all untyped interaction isolated in this adapter while runtime exports remain valid.
 import * as ZaloRuntime from "zca-js";
-import { isZaloRateLimitError } from "./bridgeErrors.js";
+import { isZaloRateLimitError, upstreamErrorCode } from "./bridgeErrors.js";
 import {
   boardEventDebounceKey,
   InboundMessageDeliveryGate,
@@ -51,7 +51,7 @@ import {
   normalizePoll,
   isGroupMemberDirectoryComplete,
   shouldLoadGroupLinkDirectory,
-  shouldPropagateGroupMemberDirectoryFailure,
+  shouldRetryUnavailableGroupLinkDirectory,
   shouldIncludeOwnAccount,
 } from "./pollLogic.js";
 import {
@@ -224,6 +224,8 @@ export type QrLoginSession = {
 const qrSessions = new Map<string, QrLoginSession>();
 const apiCache = new Map<string, { api: MinimalZaloApi; lastUsed: number }>();
 const activeListeners = new Map<string, ActiveListener>();
+const unavailableGroupLinkDirectories = new Map<string, number>();
+const unavailableGroupLinkDirectoryRetryMs = 15 * 60_000;
 const mockMode = process.env.ZALO_BRIDGE_MOCK === "true";
 
 type ActiveListener = {
@@ -951,9 +953,18 @@ export async function getGroupMemberDirectory(
   // getGroupInfo.memberIds is the authoritative UID directory. currentMems is
   // often only a hydrated subset, so comparing it with totalMember incorrectly
   // calls the invite-link endpoint even when every UID is already known.
-  if (shouldLoadGroupLinkDirectory(Boolean(info), expectedMemberCount, memberIds.size)) {
+  const groupLinkDirectoryKey = `${fingerprint(credentials)}:${normalizedGroupId}`;
+  const unavailableUntil = unavailableGroupLinkDirectories.get(groupLinkDirectoryKey);
+  const nowUnixMs = Date.now();
+  if (unavailableUntil !== undefined && unavailableUntil <= nowUnixMs) {
+    unavailableGroupLinkDirectories.delete(groupLinkDirectoryKey);
+  }
+  const canRetryGroupLinkDirectory = shouldRetryUnavailableGroupLinkDirectory(unavailableUntil, nowUnixMs);
+
+  if (shouldLoadGroupLinkDirectory(Boolean(info), expectedMemberCount, memberIds.size) && canRetryGroupLinkDirectory) {
     try {
       const linked = await getMembersFromGroupLink(api, normalizedGroupId);
+      unavailableGroupLinkDirectories.delete(groupLinkDirectoryKey);
       for (const member of linked.members) {
         memberIds.add(member.zaloUserId);
         const existingIndex = directMembers.findIndex(
@@ -970,22 +981,22 @@ export async function getGroupMemberDirectory(
       groupName ||= linked.groupName;
       linkDirectoryComplete = linked.isComplete;
     } catch (error) {
-      logZaloOperationFailure("getGroupLinkInfo.members", error, {
-        groupId: normalizedGroupId,
-      });
-      // A successful getGroupInfo call can legitimately return no usable group
-      // directory for privacy-restricted/unsupported groups. In that case the
-      // invite-link endpoint may also reject the lookup (for example Zalo code
-      // 114). That is a coverage limitation, not a bridge outage: return an
-      // incomplete directory so callers preserve existing membership state and
-      // do not hammer the provider with transport retries. If getGroupInfo itself
-      // failed, retain the original retryable failure semantics.
-      if (shouldPropagateGroupMemberDirectoryFailure(
-        primaryError !== null,
-        Boolean(info),
-        memberIds.size,
-      )) {
-        throw primaryError;
+      if (upstreamErrorCode(error) === "114") {
+        unavailableGroupLinkDirectories.set(
+          groupLinkDirectoryKey,
+          Date.now() + unavailableGroupLinkDirectoryRetryMs,
+        );
+        console.info("[Zalo bridge] group member link directory unavailable", {
+          groupId: normalizedGroupId,
+          retryAfterSeconds: Math.ceil(unavailableGroupLinkDirectoryRetryMs / 1_000),
+        });
+      } else {
+        logZaloOperationFailure("getGroupLinkInfo.members", error, {
+          groupId: normalizedGroupId,
+        });
+        if (!info && memberIds.size === 0) {
+          throw primaryError ?? error;
+        }
       }
     }
   }

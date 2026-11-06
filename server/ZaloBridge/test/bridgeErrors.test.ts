@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BridgeHttpError, bridgeErrorLogFields, classifyBridgeError } from "../src/bridgeErrors.js";
+import { BridgeHttpError, bridgeErrorLogFields, classifyBridgeError, upstreamErrorCode } from "../src/bridgeErrors.js";
 import { OutboundIdempotencyConflictError } from "../src/outboundIdempotency.js";
 
 test("preserves upstream 429 as an explicit rate-limit with safe provenance", () => {
@@ -35,6 +35,19 @@ test("maps upstream 5xx to bridge 502 while retaining upstream provenance", () =
   assert.equal(result.source, "upstream-zalo");
   assert.equal(result.kind, "upstream_failure");
   assert.equal(result.retryable, true);
+});
+
+test("treats Zalo code 114 without an HTTP status as a non-retryable upstream rejection", () => {
+  const error = { code: 114, message: "Tham số không hợp lệ" };
+
+  assert.equal(upstreamErrorCode(error), "114");
+  assert.deepEqual(classifyBridgeError(error), {
+    status: 400,
+    source: "upstream-zalo",
+    kind: "upstream_rejected",
+    retryable: false,
+    publicMessage: "Zalo upstream rejected the request.",
+  });
 });
 
 test("preserves intentional bridge validation errors", () => {

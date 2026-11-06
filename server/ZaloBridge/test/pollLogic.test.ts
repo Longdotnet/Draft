@@ -5,7 +5,7 @@ import {
   normalizeMemberId,
   normalizePoll,
   shouldLoadGroupLinkDirectory,
-  shouldPropagateGroupMemberDirectoryFailure,
+  shouldRetryUnavailableGroupLinkDirectory,
   shouldIncludeOwnAccount,
   uniqueVoterIds,
 } from "../src/pollLogic.js";
@@ -52,9 +52,9 @@ test("never marks a missing provider directory complete just because it is empty
   assert.equal(isGroupMemberDirectoryComplete(false, true, 0, 0, 0), true);
 });
 
-test("only retries member-directory fallback when the primary lookup itself failed", () => {
-  assert.equal(shouldPropagateGroupMemberDirectoryFailure(true, false, 0), true);
-  assert.equal(shouldPropagateGroupMemberDirectoryFailure(false, false, 0), false);
-  assert.equal(shouldPropagateGroupMemberDirectoryFailure(true, true, 0), false);
-  assert.equal(shouldPropagateGroupMemberDirectoryFailure(true, false, 1), false);
+test("backs off a provider-rejected group-link directory until its retry window expires", () => {
+  assert.equal(shouldRetryUnavailableGroupLinkDirectory(undefined, 1_000), true);
+  assert.equal(shouldRetryUnavailableGroupLinkDirectory(2_000, 1_000), false);
+  assert.equal(shouldRetryUnavailableGroupLinkDirectory(1_000, 1_000), true);
+  assert.equal(shouldRetryUnavailableGroupLinkDirectory(999, 1_000), true);
 });

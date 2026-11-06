@@ -40,7 +40,7 @@ function upstreamStatus(error: unknown): number | null {
   return finiteHttpStatus(response?.status) ?? finiteHttpStatus(root.status) ?? finiteHttpStatus(root.statusCode);
 }
 
-function upstreamCode(error: unknown): string | null {
+export function upstreamErrorCode(error: unknown): string | null {
   const root = readObject(error);
   const response = readObject(root?.response);
   const data = readObject(response?.data);
@@ -121,6 +121,16 @@ export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
   }
 
   const status = upstreamStatus(error);
+  const code = upstreamErrorCode(error);
+  if (status === null && code === "114") {
+    return {
+      status: 400,
+      source: "upstream-zalo",
+      kind: "upstream_rejected",
+      retryable: false,
+      publicMessage: "Zalo upstream rejected the request.",
+    };
+  }
   if (status !== null) {
     if (status === 429) {
       return {
@@ -179,7 +189,7 @@ export function bridgeErrorLogFields(error: unknown, descriptor: BridgeErrorDesc
     kind: descriptor.kind,
     status: descriptor.status,
     retryable: descriptor.retryable,
-    upstreamCode: upstreamCode(error),
+    upstreamCode: upstreamErrorCode(error),
     ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
   };
 }

@@ -44,12 +44,11 @@ export function isGroupMemberDirectoryComplete(
   return hasGroupInfo && hasMoreMember === 0;
 }
 
-export function shouldPropagateGroupMemberDirectoryFailure(
-  primaryLookupFailed: boolean,
-  hasGroupInfo: boolean,
-  knownMemberCount: number,
+export function shouldRetryUnavailableGroupLinkDirectory(
+  retryAfterUnixMs: number | undefined,
+  nowUnixMs: number,
 ): boolean {
-  return primaryLookupFailed && !hasGroupInfo && knownMemberCount === 0;
+  return retryAfterUnixMs === undefined || retryAfterUnixMs <= nowUnixMs;
 }
 
 export function uniqueVoterIds(options: BridgePollOption[], selectedOptionIds: string[]): string[] {
