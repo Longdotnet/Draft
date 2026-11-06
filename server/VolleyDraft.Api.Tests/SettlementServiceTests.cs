@@ -1125,6 +1125,60 @@ public sealed class SettlementServiceTests
     }
 
     [Fact]
+    public void Payment_roster_header_uses_authoritative_start_time_instead_of_legacy_name_time()
+    {
+        var session = new MatchSession
+        {
+            Id = "roster-header",
+            Name = "T5 05/11 17:30 - Thứ 5",
+            StartTime = new DateTimeOffset(2026, 11, 5, 19, 0, 0, TimeSpan.FromHours(7)),
+            Location = "UTE"
+        };
+
+        var copy = SettlementSummaryCardRenderer.BuildRosterHeaderCopy(session);
+
+        Assert.Contains("05/11", copy.Headline);
+        Assert.Contains("19:00", copy.Metadata);
+        Assert.DoesNotContain("17:30", copy.Headline);
+        Assert.DoesNotContain("17:30", copy.Metadata);
+        Assert.Contains("UTE", copy.Metadata);
+    }
+
+    [Fact]
+    public void Payment_roster_all_paid_uses_compact_adaptive_layout()
+    {
+        var session = new MatchSession
+        {
+            Id = "roster-paid",
+            Name = "T5 05/11 17:30 - Thứ 5",
+            StartTime = new DateTimeOffset(2026, 11, 5, 19, 0, 0, TimeSpan.FromHours(7))
+        };
+        var settlement = new MatchSettlement
+        {
+            Session = session,
+            SessionId = session.Id,
+            AmountPerFullSlot = 22_000m,
+            Entries = Enumerable.Range(1, 18)
+                .Select(index => new SettlementEntry
+                {
+                    Id = $"paid-{index}",
+                    DisplayNameSnapshot = $"Thành viên {index:00}",
+                    SlotFactor = index % 6 == 0 ? .5m : 1m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = index % 6 == 0 ? 11_000m : 22_000m
+                })
+                .ToList()
+        };
+
+        var bytes = new SettlementSummaryCardRenderer().RenderPaymentRoster(session, settlement);
+
+        using var bitmap = SKBitmap.Decode(bytes);
+        Assert.NotNull(bitmap);
+        Assert.Equal(1080, bitmap!.Width);
+        Assert.InRange(bitmap.Height, 1_050, 1_250);
+    }
+
+    [Fact]
     public async Task Delayed_unpaid_action_resolves_payment_status_at_send_time()
     {
         await using var fixture = await Fixture.CreateAsync();
