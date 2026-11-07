@@ -390,7 +390,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
         body: { amountPerFullSlot: amount },
       });
       applySettlementSnapshot(next);
-      setNotice("Đã cập nhật phí 1 slot.");
+      setNotice("Đã cập nhật mức cần thu / 1 slot. Tiền thực nhận đã ghi vẫn giữ nguyên.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không cập nhật được phí 1 slot.");
       setAmountInput(String(settlement.amountPerFullSlot));
@@ -817,16 +817,37 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           <div className="fund"><span>Dư trận này</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
         </div>
 
-        <label className="settlement-fee-field">
-          <span>Phí 1 slot</span>
-          <div>
-            <input inputMode="numeric" value={amountInput} onChange={(event) => setAmountInput(event.target.value.replace(/\D/g, ""))} onKeyDown={(event) => { if (event.key === "Enter") void saveAmount(); }} />
-            <span>đ</span>
+        <section className="settlement-fee-card" aria-label="Mức cần thu mỗi slot">
+          <div className="settlement-fee-card-copy">
+            <span className="settlement-fee-card-kicker">MỨC CẦN THU / 1 SLOT</span>
+            <strong>{formatMoney(settlement.amountPerFullSlot)}</strong>
+            <small>
+              1/2 slot: {formatMoney(settlement.amountPerFullSlot / 2)} • Đây là mức từ lệnh <code>@bot thu tiền 22k/người</code>.
+              Trưởng/phó nhóm có thể sửa tại đây; tiền thực nhận đã ghi không bị ghi đè.
+            </small>
           </div>
-          <button type="button" disabled={savingAmount || Number(amountInput) <= 0 || Number(amountInput) === settlement.amountPerFullSlot} onClick={() => void saveAmount()}>
-            {savingAmount ? "Đang lưu…" : "Lưu"}
+          <label className="settlement-fee-editor">
+            <span>Nhập mức mới</span>
+            <div>
+              <input
+                inputMode="numeric"
+                aria-label="Mức cần thu mới cho 1 slot"
+                value={amountInput}
+                onChange={(event) => setAmountInput(event.target.value.replace(/\D/g, ""))}
+                onKeyDown={(event) => { if (event.key === "Enter") void saveAmount(); }}
+              />
+              <span>đ</span>
+            </div>
+          </label>
+          <button
+            className="settlement-fee-save"
+            type="button"
+            disabled={savingAmount || Number(amountInput) <= 0 || Number(amountInput) === settlement.amountPerFullSlot}
+            onClick={() => void saveAmount()}
+          >
+            {savingAmount ? "Đang cập nhật…" : "Cập nhật mức thu"}
           </button>
-        </label>
+        </section>
       </div>
 
       {error && !composerOpen ? <div className="settlement-notice settlement-error-notice" role="alert">{error}</div> : null}

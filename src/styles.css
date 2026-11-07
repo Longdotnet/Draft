@@ -2250,6 +2250,110 @@
   margin-top: 16px;
 }
 
+.settlement-fee-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(210px, .75fr) auto;
+  align-items: end;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid rgba(10, 44, 98, 0.16);
+  border-radius: var(--settlement-radius);
+  background:
+    linear-gradient(112deg, rgba(10, 44, 98, 0.055), rgba(25, 135, 84, 0.035)),
+    #fff;
+}
+
+.settlement-fee-card-copy {
+  min-width: 0;
+}
+
+.settlement-fee-card-kicker,
+.settlement-fee-editor > span {
+  display: block;
+  color: var(--settlement-text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+}
+
+.settlement-fee-card-copy > strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--settlement-accent);
+  font-size: clamp(24px, 6vw, 32px);
+  font-weight: 1000;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-fee-card-copy > small {
+  display: block;
+  max-width: 620px;
+  margin-top: 6px;
+  color: var(--settlement-text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.settlement-fee-card-copy code {
+  color: var(--settlement-text);
+  font-family: inherit;
+  font-weight: 850;
+}
+
+.settlement-fee-editor > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 46px;
+  margin-top: 6px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  background: var(--settlement-surface-2);
+}
+
+.settlement-fee-editor input {
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  border: 0;
+  outline: 0;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--settlement-text);
+  font-size: 17px;
+  font-weight: 900;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-fee-editor > div > span {
+  padding-right: 12px;
+  color: var(--settlement-text-muted);
+  font-weight: 850;
+}
+
+.settlement-fee-save {
+  min-height: 46px;
+  border: 1px solid var(--settlement-accent);
+  border-radius: var(--settlement-radius);
+  padding: 0 16px;
+  background: var(--settlement-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.settlement-fee-save:disabled {
+  border-color: var(--settlement-border);
+  background: var(--settlement-surface-2);
+  color: var(--settlement-text-muted);
+  opacity: .62;
+}
+
 .settlement-fee-field > button {
   min-height: 44px;
   border: 1px solid var(--settlement-border);
@@ -3363,6 +3467,15 @@
 
   .settlement-fee-field {
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .settlement-fee-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .settlement-fee-save {
+    width: 100%;
   }
 
   .settlement-card-controls {
