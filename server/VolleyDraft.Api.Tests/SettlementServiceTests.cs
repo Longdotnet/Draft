@@ -1179,7 +1179,7 @@ public sealed class SettlementServiceTests
     }
 
     [Fact]
-    public void Payment_roster_uses_actual_received_amounts_hides_unpaid_rows_and_totals_received_cash()
+    public void Payment_roster_uses_actual_received_amounts_tracks_unpaid_rows_and_totals_received_cash()
     {
         var settlement = new MatchSettlement
         {
@@ -1226,10 +1226,81 @@ public sealed class SettlementServiceTests
         Assert.Equal(4, roster.TotalCount);
         Assert.Equal(3, roster.PaidRows.Count);
         Assert.DoesNotContain(roster.PaidRows, row => row.Name == "Chưa đóng");
+        Assert.Single(roster.UnpaidRows);
+        Assert.Equal("Chưa đóng", roster.UnpaidRows[0].Name);
+        Assert.Equal(22_000m, roster.UnpaidRows[0].Due);
         Assert.Equal(25_000m, roster.PaidRows.Single(row => row.Name == "Đặng Thế Nguyễn").Received);
         Assert.Equal(23_000m, roster.PaidRows.Single(row => row.Name == "Trần Hải Nam").Received);
         Assert.Equal(11_000m, roster.PaidRows.Single(row => row.Name == "Legacy Paid").Received);
         Assert.Equal(59_000m, roster.TotalReceived);
+    }
+
+    [Fact]
+    public void Payment_roster_all_paid_has_no_unpaid_section_data()
+    {
+        var settlement = new MatchSettlement
+        {
+            AmountPerFullSlot = 22_000m,
+            Entries =
+            [
+                new SettlementEntry
+                {
+                    Id = "paid-a",
+                    DisplayNameSnapshot = "A",
+                    SlotFactor = 1m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = 25_000m
+                },
+                new SettlementEntry
+                {
+                    Id = "paid-b",
+                    DisplayNameSnapshot = "B",
+                    SlotFactor = 1m,
+                    PaymentStatus = SettlementPaymentStatus.Paid,
+                    ActualPaidAmount = 22_000m
+                }
+            ]
+        };
+
+        var roster = SettlementSummaryCardRenderer.BuildPaymentRosterSnapshot(settlement);
+
+        Assert.Equal(2, roster.PaidRows.Count);
+        Assert.Empty(roster.UnpaidRows);
+        Assert.Equal(47_000m, roster.TotalReceived);
+    }
+
+    [Fact]
+    public void Payment_roster_with_unpaid_people_expands_layout_for_conditional_unpaid_section()
+    {
+        var session = new MatchSession
+        {
+            Id = "roster-partial",
+            Name = "T5 05/11",
+            StartTime = new DateTimeOffset(2026, 11, 5, 19, 0, 0, TimeSpan.FromHours(7))
+        };
+        var settlement = new MatchSettlement
+        {
+            Session = session,
+            SessionId = session.Id,
+            AmountPerFullSlot = 22_000m,
+            Entries = Enumerable.Range(1, 18)
+                .Select(index => new SettlementEntry
+                {
+                    Id = $"entry-{index}",
+                    DisplayNameSnapshot = $"Thành viên {index:00}",
+                    SlotFactor = 1m,
+                    PaymentStatus = index <= 15 ? SettlementPaymentStatus.Paid : SettlementPaymentStatus.Unpaid,
+                    ActualPaidAmount = index <= 15 ? 22_000m : 0m
+                })
+                .ToList()
+        };
+
+        var bytes = new SettlementSummaryCardRenderer().RenderPaymentRoster(session, settlement);
+
+        using var bitmap = SKBitmap.Decode(bytes);
+        Assert.NotNull(bitmap);
+        Assert.Equal(1080, bitmap!.Width);
+        Assert.True(bitmap.Height > 1_250);
     }
 
     [Fact]

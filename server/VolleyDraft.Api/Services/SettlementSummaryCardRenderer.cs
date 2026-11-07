@@ -19,6 +19,7 @@ public sealed class SettlementSummaryCardRenderer
     private const int RosterOverviewHeight = 174;
     private const int RosterListTop = 452;
     private const int RosterFooterHeight = 96;
+    private const int RosterSectionGap = 22;
 
     private static readonly SKColor Navy = new(5, 28, 68);
     private static readonly SKColor Red = new(205, 12, 42);
@@ -112,6 +113,7 @@ public sealed class SettlementSummaryCardRenderer
     {
         var roster = BuildPaymentRosterSnapshot(settlement);
         var paid = roster.PaidRows;
+        var unpaid = roster.UnpaidRows;
         var preferredRowHeight = roster.TotalCount switch
         {
             <= 24 => 54,
@@ -119,13 +121,17 @@ public sealed class SettlementSummaryCardRenderer
             <= 100 => 42,
             _ => 34
         };
-        var totalGridRows = GridRowCount(paid.Count, true);
-        var sectionChromeHeight = 92;
+        var totalGridRows = GridRowCount(paid.Count, true) + GridRowCount(unpaid.Count, false);
+        var sectionCount = unpaid.Count > 0 ? 2 : 1;
+        var sectionChromeHeight = sectionCount * 92 + (sectionCount - 1) * RosterSectionGap;
         var availableForRows = MaxHeight - RosterListTop - RosterFooterHeight - sectionChromeHeight - 24;
         var fitRowHeight = totalGridRows == 0 ? preferredRowHeight : Math.Max(26, availableForRows / totalGridRows);
         var rowHeight = Math.Min(preferredRowHeight, fitRowHeight);
-        var sectionHeight = SectionHeight(paid.Count, true, rowHeight);
-        var height = Math.Clamp(RosterListTop + sectionHeight + RosterFooterHeight + 24, 980, MaxHeight);
+        var paidSectionHeight = SectionHeight(paid.Count, true, rowHeight);
+        var unpaidSectionHeight = unpaid.Count > 0 ? SectionHeight(unpaid.Count, false, rowHeight) : 0;
+        var sectionsHeight = paidSectionHeight +
+                             (unpaid.Count > 0 ? RosterSectionGap + unpaidSectionHeight : 0);
+        var height = Math.Clamp(RosterListTop + sectionsHeight + RosterFooterHeight + 24, 980, MaxHeight);
 
         using var surface = SKSurface.Create(new SKImageInfo(Width, height, SKColorType.Rgba8888, SKAlphaType.Premul))
             ?? throw new InvalidOperationException("Could not create settlement roster canvas.");
@@ -136,9 +142,18 @@ public sealed class SettlementSummaryCardRenderer
         DrawRosterOverview(canvas, settlement.AmountPerFullSlot, roster.TotalReceived, paid.Count, roster.TotalCount);
         DrawRosterPaidSection(
             canvas,
-            new SKRect(SidePadding, RosterListTop, Width - SidePadding, RosterListTop + sectionHeight),
+            new SKRect(SidePadding, RosterListTop, Width - SidePadding, RosterListTop + paidSectionHeight),
             paid,
             rowHeight);
+        if (unpaid.Count > 0)
+        {
+            var unpaidTop = RosterListTop + paidSectionHeight + RosterSectionGap;
+            DrawRosterUnpaidSection(
+                canvas,
+                new SKRect(SidePadding, unpaidTop, Width - SidePadding, unpaidTop + unpaidSectionHeight),
+                unpaid,
+                rowHeight);
+        }
 
         DrawRosterFooter(canvas, height, paid.Count, roster.TotalCount);
 
@@ -159,8 +174,17 @@ public sealed class SettlementSummaryCardRenderer
             })
             .OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+        var unpaidRows = settlement.Entries
+            .Where(entry => entry.PaymentStatus != SettlementPaymentStatus.Paid)
+            .Select(entry => new PaymentRosterUnpaidRow(
+                entry.DisplayNameSnapshot.Trim(),
+                settlement.AmountPerFullSlot * entry.SlotFactor,
+                entry.SlotFactor))
+            .OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
         return new PaymentRosterSnapshot(
             paidRows,
+            unpaidRows,
             settlement.Entries.Count,
             paidRows.Sum(row => row.Received));
     }
@@ -337,7 +361,24 @@ public sealed class SettlementSummaryCardRenderer
         var progressLeft = splitX + 32;
         var progressRight = outer.Right - 32;
         var progress = totalCount == 0 ? 0f : Math.Clamp(paidCount / (float)totalCount, 0f, 1f);
-        DrawText(canvas, "TIẾN ĐỘ GHI NHẬN", progressLeft, outer.Top + 39, 14, Muted, true, 240, BlackTypeface);
+        DrawText(canvas, "TIẾN ĐỘ", progressLeft, outer.Top + 39, 14, Muted, true, 120, BlackTypeface);
+        var unpaidCount = Math.Max(0, totalCount - paidCount);
+        if (unpaidCount > 0)
+        {
+            var statusRect = new SKRect(progressRight - 190, outer.Top + 17, progressRight, outer.Top + 54);
+            DrawRoundedRect(canvas, statusRect, 19, RedSoft);
+            DrawText(
+                canvas,
+                $"CÒN {unpaidCount} CHƯA ĐÓNG",
+                statusRect.MidX,
+                statusRect.Top + 24,
+                12,
+                Red,
+                true,
+                statusRect.Width - 20,
+                BlackTypeface,
+                SKTextAlign.Center);
+        }
         DrawText(canvas, $"{paidCount}/{totalCount}", progressLeft, outer.Top + 79, 31, Navy, true, 150, BlackTypeface);
         DrawText(canvas, "đã ghi nhận", progressLeft + 112, outer.Top + 76, 16, Muted, false, 160);
         DrawRoundedRect(canvas, new SKRect(progressLeft, outer.Top + 102, progressRight, outer.Top + 112), 5, new SKColor(231, 235, 242));
@@ -423,6 +464,56 @@ public sealed class SettlementSummaryCardRenderer
             if (hasHalfSlotLabel)
                 DrawText(canvas, "1/2 slot", left + numberSize + 12, nameBaseline + 17, 11, Muted, false, 70);
             DrawText(canvas, Money(row.Received), left + columnWidth, centerY + 6, amountSize, Success, true, 140, BlackTypeface, SKTextAlign.Right);
+        }
+    }
+
+    private static void DrawRosterUnpaidSection(
+        SKCanvas canvas,
+        SKRect rect,
+        IReadOnlyList<PaymentRosterUnpaidRow> rows,
+        int rowHeight)
+    {
+        DrawRoundedRect(canvas, rect, 28, Surface, Border);
+        var header = new SKRect(rect.Left + 18, rect.Top + 16, rect.Right - 18, rect.Top + 72);
+        DrawRoundedRect(canvas, header, 18, RedSoft);
+        DrawStatusIcon(canvas, header.Left + 28, header.MidY, 11, false);
+        DrawText(canvas, "CHƯA ĐÓNG", header.Left + 52, header.Top + 36, 18, Red, true, 210, BlackTypeface);
+        DrawText(canvas, $"{rows.Count} người", header.Right - 18, header.Top + 36, 16, Muted, true, 120, null, SKTextAlign.Right);
+
+        var columns = GridColumnCount(rows.Count, false);
+        var rowsPerColumn = (int)Math.Ceiling(rows.Count / (double)columns);
+        const float columnGap = 32f;
+        var innerLeft = rect.Left + 28;
+        var innerRight = rect.Right - 28;
+        var columnWidth = columns == 1
+            ? innerRight - innerLeft
+            : (innerRight - innerLeft - columnGap) / 2f;
+        var gridTop = rect.Top + 88;
+
+        for (var index = 0; index < rows.Count; index++)
+        {
+            var column = index / rowsPerColumn;
+            var rowIndex = index % rowsPerColumn;
+            var left = innerLeft + column * (columnWidth + columnGap);
+            var top = gridTop + rowIndex * rowHeight;
+            var centerY = top + rowHeight / 2f;
+            var row = rows[index];
+
+            if (rowIndex > 0)
+            {
+                using var divider = new SKPaint { Color = new SKColor(237, 240, 245), StrokeWidth = 1f, IsAntialias = true };
+                canvas.DrawLine(left, top, left + columnWidth, top, divider);
+            }
+
+            DrawStatusIcon(canvas, left + 12, centerY, rowHeight < 40 ? 8f : 10f, false);
+            var hasHalfSlotLabel = row.SlotFactor == .5m && rowHeight >= 46;
+            var nameSize = rowHeight >= 50 ? 17 : rowHeight >= 42 ? 15 : 13;
+            var amountSize = rowHeight >= 50 ? 17 : rowHeight >= 42 ? 15 : 13;
+            var nameBaseline = centerY + (hasHalfSlotLabel ? -1 : 6);
+            DrawText(canvas, row.Name, left + 34, nameBaseline, nameSize, Text, true, columnWidth - 190);
+            if (hasHalfSlotLabel)
+                DrawText(canvas, "1/2 slot", left + 34, nameBaseline + 17, 11, Muted, false, 70);
+            DrawText(canvas, Money(row.Due), left + columnWidth, centerY + 6, amountSize, Red, true, 140, BlackTypeface, SKTextAlign.Right);
         }
     }
 
@@ -619,8 +710,11 @@ public sealed class SettlementSummaryCardRenderer
 
     internal sealed record PaymentRosterRow(string Name, decimal Received, decimal SlotFactor);
 
+    internal sealed record PaymentRosterUnpaidRow(string Name, decimal Due, decimal SlotFactor);
+
     internal sealed record PaymentRosterSnapshot(
         IReadOnlyList<PaymentRosterRow> PaidRows,
+        IReadOnlyList<PaymentRosterUnpaidRow> UnpaidRows,
         int TotalCount,
         decimal TotalReceived);
 }
