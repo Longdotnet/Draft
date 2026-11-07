@@ -1,3 +1,4 @@
+using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Services;
 using Xunit;
 
@@ -55,6 +56,31 @@ public sealed class ZaloConversationStateMigrationPolicyTests
             "AutoDraftConfirm",
             text);
 
+        Assert.Equal(ZaloTopicSwitchDecision.ContinuePending, result.Decision);
+    }
+
+    [Fact]
+    public void Structured_multiword_bot_mention_confirmation_survives_pending_migration()
+    {
+        const string content = "@B O T xác nhận";
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "group",
+            messageId: "confirm-message",
+            senderId: "sender",
+            senderName: "Nghuy",
+            content: content,
+            mentions: [new ZaloBridgeMention("bot-account", 0, "@B O T".Length)],
+            mentionedBot: true,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        var result = ZaloConversationStateMigrationPolicy.Evaluate(
+            ZaloBotIntent.TeamPreferenceConfirm.ToString(),
+            question);
+
+        Assert.Equal("xác nhận", question);
         Assert.Equal(ZaloTopicSwitchDecision.ContinuePending, result.Decision);
     }
 

@@ -710,7 +710,14 @@ public sealed partial class ZaloOverbookService
             return;
         }
 
-        var migration = ZaloConversationStateMigrationPolicy.Evaluate(pending.PendingIntent, incoming.Content);
+        // Evaluate the user question after removing the structured bot mention.
+        // Zalo bot display names may contain spaces (for example "@B O T"). Passing
+        // raw Content here makes the migration policy strip only "@B", leaving
+        // "O T xác nhận" and incorrectly deleting an executable confirmation state
+        // before the legacy domain router can consume it.
+        var migration = ZaloConversationStateMigrationPolicy.Evaluate(
+            pending.PendingIntent,
+            ZaloBotService.ExtractQuestion(incoming));
         if (migration.Decision != ZaloTopicSwitchDecision.SwitchToNewIntent) return;
 
         db.ZaloBotConversationStates.Remove(pending);
