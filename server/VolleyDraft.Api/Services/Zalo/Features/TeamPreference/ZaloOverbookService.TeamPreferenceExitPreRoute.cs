@@ -12,8 +12,17 @@ internal sealed record ZaloTeamPreferenceExitPendingPayload(
     bool Applied,
     string? AppliedResponse);
 
+internal sealed record ZaloTeamPreferenceExitSessionChoicePayload(
+    IReadOnlyList<string> CandidateSessionIds,
+    string? TargetZaloUserId,
+    string? TargetDisplayName,
+    bool AiInterpreted,
+    double SemanticConfidence,
+    string SemanticReason);
+
 public sealed partial class ZaloOverbookService
 {
+    private const string TeamPreferenceExitSessionChoiceIntent = "TeamPreferenceExitSessionChoice";
     private const string TeamPreferenceExitPendingIntent = "TeamPreferenceExitConfirm";
     private const string TeamPreferenceExitApplyingIntent = "TeamPreferenceExitApplying";
     private const string TeamPreferenceExitAppliedIntent = "TeamPreferenceExitApplied";
@@ -53,7 +62,8 @@ public sealed partial class ZaloOverbookService
             item.ZaloConnectionId == connection.Id && item.MessageId == incoming.MessageId,
             cancellationToken);
         if (existingIncoming?.BotReplySentAt is not null &&
-            (existingIncoming.SelectedIntent == TeamPreferenceExitPendingIntent ||
+            (existingIncoming.SelectedIntent == TeamPreferenceExitSessionChoiceIntent ||
+             existingIncoming.SelectedIntent == TeamPreferenceExitPendingIntent ||
              existingIncoming.SelectedIntent == TeamPreferenceExitAppliedIntent))
             return true;
 
@@ -70,7 +80,29 @@ public sealed partial class ZaloOverbookService
             pending = null;
         }
 
+        if (pending is not null && pending.PendingIntent == TeamPreferenceExitSessionChoiceIntent)
+        {
+            if (await TryContinueTeamPreferenceExitSessionChoiceAsync(
+                    connection.Id,
+                    connection.AccountZaloId,
+                    connection.DisplayName,
+                    groupId,
+                    senderId,
+                    pending,
+                    incoming,
+                    cancellationToken))
+                return true;
+
+            // The follow-up did not ground to one of the pending sessions. Treat it as
+            // a topic switch rather than trapping unrelated chat behind an old prompt.
+            db.ZaloBotConversationStates.Remove(pending);
+            await db.SaveChangesAsync(cancellationToken);
+            pending = null;
+        }
+
         var explicitApartRequest = ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(incoming.Content);
+        var explicitConsentRemovalRequest =
+            ZaloTeamPreferenceExitSemanticInterpreter.LooksExplicitConsentRemovalLanguage(incoming.Content);
         if (pending is not null && IsTeamPreferenceExitState(pending.PendingIntent) && explicitApartRequest)
         {
             // A fresh explicit APART request is a topic switch, not confirmation of an
@@ -103,7 +135,7 @@ public sealed partial class ZaloOverbookService
             }
         }
 
-        if (explicitApartRequest)
+        if (explicitApartRequest && !explicitConsentRemovalRequest)
             return false;
 
         if (!ZaloTeamPreferenceExitSemanticInterpreter.LooksPotentialExitLanguage(incoming.Content))
@@ -120,12 +152,28 @@ public sealed partial class ZaloOverbookService
 
         var mentions = ExtractTeamPreferenceExitMentions(incoming, candidates);
         var directNegation = ZaloNaturalCommandParser.IsNegatedTeamPreference(incoming.Content);
+        var explicitSelfExit =
+            ZaloTeamPreferenceExitSemanticInterpreter.LooksExplicitSelfExitLanguage(incoming.Content);
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        var deterministicSessionReference = ZaloConversationCore.LooksLikeSessionSelector(question)
+            ? question
+            : null;
         ZaloTeamPreferenceExitMeaningDecision semantic;
         var aiCalled = false;
 
+        if (explicitSelfExit)
+        {
+            semantic = new(
+                ZaloTeamPreferenceExitMeaningKind.SuggestExit,
+                1,
+                null,
+                null,
+                deterministicSessionReference,
+                "deterministic_self_exit");
+        }
         // Explicit negation + one authoritative member mention is safe to understand
         // deterministically. It still produces only a preview, never an immediate write.
-        if (directNegation && mentions.Count == 1 &&
+        else if (directNegation && mentions.Count == 1 &&
             candidates.Any(candidate => candidate.Members.Any(member =>
                 member.ZaloUserId == ZaloOverbookLogic.NormalizeId(mentions[0].ZaloUserId))))
         {
@@ -134,7 +182,7 @@ public sealed partial class ZaloOverbookService
                 1,
                 ZaloOverbookLogic.NormalizeId(mentions[0].ZaloUserId),
                 mentions[0].DisplayName,
-                null,
+                deterministicSessionReference,
                 "deterministic_explicit_negation");
         }
         else
@@ -181,7 +229,7 @@ public sealed partial class ZaloOverbookService
 
         var sessionSelector = semantic.SessionReference;
         if (candidates.Count > 1 && string.IsNullOrWhiteSpace(sessionSelector))
-            sessionSelector = incoming.Content;
+            sessionSelector = question;
         var plan = exitService.BuildPlan(
             candidates,
             senderId,
@@ -196,6 +244,26 @@ public sealed partial class ZaloOverbookService
         if (plan is null)
         {
             if (string.IsNullOrWhiteSpace(clarification)) return false;
+            if (NeedsTeamPreferenceExitSessionChoice(candidates, sessionSelector))
+            {
+                await SaveTeamPreferenceExitSessionChoiceAsync(
+                    connection.Id,
+                    groupId,
+                    senderId,
+                    new ZaloTeamPreferenceExitSessionChoicePayload(
+                        candidates.Select(candidate => candidate.SessionId).Distinct(StringComparer.Ordinal).ToList(),
+                        semantic.TargetZaloUserId,
+                        semantic.TargetDisplayName,
+                        aiCalled,
+                        semantic.Confidence,
+                        semantic.Reason),
+                    cancellationToken);
+                await SendTeamPreferenceExitReplyAsync(
+                    connection.Id, connection.AccountZaloId, connection.DisplayName,
+                    groupId, incoming, clarification!, TeamPreferenceExitSessionChoiceIntent,
+                    aiCalled, "session_clarification", cancellationToken);
+                return true;
+            }
             await SendTeamPreferenceExitReplyAsync(
                 connection.Id, connection.AccountZaloId, connection.DisplayName,
                 groupId, incoming, clarification!, TeamPreferenceExitPendingIntent,
@@ -214,6 +282,131 @@ public sealed partial class ZaloOverbookService
             connection.Id, connection.AccountZaloId, connection.DisplayName,
             groupId, incoming, preview, TeamPreferenceExitPendingIntent,
             aiCalled, "preview", cancellationToken);
+        return true;
+    }
+
+    private async Task<bool> TryContinueTeamPreferenceExitSessionChoiceAsync(
+        string connectionId,
+        string accountId,
+        string botName,
+        string groupId,
+        string senderId,
+        ZaloBotConversationState pending,
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        ZaloTeamPreferenceExitSessionChoicePayload? payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize<ZaloTeamPreferenceExitSessionChoicePayload>(pending.PendingPayloadJson);
+        }
+        catch (JsonException)
+        {
+            payload = null;
+        }
+        if (payload is null || payload.CandidateSessionIds.Count == 0)
+            return false;
+
+        if (ZaloBotIntelligence.IsCancel(incoming.Content))
+        {
+            db.ZaloBotConversationStates.Remove(pending);
+            await db.SaveChangesAsync(cancellationToken);
+            await SendTeamPreferenceExitReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                "Ok, mình huỷ yêu cầu rời nhóm chung team. Chưa có dữ liệu nào bị đổi.",
+                TeamPreferenceExitSessionChoiceIntent,
+                false,
+                "cancelled",
+                cancellationToken);
+            return true;
+        }
+
+        var exitService = new ZaloTeamPreferenceExitService(db);
+        var candidateIds = payload.CandidateSessionIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+        var candidates = (await exitService.LoadCandidatesAsync(
+                connectionId,
+                groupId,
+                senderId,
+                cancellationToken))
+            .Where(candidate => candidateIds.Contains(candidate.SessionId))
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            db.ZaloBotConversationStates.Remove(pending);
+            await db.SaveChangesAsync(cancellationToken);
+            await SendTeamPreferenceExitReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                "Nhóm chung team đang chờ chọn buổi không còn phù hợp nữa. Hãy gửi lại yêu cầu để mình đọc trạng thái mới.",
+                TeamPreferenceExitSessionChoiceIntent,
+                false,
+                "stale_selection",
+                cancellationToken);
+            return true;
+        }
+
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        var normalizedSelection = ZaloBotIntelligence.Normalize(question);
+        var exactCandidateName = candidates.Any(candidate =>
+            string.Equals(
+                ZaloBotIntelligence.Normalize(candidate.SessionName),
+                normalizedSelection,
+                StringComparison.Ordinal));
+        if (!exactCandidateName && !Zalo.Conversation.ZaloSessionResolver.LooksLikeStandaloneSelector(question))
+        {
+            // This pending state only owns a short session answer. A new command that
+            // merely contains a date token belongs to normal routing.
+            return false;
+        }
+
+        var refs = candidates
+            .Select(candidate => new ZaloSessionReference(candidate.SessionId, candidate.SessionName, candidate.StartTime))
+            .ToList();
+        var resolution = ZaloConversationCore.ResolveSession(question, refs, DateTimeOffset.UtcNow);
+        if (!resolution.HasExplicitSelector)
+            return false;
+
+        var plan = exitService.BuildPlan(
+            candidates,
+            senderId,
+            incoming.MessageId,
+            payload.TargetZaloUserId,
+            payload.TargetDisplayName,
+            question,
+            payload.AiInterpreted,
+            payload.SemanticConfidence,
+            payload.SemanticReason,
+            out var clarification);
+        if (plan is null)
+        {
+            if (resolution.CandidateIds.Count == 1)
+            {
+                db.ZaloBotConversationStates.Remove(pending);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            await SendTeamPreferenceExitReplyAsync(
+                connectionId, accountId, botName, groupId, incoming,
+                clarification ?? "Mình chưa khớp được đúng buổi. Hãy trả lời lại bằng ngày hoặc tên trận.",
+                TeamPreferenceExitSessionChoiceIntent,
+                payload.AiInterpreted,
+                "session_clarification",
+                cancellationToken);
+            return true;
+        }
+
+        var preview = BuildTeamPreferenceExitPreview(plan, payload.TargetDisplayName);
+        await SaveTeamPreferenceExitPendingAsync(
+            connectionId,
+            groupId,
+            senderId,
+            new ZaloTeamPreferenceExitPendingPayload(plan, preview, false, null),
+            cancellationToken);
+        await SendTeamPreferenceExitReplyAsync(
+            connectionId, accountId, botName, groupId, incoming,
+            preview, TeamPreferenceExitPendingIntent,
+            payload.AiInterpreted, "preview", cancellationToken);
         return true;
     }
 
@@ -372,6 +565,39 @@ public sealed partial class ZaloOverbookService
         }
 
         state.PendingIntent = TeamPreferenceExitPendingIntent;
+        state.PendingPayloadJson = JsonSerializer.Serialize(payload);
+        state.PreviousCommand = "TeamPreferenceExit";
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(
+            configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15), 1, 120));
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveTeamPreferenceExitSessionChoiceAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        ZaloTeamPreferenceExitSessionChoicePayload payload,
+        CancellationToken cancellationToken)
+    {
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == senderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = senderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+
+        state.PendingIntent = TeamPreferenceExitSessionChoiceIntent;
         state.PendingPayloadJson = JsonSerializer.Serialize(payload);
         state.PreviousCommand = "TeamPreferenceExit";
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(
@@ -578,7 +804,23 @@ public sealed partial class ZaloOverbookService
             .ToList();
     }
 
+    private static bool NeedsTeamPreferenceExitSessionChoice(
+        IReadOnlyList<ZaloTeamPreferenceExitCandidate> candidates,
+        string? sessionSelector)
+    {
+        if (candidates.Count == 0) return false;
+        if (string.IsNullOrWhiteSpace(sessionSelector)) return candidates.Count > 1;
+
+        var references = candidates
+            .Select(candidate => new ZaloSessionReference(candidate.SessionId, candidate.SessionName, candidate.StartTime))
+            .ToList();
+        var resolution = ZaloConversationCore.ResolveSession(sessionSelector, references, DateTimeOffset.UtcNow);
+        if (!resolution.HasExplicitSelector) return candidates.Count > 1;
+        return resolution.CandidateIds.Count != 1;
+    }
+
     private static bool IsTeamPreferenceExitState(string? intent) =>
+        intent == TeamPreferenceExitSessionChoiceIntent ||
         intent == TeamPreferenceExitPendingIntent ||
         intent == TeamPreferenceExitApplyingIntent ||
         intent == TeamPreferenceExitAppliedIntent;

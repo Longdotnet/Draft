@@ -32,7 +32,13 @@ internal sealed class ZaloTeamPreferenceExitSemanticInterpreter
 {
     private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromSeconds(20) };
     private static readonly Regex ExitCandidatePattern = new(
-        @"(?<![a-z0-9])(?:ghet|khong\s+thich|ko\s+thich|k\s+thich|hong\s+thich|khong\s+muon|ko\s+muon|k\s+muon|dung\s+xep|khoi\s+xep|tach|ne|tranh|bo\s+ra|rut\s+ra|choi\s+rieng)(?![a-z0-9])",
+        @"(?<![a-z0-9])(?:ghet|khong\s+thich|ko\s+thich|k\s+thich|hong\s+thich|khong\s+muon|ko\s+muon|k\s+muon|dung\s+xep|khoi\s+xep|tach|ne|tranh|roi|bo\s+ra|rut\s+ra|choi\s+rieng)(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex ExplicitSelfExitPattern = new(
+        @"(?<![a-z0-9])(?:roi|rut|bo)(?:\s+(?:khoi|ra))?\s+(?:nhom\s+)?(?:chung|cung)(?:\s+(?:team|doi))?(?![a-z0-9])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex AnymorePattern = new(
+        @"(?<![a-z0-9])nua(?![a-z0-9])",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly IConfiguration configuration;
@@ -64,6 +70,21 @@ internal sealed class ZaloTeamPreferenceExitSemanticInterpreter
         if (string.IsNullOrWhiteSpace(content)) return false;
         if (ZaloNaturalCommandParser.IsNegatedTeamPreference(content)) return true;
         return ExitCandidatePattern.IsMatch(ZaloBotIntelligence.Normalize(content));
+    }
+
+    public static bool LooksExplicitSelfExitLanguage(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        return ExplicitSelfExitPattern.IsMatch(ZaloBotIntelligence.Normalize(content));
+    }
+
+    public static bool LooksExplicitConsentRemovalLanguage(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        if (LooksExplicitSelfExitLanguage(content)) return true;
+        var normalized = ZaloBotIntelligence.Normalize(content);
+        return ZaloNaturalCommandParser.IsNegatedTeamPreference(content) &&
+               AnymorePattern.IsMatch(normalized);
     }
 
     public async Task<ZaloTeamPreferenceExitMeaningDecision> InterpretAsync(

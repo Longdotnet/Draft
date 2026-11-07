@@ -91,6 +91,25 @@ public sealed class ZaloTeamPreferenceExitSemanticInterpreterTests
         Assert.True(ZaloTeamPreferenceExitSemanticInterpreter.LooksPotentialExitLanguage(text));
     }
 
+    [Fact]
+    public void Production_leave_group_phrase_is_explicit_deterministic_self_exit()
+    {
+        const string text = "tui muốn rời nhóm chung team trận T7 07/11";
+
+        Assert.True(ZaloTeamPreferenceExitSemanticInterpreter.LooksPotentialExitLanguage(text));
+        Assert.True(ZaloTeamPreferenceExitSemanticInterpreter.LooksExplicitSelfExitLanguage(text));
+        Assert.True(ZaloTeamPreferenceExitSemanticInterpreter.LooksExplicitConsentRemovalLanguage(text));
+    }
+
+    [Fact]
+    public void Negated_same_team_with_anymore_is_consent_removal_not_plain_apart_request()
+    {
+        const string text = "tui không muốn chung team với @To An nữa";
+
+        Assert.True(ZaloNaturalCommandParser.IsExplicitTeamSeparationRequest(text));
+        Assert.True(ZaloTeamPreferenceExitSemanticInterpreter.LooksExplicitConsentRemovalLanguage(text));
+    }
+
     private static IConfiguration Configuration() => new ConfigurationBuilder()
         .AddInMemoryCollection(new Dictionary<string, string?>
         {

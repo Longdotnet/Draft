@@ -403,6 +403,27 @@ public sealed partial class ZaloBotService(
                 false,
                 pending.ShareCommand);
         }
+        if (pending.TeamPreferenceCommand is not null && pending.Session is not null)
+        {
+            return await HandleTeamPreferenceAsync(
+                new ZaloIntentDecision(
+                    ZaloBotIntent.TeamPreference,
+                    1,
+                    pending.Session.Name,
+                    false,
+                    null,
+                    "team_preference_session_selected"),
+                [pending.Session],
+                NormalizeText(pending.Session.Name),
+                question,
+                activeConnectionId,
+                groupId,
+                incoming,
+                cancellationToken,
+                pending.TeamPreferenceSelectionAiCalled,
+                pending.TeamPreferenceCommand,
+                pending.TeamPreferenceReplyLanguage);
+        }
         if (pending.TeamPreferencePlan is not null && pending.Session is not null)
         {
             return await ApplyTeamPreferencePlanAsync(
@@ -1137,6 +1158,74 @@ public sealed partial class ZaloBotService(
                 null,
                 "Mình đang chờ xác nhận phương án cân bằng team. Gõ @bot xác nhận để áp dụng hoặc @bot huỷ.");
         }
+        if (state.PendingIntent == ZaloBotIntent.TeamPreference.ToString())
+        {
+            TeamPreferenceSelectionPayload? payload;
+            try { payload = JsonSerializer.Deserialize<TeamPreferenceSelectionPayload>(state.PendingPayloadJson); }
+            catch (JsonException) { payload = null; }
+            if (payload is null)
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+
+            var teamPreferenceCandidates = sessions
+                .Where(session => payload.SessionIds.Contains(session.Id, StringComparer.Ordinal))
+                .ToList();
+            var normalizedSelection = ZaloBotIntelligence.Normalize(normalizedQuestion);
+            var exactCandidateName = teamPreferenceCandidates.Any(session =>
+                string.Equals(
+                    ZaloBotIntelligence.Normalize(session.Name),
+                    normalizedSelection,
+                    StringComparison.Ordinal));
+            if (!exactCandidateName && !Zalo.Conversation.ZaloSessionResolver.LooksLikeStandaloneSelector(normalizedQuestion))
+            {
+                // A session-choice prompt only owns a short selector answer (or the
+                // exact candidate name). Full fresh commands such as "8 hôm nay" must
+                // continue normal routing even though they contain a date token.
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+
+            var selected = SelectSession(teamPreferenceCandidates, normalizedQuestion);
+            if (selected.Session is not null)
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return new PendingResolution(
+                    false,
+                    ZaloBotIntent.TeamPreference,
+                    selected.Session,
+                    null,
+                    TeamPreferenceReplyLanguage: payload.ReplyLanguage,
+                    TeamPreferenceCommand: payload.Command,
+                    TeamPreferenceSelectionAiCalled: payload.AiCalled);
+            }
+
+            var references = teamPreferenceCandidates
+                .Select(session => new ZaloSessionReference(session.Id, session.Name, session.StartTime))
+                .ToList();
+            var resolution = ZaloConversationCore.ResolveSession(
+                normalizedQuestion,
+                references,
+                DateTimeOffset.UtcNow);
+            if (!resolution.HasExplicitSelector)
+            {
+                db.ZaloBotConversationStates.Remove(state);
+                await db.SaveChangesAsync(cancellationToken);
+                return PendingResolution.None;
+            }
+
+            return new PendingResolution(
+                false,
+                null,
+                null,
+                selected.Clarification ?? ZaloTeamPreferenceReplyText.SessionClarification(
+                    payload.ReplyLanguage,
+                    teamPreferenceCandidates.Take(5).Select(FormatSessionChoice).ToList()));
+        }
         if (state.PendingIntent == ZaloBotIntent.TeamPreferenceConfirm.ToString())
         {
             TeamPreferenceConfirmationPayload? payload;
@@ -1671,6 +1760,49 @@ public sealed partial class ZaloBotService(
         state.PendingPayloadJson = JsonSerializer.Serialize(new TeamPreferenceConfirmationPayload(sessionId, plan, selfService, replyLanguage));
         state.PreviousCommand = ZaloBotIntent.TeamPreference.ToString();
         state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5);
+        state.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task SaveTeamPreferenceSelectionAsync(
+        string connectionId,
+        string groupId,
+        string senderId,
+        IReadOnlyList<SessionSnapshot> candidates,
+        ZaloTeamPreferenceCommand command,
+        ZaloReplyLanguage replyLanguage,
+        bool aiCalled,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSenderId = NormalizeId(senderId);
+        var state = await db.ZaloBotConversationStates.SingleOrDefaultAsync(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.SenderZaloUserId == normalizedSenderId,
+            cancellationToken);
+        if (state is null)
+        {
+            state = new ZaloBotConversationState
+            {
+                ZaloConnectionId = connectionId,
+                GroupId = groupId,
+                SenderZaloUserId = normalizedSenderId,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            db.ZaloBotConversationStates.Add(state);
+        }
+
+        state.PendingIntent = ZaloBotIntent.TeamPreference.ToString();
+        state.PendingPayloadJson = JsonSerializer.Serialize(new TeamPreferenceSelectionPayload(
+            candidates.Select(candidate => candidate.Id).Distinct(StringComparer.Ordinal).ToList(),
+            command,
+            replyLanguage,
+            aiCalled));
+        state.PreviousCommand = ZaloBotIntent.TeamPreference.ToString();
+        state.ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(Math.Clamp(
+            configuration.GetValue("ZaloBot:ConversationTtlMinutes", 15),
+            1,
+            120));
         state.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
     }
@@ -2423,9 +2555,11 @@ public sealed partial class ZaloBotService(
         string groupId,
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken,
-        bool aiCalled)
+        bool aiCalled,
+        ZaloTeamPreferenceCommand? forcedCommand = null,
+        ZaloReplyLanguage? forcedReplyLanguage = null)
     {
-        var replyLanguage = await ai.ResolveReplyLanguageAsync(originalQuestion, cancellationToken);
+        var replyLanguage = forcedReplyLanguage ?? await ai.ResolveReplyLanguageAsync(originalQuestion, cancellationToken);
         if (ZaloNaturalCommandParser.TryParseTeamPreferenceGenderQuestion(
                 originalQuestion,
                 out var requestedGender,
@@ -2511,8 +2645,8 @@ public sealed partial class ZaloBotService(
                 ProtectedTerms: eligible.Take(6).Append(genderSession.Name).ToList());
         }
 
-        ZaloTeamPreferenceCommand? command = null;
-        if (ZaloNaturalCommandParser.TryParseTeamPreference(originalQuestion, out var parsed))
+        ZaloTeamPreferenceCommand? command = forcedCommand;
+        if (command is null && ZaloNaturalCommandParser.TryParseTeamPreference(originalQuestion, out var parsed))
             command = parsed;
         var mentionedUsers = ExtractMentionedUsers(incoming);
         if (command is null && ai.IsConfigured)
@@ -2579,6 +2713,22 @@ public sealed partial class ZaloBotService(
         }.Where(value => !string.IsNullOrWhiteSpace(value))));
         var selected = SelectSession(sessions, selector);
         if (selected.Clarification is not null)
+        {
+            var selectionCandidates = sessions.Where(IsUpcoming).Take(8).ToList();
+            if (selectionCandidates.Count == 0)
+                selectionCandidates = sessions.Take(8).ToList();
+            if (selectionCandidates.Count > 0)
+            {
+                await SaveTeamPreferenceSelectionAsync(
+                    connectionId,
+                    groupId,
+                    incoming.SenderId,
+                    selectionCandidates,
+                    command,
+                    replyLanguage,
+                    aiCalled,
+                    cancellationToken);
+            }
             return new BotAnswer(
                 ZaloTeamPreferenceReplyText.SessionClarification(
                     replyLanguage,
@@ -2586,6 +2736,7 @@ public sealed partial class ZaloBotService(
                 null,
                 decision.Intent,
                 aiCalled);
+        }
         var session = selected.Session!;
         var selfAliases = new[] { "tui", "toi", "minh", "em", "anh", "chi", "ban than", "me", "i", "myself", "저", "나", "내", "제" };
         var normalizedSenderId = NormalizeId(incoming.SenderId);
@@ -5634,6 +5785,8 @@ public sealed partial class ZaloBotService(
         TeamPreferencePreview? TeamPreferencePlan = null,
         bool TeamPreferenceSelfService = false,
         ZaloReplyLanguage? TeamPreferenceReplyLanguage = null,
+        ZaloTeamPreferenceCommand? TeamPreferenceCommand = null,
+        bool TeamPreferenceSelectionAiCalled = false,
         ShareSlotConfirmationPlan? ShareSlotPlan = null,
         ZaloShareSlotCommand? ShareCommand = null,
         string? UnshareSlotId = null)
@@ -5665,6 +5818,11 @@ public sealed partial class ZaloBotService(
     private sealed record TeamRebalanceConfirmationPayload(
         string SessionId,
         TeamRebalancePlan Plan);
+    private sealed record TeamPreferenceSelectionPayload(
+        IReadOnlyList<string> SessionIds,
+        ZaloTeamPreferenceCommand Command,
+        ZaloReplyLanguage ReplyLanguage,
+        bool AiCalled);
     private sealed record TeamPreferenceConfirmationPayload(
         string SessionId,
         TeamPreferencePreview Plan,
