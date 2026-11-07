@@ -6,6 +6,7 @@ namespace VolleyDraft.Api.Services;
 
 public sealed class SettlementSummaryCardRenderer
 {
+    private const string RosterBrandResourceName = "VolleyDraft.Api.Assets.Branding.ZyroHeaderLogo.png";
     private const int Width = 1080;
     private const int SidePadding = 64;
     private const int HeaderHeight = 238;
@@ -35,6 +36,7 @@ public sealed class SettlementSummaryCardRenderer
     private static readonly SKTypeface RegularTypeface = FindTypeface(SKFontStyle.Normal);
     private static readonly SKTypeface BoldTypeface = FindTypeface(SKFontStyle.Bold);
     private static readonly SKTypeface BlackTypeface = FindTypeface(new SKFontStyle(900, 5, SKFontStyleSlant.Upright));
+    private static readonly Lazy<SKBitmap?> RosterBrandLogo = new(LoadRosterBrandLogo);
 
     public byte[] Render(
         MatchSession session,
@@ -223,6 +225,8 @@ public sealed class SettlementSummaryCardRenderer
         return (headline, metadata);
     }
 
+    internal static bool HasEmbeddedRosterBrandLogo() => RosterBrandLogo.Value is not null;
+
     private static void DrawRosterHeader(SKCanvas canvas, MatchSession session)
     {
         using (var fill = new SKPaint { Color = Surface, IsAntialias = true })
@@ -230,22 +234,57 @@ public sealed class SettlementSummaryCardRenderer
 
         using (var topBar = new SKPaint { Color = Navy, IsAntialias = true })
             canvas.DrawRect(new SKRect(0, 0, Width, 9), topBar);
-        using (var accent = new SKPaint { Color = Red, IsAntialias = true })
-            canvas.DrawRect(new SKRect(SidePadding, 34, SidePadding + 106, 38), accent);
 
         var copy = BuildRosterHeaderCopy(session);
-        DrawText(canvas, "ZYRO • SỔ TIỀN", SidePadding, 66, 18, Navy, true, 240, BlackTypeface);
+        DrawRosterBrandLogo(canvas, new SKRect(SidePadding, 19, SidePadding + 255, 188));
 
         var badge = new SKRect(820, 37, Width - SidePadding, 82);
         DrawRoundedRect(canvas, badge, 23, SuccessSoft);
         DrawText(canvas, "THEO THỰC NHẬN", badge.MidX, 65, 14, Success, true, badge.Width - 28, BlackTypeface, SKTextAlign.Center);
 
-        DrawText(canvas, "DANH SÁCH ĐÓNG TIỀN", SidePadding, 126, 35, Navy, true, 700, BlackTypeface);
-        DrawText(canvas, copy.Headline, SidePadding, 169, 24, Text, true, 700, BoldTypeface);
-        DrawText(canvas, copy.Metadata, SidePadding, 203, 17, Muted, false, 760);
+        const float contentLeft = 360;
+        DrawText(canvas, "DANH SÁCH ĐÓNG TIỀN", contentLeft, 88, 29, Navy, true, 430, BlackTypeface);
+        DrawText(canvas, copy.Headline, contentLeft, 136, 25, Text, true, 590, BoldTypeface);
+        DrawText(canvas, copy.Metadata, contentLeft, 174, 17, Muted, false, 590);
 
         using var divider = new SKPaint { Color = Border, StrokeWidth = 1f, IsAntialias = true };
         canvas.DrawLine(SidePadding, RosterHeaderHeight - 1, Width - SidePadding, RosterHeaderHeight - 1, divider);
+    }
+
+    private static void DrawRosterBrandLogo(SKCanvas canvas, SKRect destination)
+    {
+        var logo = RosterBrandLogo.Value;
+        if (logo is null)
+        {
+            DrawText(canvas, "ZYRO", destination.Left, destination.MidY + 16, 42, Navy, true, destination.Width, BlackTypeface);
+            return;
+        }
+
+        canvas.DrawBitmap(
+            logo,
+            new SKRect(0, 0, logo.Width, logo.Height),
+            destination);
+    }
+
+    private static SKBitmap? LoadRosterBrandLogo()
+    {
+        using var stream = typeof(SettlementSummaryCardRenderer)
+            .Assembly
+            .GetManifestResourceStream(RosterBrandResourceName);
+        if (stream is null) return null;
+
+        using var reader = new StreamReader(stream);
+        var encoded = reader.ReadToEnd().Trim();
+        if (encoded.Length == 0) return null;
+
+        try
+        {
+            return SKBitmap.Decode(Convert.FromBase64String(encoded));
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
     }
 
     private static void DrawHeader(SKCanvas canvas, MatchSession session, string title)
@@ -591,7 +630,7 @@ public sealed class SettlementSummaryCardRenderer
     {
         using var line = new SKPaint { Color = new SKColor(223, 228, 236), StrokeWidth = 1.3f, IsAntialias = true };
         canvas.DrawLine(SidePadding, height - 70, Width - SidePadding, height - 70, line);
-        DrawText(canvas, "ZYRO • SỔ TIỀN", SidePadding, height - 32, 15, Navy, true, 230, BlackTypeface);
+        DrawText(canvas, "SỔ TIỀN", SidePadding, height - 32, 15, Navy, true, 120, BlackTypeface);
         DrawText(
             canvas,
             $"{paidCount}/{totalCount} đã ghi nhận • Số tiền hiển thị = thực nhận",

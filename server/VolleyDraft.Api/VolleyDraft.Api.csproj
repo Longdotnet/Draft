@@ -40,6 +40,8 @@
   </Target>
 
   <ItemGroup>
+    <EmbeddedResource Include="Assets/Branding/zyro-header-logo.b64"
+                      LogicalName="VolleyDraft.Api.Assets.Branding.ZyroHeaderLogo.png" />
     <EmbeddedResource Include="Assets/Posters/court-index-volleyball-study-02.jpg"
                       LogicalName="VolleyDraft.Api.Assets.Posters.CourtIndexVolleyballStudy02.jpg" />
     <EmbeddedResource Include="Assets/SocialCards/social-card-01.b64"

@@ -1147,6 +1147,8 @@ public sealed class SettlementServiceTests
     [Fact]
     public void Payment_roster_all_paid_uses_compact_adaptive_layout()
     {
+        Assert.True(SettlementSummaryCardRenderer.HasEmbeddedRosterBrandLogo());
+
         var session = new MatchSession
         {
             Id = "roster-paid",
