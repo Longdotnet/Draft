@@ -307,7 +307,8 @@ public sealed partial class ZaloOverbookService
         if (payload is null || payload.CandidateSessionIds.Count == 0)
             return false;
 
-        if (ZaloBotIntelligence.IsCancel(incoming.Content))
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        if (ZaloBotIntelligence.IsCancel(question))
         {
             db.ZaloBotConversationStates.Remove(pending);
             await db.SaveChangesAsync(cancellationToken);
@@ -347,7 +348,6 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        var question = ZaloBotService.ExtractQuestion(incoming);
         var normalizedSelection = ZaloBotIntelligence.Normalize(question);
         var exactCandidateName = candidates.Any(candidate =>
             string.Equals(
@@ -436,6 +436,8 @@ public sealed partial class ZaloOverbookService
             return false;
         }
 
+        var question = ZaloBotService.ExtractQuestion(incoming);
+
         if (!payload.Applied && string.Equals(payload.Plan.SourceMessageId, incoming.MessageId, StringComparison.Ordinal))
         {
             await SendTeamPreferenceExitReplyAsync(
@@ -445,7 +447,7 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        if (ZaloBotIntelligence.IsCancel(incoming.Content))
+        if (ZaloBotIntelligence.IsCancel(question))
         {
             db.ZaloBotConversationStates.Remove(pending);
             await db.SaveChangesAsync(cancellationToken);
@@ -459,8 +461,8 @@ public sealed partial class ZaloOverbookService
             return true;
         }
 
-        var confirmed = ZaloBotIntelligence.IsConfirmation(incoming.Content) ||
-                        ZaloAmbientLeasePendingContinuationPolicy.IsStrongConfirmation(incoming.Content);
+        var confirmed = ZaloBotIntelligence.IsConfirmation(question) ||
+                        ZaloAmbientLeasePendingContinuationPolicy.IsStrongConfirmation(question);
         if (!confirmed)
             return false;
 
