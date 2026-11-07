@@ -144,6 +144,51 @@ public sealed class ZaloCommunityNudgeTests
     }
 
     [Fact]
+    public async Task Generic_feature_tip_content_key_is_not_repeated_inside_cooldown_window()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        var proactiveHistory = new[]
+        {
+            Proactive("team_preference_discovery", "feature:team-preference", now.AddDays(-1))
+        };
+
+        var selected = await CommunityService(fixture.Db).BuildCandidateWithProactiveHistoryAsync(
+            "conn-1",
+            "g1",
+            now.ToString("yyyy-MM-dd"),
+            2,
+            [],
+            proactiveHistory);
+
+        Assert.NotNull(selected);
+        Assert.Equal("share_slot_discovery", selected!.Type);
+        Assert.Equal("feature:share-slot", selected.ContentKey);
+    }
+
+    [Fact]
+    public async Task Generic_feature_lane_stays_silent_when_every_fixed_tip_was_recently_sent()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var now = DateTimeOffset.UtcNow;
+        var proactiveHistory = new[]
+        {
+            Proactive("team_preference_discovery", "feature:team-preference", now.AddDays(-1)),
+            Proactive("share_slot_discovery", "feature:share-slot", now.AddDays(-2))
+        };
+
+        var selected = await CommunityService(fixture.Db).BuildCandidateWithProactiveHistoryAsync(
+            "conn-1",
+            "g1",
+            now.ToString("yyyy-MM-dd"),
+            3,
+            [],
+            proactiveHistory);
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
     public async Task Vote_activity_builds_top_30_day_praise_and_single_reengagement_candidates()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -306,6 +351,25 @@ public sealed class ZaloCommunityNudgeTests
             type,
             sentAt,
             null);
+
+    private static ZaloProactiveMessageHistoryData Proactive(
+        string kind,
+        string contentKey,
+        DateTimeOffset sentAt) =>
+        new(
+            Guid.NewGuid().ToString("n"),
+            "conn-1",
+            "g1",
+            sentAt.ToString("yyyy-MM-dd"),
+            ZaloProactiveLane.Community,
+            kind,
+            contentKey,
+            null,
+            null,
+            contentKey,
+            sentAt,
+            null,
+            Guid.NewGuid().ToString("n"));
 
     private static ZaloIncomingMessageEvent Message(string content, string senderId = "owner-user") => new(
         accountId: "bot-account",

@@ -718,15 +718,33 @@ public sealed class ZaloActivityBackfillCoordinator(
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var pageNumber = Math.Max(1, job.BoardPage);
-                var page = await WithRetryAsync(
-                    () => bridge.GetBoardPageAsync(
-                        credentials,
+                BridgeBoardPage page;
+                try
+                {
+                    page = await WithRetryAsync(
+                        () => bridge.GetBoardPageAsync(
+                            credentials,
+                            job.GroupId,
+                            pageNumber,
+                            boardPageSize,
+                            cancellationToken),
+                        $"board page {pageNumber}",
+                        cancellationToken);
+                }
+                catch (Exception exception) when (IsTransient(exception))
+                {
+                    limitations.Add(
+                        $"Không đọc được bảng tin Zalo trang {pageNumber}: {SafeError(exception)}");
+                    logger.LogWarning(
+                        exception,
+                        "Zalo board sync unavailable; preserving previous poll data and continuing with limited sync JobId={JobId} ConnectionId={ConnectionId} GroupId={GroupId} BoardPage={BoardPage}",
+                        job.Id,
+                        job.ZaloConnectionId,
                         job.GroupId,
-                        pageNumber,
-                        boardPageSize,
-                        cancellationToken),
-                    $"board page {pageNumber}",
-                    cancellationToken);
+                        pageNumber);
+                    boardCompleted = true;
+                    break;
+                }
                 pagesProcessed++;
                 totalSeenInRun += page.Items.Count;
                 job.DiscoveredTotal = page.TotalCount > 0 ? page.TotalCount : job.DiscoveredTotal;

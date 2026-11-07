@@ -135,6 +135,46 @@ public sealed class ZaloConversationalAdvisorTests
         Assert.Contains("session-t6", updated.CollectedArgumentsJson);
     }
 
+    [Fact]
+    public async Task Addressed_multiword_confirmation_continues_advisor_proposal_instead_of_becoming_new_chat()
+    {
+        await using var fixture = await Fixture.CreateAsync(withSessions: true);
+        var stateStore = new ZaloConversationStateV2Store(fixture.Db);
+        await stateStore.SaveActiveAsync(
+            "g1",
+            "user-long",
+            "AmbientTeamPreferenceProposal",
+            "{\"RequesterZaloUserId\":\"user-long\",\"RequesterName\":\"Long\",\"PartnerZaloUserId\":\"user-toan\",\"PartnerName\":\"To An\",\"SessionId\":\"session-t6\",\"SessionName\":\"T6\"}",
+            "[]",
+            "[]",
+            "proposal-source",
+            "proposal-source",
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        const string content = "@B O T xác nhận";
+        var incoming = new ZaloIncomingMessageEvent(
+            accountId: "bot-account",
+            botId: "bot-account",
+            groupId: "g1",
+            messageId: "advisor-confirm",
+            senderId: "user-long",
+            senderName: "Long",
+            content: content,
+            mentions: [new ZaloBridgeMention("bot-account", 0, "@B O T".Length)],
+            mentionedBot: true,
+            sentAtUnixMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var reply = await new ZaloConversationalAdvisor(fixture.Db).TryBuildAsync(
+            "bot-account",
+            "g1",
+            incoming,
+            proposalTtlMinutes: 5,
+            CancellationToken.None);
+
+        Assert.NotNull(reply);
+        Assert.Equal("TeamPreferenceProposalConfirmationRequired", reply!.Intent);
+        Assert.Contains("đề xuất Long + To An", reply.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static ZaloIncomingMessageEvent Incoming(string messageId, string content) => new(
         accountId: "bot-account",
         botId: "bot-account",

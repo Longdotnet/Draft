@@ -226,7 +226,8 @@ public sealed class ZaloConversationalAdvisor(VolleyDraftDbContext db)
         int ttlMinutes,
         CancellationToken cancellationToken)
     {
-        if (ZaloBotIntelligence.IsCancel(incoming.Content ?? string.Empty))
+        var question = ZaloBotService.ExtractQuestion(incoming);
+        if (ZaloBotIntelligence.IsCancel(question))
         {
             await store.CancelAsync(groupId, incoming.SenderId, cancellationToken);
             return new("Ok, tui bỏ đề xuất chơi chung team vừa rồi.", "TeamPreferenceProposalCancelled");
@@ -237,7 +238,7 @@ public sealed class ZaloConversationalAdvisor(VolleyDraftDbContext db)
         catch (JsonException) { proposal = null; }
         if (proposal is null) return null;
 
-        if (ZaloBotIntelligence.IsConfirmation(incoming.Content ?? string.Empty))
+        if (ZaloBotIntelligence.IsConfirmation(question))
         {
             return new(
                 $"Tui đang giữ đề xuất {proposal.RequesterName} + {proposal.PartnerName} chung team" +
@@ -249,7 +250,7 @@ public sealed class ZaloConversationalAdvisor(VolleyDraftDbContext db)
         }
 
         var sessions = await LoadSessionsAsync(accountId, groupId, cancellationToken);
-        var selected = ResolveSingleSession(incoming.Content ?? string.Empty, sessions);
+        var selected = ResolveSingleSession(question, sessions);
         if (selected is null) return null;
 
         var requester = await new ZaloIdentityResolver(db).ResolveAsync(groupId, "tui", currentSenderZaloUserId: proposal.RequesterZaloUserId, cancellationToken: cancellationToken);

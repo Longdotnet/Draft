@@ -230,6 +230,23 @@ public sealed partial class ZaloBotService(
     {
         var question = ExtractQuestion(incoming);
         var normalizedQuestion = NormalizeText(question);
+        var pendingControl = ZaloBotIntelligence.IsConfirmation(normalizedQuestion) ||
+                             ZaloBotIntelligence.IsCancel(normalizedQuestion);
+        var hasActivePendingControlOwner = false;
+        if (pendingControl)
+        {
+            var normalizedSenderId = NormalizeId(incoming.SenderId);
+            var pendingExpiries = await db.ZaloBotConversationStates
+                .AsNoTracking()
+                .Where(item =>
+                    item.ZaloConnectionId == activeConnectionId &&
+                    item.GroupId == groupId &&
+                    item.SenderZaloUserId == normalizedSenderId)
+                .Select(item => item.ExpiresAt)
+                .ToListAsync(cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+            hasActivePendingControlOwner = pendingExpiries.Any(expiresAt => expiresAt > now);
+        }
 
         // NPC 11 is intentionally independent from match/session intent routing.
         // The group still needs the bot enabled, but the card itself only depends on the Zalo identity/avatar.
@@ -239,23 +256,29 @@ public sealed partial class ZaloBotService(
             return new BotAnswer(card.Text, card.ImageUrl, ZaloBotIntent.GeneralChat);
         }
 
-        var conversationSummary = await TryBuildConversationSummaryAnswerAsync(
-            activeConnectionId, groupId, incoming, question, cancellationToken);
-        if (conversationSummary is not null)
-            return conversationSummary;
+        if (!hasActivePendingControlOwner)
+        {
+            var conversationSummary = await TryBuildConversationSummaryAnswerAsync(
+                activeConnectionId, groupId, incoming, question, cancellationToken);
+            if (conversationSummary is not null)
+                return conversationSummary;
+        }
 
-        var evidenceAiAllowed = ZaloConversationEvidenceIntentPolicy.MightBeQuestion(question) &&
-                                ai.IsConfigured &&
-                                await IsAiCallAllowedAsync(activeConnectionId, groupId, incoming.SenderId, cancellationToken);
-        var conversationEvidence = await memberIntelligence.TryHandleConversationEvidenceAsync(
-            activeConnectionId,
-            groupId,
-            incoming,
-            question,
-            evidenceAiAllowed,
-            cancellationToken);
-        if (conversationEvidence is not null)
-            return new BotAnswer(conversationEvidence.Text, null, conversationEvidence.Intent, conversationEvidence.AiCalled, ProtectedTerms: conversationEvidence.ProtectedTerms);
+        if (!hasActivePendingControlOwner)
+        {
+            var evidenceAiAllowed = ZaloConversationEvidenceIntentPolicy.MightBeQuestion(question) &&
+                                    ai.IsConfigured &&
+                                    await IsAiCallAllowedAsync(activeConnectionId, groupId, incoming.SenderId, cancellationToken);
+            var conversationEvidence = await memberIntelligence.TryHandleConversationEvidenceAsync(
+                activeConnectionId,
+                groupId,
+                incoming,
+                question,
+                evidenceAiAllowed,
+                cancellationToken);
+            if (conversationEvidence is not null)
+                return new BotAnswer(conversationEvidence.Text, null, conversationEvidence.Intent, conversationEvidence.AiCalled, ProtectedTerms: conversationEvidence.ProtectedTerms);
+        }
 
         var sessions = await LoadSessionSnapshotsAsync(connectionIds, groupId, incoming.SenderId, cancellationToken);
         if (sessions.Count == 0)
@@ -264,35 +287,38 @@ public sealed partial class ZaloBotService(
             return new BotAnswer(ZaloCommonReplyText.NoActiveSessions(replyLanguage), null);
         }
 
-        var directedAudienceReply = await ZaloDirectedAudienceBotIntegration.TryHandleAsync(
-            db, zaloIntegration, configuration, logger,
-            activeConnectionId, groupId, incoming, question, cancellationToken);
-        if (directedAudienceReply is not null)
+        if (!hasActivePendingControlOwner)
         {
-            return new BotAnswer(
-                directedAudienceReply.Text,
-                null,
-                ZaloBotIntent.GeneralChat,
-                directedAudienceReply.AiCalled,
-                TextGeneratedByAi: true,
-                Mentions: directedAudienceReply.Mentions);
-        }
+            var directedAudienceReply = await ZaloDirectedAudienceBotIntegration.TryHandleAsync(
+                db, zaloIntegration, configuration, logger,
+                activeConnectionId, groupId, incoming, question, cancellationToken);
+            if (directedAudienceReply is not null)
+            {
+                return new BotAnswer(
+                    directedAudienceReply.Text,
+                    null,
+                    ZaloBotIntent.GeneralChat,
+                    directedAudienceReply.AiCalled,
+                    TextGeneratedByAi: true,
+                    Mentions: directedAudienceReply.Mentions);
+            }
 
-        var memberActivityAnswer = await memberIntelligence.TryHandleAsync(
-            activeConnectionId,
-            groupId,
-            incoming,
-            question,
-            cancellationToken);
-        if (memberActivityAnswer is not null)
-        {
-            return new BotAnswer(
-                memberActivityAnswer.Text,
-                null,
-                memberActivityAnswer.Intent,
-                memberActivityAnswer.AiCalled,
-                ProtectedTerms: memberActivityAnswer.ProtectedTerms,
-                ReferencedAudience: memberActivityAnswer.ReferencedAudience);
+            var memberActivityAnswer = await memberIntelligence.TryHandleAsync(
+                activeConnectionId,
+                groupId,
+                incoming,
+                question,
+                cancellationToken);
+            if (memberActivityAnswer is not null)
+            {
+                return new BotAnswer(
+                    memberActivityAnswer.Text,
+                    null,
+                    memberActivityAnswer.Intent,
+                    memberActivityAnswer.AiCalled,
+                    ProtectedTerms: memberActivityAnswer.ProtectedTerms,
+                    ReferencedAudience: memberActivityAnswer.ReferencedAudience);
+            }
         }
 
         var pending = await ResolvePendingConversationAsync(activeConnectionId, groupId, incoming.SenderId, normalizedQuestion, sessions, cancellationToken);

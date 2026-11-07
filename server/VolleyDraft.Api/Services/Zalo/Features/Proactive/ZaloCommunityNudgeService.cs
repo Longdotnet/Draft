@@ -250,6 +250,18 @@ public sealed class ZaloCommunityNudgeService(
                 ContentKey: "feature:share-slot")
         };
 
+        var featureRepeatCutoff = DateTimeOffset.UtcNow.AddDays(-GetFeatureRepeatCooldownDays());
+        var recentFeatureKeys = proactiveHistory
+            .Where(item =>
+                string.Equals(item.Lane, ZaloProactiveLane.Community, StringComparison.Ordinal) &&
+                item.SentAt >= featureRepeatCutoff &&
+                !string.IsNullOrWhiteSpace(item.ContentKey))
+            .Select(item => item.ContentKey!)
+            .ToHashSet(StringComparer.Ordinal);
+        featureCandidates = featureCandidates
+            .Where(item => string.IsNullOrWhiteSpace(item.ContentKey) || !recentFeatureKeys.Contains(item.ContentKey))
+            .ToList();
+
         var activityCandidates = await BuildVoteActivityCandidatesWithProactiveHistoryAsync(
             connectionId,
             groupId,
@@ -835,6 +847,14 @@ public sealed class ZaloCommunityNudgeService(
                 : configuration.GetValue("ZaloBot:Ambient:Presence:MinBotIntervalMinutes", 60),
             15,
             720);
+
+    private int GetFeatureRepeatCooldownDays() =>
+        Math.Clamp(
+            configuration is null
+                ? 7
+                : configuration.GetValue("ZaloBot:CommunityNudge:FeatureRepeatCooldownDays", 7),
+            1,
+            30);
 
     private static DateTimeOffset GetScheduledLocalTime(
         DateTime localDate,

@@ -46,6 +46,28 @@ public sealed class ZaloActivityBackfillCoordinatorTests
     }
 
     [Fact]
+    public async Task Board_page_failure_finishes_with_limitation_instead_of_retry_storm()
+    {
+        await using var fixture = await BackfillFixture.CreateAsync(failBoard: true);
+
+        await fixture.Coordinator.QueueGroupAsync("connection", "group", true);
+        Assert.True(await fixture.Coordinator.ProcessNextAsync(CancellationToken.None));
+
+        fixture.Db.ChangeTracker.Clear();
+        var job = await fixture.Db.ZaloActivityBackfillJobs.SingleAsync();
+        Assert.Equal(ZaloActivityBackfillStatus.CompletedWithLimitations, job.Status);
+        Assert.Equal(ZaloActivityBackfillStage.Completed, job.Stage);
+        Assert.Equal(0, job.RetryCount);
+        Assert.Null(job.NextAttemptAt);
+        Assert.NotNull(job.LastIncrementalSyncAt);
+        Assert.Contains("bảng tin Zalo", job.LastErrorSummary!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, job.MembersSynchronized);
+        Assert.Equal(0, job.TotalBoardItemsScanned);
+        Assert.Empty(await fixture.Db.ZaloPollSnapshots.AsNoTracking().ToListAsync());
+        Assert.Equal(2, job.MessagesImported);
+    }
+
+    [Fact]
     public async Task Requeue_does_not_steal_running_lease_from_concurrent_worker()
     {
         await using var fixture = await BackfillFixture.CreateAsync();
@@ -321,7 +343,7 @@ public sealed class ZaloActivityBackfillCoordinatorTests
             Coordinator = coordinator;
         }
 
-        public static async Task<BackfillFixture> CreateAsync()
+        public static async Task<BackfillFixture> CreateAsync(bool failBoard = false)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -374,7 +396,7 @@ public sealed class ZaloActivityBackfillCoordinatorTests
             });
             await db.SaveChangesAsync();
 
-            var httpClient = new HttpClient(new BridgeFixtureHandler())
+            var httpClient = new HttpClient(new BridgeFixtureHandler(failBoard))
             {
                 BaseAddress = new Uri("http://bridge.test/")
             };
@@ -404,7 +426,7 @@ public sealed class ZaloActivityBackfillCoordinatorTests
         }
     }
 
-    private sealed class BridgeFixtureHandler : HttpMessageHandler
+    private sealed class BridgeFixtureHandler(bool failBoard = false) : HttpMessageHandler
     {
         private static readonly long GroupCreated = new DateTimeOffset(
             2025, 1, 1, 0, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
@@ -416,6 +438,20 @@ public sealed class ZaloActivityBackfillCoordinatorTests
             CancellationToken cancellationToken)
         {
             var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (failBoard && path == "/v1/groups/group/board-pages")
+            {
+                var failed = new HttpResponseMessage(HttpStatusCode.BadGateway)
+                {
+                    Content = JsonContent.Create(new
+                    {
+                        error = "Zalo bridge request failed.",
+                        kind = "bridge_failure",
+                        retryable = true
+                    })
+                };
+                failed.Headers.TryAddWithoutValidation("x-volley-bridge-response", "1");
+                return Task.FromResult(failed);
+            }
             object body = path switch
             {
                 "/v1/groups/group/members" => new
