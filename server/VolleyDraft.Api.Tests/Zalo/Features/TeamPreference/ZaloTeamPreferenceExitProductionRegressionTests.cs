@@ -193,6 +193,78 @@ public sealed class ZaloTeamPreferenceExitProductionRegressionTests
         Assert.NotEqual(ZaloBotIntent.GeneralChat.ToString(), stored.SelectedIntent);
     }
 
+    [Fact]
+    public async Task Explicit_bot_mention_confirmation_applies_team_preference_exit_without_AI()
+    {
+        await using var fixture = await Fixture.CreateAsync(twoSessions: false);
+        var localStart = fixture.TodayStart.ToOffset(TimeSpan.FromHours(7));
+        var preview = fixture.Incoming(
+            "exit-confirm-preview",
+            $"@Bott tui muốn rời nhóm chung team trận {localStart:dd/MM}",
+            mentionToAn: false);
+
+        Assert.True(await fixture.Service.TryHandleLegacyPendingContinuationPreRouteAsync(preview));
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(
+            "TeamPreferenceExitConfirm",
+            (await fixture.Db.ZaloBotConversationStates.AsNoTracking().SingleAsync()).PendingIntent);
+
+        var confirmation = fixture.Incoming("exit-confirm", "@Bott xác nhận", mentionToAn: false);
+        Assert.True(await fixture.Service.TryHandleLegacyPendingContinuationPreRouteAsync(confirmation));
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+        Assert.Empty(await fixture.Db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
+        var stored = await fixture.Db.ZaloGroupMessages.AsNoTracking()
+            .SingleAsync(item => item.MessageId == "exit-confirm");
+        Assert.False(stored.AiCalled);
+        Assert.Equal("TeamPreferenceExitApplied", stored.SelectedIntent);
+    }
+
+    [Fact]
+    public async Task Explicit_bot_mention_cancellation_clears_team_preference_exit_without_mutation()
+    {
+        await using var fixture = await Fixture.CreateAsync(twoSessions: false);
+        var localStart = fixture.TodayStart.ToOffset(TimeSpan.FromHours(7));
+        Assert.True(await fixture.Service.TryHandleLegacyPendingContinuationPreRouteAsync(fixture.Incoming(
+            "exit-cancel-preview",
+            $"@Bott tui muốn rời nhóm chung team trận {localStart:dd/MM}",
+            mentionToAn: false)));
+
+        var cancellation = fixture.Incoming("exit-cancel", "@Bott huỷ", mentionToAn: false);
+        Assert.True(await fixture.Service.TryHandleLegacyPendingContinuationPreRouteAsync(cancellation));
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
+        Assert.Single(await fixture.Db.TeamPreferenceGroups.AsNoTracking().ToListAsync());
+        Assert.Equal(2, await fixture.Db.TeamPreferenceGroupPlayers.AsNoTracking().CountAsync());
+        var stored = await fixture.Db.ZaloGroupMessages.AsNoTracking()
+            .SingleAsync(item => item.MessageId == "exit-cancel");
+        Assert.False(stored.AiCalled);
+        Assert.Equal("TeamPreferenceExitConfirm", stored.SelectedIntent);
+    }
+
+    [Fact]
+    public async Task Explicit_bot_mention_cancellation_clears_team_preference_session_choice()
+    {
+        await using var fixture = await Fixture.CreateAsync(twoSessions: true);
+        Assert.True(await fixture.Service.TryHandleLegacyPendingContinuationPreRouteAsync(fixture.Incoming(
+            "exit-choice-before-cancel",
+            "@Bott tui không muốn chung team với @To An nữa",
+            mentionToAn: true)));
+
+        var cancellation = fixture.Incoming("exit-choice-cancel", "@Bott huỷ", mentionToAn: false);
+        Assert.True(await fixture.Service.TryHandleLegacyPendingContinuationPreRouteAsync(cancellation));
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Empty(await fixture.Db.ZaloBotConversationStates.AsNoTracking().ToListAsync());
+        Assert.Equal(4, await fixture.Db.TeamPreferenceGroupPlayers.AsNoTracking().CountAsync());
+        var stored = await fixture.Db.ZaloGroupMessages.AsNoTracking()
+            .SingleAsync(item => item.MessageId == "exit-choice-cancel");
+        Assert.False(stored.AiCalled);
+        Assert.Equal("TeamPreferenceExitSessionChoice", stored.SelectedIntent);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private const string ConnectionId = "conn-team-pref-exit-regression";
