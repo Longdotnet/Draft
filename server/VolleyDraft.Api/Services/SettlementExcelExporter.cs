@@ -81,9 +81,13 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
             })
             .ToList();
 
-        var totalDue = entries.Sum(item => item.Due);
+        var derivedTotalDue = entries.Sum(item => item.Due);
+        var totalDue = settlement.TotalDueOverride ?? derivedTotalDue;
         var totalReceived = entries.Sum(item => item.Received);
-        var currentSurplus = entries.Sum(item => item.Surplus);
+        var entrySurplus = entries.Sum(item => item.Surplus);
+        var currentSurplus = settlement.TotalDueOverride.HasValue
+            ? Math.Max(0m, totalReceived - totalDue)
+            : entrySurplus;
         var groupFund = fundTransactions.Sum(item => item.Amount);
         var paidCount = entries.Count(item => item.Entry.PaymentStatus == SettlementPaymentStatus.Paid);
 
@@ -228,7 +232,9 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         }
 
         ws.Range("B24:I25").Merge();
-        ws.Cell("B24").Value = "Cách đọc file: 02_THU_TIEN để đối soát từng người • 03_SO_QUY để xem quỹ từ trận nào • 04_NHAT_KY để xem lịch sử nhắc/gửi Zalo.";
+        ws.Cell("B24").Value = settlement.TotalDueOverride.HasValue
+            ? $"Tổng phải thu đã được chỉnh trực tiếp thành {Money(totalDue)}. Mức thu từng người vẫn theo {Money(settlement.AmountPerFullSlot)}/1 slot. • 02_THU_TIEN đối soát từng người • 03_SO_QUY xem bút toán điều chỉnh."
+            : "Cách đọc file: 02_THU_TIEN để đối soát từng người • 03_SO_QUY để xem quỹ từ trận nào • 04_NHAT_KY để xem lịch sử nhắc/gửi Zalo.";
         ws.Cell("B24").Style.Font.FontColor = Muted;
         ws.Cell("B24").Style.Alignment.WrapText = true;
 
@@ -332,7 +338,7 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         var ws = workbook.Worksheets.Add("03_SO_QUY");
         BaseSheet(ws);
         ws.ShowGridLines = false;
-        WriteSheetTitle(ws, "SỔ QUỸ NHÓM", "Quỹ được truy theo từng trận và từng lần điều chỉnh", "Số dư quỹ không nhập tay: mỗi phát sinh đều có nguồn từ một người trong một trận cụ thể.");
+        WriteSheetTitle(ws, "SỔ QUỸ NHÓM", "Quỹ được truy theo từng trận và từng lần điều chỉnh", "Số dư quỹ không nhập tay: phát sinh có thể đến từ tiền dư từng người hoặc bút toán điều chỉnh tổng cần thu của trận.");
 
         ws.Range("A6:C8").Merge();
         ws.Cell("A6").Value = $"QUỸ HIỆN TẠI\n{Money(groupFund)}";
@@ -400,11 +406,20 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
             ws.Cell(row, 4).Value = item.Amount;
             ws.Cell(row, 5).Value = item.SurplusBefore;
             ws.Cell(row, 6).Value = item.SurplusAfter;
-            ws.Cell(row, 7).Value = item.Amount >= 0
-                ? $"Dư thay đổi từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ tăng {Money(item.Amount)}"
-                : $"Điều chỉnh dư từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}";
+            ws.Cell(row, 7).Value = item.Kind == GroupFundTransactionKind.SettlementTotalDueAdjustment
+                ? item.Amount >= 0
+                    ? $"Điều chỉnh tổng cần thu làm dư trận thay đổi {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ tăng {Money(item.Amount)}"
+                    : $"Điều chỉnh tổng cần thu làm dư trận thay đổi {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}"
+                : item.Amount >= 0
+                    ? $"Dư thay đổi từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ tăng {Money(item.Amount)}"
+                    : $"Điều chỉnh dư từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}";
             ws.Cell(row, 8).FormulaA1 = $"=SUM($D${startRow + 1}:D{row})";
-            if (item.SettlementId == currentSessionId && paymentRowMap.TryGetValue(item.SettlementEntryId, out var paymentRow))
+            if (item.Kind == GroupFundTransactionKind.SettlementTotalDueAdjustment)
+            {
+                ws.Cell(row, 9).Value = "Điều chỉnh tổng cần thu";
+                ws.Cell(row, 9).Style.Font.FontColor = Muted;
+            }
+            else if (item.SettlementId == currentSessionId && paymentRowMap.TryGetValue(item.SettlementEntryId, out var paymentRow))
             {
                 ws.Cell(row, 9).FormulaA1 = $"=HYPERLINK(\"#'02_THU_TIEN'!B{paymentRow}\",\"Xem dòng thu tiền\")";
             }
@@ -514,8 +529,11 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         ws.Cell("A1").Style.Font.Bold = true;
         ws.Cell("A1").Style.Font.FontSize = 16;
         ws.Cell("A3").Value = "Quy tắc dễ hiểu";
-        ws.Cell("B3").Value = "Phải đóng = đơn giá full slot × số slot. Dư = phần thực nhận cao hơn số phải đóng. Quỹ nhóm = tổng tất cả phát sinh tăng/giảm quỹ đã được ghi lại.";
+        ws.Cell("B3").Value = "Phải đóng từng người = đơn giá full slot × số slot. Tổng cần thu của trận có thể được chỉnh riêng. Dư/quỹ = tiền dư từng người cộng/trừ bút toán điều chỉnh tổng cần thu.";
         ws.Cell("B3").Style.Alignment.WrapText = true;
+        ws.Cell("A4").Value = "TotalDueOverride";
+        if (settlement.TotalDueOverride is { } totalDueOverride)
+            ws.Cell("B4").Value = totalDueOverride;
 
         var row = 6;
         ws.Cell(row, 1).Value = "SettlementId";

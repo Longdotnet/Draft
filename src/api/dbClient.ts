@@ -316,6 +316,7 @@ export type MatchSettlementResponse = {
   sessionId: string;
   sessionName: string;
   amountPerFullSlot: number;
+  totalDueOverride: number | null;
   paymentQrImageUrl: string | null;
   isClosed: boolean;
   closedAt: string | null;

@@ -104,6 +104,8 @@ public sealed class SettlementService(
     {
         if (!IsValidAmount(request.AmountPerFullSlot))
             return InvalidAmount();
+        if (request.TotalDueOverride is { } requestedTotalDue && !IsValidAmount(requestedTotalDue))
+            return InvalidTotalDue();
 
         var settlement = await LoadOwnedSettlementAsync(adminUserId, sessionId, cancellationToken, tracking: true);
         if (settlement is null)
@@ -112,6 +114,7 @@ public sealed class SettlementService(
             return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status409Conflict, "Sổ tiền đang đóng. Mở lại trước khi sửa.");
 
         var now = DateTimeOffset.UtcNow;
+        var useAggregateTotal = settlement.TotalDueOverride.HasValue || request.TotalDueOverride.HasValue;
         var updates = new List<(SettlementEntry Entry, decimal ActualPaidAmount, decimal Before, decimal After)>();
         foreach (var entry in settlement.Entries)
         {
@@ -141,12 +144,17 @@ public sealed class SettlementService(
         }
 
         settlement.AmountPerFullSlot = request.AmountPerFullSlot;
+        if (request.TotalDueOverride is { } totalDueOverride)
+            settlement.TotalDueOverride = totalDueOverride;
         settlement.UpdatedAt = now;
         foreach (var update in updates)
         {
             update.Entry.ActualPaidAmount = update.ActualPaidAmount;
-            AddFundAdjustment(settlement, update.Entry, update.Before, update.After, now);
+            if (!useAggregateTotal)
+                AddFundAdjustment(settlement, update.Entry, update.Before, update.After, now);
         }
+        if (useAggregateTotal)
+            await SyncSettlementFundContributionAsync(settlement, now, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
         return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
@@ -217,7 +225,10 @@ public sealed class SettlementService(
         entry.UpdatedAt = now;
         settlement.UpdatedAt = now;
         var newSurplus = CalculateSurplus(entry.PaymentStatus, newDue, newActual);
-        AddFundAdjustment(settlement, entry, oldSurplus, newSurplus, now);
+        if (settlement.TotalDueOverride.HasValue)
+            await SyncSettlementFundContributionAsync(settlement, now, cancellationToken);
+        else
+            AddFundAdjustment(settlement, entry, oldSurplus, newSurplus, now);
         await db.SaveChangesAsync(cancellationToken);
         return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
@@ -692,6 +703,58 @@ public sealed class SettlementService(
         });
     }
 
+    private async Task SyncSettlementFundContributionAsync(
+        MatchSettlement settlement,
+        DateTimeOffset createdAt,
+        CancellationToken cancellationToken)
+    {
+        if (!settlement.TotalDueOverride.HasValue) return;
+        var connectionId = settlement.Session.ZaloConnectionId?.Trim();
+        var groupId = settlement.Session.ZaloGroupId?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionId) || string.IsNullOrWhiteSpace(groupId)) return;
+
+        var existingAmounts = await db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.SettlementId == settlement.Id)
+            .Select(item => item.Amount)
+            .ToListAsync(cancellationToken);
+        var currentContribution = existingAmounts.Sum();
+        var desiredContribution = CalculateSettlementFundContribution(settlement);
+        if (currentContribution == desiredContribution) return;
+
+        db.GroupFundTransactions.Add(new GroupFundTransaction
+        {
+            ZaloConnectionId = connectionId,
+            GroupId = groupId,
+            SettlementId = settlement.Id,
+            Settlement = settlement,
+            SettlementEntryId = $"{settlement.Id}:total-due",
+            DisplayNameSnapshot = "Điều chỉnh tổng cần thu",
+            Kind = GroupFundTransactionKind.SettlementTotalDueAdjustment,
+            Amount = desiredContribution - currentContribution,
+            SurplusBefore = currentContribution,
+            SurplusAfter = desiredContribution,
+            CreatedAt = createdAt
+        });
+    }
+
+    private static decimal CalculateSettlementFundContribution(MatchSettlement settlement)
+    {
+        var totalReceived = 0m;
+        var entrySurplus = 0m;
+        foreach (var entry in settlement.Entries)
+        {
+            var due = settlement.AmountPerFullSlot * entry.SlotFactor;
+            var actual = EffectiveActualPaidAmount(entry, due);
+            totalReceived += actual;
+            entrySurplus += CalculateSurplus(entry.PaymentStatus, due, actual);
+        }
+
+        if (settlement.TotalDueOverride is not { } totalDueOverride)
+            return entrySurplus;
+
+        return Math.Max(0m, totalReceived - totalDueOverride);
+    }
+
     private async Task<decimal> GetGroupFundBalanceAsync(
         MatchSettlement settlement,
         CancellationToken cancellationToken)
@@ -830,6 +893,11 @@ public sealed class SettlementService(
             StatusCodes.Status400BadRequest,
             "amountPerFullSlot phải lớn hơn 0, tối đa 16 chữ số phần nguyên và 2 chữ số thập phân.");
 
+    private static ServiceResult<SettlementResponse> InvalidTotalDue() =>
+        ServiceResult<SettlementResponse>.Failure(
+            StatusCodes.Status400BadRequest,
+            "totalDueOverride phải lớn hơn 0, tối đa 16 chữ số phần nguyên và 2 chữ số thập phân.");
+
     private async Task<SettlementResponse> ToResponseAsync(
         MatchSettlement settlement,
         CancellationToken cancellationToken)
@@ -854,10 +922,14 @@ public sealed class SettlementService(
                     item.UpdatedAt);
             })
             .ToList();
-        var totalDue = entries.Sum(item => item.AmountDue);
+        var derivedTotalDue = entries.Sum(item => item.AmountDue);
+        var totalDue = settlement.TotalDueOverride ?? derivedTotalDue;
         var totalCollected = entries.Where(item => item.IsPaid).Sum(item => item.AmountDue);
         var totalReceived = entries.Where(item => item.IsPaid).Sum(item => item.ActualPaidAmount);
-        var settlementSurplus = entries.Sum(item => item.SurplusAmount);
+        var entrySurplus = entries.Sum(item => item.SurplusAmount);
+        var settlementSurplus = settlement.TotalDueOverride.HasValue
+            ? Math.Max(0m, totalReceived - totalDue)
+            : entrySurplus;
         var groupFundBalance = await GetGroupFundBalanceAsync(settlement, cancellationToken);
         var pending = settlement.Messages
             .Where(item => item.Status is SettlementMessageStatus.Pending or SettlementMessageStatus.Sending)
@@ -869,6 +941,7 @@ public sealed class SettlementService(
             settlement.SessionId,
             settlement.Session.Name,
             settlement.AmountPerFullSlot,
+            settlement.TotalDueOverride,
             settlement.Session.PaymentQrImageUrl,
             settlement.IsClosed,
             settlement.ClosedAt,

@@ -116,10 +116,12 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   const [settlement, setSettlement] = useState<MatchSettlementResponse | null>(null);
   const [missingSettlement, setMissingSettlement] = useState(false);
   const [amountInput, setAmountInput] = useState("");
+  const [totalDueInput, setTotalDueInput] = useState("");
   const [receivedInputs, setReceivedInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(true);
   const [entryBusyId, setEntryBusyId] = useState<string | null>(null);
   const [savingAmount, setSavingAmount] = useState(false);
+  const [savingTotalDue, setSavingTotalDue] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [actionKind, setActionKind] = useState<MatchSettlementActionKind>("Reminder");
@@ -170,6 +172,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   function applySettlementSnapshot(next: MatchSettlementResponse) {
     setSettlement(next);
     setAmountInput(String(next.amountPerFullSlot || ""));
+    setTotalDueInput(String(next.totalDue || ""));
     setReceivedInputs(Object.fromEntries(next.entries.map((entry) => [entry.id, String(entry.actualPaidAmount || entry.amountDue || "")])));
   }
 
@@ -195,6 +198,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           setReceivedInputs({});
           setMissingSettlement(true);
           setAmountInput("");
+          setTotalDueInput("");
         } else {
           throw caught;
         }
@@ -376,26 +380,29 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     }
   }
 
-  async function saveAmount() {
+  async function saveTotalDue() {
     if (!settlement) return;
-    const amount = Number(amountInput);
-    if (!Number.isFinite(amount) || amount <= 0 || amount === settlement.amountPerFullSlot) return;
-    setSavingAmount(true);
+    const totalDue = Number(totalDueInput);
+    if (!Number.isFinite(totalDue) || totalDue <= 0 || totalDue === settlement.totalDue) return;
+    setSavingTotalDue(true);
     setError(null);
     try {
       const mode = accessMode === "admin" ? "admin" : "zalo";
       const next = await apiFetch<MatchSettlementResponse>(settlementPath(mode), {
         method: "PUT",
         token: tokenFor(mode),
-        body: { amountPerFullSlot: amount },
+        body: {
+          amountPerFullSlot: settlement.amountPerFullSlot,
+          totalDueOverride: totalDue,
+        },
       });
       applySettlementSnapshot(next);
-      setNotice("Đã cập nhật mức cần thu / 1 slot. Tiền thực nhận đã ghi vẫn giữ nguyên.");
+      setNotice("Đã cập nhật TỔNG CẦN THU của trận. Tiền thực nhận từng người vẫn giữ nguyên và quỹ đã được đối soát lại.");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Không cập nhật được phí 1 slot.");
-      setAmountInput(String(settlement.amountPerFullSlot));
+      setError(caught instanceof Error ? caught.message : "Không cập nhật được tổng cần thu.");
+      setTotalDueInput(String(settlement.totalDue));
     } finally {
-      setSavingAmount(false);
+      setSavingTotalDue(false);
     }
   }
 
@@ -423,17 +430,22 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     const nextEntries = settlement.entries.map((item) => item.id === entry.id
       ? { ...item, slotFactor, isPaid, paymentStatus: isPaid ? "Paid" as const : "Unpaid" as const, amountDue, actualPaidAmount, surplusAmount: isPaid ? Math.max(0, actualPaidAmount - amountDue) : 0 }
       : item);
-    const oldSurplus = entry.surplusAmount;
-    const newSurplus = isPaid ? Math.max(0, actualPaidAmount - amountDue) : 0;
+    const derivedTotalDue = nextEntries.reduce((total, item) => total + item.amountDue, 0);
+    const effectiveTotalDue = settlement.totalDueOverride ?? derivedTotalDue;
+    const entrySurplus = nextEntries.reduce((total, item) => total + item.surplusAmount, 0);
+    const nextTotalReceived = nextEntries.reduce((total, item) => total + (item.isPaid ? item.actualPaidAmount : 0), 0);
+    const nextSettlementSurplus = settlement.totalDueOverride !== null
+      ? Math.max(0, nextTotalReceived - effectiveTotalDue)
+      : entrySurplus;
     setSettlement({
       ...settlement,
       entries: nextEntries,
       paidCount: nextEntries.filter((item) => item.isPaid).length,
-      totalDue: nextEntries.reduce((total, item) => total + item.amountDue, 0),
+      totalDue: effectiveTotalDue,
       totalCollected: nextEntries.reduce((total, item) => total + (item.isPaid ? item.amountDue : 0), 0),
-      totalReceived: nextEntries.reduce((total, item) => total + (item.isPaid ? item.actualPaidAmount : 0), 0),
-      settlementSurplus: nextEntries.reduce((total, item) => total + item.surplusAmount, 0),
-      groupFundBalance: settlement.groupFundBalance + (newSurplus - oldSurplus),
+      totalReceived: nextTotalReceived,
+      settlementSurplus: nextSettlementSurplus,
+      groupFundBalance: settlement.groupFundBalance + (nextSettlementSurplus - settlement.settlementSurplus),
     });
     setReceivedInputs((current) => ({ ...current, [entry.id]: isPaid ? String(actualPaidAmount) : "" }));
     try {
@@ -817,24 +829,25 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           <div className="fund"><span>Dư trận này</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
         </div>
 
-        <section className="settlement-fee-card" aria-label="Mức cần thu mỗi slot">
+        <section className="settlement-fee-card" aria-label="Tổng cần thu của trận">
           <div className="settlement-fee-card-copy">
-            <span className="settlement-fee-card-kicker">MỨC CẦN THU / 1 SLOT</span>
-            <strong>{formatMoney(settlement.amountPerFullSlot)}</strong>
+            <span className="settlement-fee-card-kicker">TỔNG CẦN THU CỦA TRẬN</span>
+            <strong>{formatMoney(settlement.totalDue)}</strong>
             <small>
-              1/2 slot: {formatMoney(settlement.amountPerFullSlot / 2)} • Đây là mức từ lệnh <code>@bot thu tiền 22k/người</code>.
-              Trưởng/phó nhóm có thể sửa tại đây; tiền thực nhận đã ghi không bị ghi đè.
+              Mức theo người: 1 slot {formatMoney(settlement.amountPerFullSlot)} • 1/2 slot {formatMoney(settlement.amountPerFullSlot / 2)}.
+              {settlement.totalDueOverride !== null ? " Tổng này đã được chỉnh trực tiếp." : " Tổng này hiện được tính tự động từ mức theo người."}
+              {" "}Sửa tổng không ghi đè tiền thực nhận từng người; hệ thống tự đối soát lại phần dư/quỹ.
             </small>
           </div>
           <label className="settlement-fee-editor">
-            <span>Nhập mức mới</span>
+            <span>Nhập tổng mới</span>
             <div>
               <input
                 inputMode="numeric"
-                aria-label="Mức cần thu mới cho 1 slot"
-                value={amountInput}
-                onChange={(event) => setAmountInput(event.target.value.replace(/\D/g, ""))}
-                onKeyDown={(event) => { if (event.key === "Enter") void saveAmount(); }}
+                aria-label="Tổng cần thu mới của trận"
+                value={totalDueInput}
+                onChange={(event) => setTotalDueInput(event.target.value.replace(/\D/g, ""))}
+                onKeyDown={(event) => { if (event.key === "Enter") void saveTotalDue(); }}
               />
               <span>đ</span>
             </div>
@@ -842,10 +855,10 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           <button
             className="settlement-fee-save"
             type="button"
-            disabled={savingAmount || Number(amountInput) <= 0 || Number(amountInput) === settlement.amountPerFullSlot}
-            onClick={() => void saveAmount()}
+            disabled={savingTotalDue || Number(totalDueInput) <= 0 || Number(totalDueInput) === settlement.totalDue}
+            onClick={() => void saveTotalDue()}
           >
-            {savingAmount ? "Đang cập nhật…" : "Cập nhật mức thu"}
+            {savingTotalDue ? "Đang cập nhật…" : "Cập nhật tổng cần thu"}
           </button>
         </section>
       </div>

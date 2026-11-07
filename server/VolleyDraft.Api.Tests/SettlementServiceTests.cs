@@ -41,6 +41,10 @@ public sealed class SettlementServiceTests
         preparedColumn.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SettlementMessages') WHERE name = 'PreparedImageData'";
         Assert.Equal(1L, Convert.ToInt64(await preparedColumn.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
 
+        await using var totalDueColumn = connection.CreateCommand();
+        totalDueColumn.CommandText = "SELECT COUNT(*) FROM pragma_table_info('MatchSettlements') WHERE name = 'TotalDueOverride'";
+        Assert.Equal(1L, Convert.ToInt64(await totalDueColumn.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+
         await using var qrSnapshotColumn = connection.CreateCommand();
         qrSnapshotColumn.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SettlementMessages') WHERE name = 'PaymentQrImageUrlSnapshot'";
         Assert.Equal(1L, Convert.ToInt64(await qrSnapshotColumn.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
@@ -737,6 +741,88 @@ public sealed class SettlementServiceTests
         Assert.Equal(20_000m, unchanged.Value!.AmountPerFullSlot);
         Assert.Equal(25_000m, unchanged.Value.Entries.Single(item => item.Id == full.Id).ActualPaidAmount);
         Assert.Equal(5_000m, unchanged.Value.GroupFundBalance);
+    }
+
+    [Fact]
+    public async Task Total_due_override_updates_match_target_without_rewriting_member_money_and_reconciles_fund()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var half = created.Entries.Single(item => item.SessionPlayerId == "player-half");
+
+        await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 25_000m));
+        var fullyPaid = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", half.Id, new UpdateSettlementEntryRequest(.5m, true, 11_000m));
+        Assert.Equal(33_000m, fullyPaid.Value!.TotalDue);
+        Assert.Equal(3_000m, fullyPaid.Value.SettlementSurplus);
+        Assert.Equal(3_000m, fullyPaid.Value.GroupFundBalance);
+
+        var adjusted = await fixture.Service.UpdateAsync(
+            "admin",
+            "session",
+            new UpdateSettlementRequest(22_000m, 34_000m));
+
+        Assert.True(adjusted.IsSuccess);
+        Assert.Equal(22_000m, adjusted.Value!.AmountPerFullSlot);
+        Assert.Equal(34_000m, adjusted.Value.TotalDueOverride);
+        Assert.Equal(34_000m, adjusted.Value.TotalDue);
+        Assert.Equal(36_000m, adjusted.Value.TotalReceived);
+        Assert.Equal(2_000m, adjusted.Value.SettlementSurplus);
+        Assert.Equal(2_000m, adjusted.Value.GroupFundBalance);
+        Assert.Equal(22_000m, adjusted.Value.Entries.Single(item => item.Id == full.Id).AmountDue);
+        Assert.Equal(25_000m, adjusted.Value.Entries.Single(item => item.Id == full.Id).ActualPaidAmount);
+        Assert.Equal(11_000m, adjusted.Value.Entries.Single(item => item.Id == half.Id).AmountDue);
+        Assert.Equal(11_000m, adjusted.Value.Entries.Single(item => item.Id == half.Id).ActualPaidAmount);
+
+        var adjustment = await fixture.Db.GroupFundTransactions.AsNoTracking()
+            .OrderByDescending(item => item.CreatedAt)
+            .FirstAsync();
+        Assert.Equal(GroupFundTransactionKind.SettlementTotalDueAdjustment, adjustment.Kind);
+        Assert.Equal(-1_000m, adjustment.Amount);
+        Assert.Equal(3_000m, adjustment.SurplusBefore);
+        Assert.Equal(2_000m, adjustment.SurplusAfter);
+
+        var correctedReceived = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 26_000m));
+        Assert.Equal(34_000m, correctedReceived.Value!.TotalDue);
+        Assert.Equal(37_000m, correctedReceived.Value.TotalReceived);
+        Assert.Equal(3_000m, correctedReceived.Value.SettlementSurplus);
+        Assert.Equal(3_000m, correctedReceived.Value.GroupFundBalance);
+    }
+
+    [Fact]
+    public async Task Total_due_override_never_creates_fund_before_cash_is_received()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+
+        var adjustedBeforePayment = await fixture.Service.UpdateAsync(
+            "admin",
+            "session",
+            new UpdateSettlementRequest(22_000m, 30_000m));
+
+        Assert.True(adjustedBeforePayment.IsSuccess);
+        Assert.Equal(30_000m, adjustedBeforePayment.Value!.TotalDue);
+        Assert.Equal(0m, adjustedBeforePayment.Value.TotalReceived);
+        Assert.Equal(0m, adjustedBeforePayment.Value.SettlementSurplus);
+        Assert.Equal(0m, adjustedBeforePayment.Value.GroupFundBalance);
+
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var onePayment = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 25_000m));
+
+        Assert.Equal(25_000m, onePayment.Value!.TotalReceived);
+        Assert.Equal(30_000m, onePayment.Value.TotalDue);
+        Assert.Equal(0m, onePayment.Value.SettlementSurplus);
+        Assert.Equal(0m, onePayment.Value.GroupFundBalance);
     }
 
     [Fact]

@@ -420,6 +420,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
         modelBuilder.Entity<MatchSettlement>(entity =>
         {
             entity.Property(settlement => settlement.AmountPerFullSlot).HasPrecision(18, 2);
+            entity.Property(settlement => settlement.TotalDueOverride).HasPrecision(18, 2);
             entity.HasIndex(settlement => settlement.SessionId).IsUnique();
             entity.HasOne(settlement => settlement.Session)
                 .WithMany()

@@ -324,6 +324,7 @@ public static class DatabaseSchemaPatch
                     "Id" TEXT NOT NULL CONSTRAINT "PK_MatchSettlements" PRIMARY KEY,
                     "SessionId" TEXT NOT NULL,
                     "AmountPerFullSlot" TEXT NOT NULL,
+                    "TotalDueOverride" TEXT NULL,
                     "IsClosed" INTEGER NOT NULL DEFAULT 0,
                     "ClosedAt" TEXT NULL,
                     "CreatedAt" TEXT NOT NULL,
@@ -450,6 +451,7 @@ public static class DatabaseSchemaPatch
                     "Id" text NOT NULL CONSTRAINT "PK_MatchSettlements" PRIMARY KEY,
                     "SessionId" text NOT NULL,
                     "AmountPerFullSlot" numeric(18,2) NOT NULL,
+                    "TotalDueOverride" numeric(18,2) NULL,
                     "IsClosed" boolean NOT NULL DEFAULT FALSE,
                     "ClosedAt" timestamp with time zone NULL,
                     "CreatedAt" timestamp with time zone NOT NULL,
@@ -576,6 +578,7 @@ public static class DatabaseSchemaPatch
 
         if (provider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
         {
+            await EnsureSqliteColumn(db, "MatchSettlements", "TotalDueOverride", "\"TotalDueOverride\" TEXT NULL");
             await EnsureSqliteColumn(db, "SettlementEntries", "ActualPaidAmount", "\"ActualPaidAmount\" TEXT NOT NULL DEFAULT '0'");
             await EnsureSqliteColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" TEXT NULL");
             await EnsureSqliteColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" TEXT NULL");
@@ -590,6 +593,7 @@ public static class DatabaseSchemaPatch
         }
         else if (provider.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
         {
+            await EnsurePostgresColumn(db, "MatchSettlements", "TotalDueOverride", "\"TotalDueOverride\" numeric(18,2) NULL");
             await EnsurePostgresColumn(db, "SettlementEntries", "ActualPaidAmount", "\"ActualPaidAmount\" numeric(18,2) NOT NULL DEFAULT 0");
             await EnsurePostgresColumn(db, "SettlementMessages", "ClientRequestId", "\"ClientRequestId\" text NULL");
             await EnsurePostgresColumn(db, "SettlementMessages", "ZaloAccountIdSnapshot", "\"ZaloAccountIdSnapshot\" text NULL");

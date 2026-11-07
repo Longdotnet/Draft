@@ -82,12 +82,17 @@ public sealed class SettlementSummaryCardRenderer
 
         DrawHeader(canvas, session, "TỔNG KẾT SỔ TIỀN");
 
-        var totalDue = rows.Sum(row => row.Due);
+        var derivedTotalDue = rows.Sum(row => row.Due);
+        var totalDue = settlement.TotalDueOverride ?? derivedTotalDue;
         var totalReceived = rows.Sum(row => row.Received);
-        var surplus = rows.Sum(row => row.Surplus);
+        var entrySurplus = rows.Sum(row => row.Surplus);
+        var surplus = settlement.TotalDueOverride.HasValue
+            ? Math.Max(0m, totalReceived - totalDue)
+            : entrySurplus;
         DrawMetrics(
             canvas,
             settlement.AmountPerFullSlot,
+            settlement.TotalDueOverride.HasValue,
             totalDue,
             totalReceived,
             surplus,
@@ -337,6 +342,7 @@ public sealed class SettlementSummaryCardRenderer
     private static void DrawMetrics(
         SKCanvas canvas,
         decimal amountPerFullSlot,
+        bool totalDueOverridden,
         decimal totalDue,
         decimal totalReceived,
         decimal surplus,
@@ -361,7 +367,9 @@ public sealed class SettlementSummaryCardRenderer
         DrawMetric(canvas, outer.Left + 32 + cellWidth * 3, outer.Top + 111, cellWidth, "QUỸ ZYRO", Money(fund), Red);
         DrawText(
             canvas,
-            $"MỨC THU  •  1 slot {Money(amountPerFullSlot)}  •  1/2 slot {Money(amountPerFullSlot / 2m)}",
+            totalDueOverridden
+                ? $"MỨC THU  •  1 slot {Money(amountPerFullSlot)}  •  1/2 slot {Money(amountPerFullSlot / 2m)}  •  TỔNG CẦN THU ĐÃ CHỈNH"
+                : $"MỨC THU  •  1 slot {Money(amountPerFullSlot)}  •  1/2 slot {Money(amountPerFullSlot / 2m)}",
             outer.Left + 32,
             outer.Top + 181,
             13,

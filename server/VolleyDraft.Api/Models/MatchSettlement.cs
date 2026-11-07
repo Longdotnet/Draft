@@ -34,7 +34,8 @@ public enum SettlementMessageStatus
 
 public enum GroupFundTransactionKind
 {
-    SettlementSurplusAdjustment
+    SettlementSurplusAdjustment,
+    SettlementTotalDueAdjustment
 }
 
 public sealed class MatchSettlement
@@ -42,6 +43,7 @@ public sealed class MatchSettlement
     public string Id { get; set; } = Guid.NewGuid().ToString("n");
     public string SessionId { get; set; } = string.Empty;
     public decimal AmountPerFullSlot { get; set; }
+    public decimal? TotalDueOverride { get; set; }
     public bool IsClosed { get; set; }
     public DateTimeOffset? ClosedAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

@@ -4,7 +4,9 @@ namespace VolleyDraft.Api.Contracts;
 
 public sealed record CreateSettlementRequest(decimal AmountPerFullSlot);
 
-public sealed record UpdateSettlementRequest(decimal AmountPerFullSlot);
+public sealed record UpdateSettlementRequest(
+    decimal AmountPerFullSlot,
+    decimal? TotalDueOverride = null);
 
 public sealed record UpdateSettlementEntryRequest(
     decimal SlotFactor,
@@ -50,6 +52,7 @@ public sealed record SettlementResponse(
     string SessionId,
     string SessionName,
     decimal AmountPerFullSlot,
+    decimal? TotalDueOverride,
     string? PaymentQrImageUrl,
     bool IsClosed,
     DateTimeOffset? ClosedAt,
