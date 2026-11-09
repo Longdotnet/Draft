@@ -191,12 +191,14 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
             fundAppliedAmount > 0 ? fundAppliedAmount : currentSurplus,
             fundAppliedAmount > 0 ? Red : currentSurplus > 0 ? Green : Muted);
 
-        WriteKpi(ws, "B11:D13", "QUỸ NHÓM HIỆN TẠI", groupFund, Red);
+        WriteKpi(ws, "B11:D13", groupFund < 0 ? "QUỸ ĐANG ÂM • CẦN BÙ" : "QUỸ NHÓM HIỆN TẠI", groupFund, groupFund < 0 ? Red : Navy);
         ws.Range("E11:I13").Merge();
         var matchCount = fundTransactions.Select(item => item.SettlementId).Distinct().Count();
-        ws.Cell("E11").Value = fundTransactions.Count == 0
-            ? "Quỹ chưa có phát sinh. Khi có người đóng dư, hệ thống sẽ ghi rõ phát sinh theo từng trận."
-            : $"Quỹ có {fundTransactions.Count} lần phát sinh thuộc {matchCount} trận. Mở sheet 03_SO_QUY để xem tiền dư, khoản bù thiếu và các lần hoàn quỹ.";
+        ws.Cell("E11").Value = groupFund < 0
+            ? $"Quỹ đang âm {Money(Math.Abs(groupFund))}. Đây là phần nhóm đã bù trước cho các trận và cần được bù lại. Mở sheet 03_SO_QUY để xem nguồn phát sinh."
+            : fundTransactions.Count == 0
+                ? "Quỹ chưa có phát sinh. Khi có người đóng dư, hệ thống sẽ ghi rõ phát sinh theo từng trận."
+                : $"Quỹ có {fundTransactions.Count} lần phát sinh thuộc {matchCount} trận. Mở sheet 03_SO_QUY để xem tiền dư, khoản bù thiếu và các lần hoàn quỹ.";
         ws.Cell("E11").Style.Alignment.WrapText = true;
         ws.Cell("E11").Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
         ws.Cell("E11").Style.Font.FontColor = Muted;
@@ -370,8 +372,10 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         WriteSheetTitle(ws, "SỔ QUỸ NHÓM", "Quỹ được truy theo từng trận và từng lần điều chỉnh", "Số dư quỹ không nhập tay: phát sinh đến từ tiền dư, điều chỉnh tổng cần thu và các khoản rút/hoàn quỹ để bù thiếu cho trận.");
 
         ws.Range("A6:C8").Merge();
-        ws.Cell("A6").Value = $"QUỸ HIỆN TẠI\n{Money(groupFund)}";
-        ws.Cell("A6").Style.Fill.BackgroundColor = Navy;
+        ws.Cell("A6").Value = groupFund < 0
+            ? $"QUỸ ĐANG ÂM • CẦN BÙ\n{Money(groupFund)}"
+            : $"QUỸ HIỆN TẠI\n{Money(groupFund)}";
+        ws.Cell("A6").Style.Fill.BackgroundColor = groupFund < 0 ? Red : Navy;
         ws.Cell("A6").Style.Font.FontColor = XLColor.White;
         ws.Cell("A6").Style.Font.Bold = true;
         ws.Cell("A6").Style.Font.FontSize = 16;

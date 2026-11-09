@@ -427,7 +427,14 @@ public sealed class SettlementSummaryCardRenderer
             fundAppliedAmount > 0 ? "BÙ TỪ QUỸ" : "DƯ TRẬN",
             fundAppliedAmount > 0 ? Money(fundAppliedAmount) : SignedMoney(surplus),
             fundAppliedAmount > 0 ? Red : surplus > 0 ? Success : Muted);
-        DrawMetric(canvas, outer.Left + 32 + cellWidth * 3, outer.Top + 111, cellWidth, "QUỸ ZYRO", Money(fund), Red);
+        DrawMetric(
+            canvas,
+            outer.Left + 32 + cellWidth * 3,
+            outer.Top + 111,
+            cellWidth,
+            fund < 0 ? "QUỸ CẦN BÙ" : "QUỸ ZYRO",
+            Money(fund),
+            fund < 0 ? Red : Navy);
         DrawText(
             canvas,
             totalDueOverridden

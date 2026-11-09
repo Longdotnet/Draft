@@ -2250,6 +2250,18 @@
   text-align: right;
 }
 
+.settlement-fund-highlight.is-negative {
+  border-color: rgba(209, 13, 47, .3);
+  background:
+    linear-gradient(112deg, rgba(209, 13, 47, .14), rgba(209, 13, 47, .035)),
+    #fff;
+}
+
+.settlement-fund-highlight.is-negative strong,
+.settlement-fund-highlight.is-negative small {
+  color: var(--settlement-danger);
+}
+
 .settlement-fee-field {
   display: grid;
   grid-template-columns: auto 1fr auto;

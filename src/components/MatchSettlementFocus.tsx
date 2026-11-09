@@ -178,7 +178,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     setTotalDueInput(String(next.totalDue || ""));
     const suggestedFundCoverage = next.fundAppliedAmount > 0
       ? next.fundAppliedAmount
-      : Math.max(0, Math.min(next.remainingAmount, next.groupFundBalance));
+      : Math.max(0, next.remainingAmount);
     setFundCoverageInput(String(suggestedFundCoverage || ""));
     setReceivedInputs(Object.fromEntries(next.entries.map((entry) => [entry.id, String(entry.actualPaidAmount || entry.amountDue || "")])));
   }
@@ -418,8 +418,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     if (!settlement) return;
     const amount = amountOverride ?? Number(fundCoverageInput || 0);
     const maxShortfall = settlement.remainingAmount + settlement.fundAppliedAmount;
-    const availableFund = Math.max(0, settlement.groupFundBalance + settlement.fundAppliedAmount);
-    const maxAllowed = Math.min(maxShortfall, availableFund);
+    const maxAllowed = maxShortfall;
     if (!Number.isFinite(amount) || amount < 0 || amount > maxAllowed) {
       setError(`Tiền bù từ quỹ phải từ 0 đến ${formatMoney(maxAllowed)}.`);
       return;
@@ -859,13 +858,15 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
         </div>
         <div className="settlement-progress" aria-label={`${progress}% đã thu`}><span style={{ width: `${progress}%` }} /></div>
 
-        <div className="settlement-fund-highlight">
+        <div className={`settlement-fund-highlight ${settlement.groupFundBalance < 0 ? "is-negative" : ""}`}>
           <div><span>QUỸ ZYRO</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
-          <small>{settlement.fundAppliedAmount > 0
-            ? `Đang bù ${formatMoney(settlement.fundAppliedAmount)} cho trận này`
-            : settlement.settlementSurplus > 0
-              ? `+${formatMoney(settlement.settlementSurplus)} từ trận này`
-              : "Trận này chưa phát sinh tiền dư"}</small>
+          <small>{settlement.groupFundBalance < 0
+            ? `Quỹ đang âm ${formatMoney(Math.abs(settlement.groupFundBalance))} • cần bù lại`
+            : settlement.fundAppliedAmount > 0
+              ? `Đang bù ${formatMoney(settlement.fundAppliedAmount)} cho trận này`
+              : settlement.settlementSurplus > 0
+                ? `+${formatMoney(settlement.settlementSurplus)} từ trận này`
+                : "Trận này chưa phát sinh tiền dư"}</small>
         </div>
 
         <div className="settlement-money-grid">
@@ -885,7 +886,9 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
                 Thực nhận {formatMoney(settlement.totalReceived)}
                 {settlement.fundAppliedAmount > 0 ? ` + quỹ ${formatMoney(settlement.fundAppliedAmount)}` : ""}
                 {` = ${formatMoney(settlement.settledAmount)} / ${formatMoney(settlement.totalDue)}.`}
-                {" "}Quỹ hiện còn {formatMoney(settlement.groupFundBalance)}.
+                {" "}{settlement.groupFundBalance < 0
+                  ? `Quỹ đang âm ${formatMoney(Math.abs(settlement.groupFundBalance))}, cần bù lại.`
+                  : `Quỹ hiện còn ${formatMoney(settlement.groupFundBalance)}.`}
               </small>
             </div>
             <label className="settlement-fee-editor settlement-fund-coverage-editor">

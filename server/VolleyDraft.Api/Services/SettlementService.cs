@@ -289,15 +289,6 @@ public sealed class SettlementService(
                 $"Quỹ bù tối đa bằng phần còn thiếu trước khi dùng quỹ ({shortfallBeforeCoverage.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ).");
         }
 
-        var currentFundBalance = await GetGroupFundBalanceAsync(settlement, cancellationToken);
-        var availableFundExcludingCurrentCoverage = Math.Max(0m, currentFundBalance + currentCoverage);
-        if (request.Amount > availableFundExcludingCurrentCoverage)
-        {
-            return ServiceResult<SettlementResponse>.Failure(
-                StatusCodes.Status400BadRequest,
-                $"Quỹ nhóm hiện chỉ có {availableFundExcludingCurrentCoverage.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ khả dụng cho sổ này.");
-        }
-
         var now = DateTimeOffset.UtcNow;
         db.GroupFundTransactions.Add(new GroupFundTransaction
         {

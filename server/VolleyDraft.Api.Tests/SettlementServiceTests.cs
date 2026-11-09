@@ -929,7 +929,7 @@ public sealed class SettlementServiceTests
     }
 
     [Fact]
-    public async Task Fund_coverage_rejects_more_than_shortfall_or_available_fund()
+    public async Task Fund_coverage_allows_negative_group_balance_but_rejects_more_than_shortfall()
     {
         await using var fixture = await Fixture.CreateAsync();
         var created = (await fixture.Service.CreateAsync(
@@ -942,55 +942,33 @@ public sealed class SettlementServiceTests
         await fixture.Service.UpdateEntryAsync("admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 22_000m));
         await fixture.Service.UpdateEntryAsync("admin", "session", half.Id, new UpdateSettlementEntryRequest(.5m, true, 11_000m));
 
-        var fundSourceSession = new MatchSession
-        {
-            Id = "fund-source-session",
-            Name = "Quỹ từ trận trước",
-            AdminUserId = "admin",
-            ZaloConnectionId = "connection",
-            ZaloGroupId = "group"
-        };
-        var fundSourceSettlement = new MatchSettlement
-        {
-            Id = "fund-source-settlement",
-            SessionId = fundSourceSession.Id,
-            Session = fundSourceSession,
-            AmountPerFullSlot = 1m
-        };
-        fixture.Db.MatchSessions.Add(fundSourceSession);
-        fixture.Db.MatchSettlements.Add(fundSourceSettlement);
-        fixture.Db.GroupFundTransactions.Add(new GroupFundTransaction
-        {
-            ZaloConnectionId = "connection",
-            GroupId = "group",
-            SettlementId = fundSourceSettlement.Id,
-            Settlement = fundSourceSettlement,
-            SettlementEntryId = $"{fundSourceSettlement.Id}:seed-fund",
-            DisplayNameSnapshot = "Quỹ có sẵn",
-            Kind = GroupFundTransactionKind.SettlementSurplusAdjustment,
-            Amount = 3_000m,
-            SurplusBefore = 0m,
-            SurplusAfter = 3_000m,
-            CreatedAt = DateTimeOffset.UtcNow
-        });
-        await fixture.Db.SaveChangesAsync();
-
         var aboveShortfall = await fixture.Service.UpdateFundCoverageAsync(
             "admin", "session", new UpdateSettlementFundCoverageRequest(5_000m));
         Assert.False(aboveShortfall.IsSuccess);
         Assert.Equal(StatusCodes.Status400BadRequest, aboveShortfall.StatusCode);
 
-        var aboveFund = await fixture.Service.UpdateFundCoverageAsync(
+        var negativeFund = await fixture.Service.UpdateFundCoverageAsync(
             "admin", "session", new UpdateSettlementFundCoverageRequest(4_000m));
-        Assert.False(aboveFund.IsSuccess);
-        Assert.Equal(StatusCodes.Status400BadRequest, aboveFund.StatusCode);
+        Assert.True(negativeFund.IsSuccess);
+        Assert.Equal(4_000m, negativeFund.Value!.FundAppliedAmount);
+        Assert.Equal(0m, negativeFund.Value.RemainingAmount);
+        Assert.Equal(-4_000m, negativeFund.Value.GroupFundBalance);
+
+        var negativeExport = await new SettlementExcelExporter(fixture.Db).ExportAsync("admin", "session");
+        Assert.True(negativeExport.IsSuccess);
+        using (var workbook = new XLWorkbook(new MemoryStream(negativeExport.Value!.Content)))
+        {
+            Assert.Contains("CẦN BÙ", workbook.Worksheet("01_TONG_QUAN").Cell("B11").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("đang âm", workbook.Worksheet("01_TONG_QUAN").Cell("E11").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("CẦN BÙ", workbook.Worksheet("03_SO_QUY").Cell("A6").GetString(), StringComparison.OrdinalIgnoreCase);
+        }
 
         var exactFund = await fixture.Service.UpdateFundCoverageAsync(
             "admin", "session", new UpdateSettlementFundCoverageRequest(3_000m));
         Assert.True(exactFund.IsSuccess);
         Assert.Equal(3_000m, exactFund.Value!.FundAppliedAmount);
         Assert.Equal(1_000m, exactFund.Value.RemainingAmount);
-        Assert.Equal(0m, exactFund.Value.GroupFundBalance);
+        Assert.Equal(-3_000m, exactFund.Value.GroupFundBalance);
     }
 
     [Fact]
