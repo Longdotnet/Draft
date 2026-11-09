@@ -35,7 +35,8 @@ public enum SettlementMessageStatus
 public enum GroupFundTransactionKind
 {
     SettlementSurplusAdjustment,
-    SettlementTotalDueAdjustment
+    SettlementTotalDueAdjustment,
+    SettlementFundCoverageAdjustment
 }
 
 public sealed class MatchSettlement

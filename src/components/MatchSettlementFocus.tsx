@@ -15,6 +15,7 @@ import {
   ShieldCheck,
   Users,
   Volleyball,
+  WalletCards,
   X,
 } from "lucide-react";
 import {
@@ -117,11 +118,13 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   const [missingSettlement, setMissingSettlement] = useState(false);
   const [amountInput, setAmountInput] = useState("");
   const [totalDueInput, setTotalDueInput] = useState("");
+  const [fundCoverageInput, setFundCoverageInput] = useState("");
   const [receivedInputs, setReceivedInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(true);
   const [entryBusyId, setEntryBusyId] = useState<string | null>(null);
   const [savingAmount, setSavingAmount] = useState(false);
   const [savingTotalDue, setSavingTotalDue] = useState(false);
+  const [savingFundCoverage, setSavingFundCoverage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [actionKind, setActionKind] = useState<MatchSettlementActionKind>("Reminder");
@@ -173,6 +176,10 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
     setSettlement(next);
     setAmountInput(String(next.amountPerFullSlot || ""));
     setTotalDueInput(String(next.totalDue || ""));
+    const suggestedFundCoverage = next.fundAppliedAmount > 0
+      ? next.fundAppliedAmount
+      : Math.max(0, Math.min(next.remainingAmount, next.groupFundBalance));
+    setFundCoverageInput(String(suggestedFundCoverage || ""));
     setReceivedInputs(Object.fromEntries(next.entries.map((entry) => [entry.id, String(entry.actualPaidAmount || entry.amountDue || "")])));
   }
 
@@ -199,6 +206,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           setMissingSettlement(true);
           setAmountInput("");
           setTotalDueInput("");
+          setFundCoverageInput("");
         } else {
           throw caught;
         }
@@ -345,7 +353,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
 
   const progress = useMemo(() => {
     if (!settlement) return 0;
-    if (settlement.totalDue > 0) return Math.min(100, Math.round((settlement.totalCollected / settlement.totalDue) * 100));
+    if (settlement.totalDue > 0) return Math.min(100, Math.round((settlement.settledAmount / settlement.totalDue) * 100));
     return settlement.totalCount > 0 ? Math.round((settlement.paidCount / settlement.totalCount) * 100) : 0;
   }, [settlement]);
 
@@ -403,6 +411,39 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       setTotalDueInput(String(settlement.totalDue));
     } finally {
       setSavingTotalDue(false);
+    }
+  }
+
+  async function saveFundCoverage(amountOverride?: number) {
+    if (!settlement) return;
+    const amount = amountOverride ?? Number(fundCoverageInput || 0);
+    const maxShortfall = settlement.remainingAmount + settlement.fundAppliedAmount;
+    const availableFund = Math.max(0, settlement.groupFundBalance + settlement.fundAppliedAmount);
+    const maxAllowed = Math.min(maxShortfall, availableFund);
+    if (!Number.isFinite(amount) || amount < 0 || amount > maxAllowed) {
+      setError(`Tiền bù từ quỹ phải từ 0 đến ${formatMoney(maxAllowed)}.`);
+      return;
+    }
+    if (amount === settlement.fundAppliedAmount) return;
+
+    setSavingFundCoverage(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const mode = accessMode === "admin" ? "admin" : "zalo";
+      const next = await apiFetch<MatchSettlementResponse>(settlementPath(mode, "/fund-coverage"), {
+        method: "PUT",
+        token: tokenFor(mode),
+        body: { amount },
+      });
+      applySettlementSnapshot(next);
+      setNotice(amount > 0
+        ? `Đã dùng ${formatMoney(amount)} từ Quỹ Zyro để bù cho trận.`
+        : "Đã hoàn khoản bù của trận về Quỹ Zyro.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không cập nhật được khoản bù từ quỹ.");
+    } finally {
+      setSavingFundCoverage(false);
     }
   }
 
@@ -813,21 +854,75 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
         </div>
 
         <div className="settlement-progress-copy">
-          <strong>{progress}% đã thu</strong>
+          <strong>{settlement.remainingAmount === 0 ? "Đã đủ quyết toán" : `${progress}% đã đủ`}</strong>
           <span>{settlement.paidCount}/{settlement.totalCount} người</span>
         </div>
         <div className="settlement-progress" aria-label={`${progress}% đã thu`}><span style={{ width: `${progress}%` }} /></div>
 
         <div className="settlement-fund-highlight">
           <div><span>QUỸ ZYRO</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
-          <small>{settlement.settlementSurplus > 0 ? `+${formatMoney(settlement.settlementSurplus)} từ trận này` : "Trận này chưa phát sinh tiền dư"}</small>
+          <small>{settlement.fundAppliedAmount > 0
+            ? `Đang bù ${formatMoney(settlement.fundAppliedAmount)} cho trận này`
+            : settlement.settlementSurplus > 0
+              ? `+${formatMoney(settlement.settlementSurplus)} từ trận này`
+              : "Trận này chưa phát sinh tiền dư"}</small>
         </div>
 
         <div className="settlement-money-grid">
           <div><span>Cần thu</span><strong>{formatMoney(settlement.totalDue)}</strong></div>
           <div><span>Đã nhận</span><strong>{formatMoney(settlement.totalReceived)}</strong></div>
-          <div className="fund"><span>Dư trận này</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
+          <div className={`fund ${settlement.remainingAmount > 0 ? "is-short" : "is-settled"}`}>
+            <span>Còn thiếu</span><strong>{formatMoney(settlement.remainingAmount)}</strong>
+          </div>
         </div>
+
+        {(settlement.remainingAmount > 0 || settlement.fundAppliedAmount > 0) ? (
+          <section className="settlement-fund-coverage-card" aria-label="Bù thiếu từ Quỹ Zyro">
+            <div className="settlement-fund-coverage-copy">
+              <span className="settlement-fee-card-kicker"><WalletCards size={15} aria-hidden="true" /> BÙ THIẾU TỪ QUỸ</span>
+              <strong>{settlement.remainingAmount === 0 ? "Đã đủ tiền" : `Còn thiếu ${formatMoney(settlement.remainingAmount)}`}</strong>
+              <small>
+                Thực nhận {formatMoney(settlement.totalReceived)}
+                {settlement.fundAppliedAmount > 0 ? ` + quỹ ${formatMoney(settlement.fundAppliedAmount)}` : ""}
+                {` = ${formatMoney(settlement.settledAmount)} / ${formatMoney(settlement.totalDue)}.`}
+                {" "}Quỹ hiện còn {formatMoney(settlement.groupFundBalance)}.
+              </small>
+            </div>
+            <label className="settlement-fee-editor settlement-fund-coverage-editor">
+              <span>Mức quỹ dùng</span>
+              <div>
+                <input
+                  inputMode="numeric"
+                  aria-label="Số tiền lấy từ Quỹ Zyro để bù cho trận"
+                  value={fundCoverageInput}
+                  onChange={(event) => setFundCoverageInput(event.target.value.replace(/\D/g, ""))}
+                  onKeyDown={(event) => { if (event.key === "Enter") void saveFundCoverage(); }}
+                />
+                <span>đ</span>
+              </div>
+            </label>
+            <div className="settlement-fund-coverage-actions">
+              <button
+                className="settlement-fee-save"
+                type="button"
+                disabled={savingFundCoverage || Number(fundCoverageInput || 0) === settlement.fundAppliedAmount}
+                onClick={() => void saveFundCoverage()}
+              >
+                {savingFundCoverage ? "Đang đối soát…" : settlement.fundAppliedAmount > 0 ? "Cập nhật quỹ bù" : `Bù từ quỹ`}
+              </button>
+              {settlement.fundAppliedAmount > 0 ? (
+                <button
+                  className="settlement-fund-refund"
+                  type="button"
+                  disabled={savingFundCoverage}
+                  onClick={() => void saveFundCoverage(0)}
+                >
+                  Hoàn về quỹ
+                </button>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
 
         <section className="settlement-fee-card" aria-label="Tổng cần thu của trận">
           <div className="settlement-fee-card-copy">
@@ -1004,7 +1099,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
                 <div className="settlement-summary-preview-grid">
                   <div><span>Đã đóng</span><strong>{settlement.paidCount}/{settlement.totalCount}</strong></div>
                   <div><span>Thực nhận</span><strong>{formatMoney(settlement.totalReceived)}</strong></div>
-                  <div><span>Dư trận</span><strong>{settlement.settlementSurplus > 0 ? "+" : ""}{formatMoney(settlement.settlementSurplus)}</strong></div>
+                  <div><span>{settlement.fundAppliedAmount > 0 ? "Bù quỹ" : "Dư trận"}</span><strong>{settlement.fundAppliedAmount > 0 ? formatMoney(settlement.fundAppliedAmount) : `${settlement.settlementSurplus > 0 ? "+" : ""}${formatMoney(settlement.settlementSurplus)}`}</strong></div>
                   <div><span>Quỹ Zyro</span><strong>{formatMoney(settlement.groupFundBalance)}</strong></div>
                 </div>
                 <p>Ảnh được render lại từ dữ liệu mới nhất đúng lúc bot gửi, kể cả khi bạn hẹn giờ.</p>

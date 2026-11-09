@@ -698,7 +698,8 @@ public sealed class SettlementServiceTests
 
         var overview = workbook.Worksheet("01_TONG_QUAN");
         Assert.Contains("ZYRO", overview.Cell("B2").GetString(), StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Quỹ này được hình thành", overview.Cell("E11").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Quỹ có", overview.Cell("E11").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("hoàn quỹ", overview.Cell("E11").GetString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -823,6 +824,173 @@ public sealed class SettlementServiceTests
         Assert.Equal(30_000m, onePayment.Value.TotalDue);
         Assert.Equal(0m, onePayment.Value.SettlementSurplus);
         Assert.Equal(0m, onePayment.Value.GroupFundBalance);
+    }
+
+    [Fact]
+    public async Task Fund_coverage_fills_shortfall_and_auto_refunds_when_member_cash_increases()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var half = created.Entries.Single(item => item.SessionPlayerId == "player-half");
+
+        await fixture.Service.UpdateAsync(
+            "admin",
+            "session",
+            new UpdateSettlementRequest(22_000m, 37_000m));
+        await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 22_000m));
+        await fixture.Service.UpdateEntryAsync(
+            "admin", "session", half.Id, new UpdateSettlementEntryRequest(.5m, true, 11_000m));
+
+        var fundSourceSession = new MatchSession
+        {
+            Id = "fund-source-session",
+            Name = "Quỹ từ trận trước",
+            AdminUserId = "admin",
+            ZaloConnectionId = "connection",
+            ZaloGroupId = "group"
+        };
+        var fundSourceSettlement = new MatchSettlement
+        {
+            Id = "fund-source-settlement",
+            SessionId = fundSourceSession.Id,
+            Session = fundSourceSession,
+            AmountPerFullSlot = 1m
+        };
+        fixture.Db.MatchSessions.Add(fundSourceSession);
+        fixture.Db.MatchSettlements.Add(fundSourceSettlement);
+        fixture.Db.GroupFundTransactions.Add(new GroupFundTransaction
+        {
+            ZaloConnectionId = "connection",
+            GroupId = "group",
+            SettlementId = fundSourceSettlement.Id,
+            Settlement = fundSourceSettlement,
+            SettlementEntryId = $"{fundSourceSettlement.Id}:seed-fund",
+            DisplayNameSnapshot = "Quỹ có sẵn",
+            Kind = GroupFundTransactionKind.SettlementSurplusAdjustment,
+            Amount = 10_000m,
+            SurplusBefore = 0m,
+            SurplusAfter = 10_000m,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var covered = await fixture.Service.UpdateFundCoverageAsync(
+            "admin",
+            "session",
+            new UpdateSettlementFundCoverageRequest(4_000m));
+
+        Assert.True(covered.IsSuccess);
+        Assert.Equal(33_000m, covered.Value!.TotalReceived);
+        Assert.Equal(4_000m, covered.Value.FundAppliedAmount);
+        Assert.Equal(37_000m, covered.Value.SettledAmount);
+        Assert.Equal(0m, covered.Value.RemainingAmount);
+        Assert.Equal(6_000m, covered.Value.GroupFundBalance);
+
+        var coverageRows = await fixture.Db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+            .OrderBy(item => item.CreatedAt)
+            .ToListAsync();
+        var withdrawal = Assert.Single(coverageRows);
+        Assert.Equal(-4_000m, withdrawal.Amount);
+        Assert.Equal(0m, withdrawal.SurplusBefore);
+        Assert.Equal(4_000m, withdrawal.SurplusAfter);
+
+        var moreCash = await fixture.Service.UpdateEntryAsync(
+            "admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 24_000m));
+
+        Assert.True(moreCash.IsSuccess);
+        Assert.Equal(35_000m, moreCash.Value!.TotalReceived);
+        Assert.Equal(2_000m, moreCash.Value.FundAppliedAmount);
+        Assert.Equal(37_000m, moreCash.Value.SettledAmount);
+        Assert.Equal(0m, moreCash.Value.RemainingAmount);
+        Assert.Equal(8_000m, moreCash.Value.GroupFundBalance);
+
+        coverageRows = await fixture.Db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+            .OrderBy(item => item.CreatedAt)
+            .ToListAsync();
+        Assert.Equal(2, coverageRows.Count);
+        Assert.Equal(2_000m, coverageRows[1].Amount);
+        Assert.Equal(4_000m, coverageRows[1].SurplusBefore);
+        Assert.Equal(2_000m, coverageRows[1].SurplusAfter);
+
+        var export = await new SettlementExcelExporter(fixture.Db).ExportAsync("admin", "session");
+        Assert.True(export.IsSuccess);
+        using var workbook = new XLWorkbook(new MemoryStream(export.Value!.Content));
+        Assert.Contains("BÙ TỪ QUỸ", workbook.Worksheet("01_TONG_QUAN").Cell("H8").GetString(), StringComparison.OrdinalIgnoreCase);
+        var fundSheet = workbook.Worksheet("03_SO_QUY");
+        Assert.Contains(fundSheet.Column(9).CellsUsed(), cell => cell.GetString() == "Bù thiếu từ quỹ");
+        Assert.Contains(fundSheet.Column(9).CellsUsed(), cell => cell.GetString() == "Hoàn quỹ");
+    }
+
+    [Fact]
+    public async Task Fund_coverage_rejects_more_than_shortfall_or_available_fund()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var created = (await fixture.Service.CreateAsync(
+            "admin",
+            "session",
+            new CreateSettlementRequest(22_000m))).Value!;
+        var full = created.Entries.Single(item => item.SessionPlayerId == "player-full");
+        var half = created.Entries.Single(item => item.SessionPlayerId == "player-half");
+        await fixture.Service.UpdateAsync("admin", "session", new UpdateSettlementRequest(22_000m, 37_000m));
+        await fixture.Service.UpdateEntryAsync("admin", "session", full.Id, new UpdateSettlementEntryRequest(1m, true, 22_000m));
+        await fixture.Service.UpdateEntryAsync("admin", "session", half.Id, new UpdateSettlementEntryRequest(.5m, true, 11_000m));
+
+        var fundSourceSession = new MatchSession
+        {
+            Id = "fund-source-session",
+            Name = "Quỹ từ trận trước",
+            AdminUserId = "admin",
+            ZaloConnectionId = "connection",
+            ZaloGroupId = "group"
+        };
+        var fundSourceSettlement = new MatchSettlement
+        {
+            Id = "fund-source-settlement",
+            SessionId = fundSourceSession.Id,
+            Session = fundSourceSession,
+            AmountPerFullSlot = 1m
+        };
+        fixture.Db.MatchSessions.Add(fundSourceSession);
+        fixture.Db.MatchSettlements.Add(fundSourceSettlement);
+        fixture.Db.GroupFundTransactions.Add(new GroupFundTransaction
+        {
+            ZaloConnectionId = "connection",
+            GroupId = "group",
+            SettlementId = fundSourceSettlement.Id,
+            Settlement = fundSourceSettlement,
+            SettlementEntryId = $"{fundSourceSettlement.Id}:seed-fund",
+            DisplayNameSnapshot = "Quỹ có sẵn",
+            Kind = GroupFundTransactionKind.SettlementSurplusAdjustment,
+            Amount = 3_000m,
+            SurplusBefore = 0m,
+            SurplusAfter = 3_000m,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+        await fixture.Db.SaveChangesAsync();
+
+        var aboveShortfall = await fixture.Service.UpdateFundCoverageAsync(
+            "admin", "session", new UpdateSettlementFundCoverageRequest(5_000m));
+        Assert.False(aboveShortfall.IsSuccess);
+        Assert.Equal(StatusCodes.Status400BadRequest, aboveShortfall.StatusCode);
+
+        var aboveFund = await fixture.Service.UpdateFundCoverageAsync(
+            "admin", "session", new UpdateSettlementFundCoverageRequest(4_000m));
+        Assert.False(aboveFund.IsSuccess);
+        Assert.Equal(StatusCodes.Status400BadRequest, aboveFund.StatusCode);
+
+        var exactFund = await fixture.Service.UpdateFundCoverageAsync(
+            "admin", "session", new UpdateSettlementFundCoverageRequest(3_000m));
+        Assert.True(exactFund.IsSuccess);
+        Assert.Equal(3_000m, exactFund.Value!.FundAppliedAmount);
+        Assert.Equal(1_000m, exactFund.Value.RemainingAmount);
+        Assert.Equal(0m, exactFund.Value.GroupFundBalance);
     }
 
     [Fact]
@@ -1101,6 +1269,12 @@ public sealed class SettlementServiceTests
             "session",
             full.Id,
             new UpdateSettlementEntryRequest(1m, true, 25_000m));
+        var covered = await fixture.Service.UpdateFundCoverageAsync(
+            "admin",
+            "session",
+            new UpdateSettlementFundCoverageRequest(3_000m));
+        Assert.True(covered.IsSuccess);
+        Assert.Equal(3_000m, covered.Value!.FundAppliedAmount);
         var relinkedSession = await fixture.Db.MatchSessions.SingleAsync(item => item.Id == "session");
         relinkedSession.ZaloGroupId = "group-new";
         var pending = await fixture.Db.SettlementMessages.SingleAsync(item => item.Id == queued.Value!.Id);
@@ -1117,7 +1291,7 @@ public sealed class SettlementServiceTests
             .Include(item => item.Session)
             .Include(item => item.Entries)
             .SingleAsync(item => item.Id == created.Id);
-        var expectedBytes = new SettlementSummaryCardRenderer().Render(latest.Session, latest, 3_000m);
+        var expectedBytes = new SettlementSummaryCardRenderer().Render(latest.Session, latest, 0m, 3_000m);
 
         Assert.Equal(expectedBytes, actualBytes);
         Assert.Empty(payload.RootElement.GetProperty("mentions").EnumerateArray());
@@ -1228,6 +1402,46 @@ public sealed class SettlementServiceTests
         Assert.DoesNotContain("17:30", copy.Headline);
         Assert.DoesNotContain("17:30", copy.Metadata);
         Assert.Contains("UTE", copy.Metadata);
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(1, 1)]
+    [InlineData(4, 1)]
+    [InlineData(5, 2)]
+    public void Financial_summary_uses_compact_unpaid_layout_only_for_small_unpaid_lists(
+        int unpaidCount,
+        int expectedMode)
+    {
+        var plan = SettlementSummaryCardRenderer.BuildSummaryLayoutPlan(15, unpaidCount);
+
+        Assert.Equal(expectedMode, (int)plan.Mode);
+    }
+
+    [Fact]
+    public void Financial_summary_compact_layout_uses_two_paid_columns_and_fits_all_planned_rows()
+    {
+        var plan = SettlementSummaryCardRenderer.BuildSummaryLayoutPlan(15, 3);
+
+        Assert.Equal(SettlementSummaryCardRenderer.SummaryLayoutMode.CompactUnpaid, plan.Mode);
+        Assert.Equal(2, plan.PaidColumns);
+        Assert.Equal(8, plan.PaidGridRows);
+        Assert.Equal(2, plan.UnpaidColumns);
+        Assert.Equal(2, plan.UnpaidGridRows);
+        Assert.InRange(plan.ImageHeight, 1_250, 1_500);
+
+        var availablePaidHeight = plan.ImageHeight - 530 - 110 - plan.CompactUnpaidHeight - 22;
+        Assert.True(availablePaidHeight >= 122 + plan.PaidGridRows * plan.RowHeight);
+    }
+
+    [Fact]
+    public void Financial_summary_layout_stays_within_renderer_max_height_for_large_rosters()
+    {
+        var plan = SettlementSummaryCardRenderer.BuildSummaryLayoutPlan(500, 0);
+
+        Assert.Equal(2, plan.PaidColumns);
+        Assert.Equal(250, plan.PaidGridRows);
+        Assert.InRange(plan.ImageHeight, 1_220, 8_000);
     }
 
     [Fact]

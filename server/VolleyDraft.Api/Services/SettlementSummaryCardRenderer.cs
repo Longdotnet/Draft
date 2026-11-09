@@ -41,7 +41,8 @@ public sealed class SettlementSummaryCardRenderer
     public byte[] Render(
         MatchSession session,
         MatchSettlement settlement,
-        decimal groupFundBalance)
+        decimal groupFundBalance,
+        decimal fundAppliedAmount = 0m)
     {
         var rows = settlement.Entries
             .Select(entry =>
@@ -63,17 +64,10 @@ public sealed class SettlementSummaryCardRenderer
 
         var paid = rows.Where(row => row.IsPaid).ToList();
         var unpaid = rows.Where(row => !row.IsPaid).ToList();
-        var longestColumn = Math.Max(4, unpaid.Count == 0 ? paid.Count : Math.Max(paid.Count, unpaid.Count));
-        var preferredRowHeight = longestColumn switch
-        {
-            <= 24 => 48,
-            <= 36 => 42,
-            _ => 36
-        };
-        var fixedHeight = ListTop + 92 + FooterHeight;
-        var fitRowHeight = Math.Max(20, (MaxHeight - fixedHeight) / longestColumn);
-        var rowHeight = Math.Min(preferredRowHeight, fitRowHeight);
-        var height = Math.Clamp(fixedHeight + longestColumn * rowHeight, 1220, MaxHeight);
+        var layout = BuildSummaryLayoutPlan(paid.Count, unpaid.Count);
+        var compactUnpaid = layout.Mode == SummaryLayoutMode.CompactUnpaid;
+        var rowHeight = layout.RowHeight;
+        var height = layout.ImageHeight;
 
         using var surface = SKSurface.Create(new SKImageInfo(Width, height, SKColorType.Rgba8888, SKAlphaType.Premul))
             ?? throw new InvalidOperationException("Could not create settlement summary canvas.");
@@ -89,6 +83,7 @@ public sealed class SettlementSummaryCardRenderer
         var surplus = settlement.TotalDueOverride.HasValue
             ? Math.Max(0m, totalReceived - totalDue)
             : entrySurplus;
+        var settledAmount = totalReceived + Math.Max(0m, fundAppliedAmount);
         DrawMetrics(
             canvas,
             settlement.AmountPerFullSlot,
@@ -96,19 +91,31 @@ public sealed class SettlementSummaryCardRenderer
             totalDue,
             totalReceived,
             surplus,
+            Math.Max(0m, fundAppliedAmount),
             groupFundBalance,
             paid.Count,
             rows.Count);
 
         if (unpaid.Count == 0)
         {
-            DrawRosterColumn(
+            DrawSummaryPaidGrid(
                 canvas,
                 new SKRect(SidePadding, ListTop, Width - SidePadding, height - FooterHeight),
-                "ĐÃ ĐÓNG • CHI TIẾT THỰC NHẬN",
                 paid,
-                true,
                 rowHeight);
+        }
+        else if (compactUnpaid)
+        {
+            var compactTop = height - FooterHeight - layout.CompactUnpaidHeight;
+            DrawSummaryPaidGrid(
+                canvas,
+                new SKRect(SidePadding, ListTop, Width - SidePadding, compactTop - RosterSectionGap),
+                paid,
+                rowHeight);
+            DrawCompactUnpaidGrid(
+                canvas,
+                new SKRect(SidePadding, compactTop, Width - SidePadding, height - FooterHeight),
+                unpaid);
         }
         else
         {
@@ -128,7 +135,7 @@ public sealed class SettlementSummaryCardRenderer
                 rowHeight);
         }
 
-        DrawFooter(canvas, height, paid.Count == rows.Count && rows.Count > 0);
+        DrawFooter(canvas, height, paid.Count == rows.Count && rows.Count > 0 && settledAmount >= totalDue);
 
         using var image = surface.Snapshot();
         using var data = image.Encode(SKEncodedImageFormat.Png, 94);
@@ -229,6 +236,54 @@ public sealed class SettlementSummaryCardRenderer
 
     private static int SectionHeight(int rowCount, bool paid, int rowHeight) =>
         92 + Math.Max(1, GridRowCount(rowCount, paid)) * rowHeight;
+
+    internal static bool UseCompactUnpaidLayout(int unpaidCount) => unpaidCount is > 0 and <= 4;
+
+    internal static SummaryLayoutPlan BuildSummaryLayoutPlan(int paidCount, int unpaidCount)
+    {
+        paidCount = Math.Max(0, paidCount);
+        unpaidCount = Math.Max(0, unpaidCount);
+        var mode = unpaidCount == 0
+            ? SummaryLayoutMode.PaidOnly
+            : UseCompactUnpaidLayout(unpaidCount)
+                ? SummaryLayoutMode.CompactUnpaid
+                : SummaryLayoutMode.Split;
+
+        var paidColumns = mode == SummaryLayoutMode.Split ? 1 : paidCount >= 8 ? 2 : 1;
+        var paidGridRows = paidCount == 0 ? 0 : (int)Math.Ceiling(paidCount / (double)paidColumns);
+        var unpaidColumns = mode == SummaryLayoutMode.CompactUnpaid && unpaidCount > 1 ? 2 : 1;
+        var unpaidGridRows = unpaidCount == 0 ? 0 : (int)Math.Ceiling(unpaidCount / (double)unpaidColumns);
+        var sizingRows = mode == SummaryLayoutMode.Split
+            ? Math.Max(4, Math.Max(paidCount, unpaidCount))
+            : Math.Max(4, paidGridRows);
+        var preferredRowHeight = sizingRows switch
+        {
+            <= 24 => 48,
+            <= 36 => 42,
+            _ => 36
+        };
+        var compactUnpaidHeight = mode == SummaryLayoutMode.CompactUnpaid
+            ? 92 + Math.Max(1, unpaidGridRows) * 54 + 16
+            : 0;
+        var compactGap = mode == SummaryLayoutMode.CompactUnpaid ? RosterSectionGap : 0;
+        // DrawRosterColumn and DrawSummaryPaidGrid both need at least 122px of chrome
+        // above/below their data rows. Using the real chrome height prevents a planned
+        // N-row section from collapsing into a false "… và N người khác" tail.
+        var fixedHeight = ListTop + 122 + FooterHeight + compactUnpaidHeight + compactGap;
+        var fitRowHeight = Math.Max(20, (MaxHeight - fixedHeight) / sizingRows);
+        var rowHeight = Math.Min(preferredRowHeight, fitRowHeight);
+        var imageHeight = Math.Clamp(fixedHeight + sizingRows * rowHeight, 1220, MaxHeight);
+
+        return new SummaryLayoutPlan(
+            mode,
+            paidColumns,
+            paidGridRows,
+            unpaidColumns,
+            unpaidGridRows,
+            rowHeight,
+            compactUnpaidHeight,
+            imageHeight);
+    }
 
     internal static (string Headline, string Metadata) BuildRosterHeaderCopy(MatchSession session)
     {
@@ -346,6 +401,7 @@ public sealed class SettlementSummaryCardRenderer
         decimal totalDue,
         decimal totalReceived,
         decimal surplus,
+        decimal fundAppliedAmount,
         decimal fund,
         int paidCount,
         int totalCount)
@@ -363,7 +419,14 @@ public sealed class SettlementSummaryCardRenderer
         var cellWidth = (outer.Width - 64) / 4f;
         DrawMetric(canvas, outer.Left + 32, outer.Top + 111, cellWidth, "CẦN THU", Money(totalDue), Text);
         DrawMetric(canvas, outer.Left + 32 + cellWidth, outer.Top + 111, cellWidth, "THỰC NHẬN", Money(totalReceived), Navy);
-        DrawMetric(canvas, outer.Left + 32 + cellWidth * 2, outer.Top + 111, cellWidth, "DƯ TRẬN", SignedMoney(surplus), surplus > 0 ? Success : Muted);
+        DrawMetric(
+            canvas,
+            outer.Left + 32 + cellWidth * 2,
+            outer.Top + 111,
+            cellWidth,
+            fundAppliedAmount > 0 ? "BÙ TỪ QUỸ" : "DƯ TRẬN",
+            fundAppliedAmount > 0 ? Money(fundAppliedAmount) : SignedMoney(surplus),
+            fundAppliedAmount > 0 ? Red : surplus > 0 ? Success : Muted);
         DrawMetric(canvas, outer.Left + 32 + cellWidth * 3, outer.Top + 111, cellWidth, "QUỸ ZYRO", Money(fund), Red);
         DrawText(
             canvas,
@@ -506,6 +569,71 @@ public sealed class SettlementSummaryCardRenderer
         }
     }
 
+    private static void DrawSummaryPaidGrid(
+        SKCanvas canvas,
+        SKRect rect,
+        IReadOnlyList<SummaryRow> rows,
+        int rowHeight)
+    {
+        DrawRoundedRect(canvas, rect, 26, Surface, Border);
+        var header = new SKRect(rect.Left + 16, rect.Top + 16, rect.Right - 16, rect.Top + 72);
+        DrawRoundedRect(canvas, header, 18, SuccessSoft);
+        DrawStatusIcon(canvas, header.Left + 27, header.MidY, 9, true);
+        DrawText(canvas, "ĐÃ ĐÓNG • CHI TIẾT THỰC NHẬN", header.Left + 50, header.Top + 36, 17, Success, true, 390, BlackTypeface);
+        DrawText(canvas, $"{rows.Count} người", header.Right - 18, header.Top + 36, 15, Muted, true, 110, null, SKTextAlign.Right);
+
+        if (rows.Count == 0)
+        {
+            DrawText(canvas, "Chưa có người đã đóng", rect.Left + 30, rect.Top + 126, 18, Muted, false, rect.Width - 60);
+            return;
+        }
+
+        var columns = rows.Count >= 8 ? 2 : 1;
+        var rowsPerColumn = (int)Math.Ceiling(rows.Count / (double)columns);
+        const float columnGap = 28f;
+        var innerLeft = rect.Left + 28;
+        var innerRight = rect.Right - 28;
+        var columnWidth = columns == 1
+            ? innerRight - innerLeft
+            : (innerRight - innerLeft - columnGap) / 2f;
+        var gridTop = rect.Top + 94;
+
+        if (columns > 1)
+        {
+            var dividerX = innerLeft + columnWidth + columnGap / 2f;
+            using var centerDivider = new SKPaint { Color = new SKColor(237, 240, 245), StrokeWidth = 1f, IsAntialias = true };
+            canvas.DrawLine(dividerX, gridTop, dividerX, rect.Bottom - 18, centerDivider);
+        }
+
+        for (var index = 0; index < rows.Count; index++)
+        {
+            var column = index / rowsPerColumn;
+            var rowIndex = index % rowsPerColumn;
+            var left = innerLeft + column * (columnWidth + columnGap);
+            var top = gridTop + rowIndex * rowHeight;
+            var centerY = top + rowHeight / 2f;
+            var row = rows[index];
+
+            if (rowIndex > 0)
+            {
+                using var divider = new SKPaint { Color = new SKColor(237, 240, 245), StrokeWidth = 1f, IsAntialias = true };
+                canvas.DrawLine(left, top, left + columnWidth, top, divider);
+            }
+
+            DrawStatusIcon(canvas, left + 10, centerY, rowHeight < 40 ? 7f : 8f, true);
+            var hasMeta = rowHeight >= 42 && (row.SlotFactor == .5m || row.Surplus > 0);
+            var nameSize = rowHeight >= 46 ? 16 : rowHeight >= 40 ? 14 : 12;
+            var amountSize = rowHeight >= 46 ? 16 : rowHeight >= 40 ? 14 : 12;
+            var nameBaseline = centerY + (hasMeta ? -1 : 5);
+            DrawText(canvas, row.Name, left + 30, nameBaseline, nameSize, Text, true, columnWidth - 190);
+            if (row.SlotFactor == .5m && rowHeight >= 42)
+                DrawText(canvas, "1/2 slot", left + 30, nameBaseline + 16, 10, Muted, false, 60);
+            DrawText(canvas, Money(row.Received), left + columnWidth, nameBaseline + 5, amountSize, Navy, true, 135, BlackTypeface, SKTextAlign.Right);
+            if (row.Surplus > 0 && rowHeight >= 42)
+                DrawText(canvas, $"+{Money(row.Surplus)} quỹ", left + columnWidth, nameBaseline + 20, 10, Success, true, 135, null, SKTextAlign.Right);
+        }
+    }
+
     private static void DrawRosterUnpaidSection(
         SKCanvas canvas,
         SKRect rect,
@@ -553,6 +681,59 @@ public sealed class SettlementSummaryCardRenderer
             if (hasHalfSlotLabel)
                 DrawText(canvas, "1/2 slot", left + 34, nameBaseline + 17, 11, Muted, false, 70);
             DrawText(canvas, Money(row.Due), left + columnWidth, centerY + 6, amountSize, Red, true, 140, BlackTypeface, SKTextAlign.Right);
+        }
+    }
+
+    private static void DrawCompactUnpaidGrid(
+        SKCanvas canvas,
+        SKRect rect,
+        IReadOnlyList<SummaryRow> rows)
+    {
+        DrawRoundedRect(canvas, rect, 24, Surface, Border);
+        var header = new SKRect(rect.Left + 16, rect.Top + 14, rect.Right - 16, rect.Top + 66);
+        DrawRoundedRect(canvas, header, 17, RedSoft);
+        DrawStatusIcon(canvas, header.Left + 26, header.MidY, 9, false);
+        DrawText(canvas, "CHƯA ĐÓNG", header.Left + 48, header.Top + 33, 16, Red, true, 180, BlackTypeface);
+        DrawText(canvas, $"{rows.Count} người", header.Right - 16, header.Top + 33, 14, Muted, true, 100, null, SKTextAlign.Right);
+
+        if (rows.Count == 0) return;
+        var columns = rows.Count == 1 ? 1 : 2;
+        var rowsPerColumn = (int)Math.Ceiling(rows.Count / (double)columns);
+        const float columnGap = 24f;
+        var innerLeft = rect.Left + 24;
+        var innerRight = rect.Right - 24;
+        var columnWidth = columns == 1
+            ? innerRight - innerLeft
+            : (innerRight - innerLeft - columnGap) / 2f;
+        var rowHeight = 54f;
+        var gridTop = rect.Top + 78;
+
+        if (columns > 1)
+        {
+            var dividerX = innerLeft + columnWidth + columnGap / 2f;
+            using var divider = new SKPaint { Color = new SKColor(237, 240, 245), StrokeWidth = 1f, IsAntialias = true };
+            canvas.DrawLine(dividerX, gridTop, dividerX, rect.Bottom - 14, divider);
+        }
+
+        for (var index = 0; index < rows.Count; index++)
+        {
+            var column = index / rowsPerColumn;
+            var rowIndex = index % rowsPerColumn;
+            var left = innerLeft + column * (columnWidth + columnGap);
+            var top = gridTop + rowIndex * rowHeight;
+            var centerY = top + rowHeight / 2f;
+            var row = rows[index];
+            if (rowIndex > 0)
+            {
+                using var rowDivider = new SKPaint { Color = new SKColor(237, 240, 245), StrokeWidth = 1f, IsAntialias = true };
+                canvas.DrawLine(left, top, left + columnWidth, top, rowDivider);
+            }
+
+            DrawStatusIcon(canvas, left + 10, centerY, 8f, false);
+            DrawText(canvas, row.Name, left + 30, centerY + 5, 15, Text, true, columnWidth - 180);
+            if (row.SlotFactor == .5m)
+                DrawText(canvas, "1/2", left + 30, centerY + 20, 10, Muted, false, 34);
+            DrawText(canvas, Money(row.Due), left + columnWidth, centerY + 5, 15, Red, true, 130, BlackTypeface, SKTextAlign.Right);
         }
     }
 
@@ -765,4 +946,21 @@ public sealed class SettlementSummaryCardRenderer
         IReadOnlyList<PaymentRosterUnpaidRow> UnpaidRows,
         int TotalCount,
         decimal TotalReceived);
+
+    internal enum SummaryLayoutMode
+    {
+        PaidOnly,
+        CompactUnpaid,
+        Split
+    }
+
+    internal sealed record SummaryLayoutPlan(
+        SummaryLayoutMode Mode,
+        int PaidColumns,
+        int PaidGridRows,
+        int UnpaidColumns,
+        int UnpaidGridRows,
+        int RowHeight,
+        int CompactUnpaidHeight,
+        int ImageHeight);
 }

@@ -584,6 +584,19 @@ settlementAccess.MapPut("/sessions/{sessionId}/settlement", async (
         ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
         : (await settlementService.UpdateAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
 });
+settlementAccess.MapPut("/sessions/{sessionId}/settlement/fund-coverage", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateSettlementFundCoverageRequest request,
+    SettlementAccessService accessService,
+    SettlementService settlementService,
+    CancellationToken cancellationToken) =>
+{
+    var access = await accessService.AuthorizeAsync(GetSettlementAccessToken(httpContext), sessionId, cancellationToken);
+    return !access.IsSuccess
+        ? Results.Json(new { message = access.Error }, statusCode: access.StatusCode)
+        : (await settlementService.UpdateFundCoverageAsync(access.Value!.AdminUserId, sessionId, request, cancellationToken)).ToHttpResult();
+});
 settlementAccess.MapPut("/sessions/{sessionId}/settlement/entries/{entryId}", async (
     HttpContext httpContext,
     string sessionId,
@@ -1084,6 +1097,18 @@ sessions.MapPut("/{sessionId}/settlement", async (
     return userId is null
         ? Results.Unauthorized()
         : (await service.UpdateAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
+});
+sessions.MapPut("/{sessionId}/settlement/fund-coverage", async (
+    HttpContext httpContext,
+    string sessionId,
+    UpdateSettlementFundCoverageRequest request,
+    SettlementService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    return userId is null
+        ? Results.Unauthorized()
+        : (await service.UpdateFundCoverageAsync(userId, sessionId, request, cancellationToken)).ToHttpResult();
 });
 sessions.MapPut("/{sessionId}/settlement/entries/{entryId}", async (
     HttpContext httpContext,

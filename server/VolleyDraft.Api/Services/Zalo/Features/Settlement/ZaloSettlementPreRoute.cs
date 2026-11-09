@@ -478,17 +478,22 @@ public sealed partial class ZaloOverbookService
             if (viewCommand.Kind == ZaloSettlementViewKind.FinancialSummary)
             {
                 var groupFundBalance = 0m;
+                var fundAppliedAmount = 0m;
                 var connectionId = viewSession.ZaloConnectionId?.Trim();
                 var viewFundGroupId = viewSession.ZaloGroupId?.Trim();
                 if (!string.IsNullOrWhiteSpace(connectionId) && !string.IsNullOrWhiteSpace(viewFundGroupId))
                 {
                     var fundRows = await db.GroupFundTransactions.AsNoTracking()
                         .Where(item => item.ZaloConnectionId == connectionId && item.GroupId == viewFundGroupId)
-                        .Select(item => item.Amount)
+                        .Select(item => new { item.SettlementId, item.Kind, item.Amount })
                         .ToListAsync(cancellationToken);
-                    groupFundBalance = fundRows.Sum();
+                    groupFundBalance = fundRows.Sum(item => item.Amount);
+                    fundAppliedAmount = Math.Max(0m, -fundRows
+                        .Where(item => item.SettlementId == viewSettlement.Id &&
+                                       item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+                        .Sum(item => item.Amount));
                 }
-                card = renderer.Render(viewSession, viewSettlement, groupFundBalance);
+                card = renderer.Render(viewSession, viewSettlement, groupFundBalance, fundAppliedAmount);
                 caption = $"📊 Tổng kết sổ tiền • {viewSession.Name}";
             }
             else

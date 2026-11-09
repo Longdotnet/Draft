@@ -8,6 +8,8 @@ public sealed record UpdateSettlementRequest(
     decimal AmountPerFullSlot,
     decimal? TotalDueOverride = null);
 
+public sealed record UpdateSettlementFundCoverageRequest(decimal Amount);
+
 public sealed record UpdateSettlementEntryRequest(
     decimal SlotFactor,
     bool IsPaid,
@@ -59,6 +61,9 @@ public sealed record SettlementResponse(
     decimal TotalDue,
     decimal TotalCollected,
     decimal TotalReceived,
+    decimal FundAppliedAmount,
+    decimal SettledAmount,
+    decimal RemainingAmount,
     decimal SettlementSurplus,
     decimal GroupFundBalance,
     int PaidCount,

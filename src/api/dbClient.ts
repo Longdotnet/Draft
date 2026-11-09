@@ -323,6 +323,9 @@ export type MatchSettlementResponse = {
   totalDue: number;
   totalCollected: number;
   totalReceived: number;
+  fundAppliedAmount: number;
+  settledAmount: number;
+  remainingAmount: number;
   settlementSurplus: number;
   groupFundBalance: number;
   paidCount: number;

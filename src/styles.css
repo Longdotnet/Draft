@@ -2191,6 +2191,14 @@
   color: var(--settlement-success);
 }
 
+.settlement-money-grid > div.fund.is-short strong {
+  color: var(--settlement-danger);
+}
+
+.settlement-money-grid > div.fund.is-settled strong {
+  color: var(--settlement-success);
+}
+
 .settlement-fund-highlight {
   display: flex;
   align-items: end;
@@ -2301,6 +2309,69 @@
   color: var(--settlement-text);
   font-family: inherit;
   font-weight: 850;
+}
+
+.settlement-fund-coverage-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(190px, .68fr) auto;
+  align-items: end;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid rgba(25, 135, 84, .18);
+  border-radius: var(--settlement-radius);
+  background:
+    linear-gradient(112deg, rgba(25, 135, 84, .08), rgba(10, 44, 98, .035)),
+    #fff;
+}
+
+.settlement-fund-coverage-copy {
+  min-width: 0;
+}
+
+.settlement-fund-coverage-copy .settlement-fee-card-kicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--settlement-success);
+}
+
+.settlement-fund-coverage-copy > strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--settlement-text);
+  font-size: clamp(22px, 5vw, 30px);
+  font-weight: 1000;
+  font-variant-numeric: tabular-nums;
+}
+
+.settlement-fund-coverage-copy > small {
+  display: block;
+  margin-top: 6px;
+  color: var(--settlement-text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.settlement-fund-coverage-actions {
+  display: grid;
+  gap: 7px;
+}
+
+.settlement-fund-refund {
+  min-height: 44px;
+  border: 1px solid var(--settlement-border);
+  border-radius: var(--settlement-radius);
+  padding: 0 14px;
+  background: #fff;
+  color: var(--settlement-text-muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.settlement-fund-refund:disabled {
+  opacity: .45;
 }
 
 .settlement-fee-editor > div {
@@ -3472,6 +3543,20 @@
   .settlement-fee-card {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .settlement-fund-coverage-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .settlement-fund-coverage-actions {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .settlement-fund-coverage-actions .settlement-fee-save,
+  .settlement-fund-refund {
+    min-height: 46px;
   }
 
   .settlement-fee-save {

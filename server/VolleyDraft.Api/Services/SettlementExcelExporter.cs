@@ -89,10 +89,29 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
             ? Math.Max(0m, totalReceived - totalDue)
             : entrySurplus;
         var groupFund = fundTransactions.Sum(item => item.Amount);
+        var fundAppliedAmount = Math.Max(0m, -fundTransactions
+            .Where(item => item.SettlementId == settlement.Id &&
+                           item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+            .Sum(item => item.Amount));
+        var settledAmount = totalReceived + fundAppliedAmount;
+        var remainingAmount = Math.Max(0m, totalDue - settledAmount);
         var paidCount = entries.Count(item => item.Entry.PaymentStatus == SettlementPaymentStatus.Paid);
 
         using var workbook = new XLWorkbook();
-        BuildOverviewSheet(workbook, settlement, entries, totalDue, totalReceived, currentSurplus, groupFund, paidCount, paymentQr, fundTransactions);
+        BuildOverviewSheet(
+            workbook,
+            settlement,
+            entries,
+            totalDue,
+            totalReceived,
+            currentSurplus,
+            fundAppliedAmount,
+            settledAmount,
+            remainingAmount,
+            groupFund,
+            paidCount,
+            paymentQr,
+            fundTransactions);
         var paymentRowMap = BuildPaymentSheet(workbook, settlement, entries);
         BuildFundSheet(workbook, fundTransactions, groupFund, settlement.Id, paymentRowMap);
         BuildMessageSheet(workbook, settlement);
@@ -112,6 +131,9 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         decimal totalDue,
         decimal totalReceived,
         decimal currentSurplus,
+        decimal fundAppliedAmount,
+        decimal settledAmount,
+        decimal remainingAmount,
         decimal groupFund,
         int paidCount,
         byte[]? paymentQr,
@@ -162,14 +184,19 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
 
         WriteKpi(ws, "D8:E9", "PHẢI THU", totalDue, Navy);
         WriteKpi(ws, "F8:G9", "THỰC NHẬN", totalReceived, Navy);
-        WriteKpi(ws, "H8:I9", "DƯ TRẬN NÀY", currentSurplus, currentSurplus > 0 ? Green : Muted);
+        WriteKpi(
+            ws,
+            "H8:I9",
+            fundAppliedAmount > 0 ? "BÙ TỪ QUỸ" : "DƯ TRẬN NÀY",
+            fundAppliedAmount > 0 ? fundAppliedAmount : currentSurplus,
+            fundAppliedAmount > 0 ? Red : currentSurplus > 0 ? Green : Muted);
 
         WriteKpi(ws, "B11:D13", "QUỸ NHÓM HIỆN TẠI", groupFund, Red);
         ws.Range("E11:I13").Merge();
         var matchCount = fundTransactions.Select(item => item.SettlementId).Distinct().Count();
         ws.Cell("E11").Value = fundTransactions.Count == 0
             ? "Quỹ chưa có phát sinh. Khi có người đóng dư, hệ thống sẽ ghi rõ phát sinh theo từng trận."
-            : $"Quỹ này được hình thành từ {fundTransactions.Count} lần phát sinh thuộc {matchCount} trận. Mở sheet 03_SO_QUY để xem quỹ đến từ trận nào, người nào và lần điều chỉnh nào.";
+            : $"Quỹ có {fundTransactions.Count} lần phát sinh thuộc {matchCount} trận. Mở sheet 03_SO_QUY để xem tiền dư, khoản bù thiếu và các lần hoàn quỹ.";
         ws.Cell("E11").Style.Alignment.WrapText = true;
         ws.Cell("E11").Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
         ws.Cell("E11").Style.Font.FontColor = Muted;
@@ -232,9 +259,11 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         }
 
         ws.Range("B24:I25").Merge();
-        ws.Cell("B24").Value = settlement.TotalDueOverride.HasValue
-            ? $"Tổng phải thu đã được chỉnh trực tiếp thành {Money(totalDue)}. Mức thu từng người vẫn theo {Money(settlement.AmountPerFullSlot)}/1 slot. • 02_THU_TIEN đối soát từng người • 03_SO_QUY xem bút toán điều chỉnh."
-            : "Cách đọc file: 02_THU_TIEN để đối soát từng người • 03_SO_QUY để xem quỹ từ trận nào • 04_NHAT_KY để xem lịch sử nhắc/gửi Zalo.";
+        ws.Cell("B24").Value = fundAppliedAmount > 0
+            ? $"Quyết toán: {Money(totalReceived)} thực nhận + {Money(fundAppliedAmount)} bù từ quỹ = {Money(settledAmount)} / {Money(totalDue)} cần thu. Còn thiếu {Money(remainingAmount)}. • 03_SO_QUY ghi rõ bút toán rút/hoàn quỹ."
+            : settlement.TotalDueOverride.HasValue
+                ? $"Tổng phải thu đã được chỉnh trực tiếp thành {Money(totalDue)}. Mức thu từng người vẫn theo {Money(settlement.AmountPerFullSlot)}/1 slot. • 02_THU_TIEN đối soát từng người • 03_SO_QUY xem bút toán điều chỉnh."
+                : "Cách đọc file: 02_THU_TIEN để đối soát từng người • 03_SO_QUY để xem quỹ từ trận nào • 04_NHAT_KY để xem lịch sử nhắc/gửi Zalo.";
         ws.Cell("B24").Style.Font.FontColor = Muted;
         ws.Cell("B24").Style.Alignment.WrapText = true;
 
@@ -338,7 +367,7 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
         var ws = workbook.Worksheets.Add("03_SO_QUY");
         BaseSheet(ws);
         ws.ShowGridLines = false;
-        WriteSheetTitle(ws, "SỔ QUỸ NHÓM", "Quỹ được truy theo từng trận và từng lần điều chỉnh", "Số dư quỹ không nhập tay: phát sinh có thể đến từ tiền dư từng người hoặc bút toán điều chỉnh tổng cần thu của trận.");
+        WriteSheetTitle(ws, "SỔ QUỸ NHÓM", "Quỹ được truy theo từng trận và từng lần điều chỉnh", "Số dư quỹ không nhập tay: phát sinh đến từ tiền dư, điều chỉnh tổng cần thu và các khoản rút/hoàn quỹ để bù thiếu cho trận.");
 
         ws.Range("A6:C8").Merge();
         ws.Cell("A6").Value = $"QUỸ HIỆN TẠI\n{Money(groupFund)}";
@@ -406,15 +435,25 @@ public sealed class SettlementExcelExporter(VolleyDraftDbContext db)
             ws.Cell(row, 4).Value = item.Amount;
             ws.Cell(row, 5).Value = item.SurplusBefore;
             ws.Cell(row, 6).Value = item.SurplusAfter;
-            ws.Cell(row, 7).Value = item.Kind == GroupFundTransactionKind.SettlementTotalDueAdjustment
-                ? item.Amount >= 0
+            ws.Cell(row, 7).Value = item.Kind switch
+            {
+                GroupFundTransactionKind.SettlementFundCoverageAdjustment => item.Amount < 0
+                    ? $"Rút {Money(Math.Abs(item.Amount))} từ quỹ để bù thiếu cho trận; mức bù {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}"
+                    : $"Hoàn {Money(item.Amount)} về quỹ; mức bù {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}",
+                GroupFundTransactionKind.SettlementTotalDueAdjustment => item.Amount >= 0
                     ? $"Điều chỉnh tổng cần thu làm dư trận thay đổi {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ tăng {Money(item.Amount)}"
-                    : $"Điều chỉnh tổng cần thu làm dư trận thay đổi {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}"
-                : item.Amount >= 0
+                    : $"Điều chỉnh tổng cần thu làm dư trận thay đổi {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}",
+                _ => item.Amount >= 0
                     ? $"Dư thay đổi từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ tăng {Money(item.Amount)}"
-                    : $"Điều chỉnh dư từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}";
+                    : $"Điều chỉnh dư từ {Money(item.SurplusBefore)} → {Money(item.SurplusAfter)}, quỹ giảm {Money(Math.Abs(item.Amount))}"
+            };
             ws.Cell(row, 8).FormulaA1 = $"=SUM($D${startRow + 1}:D{row})";
-            if (item.Kind == GroupFundTransactionKind.SettlementTotalDueAdjustment)
+            if (item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+            {
+                ws.Cell(row, 9).Value = item.Amount < 0 ? "Bù thiếu từ quỹ" : "Hoàn quỹ";
+                ws.Cell(row, 9).Style.Font.FontColor = item.Amount < 0 ? Red : Green;
+            }
+            else if (item.Kind == GroupFundTransactionKind.SettlementTotalDueAdjustment)
             {
                 ws.Cell(row, 9).Value = "Điều chỉnh tổng cần thu";
                 ws.Cell(row, 9).Style.Font.FontColor = Muted;

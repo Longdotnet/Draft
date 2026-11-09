@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -155,6 +156,7 @@ public sealed class SettlementService(
         }
         if (useAggregateTotal)
             await SyncSettlementFundContributionAsync(settlement, now, cancellationToken);
+        await ReconcileFundCoverageAsync(settlement, now, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
         return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
@@ -229,7 +231,91 @@ public sealed class SettlementService(
             await SyncSettlementFundContributionAsync(settlement, now, cancellationToken);
         else
             AddFundAdjustment(settlement, entry, oldSurplus, newSurplus, now);
+        await ReconcileFundCoverageAsync(settlement, now, cancellationToken);
         await db.SaveChangesAsync(cancellationToken);
+        return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
+    }
+
+    public async Task<ServiceResult<SettlementResponse>> UpdateFundCoverageAsync(
+        string adminUserId,
+        string sessionId,
+        UpdateSettlementFundCoverageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidReceivedAmount(request.Amount))
+        {
+            return ServiceResult<SettlementResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "amount quỹ bù phải từ 0 trở lên, tối đa 16 chữ số phần nguyên và 2 chữ số thập phân.");
+        }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable,
+            cancellationToken);
+        var settlement = await LoadOwnedSettlementAsync(adminUserId, sessionId, cancellationToken, tracking: true);
+        if (settlement is null)
+            return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status404NotFound, "Chưa có sổ tiền cho trận này.");
+        if (settlement.IsClosed)
+            return ServiceResult<SettlementResponse>.Failure(StatusCodes.Status409Conflict, "Sổ tiền đang đóng. Mở lại trước khi sửa.");
+
+        var currentCoverage = await GetFundAppliedAmountAsync(settlement, cancellationToken);
+        if (currentCoverage == request.Amount)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
+        }
+
+        var connectionId = settlement.Session.ZaloConnectionId?.Trim();
+        var groupId = settlement.Session.ZaloGroupId?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionId) || string.IsNullOrWhiteSpace(groupId))
+        {
+            return ServiceResult<SettlementResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                "Session chưa liên kết nhóm Zalo nên chưa thể dùng quỹ nhóm.");
+        }
+
+        var totalDue = settlement.TotalDueOverride ??
+                       settlement.Entries.Sum(entry => settlement.AmountPerFullSlot * entry.SlotFactor);
+        var totalReceived = settlement.Entries.Sum(entry =>
+        {
+            var due = settlement.AmountPerFullSlot * entry.SlotFactor;
+            return EffectiveActualPaidAmount(entry, due);
+        });
+        var shortfallBeforeCoverage = Math.Max(0m, totalDue - totalReceived);
+        if (request.Amount > shortfallBeforeCoverage)
+        {
+            return ServiceResult<SettlementResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                $"Quỹ bù tối đa bằng phần còn thiếu trước khi dùng quỹ ({shortfallBeforeCoverage.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ).");
+        }
+
+        var currentFundBalance = await GetGroupFundBalanceAsync(settlement, cancellationToken);
+        var availableFundExcludingCurrentCoverage = Math.Max(0m, currentFundBalance + currentCoverage);
+        if (request.Amount > availableFundExcludingCurrentCoverage)
+        {
+            return ServiceResult<SettlementResponse>.Failure(
+                StatusCodes.Status400BadRequest,
+                $"Quỹ nhóm hiện chỉ có {availableFundExcludingCurrentCoverage.ToString("N0", CultureInfo.GetCultureInfo("vi-VN"))}đ khả dụng cho sổ này.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        db.GroupFundTransactions.Add(new GroupFundTransaction
+        {
+            ZaloConnectionId = connectionId,
+            GroupId = groupId,
+            SettlementId = settlement.Id,
+            Settlement = settlement,
+            SettlementEntryId = $"{settlement.Id}:fund-coverage",
+            DisplayNameSnapshot = "Quỹ nhóm bù thiếu",
+            Kind = GroupFundTransactionKind.SettlementFundCoverageAdjustment,
+            Amount = currentCoverage - request.Amount,
+            SurplusBefore = currentCoverage,
+            SurplusAfter = request.Amount,
+            CreatedAt = now
+        });
+        settlement.UpdatedAt = now;
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return ServiceResult<SettlementResponse>.Success(await ToResponseAsync(settlement, cancellationToken));
     }
 
@@ -550,7 +636,12 @@ public sealed class SettlementService(
                         accountId,
                         groupId,
                         cancellationToken);
-                    summaryCard = summaryCardRenderer.Render(session, action.Settlement, groupFundBalance);
+                    var fundAppliedAmount = await GetFundAppliedAmountAsync(action.Settlement, cancellationToken);
+                    summaryCard = summaryCardRenderer.Render(
+                        session,
+                        action.Settlement,
+                        groupFundBalance,
+                        fundAppliedAmount);
                     action.PreparedImageData = summaryCard;
                     action.UpdatedAt = DateTimeOffset.UtcNow;
                     await db.SaveChangesAsync(cancellationToken);
@@ -714,7 +805,9 @@ public sealed class SettlementService(
         if (string.IsNullOrWhiteSpace(connectionId) || string.IsNullOrWhiteSpace(groupId)) return;
 
         var existingAmounts = await db.GroupFundTransactions.AsNoTracking()
-            .Where(item => item.SettlementId == settlement.Id)
+            .Where(item => item.SettlementId == settlement.Id &&
+                           (item.Kind == GroupFundTransactionKind.SettlementSurplusAdjustment ||
+                            item.Kind == GroupFundTransactionKind.SettlementTotalDueAdjustment))
             .Select(item => item.Amount)
             .ToListAsync(cancellationToken);
         var currentContribution = existingAmounts.Sum();
@@ -753,6 +846,72 @@ public sealed class SettlementService(
             return entrySurplus;
 
         return Math.Max(0m, totalReceived - totalDueOverride);
+    }
+
+    private async Task<decimal> GetFundAppliedAmountAsync(
+        MatchSettlement settlement,
+        CancellationToken cancellationToken)
+    {
+        var amounts = await db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.SettlementId == settlement.Id &&
+                           item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+            .Select(item => item.Amount)
+            .ToListAsync(cancellationToken);
+        return Math.Max(0m, -amounts.Sum());
+    }
+
+    private async Task ReconcileFundCoverageAsync(
+        MatchSettlement settlement,
+        DateTimeOffset createdAt,
+        CancellationToken cancellationToken)
+    {
+        var coverageRows = await db.GroupFundTransactions.AsNoTracking()
+            .Where(item => item.SettlementId == settlement.Id &&
+                           item.Kind == GroupFundTransactionKind.SettlementFundCoverageAdjustment)
+            .Select(item => new
+            {
+                item.ZaloConnectionId,
+                item.GroupId,
+                item.Amount,
+                item.CreatedAt,
+                item.Id
+            })
+            .ToListAsync(cancellationToken);
+        if (coverageRows.Count == 0) return;
+
+        var currentCoverage = Math.Max(0m, -coverageRows.Sum(item => item.Amount));
+        if (currentCoverage <= 0m) return;
+
+        var totalDue = settlement.TotalDueOverride ??
+                       settlement.Entries.Sum(entry => settlement.AmountPerFullSlot * entry.SlotFactor);
+        var totalReceived = settlement.Entries.Sum(entry =>
+        {
+            var due = settlement.AmountPerFullSlot * entry.SlotFactor;
+            return EffectiveActualPaidAmount(entry, due);
+        });
+        var maximumNeededCoverage = Math.Max(0m, totalDue - totalReceived);
+        var desiredCoverage = Math.Min(currentCoverage, maximumNeededCoverage);
+        if (desiredCoverage == currentCoverage) return;
+
+        var ledger = coverageRows
+            .OrderBy(item => item.CreatedAt)
+            .ThenBy(item => item.Id, StringComparer.Ordinal)
+            .Last();
+        db.GroupFundTransactions.Add(new GroupFundTransaction
+        {
+            ZaloConnectionId = ledger.ZaloConnectionId,
+            GroupId = ledger.GroupId,
+            SettlementId = settlement.Id,
+            Settlement = settlement,
+            SettlementEntryId = $"{settlement.Id}:fund-coverage",
+            DisplayNameSnapshot = "Quỹ nhóm bù thiếu",
+            Kind = GroupFundTransactionKind.SettlementFundCoverageAdjustment,
+            Amount = currentCoverage - desiredCoverage,
+            SurplusBefore = currentCoverage,
+            SurplusAfter = desiredCoverage,
+            CreatedAt = createdAt
+        });
+        settlement.UpdatedAt = createdAt;
     }
 
     private async Task<decimal> GetGroupFundBalanceAsync(
@@ -930,6 +1089,9 @@ public sealed class SettlementService(
         var settlementSurplus = settlement.TotalDueOverride.HasValue
             ? Math.Max(0m, totalReceived - totalDue)
             : entrySurplus;
+        var fundAppliedAmount = await GetFundAppliedAmountAsync(settlement, cancellationToken);
+        var settledAmount = totalReceived + fundAppliedAmount;
+        var remainingAmount = Math.Max(0m, totalDue - settledAmount);
         var groupFundBalance = await GetGroupFundBalanceAsync(settlement, cancellationToken);
         var pending = settlement.Messages
             .Where(item => item.Status is SettlementMessageStatus.Pending or SettlementMessageStatus.Sending)
@@ -948,6 +1110,9 @@ public sealed class SettlementService(
             totalDue,
             totalCollected,
             totalReceived,
+            fundAppliedAmount,
+            settledAmount,
+            remainingAmount,
             settlementSurplus,
             groupFundBalance,
             entries.Count(item => item.IsPaid),
