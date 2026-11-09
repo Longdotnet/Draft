@@ -140,6 +140,31 @@ internal sealed class ZaloAutoSessionStore(VolleyDraftDbContext db)
 
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         await command.ExecuteNonQueryAsync(cancellationToken);
+
+        // Sessions created by AutoSession before the default changed to 100 persisted
+        // the old generated defaults (5 min grace / 30 min interval / 5 reminders).
+        // Upgrade only active auto-created sessions that still match that untouched
+        // generated tuple so the new default applies consistently to existing fixtures.
+        await new ZaloOverbookStateStore(db).EnsureAsync(cancellationToken);
+        const string migrateLegacyOverbookDefaultsSql = """
+            UPDATE "ZaloOverbookStates" AS overbook
+            SET "MaxReminders" = 100
+            WHERE overbook."Enabled" = 1
+              AND overbook."GraceMinutes" = 5
+              AND overbook."ReminderIntervalMinutes" = 30
+              AND overbook."MaxReminders" = 5
+              AND EXISTS (
+                  SELECT 1
+                  FROM "ZaloAutoSessionLinks" AS link
+                  INNER JOIN "MatchSessions" AS session ON session."Id" = link."SessionId"
+                  WHERE link."SessionId" = overbook."SessionId"
+                    AND session."Status" = 'Setup'
+              );
+            """;
+        await using var migrateLegacyOverbookDefaults = await CreateCommandAsync(
+            migrateLegacyOverbookDefaultsSql,
+            cancellationToken);
+        await migrateLegacyOverbookDefaults.ExecuteNonQueryAsync(cancellationToken);
         ensured = true;
     }
 

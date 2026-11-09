@@ -84,7 +84,7 @@ const emptyForm: FormState = {
   enabled: false,
   graceMinutes: 10,
   reminderIntervalMinutes: 60,
-  maxReminders: 5,
+  maxReminders: 100,
   messageSource: "AdminPool",
   stageMessageBanks: { light: "", callout: "", sarcastic: "", stubborn: "" },
   reminderMessageBanks: {},

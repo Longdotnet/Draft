@@ -513,7 +513,7 @@ internal sealed class ZaloAutoSessionService(
                 state.Enabled = true;
                 state.GraceMinutes = Math.Clamp(configuration.GetValue("AutoSession:OverbookGraceMinutes", 5), 0, 120);
                 state.ReminderIntervalMinutes = Math.Clamp(configuration.GetValue("AutoSession:OverbookReminderMinutes", 30), 5, 240);
-                state.MaxReminders = Math.Clamp(configuration.GetValue("AutoSession:OverbookMaxReminders", 5), 1, 20);
+                state.MaxReminders = Math.Clamp(configuration.GetValue("AutoSession:OverbookMaxReminders", 100), 1, 100);
                 await overbookStore.SaveAsync(state, cancellationToken);
                 await overbook.ObserveAsync(item.SessionId, null, cancellationToken);
             }

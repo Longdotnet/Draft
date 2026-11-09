@@ -36,6 +36,11 @@ public sealed class ZaloOverbookStateStoreSchemaTests
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT \"ReminderMessageBanksJson\" FROM \"ZaloOverbookStates\" LIMIT 1;";
         await command.ExecuteScalarAsync();
+
+        await using var defaultCommand = connection.CreateCommand();
+        defaultCommand.CommandText = "SELECT dflt_value FROM pragma_table_info('ZaloOverbookStates') WHERE name = 'MaxReminders';";
+        var maxRemindersDefault = Convert.ToString(await defaultCommand.ExecuteScalarAsync());
+        Assert.Equal("100", maxRemindersDefault);
     }
 
     [Fact]

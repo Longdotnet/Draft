@@ -132,7 +132,7 @@ All settings have safe defaults and are optional:
     "ConfirmationHistoryCount": 200,
     "OverbookGraceMinutes": 5,
     "OverbookReminderMinutes": 30,
-    "OverbookMaxReminders": 5
+    "OverbookMaxReminders": 100
   }
 }
 ```

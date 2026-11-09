@@ -14,7 +14,7 @@ internal sealed class ZaloOverbookStateData
     public bool Enabled { get; set; }
     public int GraceMinutes { get; set; } = 10;
     public int ReminderIntervalMinutes { get; set; } = 60;
-    public int MaxReminders { get; set; } = 5;
+    public int MaxReminders { get; set; } = 100;
     public ZaloOverbookMessageSource MessageSource { get; set; } = ZaloOverbookMessageSource.AdminPool;
     public List<string> FriendlyMessages { get; set; } = [];
     public List<string> SeriousMessages { get; set; } = [];
@@ -59,7 +59,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
                 "Enabled" INTEGER NOT NULL DEFAULT 0,
                 "GraceMinutes" INTEGER NOT NULL DEFAULT 10,
                 "ReminderIntervalMinutes" INTEGER NOT NULL DEFAULT 60,
-                "MaxReminders" INTEGER NOT NULL DEFAULT 5,
+                "MaxReminders" INTEGER NOT NULL DEFAULT 100,
                 "MessageSource" TEXT NOT NULL DEFAULT 'AdminPool',
                 "FriendlyMessagesJson" TEXT NOT NULL DEFAULT '[]',
                 "SeriousMessagesJson" TEXT NOT NULL DEFAULT '[]',
@@ -247,7 +247,7 @@ internal sealed class ZaloOverbookStateStore(VolleyDraftDbContext db)
         Enabled = ReadInt(reader, "Enabled") != 0,
         GraceMinutes = ReadInt(reader, "GraceMinutes", 10),
         ReminderIntervalMinutes = ReadInt(reader, "ReminderIntervalMinutes", 60),
-        MaxReminders = ReadInt(reader, "MaxReminders", 5),
+        MaxReminders = ReadInt(reader, "MaxReminders", 100),
         MessageSource = Enum.TryParse<ZaloOverbookMessageSource>(ReadString(reader, "MessageSource"), true, out var source)
             ? source
             : ZaloOverbookMessageSource.AdminPool,
