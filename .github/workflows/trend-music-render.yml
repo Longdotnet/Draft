@@ -58,10 +58,8 @@ jobs:
             ffmpeg_path="$(command -v ffmpeg)"
           else
             ffmpeg_root="$RUNNER_TEMP/trend-music-ffmpeg"
-            python3 -m pip install +              --disable-pip-version-check +              --no-input +              --no-deps +              --target "$ffmpeg_root" +              "imageio-ffmpeg==0.6.0"
-            ffmpeg_path="$(
-              PYTHONPATH="$ffmpeg_root" +                python3 -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'
-            )"
+            python3 -m pip install --disable-pip-version-check --no-input --no-deps --target "$ffmpeg_root" "imageio-ffmpeg==0.6.0"
+            ffmpeg_path="$(PYTHONPATH="$ffmpeg_root" python3 -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
           fi
           "$ffmpeg_path" -version | head -n 1
           echo "TREND_MUSIC_FFMPEG=$ffmpeg_path" >> "$GITHUB_ENV"
