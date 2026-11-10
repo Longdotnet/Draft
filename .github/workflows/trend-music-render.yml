@@ -54,15 +54,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if command -v ffmpeg >/dev/null 2>&1; then
-            ffmpeg_path="$(command -v ffmpeg)"
-          else
-            ffmpeg_root="$RUNNER_TEMP/trend-music-ffmpeg"
-            python3 -m pip install --disable-pip-version-check --no-input --no-deps --target "$ffmpeg_root" "imageio-ffmpeg==0.6.0"
-            ffmpeg_path="$(PYTHONPATH="$ffmpeg_root" python3 -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
           fi
-          "$ffmpeg_path" -version | head -n 1
-          echo "TREND_MUSIC_FFMPEG=$ffmpeg_path" >> "$GITHUB_ENV"
+          ffmpeg -version | head -n 1
       - name: Claim queued render and deliver story video
         if: github.event_name == 'schedule' || inputs.account_id == ''
         env:
