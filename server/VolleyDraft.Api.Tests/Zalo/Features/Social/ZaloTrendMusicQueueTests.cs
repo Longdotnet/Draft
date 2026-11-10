@@ -72,7 +72,7 @@ public sealed class ZaloTrendMusicQueueTests
     }
 
     [Fact]
-    public async Task Failed_requested_song_is_retryable_once_then_terminal()
+    public async Task Failed_requested_song_is_retryable_twice_then_terminal()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -102,8 +102,14 @@ public sealed class ZaloTrendMusicQueueTests
         Assert.NotEqual(first.ClaimToken, retry.ClaimToken);
         await store.MarkQueueFailedAsync(key, retry.ClaimToken, CancellationToken.None);
 
+        var finalRetry = await store.TryClaimQueueAsync(now.AddSeconds(2), TimeSpan.FromMinutes(10), CancellationToken.None);
+        Assert.NotNull(finalRetry);
+        Assert.Equal(key, finalRetry.IdempotencyKey);
+        Assert.NotEqual(retry.ClaimToken, finalRetry.ClaimToken);
+        await store.MarkQueueFailedAsync(key, finalRetry.ClaimToken, CancellationToken.None);
+
         Assert.Null(await store.TryClaimQueueAsync(
-            now.AddSeconds(2),
+            now.AddSeconds(3),
             TimeSpan.FromMinutes(10),
             CancellationToken.None));
     }

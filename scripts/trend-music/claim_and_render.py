@@ -199,7 +199,7 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
         # spotDL do its normal title/artist matching; it is not an arbitrary fallback
         # to a different track.
         print("YouTube Music still produced no audio; retrying with spotDL YouTube provider")
-        youtube_command = [*base_command, "--audio", "youtube", "download", query]
+        youtube_command = [*base_command, "download", query, "--audio", "youtube"]
         youtube_retry = run_checked(youtube_command, cwd=work, timeout=300)
         if youtube_retry.stdout:
             print(youtube_retry.stdout[-3000:])

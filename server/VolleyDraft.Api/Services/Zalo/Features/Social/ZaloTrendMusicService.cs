@@ -2211,7 +2211,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                    OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
                    OR ("State" = 'failed'
                        AND "IdempotencyKey" LIKE 'trend-music:request:%'
-                       AND "AttemptCount" < 2
+                       AND "AttemptCount" < 3
                        AND "CreatedAt" >= @FailedRetryAfter)
                 ORDER BY
                     CASE WHEN "State" = 'failed' THEN 1 ELSE 0 END,
@@ -2224,7 +2224,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                    OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
                    OR ("State" = 'failed'
                        AND "IdempotencyKey" LIKE 'trend-music:request:%'
-                       AND "AttemptCount" < 2
+                       AND "AttemptCount" < 3
                        AND "CreatedAt" >= @FailedRetryAfter))
             RETURNING "AccountId", "GroupId", "ConnectionId", "LocalDate",
                       "IdempotencyKey", "CandidatesJson", "ClaimToken";
