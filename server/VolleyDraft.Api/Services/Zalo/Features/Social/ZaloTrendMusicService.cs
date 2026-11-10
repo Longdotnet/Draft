@@ -2209,17 +2209,30 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                 FROM "ZaloTrendMusicRenderQueue"
                 WHERE "State" = 'pending'
                    OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
-                ORDER BY "CreatedAt", "IdempotencyKey"
+                   OR ("State" = 'failed'
+                       AND "IdempotencyKey" LIKE 'trend-music:request:%'
+                       AND "AttemptCount" < 2
+                       AND "CreatedAt" >= @FailedRetryAfter)
+                ORDER BY
+                    CASE WHEN "State" = 'failed' THEN 1 ELSE 0 END,
+                    CASE WHEN "State" = 'failed' THEN "CreatedAt" END DESC,
+                    "CreatedAt",
+                    "IdempotencyKey"
                 LIMIT 1
             )
               AND ("State" = 'pending'
-                   OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore))
+                   OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
+                   OR ("State" = 'failed'
+                       AND "IdempotencyKey" LIKE 'trend-music:request:%'
+                       AND "AttemptCount" < 2
+                       AND "CreatedAt" >= @FailedRetryAfter))
             RETURNING "AccountId", "GroupId", "ConnectionId", "LocalDate",
                       "IdempotencyKey", "CandidatesJson", "ClaimToken";
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         Add(command, "@Now", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
         Add(command, "@StaleBefore", now.Subtract(staleAfter).ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        Add(command, "@FailedRetryAfter", now.AddHours(-24).ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
         Add(command, "@ClaimToken", claimToken);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;

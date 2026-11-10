@@ -72,6 +72,43 @@ public sealed class ZaloTrendMusicQueueTests
     }
 
     [Fact]
+    public async Task Failed_requested_song_is_retryable_once_then_terminal()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloTrendMusicJobStore(db);
+        var target = new ZaloProactiveTarget("connection-1", "group-1", "account-1");
+        var now = DateTimeOffset.UtcNow;
+        const string key = "trend-music:request:connection-1:group-1:message-1";
+
+        Assert.True(await store.EnqueueAsync(
+            target,
+            now.ToString("yyyy-MM-dd"),
+            key,
+            "{\"candidates\":[],\"songQuery\":\"Gói con tim làm quà\"}",
+            CancellationToken.None));
+
+        var first = await store.TryClaimQueueAsync(now, TimeSpan.FromMinutes(10), CancellationToken.None);
+        Assert.NotNull(first);
+        await store.MarkQueueFailedAsync(key, first.ClaimToken, CancellationToken.None);
+
+        var retry = await store.TryClaimQueueAsync(now.AddSeconds(1), TimeSpan.FromMinutes(10), CancellationToken.None);
+        Assert.NotNull(retry);
+        Assert.Equal(key, retry.IdempotencyKey);
+        Assert.NotEqual(first.ClaimToken, retry.ClaimToken);
+        await store.MarkQueueFailedAsync(key, retry.ClaimToken, CancellationToken.None);
+
+        Assert.Null(await store.TryClaimQueueAsync(
+            now.AddSeconds(2),
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Daily_job_store_allows_morning_and_night_on_same_service_date()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

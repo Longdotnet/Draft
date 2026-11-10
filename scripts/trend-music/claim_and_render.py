@@ -148,11 +148,11 @@ def ensure_spotdl() -> None:
 
 def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
     ensure_spotdl()
-    command = [sys.executable, "-m", "spotdl"]
+    base_command = [sys.executable, "-m", "spotdl"]
     ffmpeg = os.environ.get("TREND_MUSIC_FFMPEG", "").strip() or (shutil.which("ffmpeg") or "")
     if ffmpeg:
-        command.extend(["--ffmpeg", ffmpeg])
-    command.extend(["download", query])
+        base_command.extend(["--ffmpeg", ffmpeg])
+    command = [*base_command, "download", query]
 
     def downloaded_audio_files() -> list[pathlib.Path]:
         return sorted(
@@ -190,6 +190,19 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
         retry = run_checked(command, cwd=work, timeout=300)
         if retry.stdout:
             print(retry.stdout[-3000:])
+        audio_files = downloaded_audio_files()
+
+    if not audio_files:
+        # GitHub-hosted runners are periodically blocked by music.youtube.com even
+        # when Deno is available. Keep Spotify/spotDL metadata resolution but switch
+        # the audio provider to regular YouTube before giving up. This still lets
+        # spotDL do its normal title/artist matching; it is not an arbitrary fallback
+        # to a different track.
+        print("YouTube Music still produced no audio; retrying with spotDL YouTube provider")
+        youtube_command = [*base_command, "--audio", "youtube", "download", query]
+        youtube_retry = run_checked(youtube_command, cwd=work, timeout=300)
+        if youtube_retry.stdout:
+            print(youtube_retry.stdout[-3000:])
         audio_files = downloaded_audio_files()
 
     if not audio_files:
