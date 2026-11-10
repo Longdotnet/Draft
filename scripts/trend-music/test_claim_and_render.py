@@ -36,6 +36,39 @@ class FakeResponse:
 
 
 class RequestedSongAppleFallbackTests(unittest.TestCase):
+    def test_strong_title_match_rejects_prefix_collisions_and_alternate_versions(self) -> None:
+        query = "Gói con tim làm quà"
+        self.assertTrue(
+            claim_and_render.strong_requested_title_match(
+                query,
+                "Gói Con Tim Làm Quà (feat. Mounter) [Bò Sữa Bay Original Soundtrack]",
+            )
+        )
+        self.assertTrue(
+            claim_and_render.strong_requested_title_match(
+                query,
+                "Gói Con Tim Làm Quà (Film Version)",
+            )
+        )
+        self.assertFalse(
+            claim_and_render.strong_requested_title_match(
+                query,
+                "Gói Con Tim Làm Quà Remix",
+            )
+        )
+        self.assertFalse(
+            claim_and_render.strong_requested_title_match(
+                query,
+                "Gói Con Tim Làm Quà Karaoke",
+            )
+        )
+        self.assertFalse(
+            claim_and_render.strong_requested_title_match(
+                "Hello",
+                "Hello Goodbye",
+            )
+        )
+
     def test_itunes_preview_downloads_strong_match_and_prefers_original_soundtrack(self) -> None:
         query = "Gói con tim làm quà"
         preview_original = "https://audio-ssl.itunes.apple.com/itunes-assets/original.m4a"

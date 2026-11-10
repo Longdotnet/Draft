@@ -154,6 +154,79 @@ public sealed class ZaloTrendMusicQueueTests
     }
 
     [Fact]
+    public async Task Stale_requested_song_claim_is_limited_to_five_attempts()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloTrendMusicJobStore(db);
+        var target = new ZaloProactiveTarget("connection-1", "group-1", "account-1");
+        var now = DateTimeOffset.UtcNow;
+        const string key = "trend-music:request:connection-1:group-1:message-stale";
+        const string payload = "{\"candidates\":[],\"songQuery\":\"Gói con tim làm quà\"}";
+
+        Assert.True(await store.EnqueueAsync(
+            target, now.ToString("yyyy-MM-dd"), key, payload, CancellationToken.None));
+
+        string? previousToken = null;
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var claim = await store.TryClaimQueueAsync(
+                now.AddMinutes((attempt - 1) * 11),
+                TimeSpan.FromMinutes(10),
+                CancellationToken.None);
+            Assert.NotNull(claim);
+            Assert.Equal(key, claim.IdempotencyKey);
+            if (previousToken is not null) Assert.NotEqual(previousToken, claim.ClaimToken);
+            previousToken = claim.ClaimToken;
+        }
+
+        Assert.Null(await store.TryClaimQueueAsync(
+            now.AddMinutes(55),
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Older_stale_claimed_duplicate_is_superseded_by_newer_sent_request()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloTrendMusicJobStore(db);
+        var target = new ZaloProactiveTarget("connection-1", "group-1", "account-1");
+        var now = DateTimeOffset.UtcNow;
+        const string olderKey = "trend-music:request:connection-1:group-1:message-stale-older";
+        const string newerKey = "trend-music:request:connection-1:group-1:message-stale-newer";
+        const string payload = "{\"candidates\":[],\"songQuery\":\"Gói con tim làm quà\"}";
+
+        Assert.True(await store.EnqueueAsync(
+            target, now.ToString("yyyy-MM-dd"), olderKey, payload, CancellationToken.None));
+        var older = await store.TryClaimQueueAsync(now, TimeSpan.FromMinutes(10), CancellationToken.None);
+        Assert.NotNull(older);
+
+        await Task.Delay(2);
+        Assert.True(await store.EnqueueAsync(
+            target, now.ToString("yyyy-MM-dd"), newerKey, payload, CancellationToken.None));
+        var newer = await store.TryClaimQueueAsync(
+            now.AddSeconds(1), TimeSpan.FromMinutes(10), CancellationToken.None);
+        Assert.NotNull(newer);
+        Assert.Equal(newerKey, newer.IdempotencyKey);
+        await store.MarkQueueSentAsync(newerKey, newer.ClaimToken, CancellationToken.None);
+
+        Assert.Null(await store.TryClaimQueueAsync(
+            now.AddMinutes(11),
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Daily_job_store_allows_morning_and_night_on_same_service_date()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

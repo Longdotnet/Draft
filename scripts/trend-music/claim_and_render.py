@@ -126,7 +126,38 @@ def strong_requested_title_match(query: str, title: str) -> bool:
     title_key = search_key(title)
     if len(query_key) < 4 or not title_key:
         return False
-    return title_key == query_key or title_key.startswith(f"{query_key} ")
+    if title_key == query_key:
+        return True
+    prefix = f"{query_key} "
+    if not title_key.startswith(prefix):
+        return False
+
+    suffix = title_key[len(prefix) :].strip()
+    blocked_variants = (
+        "remix",
+        "karaoke",
+        "cover",
+        "live",
+        "instrumental",
+        "acoustic",
+        "sped up",
+        "slowed",
+        "demo",
+        "remaster",
+    )
+    if any(marker in suffix for marker in blocked_variants):
+        return False
+
+    # Apple commonly appends featured artists and soundtrack qualifiers to the
+    # canonical track title. Accept only those narrow forms so a generic prefix
+    # collision (for example "Hello" -> "Hello Goodbye") cannot be mistaken for
+    # the requested song.
+    return (
+        suffix.startswith("feat ")
+        or suffix == "film version"
+        or suffix.startswith("original soundtrack")
+        or suffix.endswith("original soundtrack")
+    )
 
 
 def _validated_https_url(value: object, *, allowed_hosts: tuple[str, ...]) -> str | None:
