@@ -193,12 +193,24 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
         audio_files = downloaded_audio_files()
 
     if not audio_files:
+        # Piped proxies the same YouTube catalog through a public frontend and is
+        # much less likely to trip Google datacenter bot checks on hosted CI.
+        # Keep it ahead of raw YouTube so explicit song requests can still resolve
+        # the exact matched track when music.youtube.com blocks GitHub runners.
+        print("YouTube Music still produced no audio; retrying with spotDL Piped provider")
+        piped_command = [*base_command, "download", query, "--audio", "piped"]
+        piped_retry = run_checked(piped_command, cwd=work, timeout=300)
+        if piped_retry.stdout:
+            print(piped_retry.stdout[-3000:])
+        audio_files = downloaded_audio_files()
+
+    if not audio_files:
         # GitHub-hosted runners are periodically blocked by music.youtube.com even
         # when Deno is available. Keep Spotify/spotDL metadata resolution but switch
         # the audio provider to regular YouTube before giving up. This still lets
         # spotDL do its normal title/artist matching; it is not an arbitrary fallback
         # to a different track.
-        print("YouTube Music still produced no audio; retrying with spotDL YouTube provider")
+        print("Piped still produced no audio; retrying with spotDL YouTube provider")
         youtube_command = [*base_command, "download", query, "--audio", "youtube"]
         youtube_retry = run_checked(youtube_command, cwd=work, timeout=300)
         if youtube_retry.stdout:
