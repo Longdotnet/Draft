@@ -202,6 +202,25 @@ app.MapPost("/api/internal/trend-music/render-complete", async (
     }
 });
 
+app.MapPost("/api/internal/trend-music/render-claim", async (
+    HttpContext httpContext,
+    ZaloTrendMusicService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
+    {
+        return Results.Json(
+            new { message = "Trend music internal key is not configured." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    if (!TrendMusicInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+
+    var claim = await service.ClaimQueuedRenderAsync(cancellationToken);
+    return claim is null ? Results.NoContent() : Results.Ok(claim);
+});
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();

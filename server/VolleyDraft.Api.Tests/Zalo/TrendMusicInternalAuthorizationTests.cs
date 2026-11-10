@@ -48,4 +48,41 @@ public sealed class TrendMusicInternalAuthorizationTests
         Assert.False(TrendMusicInternalAuthorization.IsConfigured(configuration));
         Assert.False(TrendMusicInternalAuthorization.IsAuthorized(context, configuration));
     }
+
+    [Fact]
+    public void Falls_back_to_existing_scheduler_key_when_dedicated_key_is_absent()
+    {
+        const string schedulerKey = "existing-scheduler-secret-with-at-least-32-characters";
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Scheduler:Key"] = schedulerKey
+            })
+            .Build();
+        var context = new DefaultHttpContext();
+        context.Request.Headers[TrendMusicInternalAuthorization.HeaderName] = schedulerKey;
+
+        Assert.True(TrendMusicInternalAuthorization.IsConfigured(configuration));
+        Assert.True(TrendMusicInternalAuthorization.IsAuthorized(context, configuration));
+    }
+
+    [Fact]
+    public void Dedicated_key_takes_precedence_over_scheduler_fallback()
+    {
+        const string dedicated = "dedicated-trend-secret-with-at-least-32-characters";
+        const string schedulerKey = "existing-scheduler-secret-with-at-least-32-characters";
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ZaloBot:Ambient:TrendMusic:CallbackKey"] = dedicated,
+                ["Scheduler:Key"] = schedulerKey
+            })
+            .Build();
+        var context = new DefaultHttpContext();
+        context.Request.Headers[TrendMusicInternalAuthorization.HeaderName] = schedulerKey;
+        Assert.False(TrendMusicInternalAuthorization.IsAuthorized(context, configuration));
+
+        context.Request.Headers[TrendMusicInternalAuthorization.HeaderName] = dedicated;
+        Assert.True(TrendMusicInternalAuthorization.IsAuthorized(context, configuration));
+    }
 }

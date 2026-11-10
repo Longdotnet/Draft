@@ -74,14 +74,13 @@ internal sealed record ZaloTrendMusicSettings(
             Math.Clamp(configuration.GetValue("ZaloBot:Ambient:TrendMusic:RetryMinutes", 35), 10, 180));
     }
 
-    public bool IsConfigured =>
-        Enabled &&
-        CanRender;
+    public bool IsConfigured => Enabled;
 
-    public bool CanRender =>
-        (FeedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || JamendoClientId.Length >= 4) &&
-        GitHubToken.Length >= 20 &&
-        GitHubRepository.Contains('/', StringComparison.Ordinal);
+    public bool HasMediaSource =>
+        FeedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || JamendoClientId.Length >= 4;
+
+    public bool CanDirectDispatch =>
+        GitHubToken.Length >= 20 && GitHubRepository.Contains('/', StringComparison.Ordinal);
 }
 
 public sealed class ZaloTrendMusicService(
@@ -108,11 +107,11 @@ public sealed class ZaloTrendMusicService(
         if (!IsManualTestCommand(incoming)) return false;
 
         var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
-        if (!settings.CanRender || !TrendMusicInternalAuthorization.IsConfigured(configuration))
+        if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
         {
             await SendTestReplyAsync(
                 incoming,
-                "🎵 Trend Music chưa đủ cấu hình để render test. Cần Jamendo/feed + GitHub token + callback key trước.",
+                "🎵 Trend Music chưa có internal key để worker render nhận/trả job.",
                 cancellationToken);
             return true;
         }
@@ -166,15 +165,18 @@ public sealed class ZaloTrendMusicService(
             return true;
         }
 
-        IReadOnlyList<ZaloTrendMusicCandidate> candidates;
-        try
+        IReadOnlyList<ZaloTrendMusicCandidate> candidates = [];
+        if (settings.HasMediaSource)
         {
-            candidates = await LoadCandidatesAsync(settings, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(exception, "Trend music manual test source unavailable; using original fallback");
-            candidates = [];
+            try
+            {
+                candidates = await LoadCandidatesAsync(settings, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Trend music manual test source unavailable; using original fallback");
+                candidates = [];
+            }
         }
 
         var localDate = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date)
@@ -185,7 +187,7 @@ public sealed class ZaloTrendMusicService(
 
         try
         {
-            await DispatchRenderAsync(
+            var queued = await DispatchOrQueueRenderAsync(
                 settings,
                 target,
                 localDate,
@@ -194,9 +196,13 @@ public sealed class ZaloTrendMusicService(
                 cancellationToken);
             await SendTestReplyAsync(
                 incoming,
-                candidates.Count > 0
-                    ? $"🎵 Đang dựng bản test từ {candidates[0].Title} — {candidates[0].Artist}. Render xong bot sẽ gửi video ngay trong nhóm này."
-                    : "🎵 Nguồn trend đang không có bài usable, bot đang dựng NPC ORIGINAL fallback để test luồng video.",
+                queued
+                    ? candidates.Count > 0
+                        ? $"🎵 Đã xếp bản test {candidates[0].Title} — {candidates[0].Artist}. GitHub worker quét mỗi 5 phút; render xong bot gửi video ngay trong nhóm này."
+                        : "🎵 Đã xếp NPC ORIGINAL fallback để test luồng video. GitHub worker quét mỗi 5 phút rồi gửi video lại nhóm này."
+                    : candidates.Count > 0
+                        ? $"🎵 Đang dựng bản test từ {candidates[0].Title} — {candidates[0].Artist}. Render xong bot sẽ gửi video ngay trong nhóm này."
+                        : "🎵 Đang dựng NPC ORIGINAL fallback để test luồng video.",
                 cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -204,7 +210,7 @@ public sealed class ZaloTrendMusicService(
             logger.LogWarning(exception, "Trend music manual test dispatch failed Group={GroupId}", target.GroupId);
             await SendTestReplyAsync(
                 incoming,
-                "🎵 Chưa dispatch được bản test lúc này. Bot chưa gửi video; kiểm tra GitHub Actions/credential rồi thử lại.",
+                "🎵 Chưa xếp được bản test lúc này. Bot chưa gửi video; kiểm tra GitHub Actions/worker rồi thử lại.",
                 cancellationToken);
         }
 
@@ -252,7 +258,7 @@ public sealed class ZaloTrendMusicService(
             try
             {
                 var idempotencyKey = $"trend-music:{target.ConnectionId}:{target.GroupId}:{localDate}:morning";
-                await DispatchRenderAsync(
+                await DispatchOrQueueRenderAsync(
                     settings,
                     target,
                     localDate,
@@ -260,7 +266,7 @@ public sealed class ZaloTrendMusicService(
                     candidates,
                     cancellationToken);
                 logger.LogInformation(
-                    "Trend music render dispatched Group={GroupId} Date={LocalDate} Candidates={CandidateCount}",
+                    "Trend music render scheduled Group={GroupId} Date={LocalDate} Candidates={CandidateCount}",
                     target.GroupId,
                     localDate,
                     candidates.Count);
@@ -309,7 +315,10 @@ public sealed class ZaloTrendMusicService(
         if (existing.Any(item =>
                 string.Equals(item.Lane, ZaloProactiveLane.TrendMusic, StringComparison.Ordinal) &&
                 string.Equals(item.IdempotencyKey, request.IdempotencyKey, StringComparison.Ordinal)))
+        {
+            await jobs.MarkQueueSentAsync(request.IdempotencyKey, cancellationToken);
             return true;
+        }
 
         var now = DateTimeOffset.UtcNow;
         if (!await proactiveStore.TryAcquireLeaseAsync(
@@ -379,6 +388,7 @@ public sealed class ZaloTrendMusicService(
                     response.MessageId,
                     cancellationToken);
             }
+            await jobs.MarkQueueSentAsync(request.IdempotencyKey, cancellationToken);
             return true;
         }
         catch
@@ -401,6 +411,8 @@ public sealed class ZaloTrendMusicService(
     {
         if (!string.IsNullOrWhiteSpace(settings.JamendoClientId))
             return await LoadJamendoCandidatesAsync(settings, cancellationToken);
+        if (!settings.FeedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return [];
 
         var client = httpClientFactory.CreateClient("TrendMusicFeed");
         using var response = await client.GetAsync(settings.FeedUrl, cancellationToken);
@@ -518,7 +530,7 @@ public sealed class ZaloTrendMusicService(
         return label.Length > 0;
     }
 
-    private async Task DispatchRenderAsync(
+    private async Task<bool> DispatchOrQueueRenderAsync(
         ZaloTrendMusicSettings settings,
         ZaloProactiveTarget target,
         string localDate,
@@ -526,6 +538,17 @@ public sealed class ZaloTrendMusicService(
         IReadOnlyList<ZaloTrendMusicCandidate> candidates,
         CancellationToken cancellationToken)
     {
+        if (!settings.CanDirectDispatch)
+        {
+            await jobs.EnqueueAsync(
+                target,
+                localDate,
+                idempotencyKey,
+                JsonSerializer.Serialize(candidates, JsonOptions),
+                cancellationToken);
+            return true;
+        }
+
         await renderDispatcher.DispatchAsync(
             settings.GitHubToken,
             settings.GitHubRepository,
@@ -538,6 +561,7 @@ public sealed class ZaloTrendMusicService(
             idempotencyKey,
             JsonSerializer.Serialize(candidates, JsonOptions),
             cancellationToken);
+        return false;
     }
 
     private static bool IsUsableCandidate(ZaloTrendMusicCandidate item)
@@ -605,7 +629,22 @@ public sealed class ZaloTrendMusicService(
             .ToArray());
         return text.Length == 0 ? "music" : text;
     }
+
+    public Task<ZaloTrendMusicRenderClaim?> ClaimQueuedRenderAsync(
+        CancellationToken cancellationToken = default) =>
+        jobs.TryClaimQueueAsync(
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMinutes(10),
+            cancellationToken);
 }
+
+public sealed record ZaloTrendMusicRenderClaim(
+    string AccountId,
+    string GroupId,
+    string ConnectionId,
+    string LocalDate,
+    string IdempotencyKey,
+    string CandidatesJson);
 
 public sealed class ZaloTrendMusicWorker(
     IServiceScopeFactory scopeFactory,
@@ -684,6 +723,96 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken) =>
         UpdateAsync(connectionId, groupId, localDate, "sent", providerMessageId, cancellationToken);
 
+    public async Task EnqueueAsync(
+        ZaloProactiveTarget target,
+        string localDate,
+        string idempotencyKey,
+        string candidatesJson,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        const string sql = """
+            INSERT INTO "ZaloTrendMusicRenderQueue" (
+                "IdempotencyKey", "ConnectionId", "AccountId", "GroupId", "LocalDate",
+                "CandidatesJson", "State", "AttemptCount", "ClaimedAt", "ClaimToken",
+                "CreatedAt", "UpdatedAt")
+            VALUES (
+                @IdempotencyKey, @ConnectionId, @AccountId, @GroupId, @LocalDate,
+                @CandidatesJson, 'pending', 0, NULL, NULL, @Now, @Now)
+            ON CONFLICT ("IdempotencyKey") DO NOTHING;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@IdempotencyKey", idempotencyKey);
+        Add(command, "@ConnectionId", target.ConnectionId.Trim());
+        Add(command, "@AccountId", target.AccountId.Trim());
+        Add(command, "@GroupId", target.GroupId.Trim());
+        Add(command, "@LocalDate", localDate);
+        Add(command, "@CandidatesJson", candidatesJson);
+        Add(command, "@Now", now);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<ZaloTrendMusicRenderClaim?> TryClaimQueueAsync(
+        DateTimeOffset now,
+        TimeSpan staleAfter,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        var claimToken = Guid.NewGuid().ToString("N");
+        const string sql = """
+            UPDATE "ZaloTrendMusicRenderQueue"
+            SET "State" = 'claimed',
+                "AttemptCount" = "AttemptCount" + 1,
+                "ClaimedAt" = @Now,
+                "ClaimToken" = @ClaimToken,
+                "UpdatedAt" = @Now
+            WHERE "IdempotencyKey" = (
+                SELECT "IdempotencyKey"
+                FROM "ZaloTrendMusicRenderQueue"
+                WHERE "State" = 'pending'
+                   OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
+                ORDER BY "CreatedAt", "IdempotencyKey"
+                LIMIT 1
+            )
+              AND ("State" = 'pending'
+                   OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore))
+            RETURNING "AccountId", "GroupId", "ConnectionId", "LocalDate",
+                      "IdempotencyKey", "CandidatesJson";
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@Now", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        Add(command, "@StaleBefore", now.Subtract(staleAfter).ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        Add(command, "@ClaimToken", claimToken);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        return new ZaloTrendMusicRenderClaim(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            reader.GetString(4),
+            reader.GetString(5));
+    }
+
+    public async Task MarkQueueSentAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            UPDATE "ZaloTrendMusicRenderQueue"
+            SET "State" = 'sent',
+                "ClaimToken" = NULL,
+                "UpdatedAt" = @UpdatedAt
+            WHERE "IdempotencyKey" = @IdempotencyKey;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@UpdatedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        Add(command, "@IdempotencyKey", idempotencyKey);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task UpdateAsync(
         string connectionId,
         string groupId,
@@ -726,6 +855,20 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                 "ProviderMessageId" TEXT NULL,
                 "UpdatedAt" TEXT NOT NULL,
                 PRIMARY KEY ("ConnectionId", "GroupId", "LocalDate")
+            );
+            CREATE TABLE IF NOT EXISTS "ZaloTrendMusicRenderQueue" (
+                "IdempotencyKey" TEXT NOT NULL PRIMARY KEY,
+                "ConnectionId" TEXT NOT NULL,
+                "AccountId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "LocalDate" TEXT NOT NULL,
+                "CandidatesJson" TEXT NOT NULL,
+                "State" TEXT NOT NULL,
+                "AttemptCount" INTEGER NOT NULL,
+                "ClaimedAt" TEXT NULL,
+                "ClaimToken" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL
             );
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);

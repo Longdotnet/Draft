@@ -73,6 +73,7 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
              path.Equals("/api/internal/zalo/membership-events", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/zalo/presence-events", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/zalo/poll-events", StringComparison.OrdinalIgnoreCase) ||
+             path.Equals("/api/internal/trend-music/render-claim", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/trend-music/render-complete", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/zyro-mapping/profiles/sync", StringComparison.OrdinalIgnoreCase)))
         {

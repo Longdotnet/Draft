@@ -1,35 +1,37 @@
 name: Trend music story renderer
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       account_id:
         description: Zalo account id
-        required: true
+        required: false
         type: string
       group_id:
         description: Zalo group id
-        required: true
+        required: false
         type: string
       connection_id:
         description: VolleyDraft Zalo connection id
-        required: true
+        required: false
         type: string
       local_date:
         description: Vietnam service date
-        required: true
+        required: false
         type: string
       idempotency_key:
         description: Stable one-send key
-        required: true
+        required: false
         type: string
       candidates_json:
         description: Ordered licensed-media candidate array
-        required: true
+        required: false
         type: string
 
 concurrency:
-  group: trend-music-${{ inputs.connection_id }}-${{ inputs.group_id }}-${{ inputs.local_date }}
+  group: trend-music-render-worker
   cancel-in-progress: false
 
 permissions:
@@ -51,7 +53,14 @@ jobs:
             sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version | head -n 1
-      - name: Render and deliver story video
+      - name: Claim queued render and deliver story video
+        if: github.event_name == 'schedule' || inputs.account_id == ''
+        env:
+          SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
+          SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
+        run: python3 scripts/trend-music/claim_and_render.py
+      - name: Render direct workflow-dispatch request
+        if: github.event_name == 'workflow_dispatch' && inputs.account_id != ''
         env:
           ACCOUNT_ID: ${{ inputs.account_id }}
           GROUP_ID: ${{ inputs.group_id }}
@@ -59,6 +68,6 @@ jobs:
           LOCAL_DATE: ${{ inputs.local_date }}
           IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
           CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL }}
-          CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY }}
+          CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
           CANDIDATES_JSON: ${{ inputs.candidates_json }}
         run: python3 scripts/trend-music/render_story.py
