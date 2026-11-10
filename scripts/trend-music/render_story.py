@@ -24,8 +24,11 @@ def env(name: str, required: bool = True) -> str:
 def truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
-def download(url: str, target: pathlib.Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "VolleyDraft-TrendMusic/1.0"})
+def download(url: str, target: pathlib.Path, referer: str | None = None) -> None:
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; VolleyDraft-TrendMusic/1.0)"}
+    if referer:
+        headers["Referer"] = referer
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         total = 0
         with target.open("wb") as output:
@@ -81,7 +84,7 @@ def draw_filters(title_file: pathlib.Path, artist_file: pathlib.Path, trend_file
 
 def render_video_candidate(candidate: dict, work: pathlib.Path, output: pathlib.Path) -> None:
     media = work / "source-video"
-    download(candidate["mediaUrl"], media)
+    download(candidate["mediaUrl"], media, candidate.get("sourceUrl"))
     title_file, artist_file, trend_file = work / "title.txt", work / "artist.txt", work / "trend.txt"
     safe_text(title_file, candidate.get("title", "NPC PICK"))
     safe_text(artist_file, candidate.get("artist", ""))
@@ -104,15 +107,35 @@ def render_video_candidate(candidate: dict, work: pathlib.Path, output: pathlib.
 
 def render_audio_candidate(candidate: dict, work: pathlib.Path, output: pathlib.Path) -> None:
     audio, artwork = work / "source-audio", work / "artwork"
-    download(candidate["mediaUrl"], audio)
+    download(candidate["mediaUrl"], audio, candidate.get("sourceUrl"))
     artwork_url = (candidate.get("artworkUrl") or "").strip()
-    if not artwork_url:
-        raise RuntimeError("audio candidate has no artworkUrl")
-    download(artwork_url, artwork)
     title_file, artist_file, trend_file = work / "title.txt", work / "artist.txt", work / "trend.txt"
     safe_text(title_file, candidate.get("title", "NPC PICK"))
     safe_text(artist_file, candidate.get("artist", ""))
     safe_text(trend_file, candidate.get("trendLabel") or f"TRENDING #{candidate.get('rank', '?')}")
+    if not artwork_url:
+        filters = (
+            "[1:a]asplit=2[aout0][viz];"
+            "[aout0]afade=t=in:st=0:d=0.7,afade=t=out:st=18:d=2[aout];"
+            "[viz]showwaves=s=600x250:mode=cline:rate=30:colors=0x67e8f9,format=rgba[wave];"
+            "[0:v]noise=alls=3:allf=t,"
+            "drawbox=x=44:y=240:w=632:h=500:color=white@0.045:t=fill,"
+            "drawbox=x=68:y=264:w=584:h=452:color=0x172554@0.58:t=fill,"
+            "drawbox=x=68:y=264:w=584:h=4:color=0x67e8f9@0.75:t=fill[bg];"
+            "[bg][wave]overlay=60:370[base];"
+            f"[base]{draw_filters(title_file, artist_file, trend_file)}[v]"
+        )
+        run_ffmpeg([
+            "-f", "lavfi", "-i", f"color=c=0x0f172a:s={WIDTH}x{HEIGHT}:r=30:d={DURATION_SECONDS}",
+            "-stream_loop", "-1", "-i", str(audio),
+            "-filter_complex", filters, "-map", "[v]", "-map", "[aout]",
+            "-t", str(DURATION_SECONDS), "-r", "30",
+            "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main", "-pix_fmt", "yuv420p",
+            "-b:v", "720k", "-maxrate", "900k", "-bufsize", "1440k",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(output),
+        ])
+        return
+    download(artwork_url, artwork)
     filters = (
         "[0:v]split=2[bg0][cover0];"
         "[bg0]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,boxblur=22:2[bg];"

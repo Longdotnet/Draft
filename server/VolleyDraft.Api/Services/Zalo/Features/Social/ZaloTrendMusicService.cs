@@ -76,8 +76,7 @@ internal sealed record ZaloTrendMusicSettings(
 
     public bool IsConfigured => Enabled;
 
-    public bool HasMediaSource =>
-        FeedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || JamendoClientId.Length >= 4;
+    public bool HasMediaSource => true;
 
     public bool CanDirectDispatch =>
         GitHubToken.Length >= 20 && GitHubRepository.Contains('/', StringComparison.Ordinal);
@@ -166,17 +165,14 @@ public sealed class ZaloTrendMusicService(
         }
 
         IReadOnlyList<ZaloTrendMusicCandidate> candidates = [];
-        if (settings.HasMediaSource)
+        try
         {
-            try
-            {
-                candidates = await LoadCandidatesAsync(settings, cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                logger.LogWarning(exception, "Trend music manual test source unavailable; using original fallback");
-                candidates = [];
-            }
+            candidates = await LoadCandidatesAsync(settings, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Trend music manual test source unavailable; using original fallback");
+            candidates = [];
         }
 
         var localDate = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date)
@@ -412,7 +408,7 @@ public sealed class ZaloTrendMusicService(
         if (!string.IsNullOrWhiteSpace(settings.JamendoClientId))
             return await LoadJamendoCandidatesAsync(settings, cancellationToken);
         if (!settings.FeedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            return [];
+            return await LoadCcMixterCandidatesAsync(settings.MaxCandidates, cancellationToken);
 
         var client = httpClientFactory.CreateClient("TrendMusicFeed");
         using var response = await client.GetAsync(settings.FeedUrl, cancellationToken);
@@ -424,6 +420,109 @@ public sealed class ZaloTrendMusicService(
             .OrderBy(item => item.Rank <= 0 ? int.MaxValue : item.Rank)
             .Take(settings.MaxCandidates)
             .ToArray();
+    }
+
+    private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> LoadCcMixterCandidatesAsync(
+        int maxCandidates,
+        CancellationToken cancellationToken)
+    {
+        var client = httpClientFactory.CreateClient("TrendMusicFeed");
+        foreach (var since in new[] { "12 weeks ago", "1 year ago", string.Empty })
+        {
+            using var response = await client.GetAsync(BuildCcMixterUri(maxCandidates, since), cancellationToken);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            var candidates = ParseCcMixterCandidates(json, maxCandidates);
+            if (candidates.Count > 0) return candidates;
+        }
+        return [];
+    }
+
+    internal static string BuildCcMixterUri(int maxCandidates, string since)
+    {
+        var requestLimit = Math.Clamp(maxCandidates * 4, 8, 24);
+        var parts = new List<string>
+        {
+            "f=json",
+            $"limit={requestLimit}",
+            "reqtags=remix",
+            "lic=by",
+            "sort=rank",
+            "ord=DESC",
+            "dataview=info"
+        };
+        if (!string.IsNullOrWhiteSpace(since))
+            parts.Add($"sinced={Uri.EscapeDataString(since.Trim())}");
+        return "https://ccmixter.org/api/query?" + string.Join('&', parts);
+    }
+
+    internal static IReadOnlyList<ZaloTrendMusicCandidate> ParseCcMixterCandidates(
+        string json,
+        int maxCandidates)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var items = root.ValueKind == JsonValueKind.Array
+            ? root.EnumerateArray().ToArray()
+            : root.ValueKind == JsonValueKind.Object
+                ? new[] { root.Clone() }
+                : [];
+
+        var output = new List<ZaloTrendMusicCandidate>();
+        foreach (var item in items)
+        {
+            if (output.Count >= Math.Clamp(maxCandidates, 1, 8)) break;
+            var id = item.TryGetProperty("upload_id", out var idElement)
+                ? idElement.ToString().Trim()
+                : string.Empty;
+            var title = JsonString(item, "upload_name");
+            var artist = JsonString(item, "user_real_name");
+            if (string.IsNullOrWhiteSpace(artist)) artist = JsonString(item, "user_name");
+            var sourceUrl = JsonString(item, "file_page_url");
+            var licenseUrl = JsonString(item, "license_url");
+            var rankValue = item.TryGetProperty("qrank", out var rankElement) &&
+                            rankElement.TryGetInt32(out var parsedRank)
+                ? parsedRank
+                : 0;
+            var mediaUrl = string.Empty;
+            if (item.TryGetProperty("files", out var files) && files.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var file in files.EnumerateArray())
+                {
+                    var candidateUrl = JsonString(file, "download_url");
+                    var fileName = JsonString(file, "file_name");
+                    if (!IsHttpsUrl(candidateUrl) ||
+                        !fileName.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    mediaUrl = candidateUrl;
+                    break;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(id) ||
+                string.IsNullOrWhiteSpace(title) ||
+                string.IsNullOrWhiteSpace(artist) ||
+                !IsHttpsUrl(mediaUrl) ||
+                !IsHttpsUrl(sourceUrl) ||
+                !TryGetPermissiveLicense(licenseUrl, out var licenseLabel))
+                continue;
+
+            var displayRank = output.Count + 1;
+            output.Add(new ZaloTrendMusicCandidate(
+                $"ccmixter-{id}",
+                title,
+                artist,
+                displayRank,
+                "audio",
+                mediaUrl,
+                null,
+                $"CCMIXTER RECENT #{displayRank} • {licenseLabel}",
+                sourceUrl,
+                licenseUrl,
+                licenseLabel));
+        }
+
+        return output;
     }
 
     private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> LoadJamendoCandidatesAsync(
@@ -523,6 +622,7 @@ public sealed class ZaloTrendMusicService(
         label = path switch
         {
             "/publicdomain/zero/1.0" => "CC0 1.0",
+            "/licenses/by/2.5" => "CC BY 2.5",
             "/licenses/by/3.0" => "CC BY 3.0",
             "/licenses/by/4.0" => "CC BY 4.0",
             _ => string.Empty

@@ -134,6 +134,75 @@ public sealed class ZaloTrendMusicCandidateTests
         Assert.DoesNotContain("audioformat=", uri);
     }
 
+    [Fact]
+    public void CcMixter_query_prefers_recent_ranked_full_remixes_with_attribution_license()
+    {
+        var uri = ZaloTrendMusicService.BuildCcMixterUri(5, "12 weeks ago");
+
+        Assert.Contains("limit=20", uri);
+        Assert.Contains("reqtags=remix", uri);
+        Assert.Contains("lic=by", uri);
+        Assert.Contains("sort=rank", uri);
+        Assert.Contains("ord=DESC", uri);
+        Assert.Contains("dataview=info", uri);
+        Assert.Contains("sinced=12%20weeks%20ago", uri);
+    }
+
+    [Fact]
+    public void CcMixter_parser_keeps_real_mp3_attribution_tracks_and_needs_no_artwork()
+    {
+        var json = """
+            [{
+              "upload_id": 71178,
+              "upload_name": "Come Home",
+              "user_real_name": "Gabriel Shellington",
+              "file_page_url": "https://ccmixter.org/files/gabriel_shelligton/71178",
+              "license_url": "http://creativecommons.org/licenses/by/3.0/",
+              "qrank": 4,
+              "files": [{
+                "file_name": "gabriel_shelligton_-_Come_Home_1.mp3",
+                "download_url": "https://ccmixter.org/content/gabriel_shelligton/gabriel_shelligton_-_Come_Home_1.mp3"
+              }]
+            }]
+            """;
+
+        var candidate = Assert.Single(ZaloTrendMusicService.ParseCcMixterCandidates(json, 5));
+        Assert.Equal("ccmixter-71178", candidate.Id);
+        Assert.Equal("Come Home", candidate.Title);
+        Assert.Equal("Gabriel Shellington", candidate.Artist);
+        Assert.Equal("audio", candidate.MediaType);
+        Assert.Null(candidate.ArtworkUrl);
+        Assert.Equal("CC BY 3.0", candidate.LicenseLabel);
+        Assert.Equal("https://ccmixter.org/files/gabriel_shelligton/71178", candidate.SourceUrl);
+    }
+
+    [Fact]
+    public void CcMixter_parser_rejects_non_mp3_and_non_permissive_licenses()
+    {
+        var json = """
+            [
+              {
+                "upload_id": 1,
+                "upload_name": "Wrong File",
+                "user_real_name": "Artist",
+                "file_page_url": "https://ccmixter.org/files/artist/1",
+                "license_url": "http://creativecommons.org/licenses/by/3.0/",
+                "files": [{"file_name":"track.wav","download_url":"https://ccmixter.org/content/artist/track.wav"}]
+              },
+              {
+                "upload_id": 2,
+                "upload_name": "NC",
+                "user_real_name": "Artist",
+                "file_page_url": "https://ccmixter.org/files/artist/2",
+                "license_url": "http://creativecommons.org/licenses/by-nc/3.0/",
+                "files": [{"file_name":"track.mp3","download_url":"https://ccmixter.org/content/artist/track.mp3"}]
+              }
+            ]
+            """;
+
+        Assert.Empty(ZaloTrendMusicService.ParseCcMixterCandidates(json, 5));
+    }
+
     [Theory]
     [InlineData("https://creativecommons.org/licenses/by-sa/4.0/")]
     [InlineData("https://creativecommons.org/licenses/by-nc/4.0/")]
