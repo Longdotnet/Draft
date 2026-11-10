@@ -179,6 +179,36 @@ class RequestedSongAppleFallbackTests(unittest.TestCase):
         self.assertIs(expected, actual)
         apple.assert_called_once()
 
+    def test_spotdl_metadata_rejects_unrelated_resolved_title(self) -> None:
+        class FakeFrame:
+            def __init__(self, value: str):
+                self.value = value
+
+            def __str__(self) -> str:
+                return self.value
+
+        class FakeTags(dict):
+            def values(self):
+                return []
+
+        fake_tags = FakeTags(
+            TIT2=FakeFrame("Hello Goodbye"),
+            TPE1=FakeFrame("Wrong Artist"),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            audio = pathlib.Path(temp) / "song.mp3"
+            audio.write_bytes(b"fake")
+            with mock.patch.dict(
+                "sys.modules",
+                {"mutagen.id3": mock.Mock(ID3=mock.Mock(return_value=fake_tags))},
+            ):
+                with self.assertRaisesRegex(RuntimeError, "non-matching title"):
+                    claim_and_render.extract_spotdl_metadata(
+                        audio,
+                        pathlib.Path(temp),
+                        "Hello",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

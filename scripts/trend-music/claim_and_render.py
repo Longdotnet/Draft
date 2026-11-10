@@ -428,6 +428,10 @@ def extract_spotdl_metadata(audio_path: pathlib.Path, work: pathlib.Path, query:
 
     if not title:
         title = query
+    elif not strong_requested_title_match(query, title):
+        raise RuntimeError(
+            f"spotDL resolved a non-matching title: requested={query!r}, resolved={title!r}"
+        )
     if not artist:
         artist = "Không rõ nghệ sĩ"
     else:

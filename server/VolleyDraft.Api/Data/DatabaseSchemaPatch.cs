@@ -60,6 +60,7 @@ public static class DatabaseSchemaPatch
             await EnsureSqliteZaloBotConversationTables(db);
             await EnsureSqliteZaloConversationSummaryTables(db);
             await EnsureSqliteZaloBotImageTables(db);
+            await EnsureSqliteRequestedSongRenderCacheTables(db);
             await EnsureSqliteZaloReminderScheduleTables(db);
             await EnsureSqliteWaitlistAndActionHistoryTables(db);
             await EnsureSqliteMemberIntelligenceTables(db);
@@ -154,6 +155,7 @@ public static class DatabaseSchemaPatch
             await EnsurePostgresZaloBotConversationTables(db);
             await EnsurePostgresZaloConversationSummaryTables(db);
             await EnsurePostgresZaloBotImageTables(db);
+            await EnsurePostgresRequestedSongRenderCacheTables(db);
             await EnsurePostgresZaloReminderScheduleTables(db);
             await EnsurePostgresWaitlistAndActionHistoryTables(db);
             await EnsurePostgresMemberIntelligenceTables(db);
@@ -1288,6 +1290,72 @@ public static class DatabaseSchemaPatch
             """);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotImageAssets_AdminUserId_CreatedAt" ON "ZaloBotImageAssets" ("AdminUserId", "CreatedAt");""");
+    }
+
+    private static async Task EnsureSqliteRequestedSongRenderCacheTables(VolleyDraftDbContext db)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloRequestedSongRenderCache" (
+                "CacheKey" TEXT NOT NULL CONSTRAINT "PK_ZaloRequestedSongRenderCache" PRIMARY KEY,
+                "SongQuery" TEXT NOT NULL,
+                "CandidateId" TEXT NOT NULL,
+                "Title" TEXT NOT NULL,
+                "Artist" TEXT NOT NULL,
+                "Rank" INTEGER NOT NULL,
+                "VideoData" BLOB NOT NULL,
+                "ThumbnailData" BLOB NOT NULL,
+                "VideoSize" INTEGER NOT NULL,
+                "ThumbnailSize" INTEGER NOT NULL,
+                "DurationMs" INTEGER NOT NULL,
+                "Width" INTEGER NOT NULL,
+                "Height" INTEGER NOT NULL,
+                "SourceUrl" TEXT NULL,
+                "LicenseUrl" TEXT NULL,
+                "LicenseLabel" TEXT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "LastUsedAt" TEXT NOT NULL,
+                "ExpiresAt" TEXT NOT NULL,
+                "HitCount" INTEGER NOT NULL DEFAULT 0
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloRequestedSongRenderCache_ExpiresAt" ON "ZaloRequestedSongRenderCache" ("ExpiresAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloRequestedSongRenderCache_LastUsedAt" ON "ZaloRequestedSongRenderCache" ("LastUsedAt");""");
+    }
+
+    private static async Task EnsurePostgresRequestedSongRenderCacheTables(VolleyDraftDbContext db)
+    {
+        // Timestamps intentionally remain text because the lightweight render-cache store
+        // uses the same round-trip ISO-8601 representation on SQLite and PostgreSQL.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloRequestedSongRenderCache" (
+                "CacheKey" text NOT NULL CONSTRAINT "PK_ZaloRequestedSongRenderCache" PRIMARY KEY,
+                "SongQuery" text NOT NULL,
+                "CandidateId" text NOT NULL,
+                "Title" text NOT NULL,
+                "Artist" text NOT NULL,
+                "Rank" integer NOT NULL,
+                "VideoData" bytea NOT NULL,
+                "ThumbnailData" bytea NOT NULL,
+                "VideoSize" bigint NOT NULL,
+                "ThumbnailSize" bigint NOT NULL,
+                "DurationMs" integer NOT NULL,
+                "Width" integer NOT NULL,
+                "Height" integer NOT NULL,
+                "SourceUrl" text NULL,
+                "LicenseUrl" text NULL,
+                "LicenseLabel" text NULL,
+                "CreatedAt" text NOT NULL,
+                "LastUsedAt" text NOT NULL,
+                "ExpiresAt" text NOT NULL,
+                "HitCount" integer NOT NULL DEFAULT 0
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloRequestedSongRenderCache_ExpiresAt" ON "ZaloRequestedSongRenderCache" ("ExpiresAt");""");
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE INDEX IF NOT EXISTS "IX_ZaloRequestedSongRenderCache_LastUsedAt" ON "ZaloRequestedSongRenderCache" ("LastUsedAt");""");
     }
 
     private static async Task EnsureSqliteZaloReminderScheduleTables(VolleyDraftDbContext db)
