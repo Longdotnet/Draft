@@ -1307,6 +1307,7 @@ public sealed class ZaloTrendMusicService(
                     cancellationToken);
             }
             await jobs.MarkQueueSentAsync(request.IdempotencyKey, request.ClaimToken, cancellationToken);
+            await TryPersistRequestedSongCacheAsync(request, cancellationToken);
             return true;
         }
 
@@ -1390,6 +1391,7 @@ public sealed class ZaloTrendMusicService(
                     cancellationToken);
             }
             await jobs.MarkQueueSentAsync(request.IdempotencyKey, request.ClaimToken, cancellationToken);
+            await TryPersistRequestedSongCacheAsync(request, cancellationToken);
             return true;
         }
         catch
@@ -1403,6 +1405,141 @@ public sealed class ZaloTrendMusicService(
                     cancellationToken);
             }
             throw;
+        }
+    }
+
+    private async Task TryPersistRequestedSongCacheAsync(
+        ZaloTrendMusicRenderCompleteRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!request.IdempotencyKey.StartsWith("trend-music:request:", StringComparison.Ordinal) ||
+            !(request.CandidateId.StartsWith("spotdl-", StringComparison.Ordinal) ||
+              request.CandidateId.StartsWith("itunes-", StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        var queued = await TryGetQueuedRequestedSongMetadataAsync(
+            request.IdempotencyKey,
+            cancellationToken);
+        if (queued is null) return;
+        if (!string.Equals(
+                NormalizeRequestedSongCacheQuery(queued.Value.SongQuery),
+                NormalizeRequestedSongCacheQuery(request.Title),
+                StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "Requested-song render not cached because resolved title does not match queued query Key={IdempotencyKey} Query={SongQuery} Title={Title}",
+                request.IdempotencyKey,
+                queued.Value.SongQuery,
+                request.Title);
+            return;
+        }
+
+        byte[] videoData;
+        byte[] thumbnailData;
+        try
+        {
+            videoData = Convert.FromBase64String(request.VideoBase64);
+            thumbnailData = Convert.FromBase64String(request.ThumbnailBase64);
+        }
+        catch (FormatException)
+        {
+            logger.LogWarning(
+                "Requested-song render not cached because callback media is not valid base64 Key={IdempotencyKey}",
+                request.IdempotencyKey);
+            return;
+        }
+
+        var cacheKey = RequestedSongCacheKey(queued.Value.SongQuery, queued.Value.ShowLogo);
+        if (cacheKey.Length == 0) return;
+        if (videoData.Length + thumbnailData.Length > RequestedSongCacheMaxPayloadBytes)
+        {
+            logger.LogInformation(
+                "Requested-song render not cached because payload is too large Key={IdempotencyKey} Candidate={CandidateId} Bytes={Bytes}",
+                request.IdempotencyKey,
+                request.CandidateId,
+                videoData.Length + thumbnailData.Length);
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        try
+        {
+            await renderCache.UpsertAsync(
+                new ZaloTrendMusicRenderCacheEntry(
+                    cacheKey,
+                    queued.Value.SongQuery,
+                    request.CandidateId,
+                    request.Title,
+                    request.Artist,
+                    request.Rank,
+                    videoData,
+                    thumbnailData,
+                    Math.Clamp(request.DurationMs, 1_000, 60_000),
+                    Math.Clamp(request.Width, 240, 2160),
+                    Math.Clamp(request.Height, 240, 3840),
+                    request.SourceUrl,
+                    request.LicenseUrl,
+                    request.LicenseLabel,
+                    now,
+                    now,
+                    now.Add(RequestedSongCacheTtl),
+                    0),
+                now,
+                RequestedSongCacheMaxEntries,
+                RequestedSongCacheMaxTotalBytes,
+                cancellationToken);
+            logger.LogInformation(
+                "Requested-song render cached CacheKey={CacheKey} Candidate={CandidateId}",
+                cacheKey,
+                request.CandidateId);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Requested-song render cache persistence failed Key={IdempotencyKey} Candidate={CandidateId}",
+                request.IdempotencyKey,
+                request.CandidateId);
+        }
+    }
+
+    private async Task<(string SongQuery, bool ShowLogo)?> TryGetQueuedRequestedSongMetadataAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        var payload = await jobs.GetQueuePayloadAsync(idempotencyKey, cancellationToken);
+        if (string.IsNullOrWhiteSpace(payload)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("songQuery", out var songQueryElement) ||
+                songQueryElement.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            var songQuery = songQueryElement.GetString()?.Trim() ?? string.Empty;
+            if (songQuery.Length == 0) return null;
+            var showLogo = true;
+            if (document.RootElement.TryGetProperty("spec", out var spec) &&
+                spec.ValueKind == JsonValueKind.Object &&
+                spec.TryGetProperty("showLogo", out var showLogoElement) &&
+                showLogoElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                showLogo = showLogoElement.GetBoolean();
+            }
+            return (songQuery, showLogo);
+        }
+        catch (JsonException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Requested-song queued render envelope is invalid JSON Key={IdempotencyKey}",
+                idempotencyKey);
+            return null;
         }
     }
 
@@ -1955,6 +2092,27 @@ public sealed class ZaloTrendMusicService(
         return query;
     }
 
+    internal static string NormalizeRequestedSongCacheQuery(string? songQuery)
+    {
+        var normalized = ZaloTextNormalizer.Normalize(songQuery);
+        return Regex.Replace(
+                normalized,
+                @"[^\p{L}\p{N}]+",
+                " ",
+                RegexOptions.CultureInvariant)
+            .Trim();
+    }
+
+    internal static string RequestedSongCacheKey(string? songQuery, bool showLogo = true)
+    {
+        var normalized = NormalizeRequestedSongCacheQuery(songQuery);
+        if (normalized.Length == 0) return string.Empty;
+        var hash = Convert.ToHexString(
+                SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalized)))
+            .ToLowerInvariant();
+        return $"{RequestedSongCacheVersion}:logo{(showLogo ? 1 : 0)}:{hash}";
+    }
+
     internal static bool IsManualTestCommand(ZaloIncomingMessageEvent incoming)
     {
         if (!incoming.MentionedBot) return false;
@@ -2368,6 +2526,23 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         Add(command, "@CandidatesJson", candidatesJson);
         Add(command, "@Now", now);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<string?> GetQueuePayloadAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            SELECT "CandidatesJson"
+            FROM "ZaloTrendMusicRenderQueue"
+            WHERE "IdempotencyKey" = @IdempotencyKey
+            LIMIT 1;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@IdempotencyKey", idempotencyKey.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
     }
 
     public async Task<ZaloTrendMusicRenderClaim?> TryClaimQueueAsync(
