@@ -33,7 +33,20 @@ public sealed record ZaloTrendMusicRenderCompleteRequest(
     string? SourceUrl = null,
     string? LicenseUrl = null,
     string? LicenseLabel = null,
-    string? GreetingText = null);
+    string? GreetingText = null,
+    string? ClaimToken = null);
+
+public sealed record ZaloTrendMusicRenderProgressRequest(
+    string AccountId,
+    string GroupId,
+    string ConnectionId,
+    string LocalDate,
+    string IdempotencyKey,
+    string State,
+    string? Title = null,
+    string? Artist = null,
+    string? Error = null,
+    string? ClaimToken = null);
 
 internal sealed record ZaloTrendMusicCandidate(
     string Id,
@@ -61,7 +74,8 @@ internal sealed record ZaloTrendMusicRenderSpec(
 
 internal sealed record ZaloTrendMusicRenderEnvelope(
     IReadOnlyList<ZaloTrendMusicCandidate> Candidates,
-    ZaloTrendMusicRenderSpec Spec);
+    ZaloTrendMusicRenderSpec Spec,
+    string? SongQuery = null);
 
 internal sealed record ZaloTrendMusicOneShotOverride(
     string Period,
@@ -137,8 +151,118 @@ public sealed class ZaloTrendMusicService(
         ZaloIncomingMessageEvent incoming,
         CancellationToken cancellationToken = default)
     {
+        if (await TryHandleRequestedSongAsync(incoming, cancellationToken)) return true;
         if (await TryHandleManualTestAsync(incoming, cancellationToken)) return true;
         return await TryHandleOneShotOverrideAsync(incoming, cancellationToken);
+    }
+
+    private async Task<bool> TryHandleRequestedSongAsync(
+        ZaloIncomingMessageEvent incoming,
+        CancellationToken cancellationToken)
+    {
+        var songQuery = ParseRequestedSongQuery(incoming);
+        if (songQuery is null) return false;
+
+        if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
+        {
+            await SendTestReplyAsync(
+                incoming,
+                "🎵 Trend Music chưa có internal key để worker tìm và dựng bài.",
+                cancellationToken);
+            return true;
+        }
+
+        var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
+        var accountId = ZaloOverbookLogic.NormalizeId(incoming.AccountId);
+        var groupId = ZaloOverbookLogic.NormalizeId(incoming.GroupId);
+        var senderId = ZaloOverbookLogic.NormalizeId(incoming.SenderId);
+        if (accountId.Length == 0 || groupId.Length == 0 || senderId.Length == 0) return true;
+
+        var target = await new ZaloProactiveTargetResolver(db)
+            .ResolveTargetAsync(accountId, groupId, cancellationToken);
+        if (target is null)
+        {
+            await SendTestReplyAsync(
+                incoming,
+                "🎵 Nhóm này chưa được cấu hình làm Zalo target của VolleyDraft.",
+                cancellationToken);
+            return true;
+        }
+
+        var sessions = await db.MatchSessions
+            .AsNoTracking()
+            .Where(session =>
+                session.ZaloConnectionId == target.ConnectionId &&
+                session.ZaloGroupId == target.GroupId &&
+                session.BotEnabled &&
+                session.Status != SessionStatus.Cancelled &&
+                session.Status != SessionStatus.Finished)
+            .OrderByDescending(session => session.UpdatedAt)
+            .ThenByDescending(session => session.StartTime)
+            .Take(10)
+            .ToListAsync(cancellationToken);
+
+        if (!await IsAuthorizedOperatorAsync(target, sessions, senderId, cancellationToken))
+        {
+            await SendTestReplyAsync(
+                incoming,
+                "🎵 Lệnh lấy nhạc chỉ dành cho trưởng nhóm, phó nhóm hoặc Zalo operator của nhóm.",
+                cancellationToken);
+            return true;
+        }
+
+        var localDate = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date)
+            .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var messageId = StableInboundMessageToken(incoming);
+        var idempotencyKey = $"trend-music:request:{target.ConnectionId}:{target.GroupId}:{messageId}";
+
+        try
+        {
+            var envelope = new ZaloTrendMusicRenderEnvelope(
+                [],
+                new ZaloTrendMusicRenderSpec(
+                    "manual",
+                    GreetingEnabled: false,
+                    GreetingText: string.Empty,
+                    DisplayTitle: null,
+                    DisplayArtist: null,
+                    ArtworkUrl: null,
+                    ShowLogo: settings.ShowZyroLogo),
+                SongQuery: songQuery);
+
+            // Explicit song requests are always queued. The queue worker is the only path
+            // that installs/runs spotDL, so automatic DailyRhythm and direct ccMixter renders
+            // stay dependency-free and unchanged.
+            // Acknowledge before making the queue visible so even a fast worker can never
+            // publish the matched-song progress before the user's initial command response.
+            await SendTestReplyAsync(
+                incoming,
+                $"🎵 Đang tìm {songQuery} và dựng video…",
+                cancellationToken);
+
+            await DispatchOrQueueRenderAsync(
+                settings,
+                target,
+                localDate,
+                idempotencyKey,
+                envelope,
+                cancellationToken,
+                forceQueue: true);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Trend music requested-song dispatch failed Group={GroupId} Query={SongQuery}",
+                target.GroupId,
+                songQuery);
+            await SendTestReplyAsync(
+                incoming,
+                $"🎵 Chưa xếp được yêu cầu {songQuery} lúc này. Kiểm tra worker rồi thử lại.",
+                cancellationToken);
+        }
+
+        return true;
     }
 
     public async Task<bool> TryHandleManualTestAsync(
@@ -210,8 +334,7 @@ public sealed class ZaloTrendMusicService(
 
         var localDate = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date)
             .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var messageId = SanitizeId(incoming.MessageId);
-        if (messageId.Length == 0) messageId = Guid.NewGuid().ToString("N");
+        var messageId = StableInboundMessageToken(incoming);
         var idempotencyKey = $"trend-music:test:{target.ConnectionId}:{target.GroupId}:{messageId}";
 
         try
@@ -976,9 +1099,17 @@ public sealed class ZaloTrendMusicService(
                     existingTrend.ProviderMessageId,
                     cancellationToken);
             }
-            await jobs.MarkQueueSentAsync(request.IdempotencyKey, cancellationToken);
+            await jobs.MarkQueueSentAsync(request.IdempotencyKey, request.ClaimToken, cancellationToken);
             return true;
         }
+
+        var currentClaim = await jobs.IsCurrentQueueClaimAsync(
+            request.IdempotencyKey,
+            request.ClaimToken,
+            cancellationToken);
+        var explicitSongRequest = request.IdempotencyKey.StartsWith("trend-music:request:", StringComparison.Ordinal);
+        if (currentClaim is false || (explicitSongRequest && currentClaim is not true))
+            throw new InvalidOperationException("Trend music callback claim is stale or invalid.");
 
         var now = DateTimeOffset.UtcNow;
         if (!await proactiveStore.TryAcquireLeaseAsync(
@@ -1034,7 +1165,7 @@ public sealed class ZaloTrendMusicService(
                 response.MessageId,
                 request.IdempotencyKey), cancellationToken);
             await RecordGreetingHistoryAsync(target, request, cancellationToken, response.MessageId);
-            var isManualTest = request.IdempotencyKey.StartsWith("trend-music:test:", StringComparison.Ordinal);
+            var isManualTest = IsManualRenderKey(request.IdempotencyKey);
             var cooldownMinutes = ZaloSocialPresenceSettings.FromConfiguration(configuration).MinBotIntervalMinutes;
             await proactiveStore.CommitCooldownAsync(
                 target.ConnectionId,
@@ -1051,7 +1182,7 @@ public sealed class ZaloTrendMusicService(
                     response.MessageId,
                     cancellationToken);
             }
-            await jobs.MarkQueueSentAsync(request.IdempotencyKey, cancellationToken);
+            await jobs.MarkQueueSentAsync(request.IdempotencyKey, request.ClaimToken, cancellationToken);
             return true;
         }
         catch
@@ -1066,6 +1197,76 @@ public sealed class ZaloTrendMusicService(
             }
             throw;
         }
+    }
+
+    public async Task<bool> ReportRenderProgressAsync(
+        ZaloTrendMusicRenderProgressRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var target = await new ZaloProactiveTargetResolver(db)
+            .ResolveTargetAsync(request.AccountId, request.GroupId, cancellationToken);
+        if (target is null ||
+            !string.Equals(target.ConnectionId, request.ConnectionId?.Trim(), StringComparison.Ordinal))
+            throw new InvalidOperationException("Trend music progress target is not an active configured Zalo group.");
+
+        if (!DateOnly.TryParseExact(
+                request.LocalDate,
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var localDate))
+            throw new InvalidOperationException("Trend music progress LocalDate is invalid.");
+
+        var today = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(VietnamOffset).Date);
+        if (Math.Abs(localDate.DayNumber - today.DayNumber) > 1)
+            throw new InvalidOperationException("Trend music progress is stale.");
+
+        var currentClaim = await jobs.IsCurrentQueueClaimAsync(
+            request.IdempotencyKey,
+            request.ClaimToken,
+            cancellationToken);
+        if (currentClaim is not true)
+            throw new InvalidOperationException("Trend music progress claim is stale or invalid.");
+
+        var idempotencyKey = request.IdempotencyKey?.Trim() ?? string.Empty;
+        if (!idempotencyKey.StartsWith("trend-music:request:", StringComparison.Ordinal))
+            throw new InvalidOperationException("Trend music progress is only valid for explicit song requests.");
+
+        var state = (request.State ?? string.Empty).Trim().ToLowerInvariant();
+        string message;
+        string suffix;
+        switch (state)
+        {
+            case "matched":
+            {
+                var title = CleanOverrideText(request.Title, 120);
+                var artist = CleanOverrideText(request.Artist, 120);
+                if (title is null || artist is null)
+                    throw new InvalidOperationException("Matched trend music progress requires title and artist.");
+                message = $"🎵 Tìm thấy {title} — {artist}. Đang dựng video 20s…";
+                suffix = "matched";
+                break;
+            }
+            case "failed":
+            {
+                var title = CleanOverrideText(request.Title, 120) ?? "bài nhạc này";
+                message = $"🎵 Chưa lấy được {title} lúc này. Bot sẽ không gửi nhầm sang bài khác.";
+                suffix = "failed";
+                break;
+            }
+            default:
+                throw new InvalidOperationException("Trend music progress state is invalid.");
+        }
+
+        var response = await bridge.SendGroupMessageAsync(
+            target.AccountId,
+            target.GroupId,
+            message,
+            [],
+            idempotencyKey: $"{idempotencyKey}:{suffix}");
+        if (response.Sent && state == "failed")
+            await jobs.MarkQueueFailedAsync(idempotencyKey, request.ClaimToken, cancellationToken);
+        return response.Sent;
     }
 
     private async Task RecordGreetingHistoryAsync(
@@ -1504,9 +1705,47 @@ public sealed class ZaloTrendMusicService(
     private static string PeriodFromIdempotencyKey(string? idempotencyKey)
     {
         var value = idempotencyKey?.Trim() ?? string.Empty;
-        if (value.StartsWith("trend-music:test:", StringComparison.Ordinal)) return "manual";
+        if (IsManualRenderKey(value)) return "manual";
         if (value.EndsWith(":night", StringComparison.Ordinal)) return "night";
         return "morning";
+    }
+
+    private static bool IsManualRenderKey(string? idempotencyKey)
+    {
+        var value = idempotencyKey?.Trim() ?? string.Empty;
+        return value.StartsWith("trend-music:test:", StringComparison.Ordinal) ||
+               value.StartsWith("trend-music:request:", StringComparison.Ordinal);
+    }
+
+    internal static string? ParseRequestedSongQuery(ZaloIncomingMessageEvent incoming)
+    {
+        if (!incoming.MentionedBot) return null;
+        var raw = ZaloBotService.ExtractQuestion(incoming).Trim();
+        if (raw.Length == 0) return null;
+
+        var match = Regex.Match(
+            raw,
+            @"(?is)^\s*(?:lấy|lay)\s+(?:nhạc|nhac)\s+(?<query>.+?)\s*$",
+            RegexOptions.CultureInvariant);
+        if (!match.Success) return null;
+
+        var query = string.Join(' ', match.Groups["query"].Value
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        if (query.Length >= 2)
+        {
+            var first = query[0];
+            var last = query[^1];
+            var pairedQuotes = (first, last) is
+                ('"', '"') or
+                ('\'', '\'') or
+                ('“', '”') or
+                ('‘', '’');
+            if (pairedQuotes)
+                query = query[1..^1].Trim();
+        }
+
+        if (query.Length is < 2 or > 120) return null;
+        return query;
     }
 
     internal static bool IsManualTestCommand(ZaloIncomingMessageEvent incoming)
@@ -1526,7 +1765,17 @@ public sealed class ZaloTrendMusicService(
             incoming.GroupId,
             message,
             [],
-            idempotencyKey: $"trend-music:test-reply:{SanitizeId(incoming.MessageId)}:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(message)))[..12]}");
+            idempotencyKey: $"trend-music:test-reply:{StableInboundMessageToken(incoming)}:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(message)))[..12]}");
+    }
+
+    private static string StableInboundMessageToken(ZaloIncomingMessageEvent incoming)
+    {
+        var providerId = incoming.MessageId?.Trim() ?? string.Empty;
+        var seed = providerId.Length > 0
+            ? $"provider:{providerId}"
+            : $"fallback:{incoming.AccountId}|{incoming.GroupId}|{incoming.SenderId}|{incoming.SentAtUnixMs}|{incoming.Content}";
+        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(seed)))[..24]
+            .ToLowerInvariant();
     }
 
     private static string SanitizeId(string? value)
@@ -1552,7 +1801,8 @@ public sealed record ZaloTrendMusicRenderClaim(
     string ConnectionId,
     string LocalDate,
     string IdempotencyKey,
-    string CandidatesJson);
+    string CandidatesJson,
+    string ClaimToken);
 
 public sealed class ZaloTrendMusicWorker(
     IServiceScopeFactory scopeFactory,
@@ -1938,7 +2188,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
               AND ("State" = 'pending'
                    OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore))
             RETURNING "AccountId", "GroupId", "ConnectionId", "LocalDate",
-                      "IdempotencyKey", "CandidatesJson";
+                      "IdempotencyKey", "CandidatesJson", "ClaimToken";
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         Add(command, "@Now", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
@@ -1952,11 +2202,36 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
             reader.GetString(2),
             reader.GetString(3),
             reader.GetString(4),
-            reader.GetString(5));
+            reader.GetString(5),
+            reader.GetString(6));
+    }
+
+    public async Task<bool?> IsCurrentQueueClaimAsync(
+        string idempotencyKey,
+        string? claimToken,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            SELECT "State", "ClaimToken"
+            FROM "ZaloTrendMusicRenderQueue"
+            WHERE "IdempotencyKey" = @IdempotencyKey
+            LIMIT 1;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@IdempotencyKey", idempotencyKey);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var state = reader.GetString(0);
+        var storedToken = reader.IsDBNull(1) ? null : reader.GetString(1);
+        return string.Equals(state, "claimed", StringComparison.Ordinal) &&
+               !string.IsNullOrWhiteSpace(claimToken) &&
+               string.Equals(storedToken, claimToken.Trim(), StringComparison.Ordinal);
     }
 
     public async Task MarkQueueSentAsync(
         string idempotencyKey,
+        string? claimToken,
         CancellationToken cancellationToken)
     {
         await EnsureAsync(cancellationToken);
@@ -1965,11 +2240,36 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
             SET "State" = 'sent',
                 "ClaimToken" = NULL,
                 "UpdatedAt" = @UpdatedAt
-            WHERE "IdempotencyKey" = @IdempotencyKey;
+            WHERE "IdempotencyKey" = @IdempotencyKey
+              AND "State" = 'claimed'
+              AND "ClaimToken" = @ClaimToken;
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         Add(command, "@UpdatedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
         Add(command, "@IdempotencyKey", idempotencyKey);
+        Add(command, "@ClaimToken", claimToken?.Trim());
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task MarkQueueFailedAsync(
+        string idempotencyKey,
+        string? claimToken,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            UPDATE "ZaloTrendMusicRenderQueue"
+            SET "State" = 'failed',
+                "ClaimToken" = NULL,
+                "UpdatedAt" = @UpdatedAt
+            WHERE "IdempotencyKey" = @IdempotencyKey
+              AND "State" = 'claimed'
+              AND "ClaimToken" = @ClaimToken;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@UpdatedAt", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        Add(command, "@IdempotencyKey", idempotencyKey);
+        Add(command, "@ClaimToken", claimToken?.Trim());
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

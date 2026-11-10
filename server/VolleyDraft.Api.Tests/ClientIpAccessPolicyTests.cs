@@ -115,6 +115,7 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/api/internal/zalo/presence-events")]
     [InlineData("/api/internal/zalo/poll-events")]
     [InlineData("/api/internal/trend-music/render-claim")]
+    [InlineData("/api/internal/trend-music/render-progress")]
     [InlineData("/api/internal/trend-music/render-complete")]
     [InlineData("/api/internal/zyro-mapping/profiles/sync")]
     public void ExactInternalPostPathsBypassBrowserIpGate(string path)
@@ -159,6 +160,8 @@ public sealed class ClientIpAccessPolicyTests
     [Theory]
     [InlineData("/api/internal/trend-music/render-claim/extra")]
     [InlineData("/api/internal/trend-music/render-claim-evil")]
+    [InlineData("/api/internal/trend-music/render-progress/extra")]
+    [InlineData("/api/internal/trend-music/render-progress-evil")]
     [InlineData("/api/internal/trend-music/render-complete/extra")]
     [InlineData("/api/internal/trend-music/render-complete-evil")]
     public void TrendMusicLookalikePostPathsDoNotBypassIpGate(string path)

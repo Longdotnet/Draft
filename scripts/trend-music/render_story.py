@@ -6,11 +6,17 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
 import urllib.parse
 import urllib.request
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 DURATION_SECONDS = 20
 WIDTH = 720
@@ -62,6 +68,22 @@ def download(url: str, target: pathlib.Path, referer: str | None = None) -> None
                 output.write(chunk)
     if target.stat().st_size == 0:
         raise RuntimeError("media download is empty")
+
+
+def local_candidate_file(candidate: dict, field: str) -> pathlib.Path | None:
+    raw = str(candidate.get(field) or "").strip()
+    root_raw = os.environ.get("TREND_MUSIC_LOCAL_MEDIA_ROOT", "").strip()
+    if not raw or not root_raw:
+        return None
+    root = pathlib.Path(root_raw).resolve()
+    path = pathlib.Path(raw).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"{field} is outside the allowed local media root") from exc
+    if not path.is_file():
+        raise RuntimeError(f"{field} does not exist")
+    return path
 
 def run_ffmpeg(args: list[str]) -> None:
     subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args], check=True, timeout=180)
@@ -118,7 +140,7 @@ def draw_filters(
     )
     return (
         greeting
-        + f"drawtext=fontfile={bold_path}:textfile={title_path}:fontcolor=white:fontsize=44:line_spacing=6:x=42:y=970:fix_bounds=true,"
+        + f"drawtext=fontfile={bold_path}:textfile={title_path}:fontcolor=white:fontsize=44:line_spacing=6:x=42:y=910:fix_bounds=true,"
         + f"drawtext=fontfile={regular_path}:textfile={artist_path}:fontcolor=white@0.86:fontsize=27:x=42:y=1092:fix_bounds=true,"
         + "drawbox=x=42:y=1168:w=636:h=3:color=white@0.18:t=fill,"
         + "drawbox=x=42:y=1168:w='636*t/20':h=3:color=white@0.88:t=fill"
@@ -128,7 +150,7 @@ def prepare_text_files(candidate: dict, spec: dict, work: pathlib.Path) -> tuple
     title_file = work / "title.txt"
     artist_file = work / "artist.txt"
     greeting_file = work / "greeting.txt"
-    safe_wrapped_text(title_file, str(spec.get("displayTitle") or candidate.get("title") or "Daily Mix"), 15, 2, 96)
+    safe_wrapped_text(title_file, str(spec.get("displayTitle") or candidate.get("title") or "Daily Mix"), 20, 2, 96)
     safe_wrapped_text(artist_file, str(spec.get("displayArtist") or candidate.get("artist") or "Zyro Volleyball Club"), 24, 1, 72)
     safe_greeting(greeting_file, str(spec.get("greetingText") or ""))
     return title_file, artist_file, greeting_file
@@ -228,18 +250,25 @@ def render_video_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
 
 def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, output: pathlib.Path) -> None:
     audio, artwork = work / "source-audio", work / "artwork"
-    download(candidate["mediaUrl"], audio, candidate.get("sourceUrl"))
+    local_audio = local_candidate_file(candidate, "mediaPath")
+    if local_audio is not None:
+        shutil.copy2(local_audio, audio)
+    else:
+        download(candidate["mediaUrl"], audio, candidate.get("sourceUrl"))
     artwork_url = str(spec.get("artworkUrl") or candidate.get("artworkUrl") or "").strip()
+    local_artwork = local_candidate_file(candidate, "artworkPath")
     title_file, artist_file, greeting_file = prepare_text_files(candidate, spec, work)
     greeting_enabled = bool(spec.get("greetingEnabled", False) and spec.get("greetingText"))
     logo = logo_file(work) if bool(spec.get("showLogo", True)) else None
-    if artwork_url:
+    if local_artwork is not None:
+        shutil.copy2(local_artwork, artwork)
+    elif artwork_url:
         try:
             download(artwork_url, artwork, candidate.get("sourceUrl"))
         except Exception as exc:
             print(f"artwork unavailable; keeping audio with waveform: {type(exc).__name__}: {exc}")
             artwork_url = ""
-    if not artwork_url:
+    if local_artwork is None and not artwork_url:
         filters = (
             "[1:a]asplit=2[aout0][viz];"
             "[aout0]afade=t=in:st=0:d=0.7,afade=t=out:st=18:d=2[aout];"
@@ -266,7 +295,7 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
         run_ffmpeg(args)
         return
     try:
-        if is_small_profile_artwork(artwork_url):
+        if local_artwork is None and is_small_profile_artwork(artwork_url):
             filters = (
                 "[0:v]split=2[bg0][portrait0];"
                 "[bg0]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,boxblur=34:3,eq=brightness=-0.34:saturation=0.62[bg];"
@@ -304,6 +333,7 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
         print(f"artwork decode/render failed; keeping audio with waveform: {type(exc).__name__}: {exc}")
         fallback_candidate = dict(candidate)
         fallback_candidate["artworkUrl"] = None
+        fallback_candidate["artworkPath"] = None
         fallback_spec = dict(spec)
         fallback_spec["artworkUrl"] = None
         render_audio_candidate(fallback_candidate, fallback_spec, work, output)
@@ -390,6 +420,7 @@ def deliver(video: pathlib.Path, thumbnail: pathlib.Path, selected: dict, spec: 
         "sourceUrl": selected.get("sourceUrl"), "licenseUrl": selected.get("licenseUrl"),
         "licenseLabel": selected.get("licenseLabel"),
         "greetingText": str(spec.get("greetingText") or "") if isinstance(spec, dict) else "",
+        "claimToken": env("CLAIM_TOKEN", required=False) or None,
         "videoBase64": base64.b64encode(video.read_bytes()).decode("ascii"),
         "thumbnailBase64": base64.b64encode(thumbnail.read_bytes()).decode("ascii"),
         "durationMs": DURATION_SECONDS * 1000, "width": WIDTH, "height": HEIGHT,

@@ -295,6 +295,48 @@ public sealed class ZaloTrendMusicCandidateTests
         Assert.False(ZaloTrendMusicService.IsManualTestCommand(incoming));
     }
 
+    [Theory]
+    [InlineData("lấy nhạc \"Gói con tim làm quà\"", "Gói con tim làm quà")]
+    [InlineData("lay nhac \"Goi con tim lam qua\"", "Goi con tim lam qua")]
+    [InlineData("lấy nhạc Gói con tim làm quà", "Gói con tim làm quà")]
+    [InlineData("lấy nhạc “Gói con tim làm quà”", "Gói con tim làm quà")]
+    public void Requested_song_command_extracts_query(string content, string expected)
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account",
+            "bot",
+            "group",
+            "message",
+            "sender",
+            "Tester",
+            content,
+            [],
+            true,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Assert.Equal(expected, ZaloTrendMusicService.ParseRequestedSongQuery(incoming));
+    }
+
+    [Theory]
+    [InlineData("lấy nhạc \"Gói con tim làm quà\"", false)]
+    [InlineData("phát nhạc \"Gói con tim làm quà\"", true)]
+    public void Requested_song_command_requires_supported_phrase_and_bot_mention(string content, bool mentionedBot)
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account",
+            "bot",
+            "group",
+            "message",
+            "sender",
+            "Tester",
+            content,
+            [],
+            mentionedBot,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Assert.Null(ZaloTrendMusicService.ParseRequestedSongQuery(incoming));
+    }
+
     [Fact]
     public void CcMixter_artwork_prefers_open_graph_then_twitter_and_rejects_external_hosts()
     {

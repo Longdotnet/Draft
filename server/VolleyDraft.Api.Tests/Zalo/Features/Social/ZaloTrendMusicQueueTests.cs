@@ -34,6 +34,9 @@ public sealed class ZaloTrendMusicQueueTests
         Assert.Equal("2026-11-10", first.LocalDate);
         Assert.Equal(key, first.IdempotencyKey);
         Assert.Equal(candidates, first.CandidatesJson);
+        Assert.False(string.IsNullOrWhiteSpace(first.ClaimToken));
+        Assert.True(await store.IsCurrentQueueClaimAsync(key, first.ClaimToken, CancellationToken.None));
+        Assert.False(await store.IsCurrentQueueClaimAsync(key, "wrong-token", CancellationToken.None));
 
         Assert.Null(await store.TryClaimQueueAsync(
             now.AddMinutes(9),
@@ -46,8 +49,22 @@ public sealed class ZaloTrendMusicQueueTests
             CancellationToken.None);
         Assert.NotNull(staleRetry);
         Assert.Equal(key, staleRetry.IdempotencyKey);
+        Assert.NotEqual(first.ClaimToken, staleRetry.ClaimToken);
+        Assert.False(await store.IsCurrentQueueClaimAsync(key, first.ClaimToken, CancellationToken.None));
+        Assert.True(await store.IsCurrentQueueClaimAsync(key, staleRetry.ClaimToken, CancellationToken.None));
 
-        await store.MarkQueueSentAsync(key, CancellationToken.None);
+        await store.MarkQueueSentAsync(key, first.ClaimToken, CancellationToken.None);
+        Assert.NotNull(await store.TryClaimQueueAsync(
+            now.AddMinutes(22),
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None));
+
+        var current = await store.TryClaimQueueAsync(
+            now.AddMinutes(33),
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None);
+        Assert.NotNull(current);
+        await store.MarkQueueSentAsync(key, current.ClaimToken, CancellationToken.None);
         Assert.Null(await store.TryClaimQueueAsync(
             now.AddDays(1),
             TimeSpan.FromMinutes(10),

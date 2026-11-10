@@ -46,7 +46,7 @@ permissions:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,6 +64,7 @@ jobs:
         env:
           SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
           SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
+          TREND_MUSIC_CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
           TREND_MUSIC_CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL || 'https://draft-i1mq.onrender.com/api/internal/trend-music/render-complete' }}
         run: python3 scripts/trend-music/claim_and_render.py
       - name: Render direct workflow-dispatch request

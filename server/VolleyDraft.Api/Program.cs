@@ -205,6 +205,35 @@ app.MapPost("/api/internal/trend-music/render-complete", async (
     }
 });
 
+app.MapPost("/api/internal/trend-music/render-progress", async (
+    HttpContext httpContext,
+    ZaloTrendMusicRenderProgressRequest request,
+    ZaloTrendMusicService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
+    {
+        return Results.Json(
+            new { message = "Trend music callback key is not configured." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    if (!TrendMusicInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+
+    try
+    {
+        var sent = await service.ReportRenderProgressAsync(request, cancellationToken);
+        return sent
+            ? Results.Ok(new { accepted = true, sent = true })
+            : Results.Conflict(new { accepted = true, sent = false, retry = true });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
+});
+
 app.MapPost("/api/internal/trend-music/render-claim", async (
     HttpContext httpContext,
     ZaloTrendMusicService service,
