@@ -180,16 +180,19 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
     audio_files = downloaded_audio_files()
     if not audio_files:
         print("spotDL produced no audio file; installing Deno and retrying once")
-        deno = run_checked(
-            [sys.executable, "-m", "spotdl", "--download-deno"],
-            cwd=work,
-            timeout=120,
-        )
-        if deno.stdout:
-            print(deno.stdout[-1500:])
-        retry = run_checked(command, cwd=work, timeout=300)
-        if retry.stdout:
-            print(retry.stdout[-3000:])
+        try:
+            deno = run_checked(
+                [sys.executable, "-m", "spotdl", "--download-deno"],
+                cwd=work,
+                timeout=120,
+            )
+            if deno.stdout:
+                print(deno.stdout[-1500:])
+            retry = run_checked(command, cwd=work, timeout=300)
+            if retry.stdout:
+                print(retry.stdout[-3000:])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as retry_error:
+            print(f"spotDL Deno retry failed: {type(retry_error).__name__}; continuing to provider fallbacks")
         audio_files = downloaded_audio_files()
 
     if not audio_files:
@@ -199,9 +202,12 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
         # the exact matched track when music.youtube.com blocks GitHub runners.
         print("YouTube Music still produced no audio; retrying with spotDL Piped provider")
         piped_command = [*base_command, "download", query, "--audio", "piped"]
-        piped_retry = run_checked(piped_command, cwd=work, timeout=300)
-        if piped_retry.stdout:
-            print(piped_retry.stdout[-3000:])
+        try:
+            piped_retry = run_checked(piped_command, cwd=work, timeout=300)
+            if piped_retry.stdout:
+                print(piped_retry.stdout[-3000:])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as piped_error:
+            print(f"spotDL Piped retry failed: {type(piped_error).__name__}; continuing to raw YouTube")
         audio_files = downloaded_audio_files()
 
     if not audio_files:
@@ -212,9 +218,12 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
         # to a different track.
         print("Piped still produced no audio; retrying with spotDL YouTube provider")
         youtube_command = [*base_command, "download", query, "--audio", "youtube"]
-        youtube_retry = run_checked(youtube_command, cwd=work, timeout=300)
-        if youtube_retry.stdout:
-            print(youtube_retry.stdout[-3000:])
+        try:
+            youtube_retry = run_checked(youtube_command, cwd=work, timeout=300)
+            if youtube_retry.stdout:
+                print(youtube_retry.stdout[-3000:])
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as youtube_error:
+            print(f"spotDL YouTube retry failed: {type(youtube_error).__name__}")
         audio_files = downloaded_audio_files()
 
     if not audio_files:
