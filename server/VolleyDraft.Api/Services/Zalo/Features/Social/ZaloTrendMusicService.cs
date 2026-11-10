@@ -2205,26 +2205,39 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                 "ClaimToken" = @ClaimToken,
                 "UpdatedAt" = @Now
             WHERE "IdempotencyKey" = (
-                SELECT "IdempotencyKey"
-                FROM "ZaloTrendMusicRenderQueue"
-                WHERE "State" = 'pending'
-                   OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
-                   OR ("State" = 'failed'
-                       AND "IdempotencyKey" LIKE 'trend-music:request:%'
-                       AND "AttemptCount" < 3
-                       AND "CreatedAt" >= @FailedRetryAfter)
+                SELECT candidate."IdempotencyKey"
+                FROM "ZaloTrendMusicRenderQueue" AS candidate
+                WHERE candidate."State" = 'pending'
+                   OR (candidate."State" = 'claimed' AND candidate."ClaimedAt" <= @StaleBefore)
+                   OR (candidate."State" = 'failed'
+                       AND candidate."IdempotencyKey" LIKE 'trend-music:request:%'
+                       AND candidate."AttemptCount" < 5
+                       AND candidate."CreatedAt" >= @FailedRetryAfter
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM "ZaloTrendMusicRenderQueue" AS newer
+                           WHERE newer."ConnectionId" = candidate."ConnectionId"
+                             AND newer."GroupId" = candidate."GroupId"
+                             AND newer."CandidatesJson" = candidate."CandidatesJson"
+                             AND newer."IdempotencyKey" LIKE 'trend-music:request:%'
+                             AND (
+                                 newer."CreatedAt" > candidate."CreatedAt"
+                                 OR (newer."CreatedAt" = candidate."CreatedAt"
+                                     AND newer."IdempotencyKey" > candidate."IdempotencyKey")
+                             )
+                       ))
                 ORDER BY
-                    CASE WHEN "State" = 'failed' THEN 1 ELSE 0 END,
-                    CASE WHEN "State" = 'failed' THEN "CreatedAt" END DESC,
-                    "CreatedAt",
-                    "IdempotencyKey"
+                    CASE WHEN candidate."State" = 'failed' THEN 1 ELSE 0 END,
+                    CASE WHEN candidate."State" = 'failed' THEN candidate."CreatedAt" END DESC,
+                    candidate."CreatedAt",
+                    candidate."IdempotencyKey"
                 LIMIT 1
             )
               AND ("State" = 'pending'
                    OR ("State" = 'claimed' AND "ClaimedAt" <= @StaleBefore)
                    OR ("State" = 'failed'
                        AND "IdempotencyKey" LIKE 'trend-music:request:%'
-                       AND "AttemptCount" < 3
+                       AND "AttemptCount" < 5
                        AND "CreatedAt" >= @FailedRetryAfter))
             RETURNING "AccountId", "GroupId", "ConnectionId", "LocalDate",
                       "IdempotencyKey", "CandidatesJson", "ClaimToken";

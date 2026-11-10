@@ -15,6 +15,13 @@ import urllib.parse
 import urllib.request
 
 SPOTDL_VERSION = "4.6.0"
+ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+APPLE_AUDIO_HOST = "audio-ssl.itunes.apple.com"
+
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def required(name: str) -> str:
@@ -106,6 +113,141 @@ def requested_song_query(render_request: object) -> str:
         return ""
     value = " ".join(value.split()).strip()
     return value[:120]
+
+
+def search_key(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    plain = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in plain.casefold()).split())
+
+
+def strong_requested_title_match(query: str, title: str) -> bool:
+    query_key = search_key(query)
+    title_key = search_key(title)
+    if len(query_key) < 4 or not title_key:
+        return False
+    return title_key == query_key or title_key.startswith(f"{query_key} ")
+
+
+def _validated_https_url(value: object, *, allowed_hosts: tuple[str, ...]) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    parsed = urllib.parse.urlsplit(raw)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme != "https" or not host:
+        return None
+    if not any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts):
+        return None
+    return raw
+
+
+def itunes_preview_candidate(query: str, work: pathlib.Path) -> dict:
+    params = urllib.parse.urlencode(
+        {
+            "term": query,
+            "entity": "song",
+            "limit": "20",
+            "country": "VN",
+        }
+    )
+    request = urllib.request.Request(
+        f"{ITUNES_SEARCH_URL}?{params}",
+        headers={
+            "accept": "application/json",
+            "User-Agent": "VolleyDraft-TrendMusic-Renderer/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if response.status != 200:
+                raise RuntimeError(f"iTunes search returned HTTP {response.status}")
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"iTunes search failed: {type(exc).__name__}: {exc}") from exc
+
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        raise RuntimeError("iTunes search returned an invalid result list")
+
+    matches: list[tuple[int, int, dict, str]] = []
+    query_key = search_key(query)
+    for index, item in enumerate(results):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("trackName") or "").strip()
+        if not strong_requested_title_match(query, title):
+            continue
+        preview_url = _validated_https_url(item.get("previewUrl"), allowed_hosts=(APPLE_AUDIO_HOST,))
+        if preview_url is None:
+            continue
+        title_key = search_key(title)
+        if title_key == query_key:
+            variant_rank = 0
+        elif "original soundtrack" in title_key:
+            variant_rank = 1
+        elif "film version" in title_key:
+            variant_rank = 3
+        else:
+            variant_rank = 2
+        matches.append((variant_rank, index, item, preview_url))
+
+    if not matches:
+        raise RuntimeError("iTunes search found no confident title match with an Apple preview")
+
+    _, _, selected, preview_url = min(matches, key=lambda entry: (entry[0], entry[1]))
+    audio_path = work / "itunes-preview.m4a"
+    audio_request = urllib.request.Request(
+        preview_url,
+        headers={"User-Agent": "VolleyDraft-TrendMusic-Renderer/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(audio_request, timeout=45) as response:
+            final_url = _validated_https_url(response.geturl(), allowed_hosts=(APPLE_AUDIO_HOST,))
+            if final_url is None:
+                raise RuntimeError("Apple preview redirected to an unexpected host")
+            total = 0
+            with audio_path.open("wb") as stream:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 20 * 1024 * 1024:
+                        raise RuntimeError("Apple preview exceeded 20 MiB")
+                    stream.write(chunk)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        if audio_path.exists():
+            audio_path.unlink()
+        raise RuntimeError(f"Apple preview download failed: {type(exc).__name__}: {exc}") from exc
+
+    if not audio_path.exists() or audio_path.stat().st_size == 0:
+        raise RuntimeError("Apple preview download returned an empty file")
+
+    artist = str(selected.get("artistName") or "").strip() or "Không rõ nghệ sĩ"
+    source_url = _validated_https_url(selected.get("trackViewUrl"), allowed_hosts=("music.apple.com",))
+    artwork_url = _validated_https_url(selected.get("artworkUrl100"), allowed_hosts=("mzstatic.com",))
+    track_id = str(selected.get("trackId") or "").strip()
+    if not track_id:
+        track_id = hashlib.sha256(
+            f"{query}\n{artist}\n{preview_url}".encode("utf-8")
+        ).hexdigest()[:20]
+
+    return {
+        "id": f"itunes-{track_id}",
+        "title": query[:120],
+        "artist": artist[:120],
+        "rank": 1,
+        "mediaType": "audio",
+        "mediaUrl": "",
+        "mediaPath": str(audio_path.resolve()),
+        "artworkUrl": artwork_url,
+        "artworkPath": None,
+        "trendLabel": "REQUESTED SONG",
+        "sourceUrl": source_url,
+        "licenseUrl": None,
+        "licenseLabel": "Apple Music preview",
+    }
 
 
 def run_checked(args: list[str], *, cwd: pathlib.Path | None = None, timeout: int = 240) -> subprocess.CompletedProcess[str]:
@@ -260,11 +402,6 @@ def extract_spotdl_metadata(audio_path: pathlib.Path, work: pathlib.Path, query:
     else:
         artist = artist.replace("/", ", ")
 
-    def search_key(value: str) -> str:
-        decomposed = unicodedata.normalize("NFKD", value)
-        plain = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-        return " ".join("".join(ch if ch.isalnum() else " " for ch in plain.casefold()).split())
-
     query_key = search_key(query)
     title_key = search_key(title)
     # spotDL/Spotify often appends version/OST qualifiers to the track title. When the
@@ -275,7 +412,16 @@ def extract_spotdl_metadata(audio_path: pathlib.Path, work: pathlib.Path, query:
 
 
 def build_requested_candidate(query: str, work: pathlib.Path) -> dict:
-    audio_path = spotdl_download(query, work)
+    try:
+        audio_path = spotdl_download(query, work)
+    except Exception as spotdl_error:
+        print(
+            "spotDL providers could not prepare requested song; "
+            f"trying iTunes preview fallback: {type(spotdl_error).__name__}: {spotdl_error}"
+        )
+        candidate = itunes_preview_candidate(query, work)
+        print(f"iTunes preview matched requested song: {candidate['title']} — {candidate['artist']}")
+        return candidate
     title, artist, artwork = extract_spotdl_metadata(audio_path, work, query)
     candidate_id = hashlib.sha256(f"{title}\n{artist}".encode("utf-8")).hexdigest()[:20]
     return {
