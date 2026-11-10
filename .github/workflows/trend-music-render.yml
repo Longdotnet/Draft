@@ -64,6 +64,7 @@ jobs:
         env:
           SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
           SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
+          TREND_MUSIC_CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL }}
         run: python3 scripts/trend-music/claim_and_render.py
       - name: Render direct workflow-dispatch request
         if: github.event_name == 'workflow_dispatch' && inputs.account_id != ''

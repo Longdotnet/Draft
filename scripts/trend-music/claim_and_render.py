@@ -30,6 +30,18 @@ def api_base_from_scheduler_url(value: str) -> str:
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, base_path, "", "")).rstrip("/")
 
 
+def api_base_from_callback_url(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError("TREND_MUSIC_CALLBACK_URL must be an absolute HTTPS URL")
+    suffix = "/api/internal/trend-music/render-complete"
+    path = parsed.path.rstrip("/")
+    if not path.endswith(suffix):
+        raise RuntimeError(f"TREND_MUSIC_CALLBACK_URL must end with {suffix}")
+    base_path = path[: -len(suffix)]
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, base_path, "", "")).rstrip("/")
+
+
 def claim_render(claim_url: str, key: str) -> dict | None:
     last_error: Exception | None = None
     for attempt in range(1, 5):
@@ -76,11 +88,15 @@ def claim_field(payload: dict, name: str) -> str:
 
 
 def main() -> int:
-    scheduler_url = required("SCHEDULER_URL")
     scheduler_key = required("SCHEDULER_KEY")
-    api_base = api_base_from_scheduler_url(scheduler_url)
+    callback_url = os.environ.get("TREND_MUSIC_CALLBACK_URL", "").strip()
+    if callback_url:
+        api_base = api_base_from_callback_url(callback_url)
+    else:
+        scheduler_url = required("SCHEDULER_URL")
+        api_base = api_base_from_scheduler_url(scheduler_url)
+        callback_url = f"{api_base}/api/internal/trend-music/render-complete"
     claim_url = f"{api_base}/api/internal/trend-music/render-claim"
-    callback_url = f"{api_base}/api/internal/trend-music/render-complete"
 
     claim = claim_render(claim_url, scheduler_key)
     if claim is None:
