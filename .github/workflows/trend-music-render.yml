@@ -1,6 +1,12 @@
 name: Trend music story renderer
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/trend-music-render.yml"
+      - "scripts/trend-music/**"
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
