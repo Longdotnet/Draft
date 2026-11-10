@@ -202,6 +202,56 @@ public sealed class ZaloBridgeClient
         return result;
     }
 
+    public async Task<BridgeSendVideoResponse> SendGroupVideoAsync(
+        string accountId,
+        string groupId,
+        string message,
+        string? videoUrl = null,
+        string? thumbnailUrl = null,
+        string? thumbnailBase64 = null,
+        string? thumbnailFileName = null,
+        string? videoBase64 = null,
+        string? videoFileName = null,
+        int? durationMs = null,
+        int? width = null,
+        int? height = null,
+        string? idempotencyKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "v1/group-videos",
+            new
+            {
+                accountId,
+                groupId,
+                message,
+                videoUrl,
+                thumbnailUrl,
+                thumbnailBase64,
+                thumbnailContentType = string.IsNullOrWhiteSpace(thumbnailBase64) ? null : "image/jpeg",
+                thumbnailFileName,
+                videoBase64,
+                videoContentType = string.IsNullOrWhiteSpace(videoBase64) ? null : "video/mp4",
+                videoFileName,
+                durationMs,
+                width,
+                height,
+                idempotencyKey
+            },
+            cancellationToken);
+        var result = await ReadAsync<BridgeSendVideoResponse>(response);
+        if (result.Sent && !result.Mock && !string.IsNullOrWhiteSpace(result.MessageId))
+        {
+            await TryRememberProviderOutboundIdAsync(
+                accountId,
+                groupId,
+                result.MessageId!,
+                message,
+                ParseParentMessageId(accountId, idempotencyKey));
+        }
+        return result;
+    }
+
     private async Task<BridgeSendMessageResponse> SendGroupMessagePartAsync(
         string accountId,
         string groupId,
@@ -662,5 +712,6 @@ public sealed record BridgeListenerResponse(string AccountId, string BotId, long
 public sealed record BridgeStopListenerResponse(bool Stopped);
 public sealed record BridgeOutgoingMention(string Uid, int Pos, int Len);
 public sealed record BridgeSendMessageResponse(bool Sent, bool Mock, string? MessageId = null);
+public sealed record BridgeSendVideoResponse(bool Sent, bool Mock, string? MessageId = null);
 public sealed record BridgeSendStickerResponse(bool Sent, bool Mock, string? MessageId = null);
 public sealed record BridgeErrorResponse(string? Error);

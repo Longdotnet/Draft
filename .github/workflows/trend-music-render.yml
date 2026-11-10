@@ -1,0 +1,64 @@
+name: Trend music story renderer
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Zalo account id
+        required: true
+        type: string
+      group_id:
+        description: Zalo group id
+        required: true
+        type: string
+      connection_id:
+        description: VolleyDraft Zalo connection id
+        required: true
+        type: string
+      local_date:
+        description: Vietnam service date
+        required: true
+        type: string
+      idempotency_key:
+        description: Stable one-send key
+        required: true
+        type: string
+      candidates_json:
+        description: Ordered licensed-media candidate array
+        required: true
+        type: string
+
+concurrency:
+  group: trend-music-${{ inputs.connection_id }}-${{ inputs.group_id }}-${{ inputs.local_date }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Ensure FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+      - name: Render and deliver story video
+        env:
+          ACCOUNT_ID: ${{ inputs.account_id }}
+          GROUP_ID: ${{ inputs.group_id }}
+          CONNECTION_ID: ${{ inputs.connection_id }}
+          LOCAL_DATE: ${{ inputs.local_date }}
+          IDEMPOTENCY_KEY: ${{ inputs.idempotency_key }}
+          CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL }}
+          CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY }}
+          CANDIDATES_JSON: ${{ inputs.candidates_json }}
+        run: python3 scripts/trend-music/render_story.py

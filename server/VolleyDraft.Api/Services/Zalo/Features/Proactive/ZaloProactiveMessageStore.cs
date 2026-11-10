@@ -14,6 +14,7 @@ internal static class ZaloProactiveLane
     public const string Community = "community";
     public const string MemberIntegration = "member_integration";
     public const string MemberIntegrationRecipient = "member_integration_recipient";
+    public const string TrendMusic = "trend_music";
 }
 
 internal sealed record ZaloProactiveMessageHistoryData(

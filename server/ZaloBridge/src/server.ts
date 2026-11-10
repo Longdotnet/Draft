@@ -12,6 +12,7 @@ import {
 } from "./apiKeepAlive.js";
 import type {
   SendGroupMessageRequest,
+  SendGroupVideoRequest,
   SendGroupStickerRequest,
   StartListenerRequest,
   ZaloCredentials,
@@ -19,6 +20,7 @@ import type {
 import { quiesceListenersAndDrain } from "./gracefulShutdown.js";
 import { KeyedSerialExecutor } from "./keyedSerialExecutor.js";
 import { ScopedOutboundIdempotency } from "./outboundIdempotency.js";
+import { normalizeGroupVideoRequest } from "./groupVideoRequest.js";
 import { isStickerReaction } from "./stickerLogic.js";
 import { sendGroupSticker } from "./stickerGateway.js";
 import { zaloProviderTrafficGovernor } from "./zaloProviderTraffic.js";
@@ -41,6 +43,7 @@ import {
   getPolls,
   getQrLogin,
   sendGroupMessage,
+  sendGroupVideo,
   startListener,
   stopListener,
 } from "./zaloGateway.js";
@@ -54,6 +57,7 @@ if (!configuredInternalKey && process.env.NODE_ENV === "production") {
 const internalKey = configuredInternalKey || "development-zalo-bridge-key";
 const apiKeepAliveConfiguration = getApiKeepAliveConfiguration();
 const outboundMessageIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupMessage>>>();
+const outboundVideoIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupVideo>>>();
 const outboundStickerIdempotency = new ScopedOutboundIdempotency<Awaited<ReturnType<typeof sendGroupSticker>>>();
 const listenerLifecycle = new KeyedSerialExecutor();
 const configuredShutdownDrainMs = Number(process.env.ZALO_BRIDGE_SHUTDOWN_DRAIN_MS ?? 20_000);
@@ -336,6 +340,38 @@ app.post("/v1/group-messages", async (request, response) => {
       accountId,
       () => sendGroupMessage(outbound),
       "message.send",
+    ),
+  ));
+});
+
+app.post("/v1/group-videos", async (request, response) => {
+  const body = request.body as Partial<SendGroupVideoRequest>;
+  const normalized = normalizeGroupVideoRequest(body);
+  if (!normalized.ok) {
+    response.status(400).json({ error: normalized.error });
+    return;
+  }
+  const { accountId, groupId, idempotencyKey, outbound } = normalized.value;
+  response.json(await outboundVideoIdempotency.run(
+    { accountId, groupId, idempotencyKey },
+    {
+      message: outbound.message,
+      videoUrl: outbound.videoUrl,
+      thumbnailUrl: outbound.thumbnailUrl,
+      thumbnailBase64: outbound.thumbnailBase64,
+      thumbnailContentType: outbound.thumbnailContentType,
+      thumbnailFileName: outbound.thumbnailFileName,
+      videoBase64: outbound.videoBase64,
+      videoContentType: outbound.videoContentType,
+      videoFileName: outbound.videoFileName,
+      durationMs: outbound.durationMs,
+      width: outbound.width,
+      height: outbound.height,
+    },
+    () => zaloProviderTrafficGovernor.runWithAccount(
+      accountId,
+      () => sendGroupVideo(outbound),
+      "video.send",
     ),
   ));
 });

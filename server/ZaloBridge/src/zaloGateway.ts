@@ -30,6 +30,7 @@ import type {
   GroupPresenceSignalEvent,
   PollBoardChangedEvent,
   SendGroupMessageRequest,
+  SendGroupVideoRequest,
   StartListenerRequest,
   ZaloCredentials,
 } from "./contracts.js";
@@ -127,6 +128,37 @@ type MinimalZaloApi = AvatarProfileApi & {
     message?: { msgId?: string | number } | null;
     attachment?: Array<{ msgId?: string | number }>;
   }>;
+  sendVideo(
+    options: {
+      msg?: string;
+      videoUrl: string;
+      thumbnailUrl: string;
+      duration?: number;
+      width?: number;
+      height?: number;
+      ttl?: number;
+    },
+    threadId: string,
+    type: number,
+  ): Promise<{ msgId?: string | number }>;
+  uploadAttachment(
+    sources: Array<string | {
+      data: Buffer;
+      filename: `${string}.${string}`;
+      metadata: { totalSize: number; width?: number; height?: number };
+    }> | string | {
+      data: Buffer;
+      filename: `${string}.${string}`;
+      metadata: { totalSize: number; width?: number; height?: number };
+    },
+    threadId: string,
+    type: number,
+  ): Promise<Array<{
+    fileType: "image" | "video" | "others";
+    fileUrl?: string;
+    normalUrl?: string;
+    thumbUrl?: string;
+  }>>;
 };
 
 type MinimalMessage = {
@@ -685,6 +717,63 @@ export function decodeInlineImage(request: SendGroupMessageRequest) {
   return { data, filename, metadata: { totalSize: data.length } };
 }
 
+export function decodeInlineVideo(request: SendGroupVideoRequest) {
+  const encoded = request.videoBase64?.trim();
+  if (!encoded) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
+    throw new Error("Inline video is not valid base64");
+  }
+
+  const data = Buffer.from(encoded, "base64");
+  if (data.length === 0) throw new Error("Inline video is empty");
+  if (data.length > 8 * 1024 * 1024) throw new Error("Inline video exceeds 8 MB");
+
+  const contentType = request.videoContentType?.trim().toLowerCase() ?? "video/mp4";
+  if (contentType !== "video/mp4") throw new Error("Inline video must be video/mp4");
+  const requestedName = request.videoFileName?.trim() ?? "trend-music.mp4";
+  const baseName = requestedName
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/\.[^.]+$/, "")
+    .slice(0, 80) || "trend-music";
+  const filename = `${baseName}.mp4` as `${string}.${string}`;
+  return { data, filename, metadata: { totalSize: data.length } };
+}
+
+export function decodeInlineVideoThumbnail(request: SendGroupVideoRequest) {
+  const encoded = request.thumbnailBase64?.trim();
+  if (!encoded) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
+    throw new Error("Inline video thumbnail is not valid base64");
+  }
+  const data = Buffer.from(encoded, "base64");
+  if (data.length === 0) throw new Error("Inline video thumbnail is empty");
+  if (data.length > 2 * 1024 * 1024) throw new Error("Inline video thumbnail exceeds 2 MB");
+  const contentType = request.thumbnailContentType?.trim().toLowerCase() ?? "image/jpeg";
+  const extension = contentType === "image/png"
+    ? "png"
+    : contentType === "image/webp"
+      ? "webp"
+      : contentType === "image/jpeg" || contentType === "image/jpg"
+        ? "jpg"
+        : null;
+  if (!extension) throw new Error("Inline video thumbnail must be jpeg, png or webp");
+  const requestedName = request.thumbnailFileName?.trim() ?? `trend-music-thumb.${extension}`;
+  const baseName = requestedName
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/\.[^.]+$/, "")
+    .slice(0, 80) || "trend-music-thumb";
+  const filename = `${baseName}.${extension}` as `${string}.${string}`;
+  return {
+    data,
+    filename,
+    metadata: {
+      totalSize: data.length,
+      width: request.width && request.width > 0 ? Math.trunc(request.width) : 720,
+      height: request.height && request.height > 0 ? Math.trunc(request.height) : 1280,
+    },
+  };
+}
+
 export async function leaveGroup(accountId: string, groupId: string): Promise<{ left: boolean; mock: boolean }> {
   const account = normalizeMemberId(accountId);
   const target = normalizeId(groupId);
@@ -718,6 +807,90 @@ export async function sendGroupMessage(request: SendGroupMessageRequest) {
     return result;
   }
   return sendGroupMessageCore(request);
+}
+
+export async function sendGroupVideo(request: SendGroupVideoRequest): Promise<BridgeSendResult> {
+  const accountId = normalizeMemberId(request.accountId);
+  const groupId = normalizeId(request.groupId);
+  const listener = activeListeners.get(accountId);
+  if (!listener) throw new Error("Zalo listener is not active for this account");
+  if (!groupId) throw new Error("Group ID is required");
+
+  if (mockMode) {
+    console.log(`[Zalo mock video -> ${groupId}] ${request.message ?? ""}`);
+    return { sent: true, mock: true, messageId: null };
+  }
+  if (!listener.api) throw new Error("Zalo provider API is not available for video send");
+
+  return sendGroupVideoWithApi(listener.api, request, groupId);
+}
+
+export type NativeVideoApi = {
+  uploadAttachment: MinimalZaloApi["uploadAttachment"];
+  sendVideo: MinimalZaloApi["sendVideo"];
+};
+
+export async function sendGroupVideoWithApi(
+  api: NativeVideoApi,
+  request: SendGroupVideoRequest,
+  groupId: string,
+): Promise<BridgeSendResult> {
+
+  const inlineVideo = decodeInlineVideo(request);
+  const inlineThumbnail = decodeInlineVideoThumbnail(request);
+  const videoUrl = request.videoUrl?.trim();
+  if (inlineVideo && videoUrl) throw new Error("Provide either videoBase64 or videoUrl, not both");
+  if (!inlineVideo && !videoUrl) throw new Error("videoBase64 or videoUrl is required");
+
+  if (inlineVideo) {
+    if (!inlineThumbnail) throw new Error("thumbnailBase64 is required when videoBase64 is used");
+    const [videoUploads, thumbnailUploads] = await Promise.all([
+      api.uploadAttachment(inlineVideo, groupId, ThreadType.Group),
+      api.uploadAttachment(inlineThumbnail, groupId, ThreadType.Group),
+    ]);
+    const uploadedVideo = videoUploads.find((item) => item.fileType === "video" && item.fileUrl);
+    const uploadedThumbnail = thumbnailUploads.find((item) => item.fileType === "image" && (item.normalUrl || item.thumbUrl));
+    if (!uploadedVideo?.fileUrl || !(uploadedThumbnail?.normalUrl || uploadedThumbnail?.thumbUrl)) {
+      throw new Error("Zalo did not return playable uploaded video/thumbnail URLs");
+    }
+    const sent = await api.sendVideo(
+      {
+        msg: request.message?.trim() || undefined,
+        videoUrl: uploadedVideo.fileUrl,
+        thumbnailUrl: uploadedThumbnail.normalUrl ?? uploadedThumbnail.thumbUrl!,
+        duration: request.durationMs && request.durationMs > 0 ? Math.trunc(request.durationMs) : undefined,
+        width: request.width && request.width > 0 ? Math.trunc(request.width) : undefined,
+        height: request.height && request.height > 0 ? Math.trunc(request.height) : undefined,
+      },
+      groupId,
+      ThreadType.Group,
+    );
+    return {
+      sent: true,
+      mock: false,
+      messageId: normalizeId(String(sent.msgId ?? "")) || null,
+    };
+  }
+
+  const thumbnailUrl = request.thumbnailUrl?.trim();
+  if (!thumbnailUrl) throw new Error("thumbnailUrl is required when videoUrl is used");
+  const sent = await api.sendVideo(
+    {
+      msg: request.message?.trim() || undefined,
+      videoUrl: videoUrl!,
+      thumbnailUrl,
+      duration: request.durationMs && request.durationMs > 0 ? Math.trunc(request.durationMs) : undefined,
+      width: request.width && request.width > 0 ? Math.trunc(request.width) : undefined,
+      height: request.height && request.height > 0 ? Math.trunc(request.height) : undefined,
+    },
+    groupId,
+    ThreadType.Group,
+  );
+  return {
+    sent: true,
+    mock: false,
+    messageId: normalizeId(String(sent.msgId ?? "")) || null,
+  };
 }
 
 async function sendGroupMessageCore(request: SendGroupMessageRequest): Promise<BridgeSendResult> {

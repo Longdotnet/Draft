@@ -81,6 +81,9 @@ jobs:
       - name: Compile worker
         run: python -m py_compile server/Npc11ArtWorker/app.py
 
+      - name: Compile trend music renderer
+        run: python -m py_compile scripts/trend-music/render_story.py
+
   zalo-bridge:
     name: Zalo Bridge build and test
     runs-on: ubuntu-latest

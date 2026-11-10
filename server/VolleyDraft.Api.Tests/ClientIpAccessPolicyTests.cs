@@ -114,6 +114,7 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/api/internal/zalo/membership-events")]
     [InlineData("/api/internal/zalo/presence-events")]
     [InlineData("/api/internal/zalo/poll-events")]
+    [InlineData("/api/internal/trend-music/render-complete")]
     [InlineData("/api/internal/zyro-mapping/profiles/sync")]
     public void ExactInternalPostPathsBypassBrowserIpGate(string path)
     {
@@ -151,6 +152,15 @@ public sealed class ClientIpAccessPolicyTests
     public void UnknownInternalPostPathDoesNotBypassIpGate()
     {
         var context = CreateRequest("/api/internal/unknown", HttpMethods.Post);
+        Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
+    }
+
+    [Theory]
+    [InlineData("/api/internal/trend-music/render-complete/extra")]
+    [InlineData("/api/internal/trend-music/render-complete-evil")]
+    public void TrendMusicLookalikePostPathsDoNotBypassIpGate(string path)
+    {
+        var context = CreateRequest(path, HttpMethods.Post);
         Assert.False(ClientIpAccessPolicy.IsInfrastructureRequest(context));
     }
 

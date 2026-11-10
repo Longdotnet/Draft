@@ -101,6 +101,22 @@ services:
         value: "420"
       - key: ZaloBot__Ambient__DailyRhythm__GreetingImagesEnabled
         value: "false"
+      - key: ZaloBot__Ambient__TrendMusic__Enabled
+        value: "false"
+      - key: ZaloBot__Ambient__TrendMusic__FeedUrl
+        sync: false
+      - key: ZaloBot__Ambient__TrendMusic__JamendoClientId
+        sync: false
+      - key: ZaloBot__Ambient__TrendMusic__GitHubToken
+        sync: false
+      - key: ZaloBot__Ambient__TrendMusic__CallbackKey
+        sync: false
+      - key: ZaloBot__Ambient__TrendMusic__GitHubRepository
+        value: Longdotnet/Draft
+      - key: ZaloBot__Ambient__TrendMusic__GitHubWorkflow
+        value: trend-music-render.yml
+      - key: ZaloBot__Ambient__TrendMusic__GitHubRef
+        value: main
       - key: ZaloActivitySync__BoardPageSize
         value: "50"
       - key: ZaloActivitySync__MaxBoardPages

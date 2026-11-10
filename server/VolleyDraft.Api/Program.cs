@@ -90,6 +90,10 @@ builder.Services.AddHttpClient<AiAssistantService>(client => client.Timeout = Ti
 builder.Services.AddHttpClient("TeamCardAvatars", client => client.Timeout = TimeSpan.FromSeconds(6));
 builder.Services.AddHttpClient("Npc11ArtWorker", client => client.Timeout = TimeSpan.FromSeconds(190));
 builder.Services.AddHttpClient("Npc11CloudflareAi", client => client.Timeout = TimeSpan.FromSeconds(125));
+builder.Services.AddHttpClient("TrendMusicFeed", client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("TrendMusicGitHub", client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddScoped<ZaloTrendMusicService>();
+builder.Services.AddScoped<ZaloTrendMusicRenderDispatcher>();
 builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddHostedService<ZaloSchedulerWorker>();
@@ -97,6 +101,7 @@ builder.Services.AddHostedService<ZaloPollEventWorker>();
 builder.Services.AddHostedService<ZaloOverbookWorker>();
 builder.Services.AddHostedService<ZaloActivityBackfillWorker>();
 builder.Services.AddHostedService<SettlementMessageWorker>();
+builder.Services.AddHostedService<ZaloTrendMusicWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
@@ -166,6 +171,35 @@ app.MapPost("/api/internal/scheduler/tick", (
         queued,
         requestedAt = DateTimeOffset.UtcNow
     });
+});
+
+app.MapPost("/api/internal/trend-music/render-complete", async (
+    HttpContext httpContext,
+    ZaloTrendMusicRenderCompleteRequest request,
+    ZaloTrendMusicService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
+    {
+        return Results.Json(
+            new { message = "Trend music callback key is not configured." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    if (!TrendMusicInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+
+    try
+    {
+        var sent = await service.CompleteRenderAsync(request, cancellationToken);
+        return sent
+            ? Results.Ok(new { accepted = true, sent = true })
+            : Results.Conflict(new { accepted = true, sent = false, retry = true });
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
 });
 
 if (app.Environment.IsDevelopment())

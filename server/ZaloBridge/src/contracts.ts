@@ -133,6 +133,24 @@ export type SendGroupMessageRequest = {
   idempotencyKey?: string | null;
 };
 
+export type SendGroupVideoRequest = {
+  accountId: string;
+  groupId: string;
+  message?: string | null;
+  videoUrl?: string | null;
+  thumbnailUrl?: string | null;
+  thumbnailBase64?: string | null;
+  thumbnailContentType?: string | null;
+  thumbnailFileName?: string | null;
+  videoBase64?: string | null;
+  videoContentType?: string | null;
+  videoFileName?: string | null;
+  durationMs?: number | null;
+  width?: number | null;
+  height?: number | null;
+  idempotencyKey?: string | null;
+};
+
 export type StickerReaction =
   | "laugh"
   | "cheer"

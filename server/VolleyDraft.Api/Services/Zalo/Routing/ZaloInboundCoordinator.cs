@@ -26,7 +26,8 @@ public sealed class ZaloInboundCoordinator(
     VolleyDraftDbContext db,
     ZaloOverbookService overbookService,
     ZaloBotService botService,
-    ILogger<ZaloInboundCoordinator> logger)
+    ILogger<ZaloInboundCoordinator> logger,
+    ZaloTrendMusicService? trendMusicService = null)
 {
     private const string PreRouteHandledOutcome = "pre_route_handled";
     private const string ProviderReceiptRecoveredOutcome = "sent_recovered";
@@ -74,6 +75,7 @@ public sealed class ZaloInboundCoordinator(
             incoming,
             TryClaimAsync,
             async (message, token) =>
+                (trendMusicService is not null && await trendMusicService.TryHandleManualTestAsync(message, token)) ||
                 await overbookService.TryHandleZaloProfileUpdatePreRouteAsync(message, token) ||
                 await overbookService.TryHandlePassSlotGuidancePreRouteAsync(message, token) ||
                 await overbookService.TryHandleAddressedOpenSlotOfferPreRouteAsync(message, token) ||
