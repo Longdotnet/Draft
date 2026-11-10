@@ -153,33 +153,45 @@ def spotdl_download(query: str, work: pathlib.Path) -> pathlib.Path:
     if ffmpeg:
         command.extend(["--ffmpeg", ffmpeg])
     command.extend(["download", query])
+
+    def downloaded_audio_files() -> list[pathlib.Path]:
+        return sorted(
+            [
+                *work.glob("*.mp3"),
+                *work.glob("*.m4a"),
+                *work.glob("*.opus"),
+                *work.glob("*.ogg"),
+                *work.glob("*.flac"),
+            ],
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+
     try:
         result = run_checked(command, cwd=work, timeout=300)
         if result.stdout:
             print(result.stdout[-3000:])
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as first_error:
         print(f"spotDL first download attempt failed: {type(first_error).__name__}")
-        try:
-            deno = run_checked([sys.executable, "-m", "spotdl", "--download-deno"], cwd=work, timeout=120)
-            if deno.stdout:
-                print(deno.stdout[-1500:])
-            retry = run_checked(command, cwd=work, timeout=300)
-            if retry.stdout:
-                print(retry.stdout[-3000:])
-        except Exception:
-            raise first_error
+        # Some spotDL/yt-dlp failures are reported with a successful process exit.
+        # Fall through to the file-presence check below so those cases get the
+        # exact same Deno bootstrap + retry as a non-zero exit.
 
-    audio_files = sorted(
-        [
-            *work.glob("*.mp3"),
-            *work.glob("*.m4a"),
-            *work.glob("*.opus"),
-            *work.glob("*.ogg"),
-            *work.glob("*.flac"),
-        ],
-        key=lambda path: path.stat().st_mtime_ns,
-        reverse=True,
-    )
+    audio_files = downloaded_audio_files()
+    if not audio_files:
+        print("spotDL produced no audio file; installing Deno and retrying once")
+        deno = run_checked(
+            [sys.executable, "-m", "spotdl", "--download-deno"],
+            cwd=work,
+            timeout=120,
+        )
+        if deno.stdout:
+            print(deno.stdout[-1500:])
+        retry = run_checked(command, cwd=work, timeout=300)
+        if retry.stdout:
+            print(retry.stdout[-3000:])
+        audio_files = downloaded_audio_files()
+
     if not audio_files:
         raise RuntimeError("spotDL completed without an audio file")
     return audio_files[0]
