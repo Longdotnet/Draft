@@ -294,4 +294,186 @@ public sealed class ZaloTrendMusicCandidateTests
 
         Assert.False(ZaloTrendMusicService.IsManualTestCommand(incoming));
     }
+
+    [Fact]
+    public void CcMixter_artwork_prefers_open_graph_then_twitter_and_rejects_external_hosts()
+    {
+        const string source = "https://ccmixter.org/files/artist/123";
+        var html = """
+            <html><head>
+              <meta name="twitter:image" content="https://ccmixter.org/twitter.jpg">
+              <meta property="og:image" content="/content/artist/cover.jpg">
+            </head></html>
+            """;
+
+        Assert.Equal(
+            "https://ccmixter.org/content/artist/cover.jpg",
+            ZaloTrendMusicService.ExtractSourceArtworkUrl(html, source));
+        Assert.Null(ZaloTrendMusicService.ExtractSourceArtworkUrl(
+            "<meta property=\"og:image\" content=\"https://evil.example/cover.jpg\">",
+            source));
+        Assert.Null(ZaloTrendMusicService.ExtractSourceArtworkUrl(
+            "<meta property=\"og:image\" content=\"http://ccmixter.org/cover.jpg\">",
+            source));
+    }
+
+    [Fact]
+    public void CcMixter_artwork_uses_twitter_image_from_real_track_shape()
+    {
+        const string html = """
+            <html><head><meta name="twitter:image" content="https://ccmixter.org/tt34699.jpeg"></head></html>
+            """;
+
+        Assert.Equal(
+            "https://ccmixter.org/tt34699.jpeg",
+            ZaloTrendMusicService.ExtractSourceArtworkUrl(
+                html,
+                "https://ccmixter.org/files/gabriel_shelligton/71178"));
+    }
+
+    [Fact]
+    public void CcMixter_artwork_prefers_social_card_over_tiny_artist_credit_image()
+    {
+        const string html = """
+            <html><head>
+              <meta name="twitter:image" content="https://ccmixter.org/tt34699.jpeg">
+            </head><body>
+              <div class="box"><img src="https://ccmixter.org/content/gabriel_shelligton/profile93x94.jpg" style="float:right" />
+              <table id="credit_info"><tr><td>credits</td></tr></table></div>
+            </body></html>
+            """;
+
+        Assert.Equal(
+            "https://ccmixter.org/tt34699.jpeg",
+            ZaloTrendMusicService.ExtractSourceArtworkUrl(
+                html,
+                "https://ccmixter.org/files/gabriel_shelligton/71178"));
+    }
+
+    [Fact]
+    public void CcMixter_artwork_uses_artist_credit_image_as_fallback_when_social_card_is_missing()
+    {
+        const string html = """
+            <html><body>
+              <div class="box"><img src="https://ccmixter.org/content/artist/profile93x94.jpg" />
+              <table id="credit_info"><tr><td>credits</td></tr></table></div>
+            </body></html>
+            """;
+
+        Assert.Equal(
+            "https://ccmixter.org/content/artist/profile93x94.jpg",
+            ZaloTrendMusicService.ExtractSourceArtworkUrl(
+                html,
+                "https://ccmixter.org/files/artist/123"));
+    }
+
+    [Fact]
+    public void One_shot_override_parses_natural_night_command_and_preserves_custom_text()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account", "bot", "group", "message", "sender", "Tester",
+            "tối nay, lời chúc: Chúc cả nhà ngủ ngon, mai chiến tiếp, tiêu đề: Kèo đêm nay, nghệ sĩ: Zyro VC, không logo",
+            [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloTrendMusicService.ParseOneShotOverrideCommand(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("night", parsed.Period);
+        Assert.Equal("Chúc cả nhà ngủ ngon, mai chiến tiếp", parsed.GreetingText);
+        Assert.Equal("Kèo đêm nay", parsed.DisplayTitle);
+        Assert.Equal("Zyro VC", parsed.DisplayArtist);
+        Assert.False(parsed.ShowLogo);
+        Assert.False(parsed.UseQuotedArtwork);
+    }
+
+    [Fact]
+    public void One_shot_override_can_disable_greeting_and_use_quoted_artwork()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account", "bot", "group", "message", "sender", "Tester",
+            "sáng mai dùng ảnh này, không lời chúc",
+            [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            new ZaloBridgeMessageQuote(
+                "quoted", "someone", "Member", "", "photo", null,
+                "{\"thumbUrl\":\"https://photo.zalo.example/thumb.jpg\",\"oriUrl\":\"https://photo.zalo.example/image.jpg\"}"));
+
+        var parsed = ZaloTrendMusicService.ParseOneShotOverrideCommand(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("morning", parsed.Period);
+        Assert.True(parsed.GreetingDisabled);
+        Assert.True(parsed.UseQuotedArtwork);
+        Assert.Equal(
+            "https://photo.zalo.example/image.jpg",
+            ZaloTrendMusicService.ExtractHttpsUrlFromAttachment(incoming.Quote!.Attachment));
+    }
+
+    [Fact]
+    public void One_shot_override_accepts_field_without_comma_and_negative_logo_phrase()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account", "bot", "group", "message", "sender", "Tester",
+            "nhạc tối lời chúc: ngủ ngon cả nhà, không có logo",
+            [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloTrendMusicService.ParseOneShotOverrideCommand(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("night", parsed.Period);
+        Assert.Equal("ngủ ngon cả nhà", parsed.GreetingText);
+        Assert.False(parsed.ShowLogo);
+    }
+
+    [Fact]
+    public void One_shot_override_period_comes_from_command_prefix_not_greeting_body()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account", "bot", "group", "message", "sender", "Tester",
+            "sáng mai lời chúc: Tối nay nhớ ngủ sớm nha",
+            [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloTrendMusicService.ParseOneShotOverrideCommand(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("morning", parsed.Period);
+        Assert.Equal("Tối nay nhớ ngủ sớm nha", parsed.GreetingText);
+    }
+
+    [Fact]
+    public void One_shot_override_does_not_treat_plain_image_words_inside_greeting_as_artwork_command()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account", "bot", "group", "message", "sender", "Tester",
+            "tối nay lời chúc: cả nhà xem ảnh này vui ghê",
+            [], true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        var parsed = ZaloTrendMusicService.ParseOneShotOverrideCommand(incoming);
+
+        Assert.NotNull(parsed);
+        Assert.False(parsed.UseQuotedArtwork);
+    }
+
+    [Fact]
+    public void One_shot_override_requires_bot_mention()
+    {
+        var incoming = new ZaloIncomingMessageEvent(
+            "account", "bot", "group", "message", "sender", "Tester",
+            "tối nay không logo", [], false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Assert.Null(ZaloTrendMusicService.ParseOneShotOverrideCommand(incoming));
+    }
+
+    [Fact]
+    public void Caption_has_real_track_identity_without_npc_labels()
+    {
+        var request = new ZaloTrendMusicRenderCompleteRequest(
+            "account", "group", "connection", "2026-11-10", "key", "ccmixter-1",
+            "Come Home", "Gabriel Shellington", 1, "video", "thumb");
+
+        var caption = ZaloTrendMusicService.BuildCaption(request);
+
+        Assert.StartsWith("🎵 Come Home — Gabriel Shellington", caption);
+        Assert.DoesNotContain("NPC", caption, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("PICK", caption, StringComparison.OrdinalIgnoreCase);
+    }
 }

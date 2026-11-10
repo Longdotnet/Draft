@@ -280,7 +280,8 @@ public sealed class ZaloSocialPresenceService(
     VolleyDraftDbContext db,
     ZaloBridgeClient bridge,
     IConfiguration configuration,
-    ILogger<ZaloSocialPresenceService> logger)
+    ILogger<ZaloSocialPresenceService> logger,
+    ZaloTrendMusicService? trendMusicService = null)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private static readonly TimeSpan SendLeaseDuration = TimeSpan.FromMinutes(2);
@@ -290,7 +291,8 @@ public sealed class ZaloSocialPresenceService(
         services.GetRequiredService<VolleyDraftDbContext>(),
         services.GetRequiredService<ZaloBridgeClient>(),
         services.GetRequiredService<IConfiguration>(),
-        services.GetRequiredService<ILogger<ZaloSocialPresenceService>>());
+        services.GetRequiredService<ILogger<ZaloSocialPresenceService>>(),
+        services.GetService<ZaloTrendMusicService>());
 
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
@@ -401,6 +403,18 @@ public sealed class ZaloSocialPresenceService(
                         greeting.Kind,
                         greeting.Mood,
                         greeting.Message);
+                    continue;
+                }
+
+                if (trendMusicService is not null &&
+                    await trendMusicService.TryScheduleGreetingAsync(
+                        new ZaloProactiveTarget(
+                            group.Key.ConnectionId,
+                            group.Key.GroupId,
+                            group.Key.AccountId),
+                        greeting,
+                        cancellationToken))
+                {
                     continue;
                 }
 

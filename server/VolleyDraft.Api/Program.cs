@@ -91,7 +91,10 @@ builder.Services.AddHttpClient("TeamCardAvatars", client => client.Timeout = Tim
 builder.Services.AddHttpClient("Npc11ArtWorker", client => client.Timeout = TimeSpan.FromSeconds(190));
 builder.Services.AddHttpClient("Npc11CloudflareAi", client => client.Timeout = TimeSpan.FromSeconds(125));
 builder.Services.AddHttpClient("TrendMusicFeed", client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("TrendMusicArtwork", client => client.Timeout = TimeSpan.FromSeconds(5));
 builder.Services.AddHttpClient("TrendMusicGitHub", client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("ZaloQuotedMedia", client => client.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<ZaloTrendMusicService>();
 builder.Services.AddScoped<ZaloTrendMusicRenderDispatcher>();
 builder.Services.AddHostedService<ZaloListenerWorker>();

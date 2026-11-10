@@ -104,9 +104,13 @@ def main() -> int:
         return 0
 
     candidates_json = claim_field(claim, "candidatesJson")
-    parsed_candidates = json.loads(candidates_json)
-    if not isinstance(parsed_candidates, list):
-        raise RuntimeError("claimed candidatesJson must contain a JSON array")
+    parsed_render = json.loads(candidates_json)
+    if isinstance(parsed_render, list):
+        candidate_count = len(parsed_render)
+    elif isinstance(parsed_render, dict) and isinstance(parsed_render.get("candidates"), list):
+        candidate_count = len(parsed_render["candidates"])
+    else:
+        raise RuntimeError("claimed candidatesJson must contain a candidate array or render envelope")
 
     env = os.environ.copy()
     env.update(
@@ -125,7 +129,7 @@ def main() -> int:
     print(
         "claimed trend-music render job",
         env["IDEMPOTENCY_KEY"],
-        f"candidates={len(parsed_candidates)}",
+        f"candidates={candidate_count}",
     )
     subprocess.run([sys.executable, str(renderer)], env=env, check=True)
     return 0

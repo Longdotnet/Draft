@@ -75,7 +75,7 @@ public sealed class ZaloInboundCoordinator(
             incoming,
             TryClaimAsync,
             async (message, token) =>
-                (trendMusicService is not null && await trendMusicService.TryHandleManualTestAsync(message, token)) ||
+                (trendMusicService is not null && await trendMusicService.TryHandleCommandAsync(message, token)) ||
                 await overbookService.TryHandleZaloProfileUpdatePreRouteAsync(message, token) ||
                 await overbookService.TryHandlePassSlotGuidancePreRouteAsync(message, token) ||
                 await overbookService.TryHandleAddressedOpenSlotOfferPreRouteAsync(message, token) ||
