@@ -48,6 +48,29 @@ public sealed class ZaloTrendMusicRenderDispatcherTests
         Assert.Equal("[{\"id\":\"candidate-1\"}]", inputs.GetProperty("candidates_json").GetString());
     }
 
+    [Fact]
+    public async Task WakeQueueWorkerAsync_dispatches_without_direct_render_inputs()
+    {
+        var handler = new RecordingHandler();
+        var client = new HttpClient(handler);
+        var dispatcher = new ZaloTrendMusicRenderDispatcher(new SingleClientFactory(client));
+
+        await dispatcher.WakeQueueWorkerAsync(
+            "github-token",
+            "Longdotnet/Draft",
+            "trend-music-render.yml",
+            "main",
+            CancellationToken.None);
+
+        Assert.Equal(
+            "/repos/Longdotnet/Draft/actions/workflows/trend-music-render.yml/dispatches",
+            handler.Path);
+        using var document = JsonDocument.Parse(handler.Body!);
+        var root = document.RootElement;
+        Assert.Equal("main", root.GetProperty("ref").GetString());
+        Assert.False(root.TryGetProperty("inputs", out _));
+    }
+
     private sealed class SingleClientFactory(HttpClient client) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name)

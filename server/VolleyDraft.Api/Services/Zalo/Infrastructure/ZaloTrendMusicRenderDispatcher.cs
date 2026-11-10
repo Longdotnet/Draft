@@ -6,6 +6,19 @@ namespace VolleyDraft.Api.Services;
 
 public sealed class ZaloTrendMusicRenderDispatcher(IHttpClientFactory httpClientFactory)
 {
+    public Task WakeQueueWorkerAsync(
+        string githubToken,
+        string githubRepository,
+        string githubWorkflow,
+        string githubRef,
+        CancellationToken cancellationToken) =>
+        SendDispatchAsync(
+            githubToken,
+            githubRepository,
+            githubWorkflow,
+            new { @ref = githubRef },
+            cancellationToken);
+
     public async Task DispatchAsync(
         string githubToken,
         string githubRepository,
@@ -19,16 +32,11 @@ public sealed class ZaloTrendMusicRenderDispatcher(IHttpClientFactory httpClient
         string candidatesJson,
         CancellationToken cancellationToken)
     {
-        var client = httpClientFactory.CreateClient("TrendMusicGitHub");
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://api.github.com/repos/{githubRepository}/actions/workflows/{Uri.EscapeDataString(githubWorkflow)}/dispatches");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        request.Headers.UserAgent.ParseAdd("VolleyDraft-TrendMusic/1.0");
-        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
-        request.Content = new StringContent(
-            JsonSerializer.Serialize(new
+        await SendDispatchAsync(
+            githubToken,
+            githubRepository,
+            githubWorkflow,
+            new
             {
                 @ref = githubRef,
                 inputs = new
@@ -40,7 +48,27 @@ public sealed class ZaloTrendMusicRenderDispatcher(IHttpClientFactory httpClient
                     idempotency_key = idempotencyKey,
                     candidates_json = candidatesJson
                 }
-            }),
+            },
+            cancellationToken);
+    }
+
+    private async Task SendDispatchAsync(
+        string githubToken,
+        string githubRepository,
+        string githubWorkflow,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var client = httpClientFactory.CreateClient("TrendMusicGitHub");
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"https://api.github.com/repos/{githubRepository}/actions/workflows/{Uri.EscapeDataString(githubWorkflow)}/dispatches");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        request.Headers.UserAgent.ParseAdd("VolleyDraft-TrendMusic/1.0");
+        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(payload),
             Encoding.UTF8,
             "application/json");
 

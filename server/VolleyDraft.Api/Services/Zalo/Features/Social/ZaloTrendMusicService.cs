@@ -240,7 +240,7 @@ public sealed class ZaloTrendMusicService(
                 $"🎵 Đang tìm {songQuery} và dựng video…",
                 cancellationToken);
 
-            await DispatchOrQueueRenderAsync(
+            var queued = await DispatchOrQueueRenderAsync(
                 settings,
                 target,
                 localDate,
@@ -248,6 +248,33 @@ public sealed class ZaloTrendMusicService(
                 envelope,
                 cancellationToken,
                 forceQueue: true);
+
+            if (queued && settings.CanDirectDispatch)
+            {
+                try
+                {
+                    await renderDispatcher.WakeQueueWorkerAsync(
+                        settings.GitHubToken,
+                        settings.GitHubRepository,
+                        settings.GitHubWorkflow,
+                        settings.GitHubRef,
+                        cancellationToken);
+                    logger.LogInformation(
+                        "Requested-song queue worker woken immediately Group={GroupId} Key={IdempotencyKey}",
+                        target.GroupId,
+                        idempotencyKey);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    // The durable queue is authoritative. A failed wake-up only means the
+                    // scheduled */5 GitHub worker will pick this request up as a fallback.
+                    logger.LogWarning(
+                        exception,
+                        "Requested-song immediate worker wake failed; queued cron fallback remains Group={GroupId} Key={IdempotencyKey}",
+                        target.GroupId,
+                        idempotencyKey);
+                }
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
