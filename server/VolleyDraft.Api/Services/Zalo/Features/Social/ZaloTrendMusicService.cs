@@ -12,6 +12,7 @@ using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
 using VolleyDraft.Api.Security;
+using VolleyDraft.Api.Services.Zalo.Conversation;
 
 namespace VolleyDraft.Api.Services;
 
@@ -76,6 +77,26 @@ internal sealed record ZaloTrendMusicRenderEnvelope(
     IReadOnlyList<ZaloTrendMusicCandidate> Candidates,
     ZaloTrendMusicRenderSpec Spec,
     string? SongQuery = null);
+
+internal sealed record ZaloTrendMusicRenderCacheEntry(
+    string CacheKey,
+    string SongQuery,
+    string CandidateId,
+    string Title,
+    string Artist,
+    int Rank,
+    byte[] VideoData,
+    byte[] ThumbnailData,
+    int DurationMs,
+    int Width,
+    int Height,
+    string? SourceUrl,
+    string? LicenseUrl,
+    string? LicenseLabel,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset LastUsedAt,
+    DateTimeOffset ExpiresAt,
+    int UseCount);
 
 internal sealed record ZaloTrendMusicOneShotOverride(
     string Period,
@@ -144,8 +165,14 @@ public sealed class ZaloTrendMusicService(
     };
     private readonly ZaloTrendMusicJobStore jobs = new(db);
     private readonly ZaloTrendMusicOverrideStore overrides = new(db);
+    private readonly ZaloTrendMusicRenderCacheStore renderCache = new(db);
     private readonly ZaloProactiveMessageStore proactiveStore = new(db);
     private static readonly SemaphoreSlim DailyCandidateCacheLock = new(1, 1);
+    private static readonly TimeSpan RequestedSongCacheTtl = TimeSpan.FromDays(30);
+    private const int RequestedSongCacheMaxEntries = 24;
+    private const long RequestedSongCacheMaxTotalBytes = 96L * 1024 * 1024;
+    private const int RequestedSongCacheMaxPayloadBytes = 10_500_000;
+    private const string RequestedSongCacheVersion = "v1";
 
     public async Task<bool> TryHandleCommandAsync(
         ZaloIncomingMessageEvent incoming,
@@ -215,6 +242,42 @@ public sealed class ZaloTrendMusicService(
             .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var messageId = StableInboundMessageToken(incoming);
         var idempotencyKey = $"trend-music:request:{target.ConnectionId}:{target.GroupId}:{messageId}";
+
+        var cacheKey = RequestedSongCacheKey(songQuery, settings.ShowZyroLogo);
+        if (cacheKey.Length > 0)
+        {
+            try
+            {
+                var cached = await renderCache.TryGetAsync(
+                    cacheKey,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+                if (cached is not null &&
+                    await TrySendCachedRequestedSongAsync(
+                        target,
+                        localDate,
+                        idempotencyKey,
+                        cached,
+                        cancellationToken))
+                {
+                    logger.LogInformation(
+                        "Requested-song cache hit Group={GroupId} Key={IdempotencyKey} CacheKey={CacheKey} Candidate={CandidateId}",
+                        target.GroupId,
+                        idempotencyKey,
+                        cacheKey,
+                        cached.CandidateId);
+                    return true;
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Requested-song cache lookup/send failed; falling back to render queue Group={GroupId} Key={IdempotencyKey}",
+                    target.GroupId,
+                    idempotencyKey);
+            }
+        }
 
         try
         {
@@ -290,6 +353,123 @@ public sealed class ZaloTrendMusicService(
         }
 
         return true;
+    }
+
+    private async Task<bool> TrySendCachedRequestedSongAsync(
+        ZaloProactiveTarget target,
+        string localDate,
+        string idempotencyKey,
+        ZaloTrendMusicRenderCacheEntry cached,
+        CancellationToken cancellationToken)
+    {
+        await proactiveStore.EnsureAsync(cancellationToken);
+        var existing = await proactiveStore.GetHistoryAsync(
+            target.ConnectionId,
+            target.GroupId,
+            100,
+            cancellationToken);
+        if (existing.Any(item =>
+                string.Equals(item.Lane, ZaloProactiveLane.TrendMusic, StringComparison.Ordinal) &&
+                string.Equals(item.IdempotencyKey, idempotencyKey, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (!await proactiveStore.TryAcquireLeaseAsync(
+                target.ConnectionId,
+                target.GroupId,
+                idempotencyKey,
+                now,
+                TimeSpan.FromMinutes(2),
+                cancellationToken))
+        {
+            return true;
+        }
+
+        var videoBase64 = Convert.ToBase64String(cached.VideoData);
+        var thumbnailBase64 = Convert.ToBase64String(cached.ThumbnailData);
+        var request = new ZaloTrendMusicRenderCompleteRequest(
+            target.AccountId,
+            target.GroupId,
+            target.ConnectionId,
+            localDate,
+            idempotencyKey,
+            cached.CandidateId,
+            cached.Title,
+            cached.Artist,
+            cached.Rank,
+            videoBase64,
+            thumbnailBase64,
+            cached.DurationMs,
+            cached.Width,
+            cached.Height,
+            cached.SourceUrl,
+            cached.LicenseUrl,
+            cached.LicenseLabel);
+        var caption = BuildCaption(request);
+        var providerAccepted = false;
+        try
+        {
+            var response = await bridge.SendGroupVideoAsync(
+                target.AccountId,
+                target.GroupId,
+                caption,
+                thumbnailBase64: thumbnailBase64,
+                thumbnailFileName: $"trend-cache-{SanitizeId(cached.CandidateId)}.jpg",
+                videoBase64: videoBase64,
+                videoFileName: $"trend-cache-{SanitizeId(cached.CandidateId)}.mp4",
+                durationMs: Math.Clamp(cached.DurationMs, 1_000, 60_000),
+                width: Math.Clamp(cached.Width, 240, 2160),
+                height: Math.Clamp(cached.Height, 240, 3840),
+                idempotencyKey: idempotencyKey,
+                cancellationToken: cancellationToken);
+            if (!response.Sent)
+            {
+                await proactiveStore.ReleaseLeaseAsync(
+                    target.ConnectionId,
+                    target.GroupId,
+                    idempotencyKey,
+                    cancellationToken);
+                return false;
+            }
+
+            providerAccepted = true;
+            await proactiveStore.RecordAsync(new ZaloProactiveMessageHistoryData(
+                Guid.NewGuid().ToString("N"),
+                target.ConnectionId,
+                target.GroupId,
+                localDate,
+                ZaloProactiveLane.TrendMusic,
+                "ManualVideo",
+                $"song:{SanitizeId(cached.CandidateId)}",
+                null,
+                cached.Artist,
+                caption,
+                now,
+                response.MessageId,
+                idempotencyKey), cancellationToken);
+            await proactiveStore.CommitCooldownAsync(
+                target.ConnectionId,
+                target.GroupId,
+                idempotencyKey,
+                now.AddMinutes(2),
+                cancellationToken);
+            await renderCache.TouchAsync(cached.CacheKey, now, cancellationToken);
+            return true;
+        }
+        catch
+        {
+            if (!providerAccepted)
+            {
+                await proactiveStore.ReleaseLeaseAsync(
+                    target.ConnectionId,
+                    target.GroupId,
+                    idempotencyKey,
+                    cancellationToken);
+            }
+            throw;
+        }
     }
 
     public async Task<bool> TryHandleManualTestAsync(
