@@ -2602,6 +2602,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                              )
                        ))
                 ORDER BY
+                    CASE WHEN candidate."IdempotencyKey" LIKE 'trend-music:request:%' THEN 0 ELSE 1 END,
                     CASE WHEN candidate."State" = 'failed' THEN 1 ELSE 0 END,
                     CASE WHEN candidate."State" = 'failed' THEN candidate."CreatedAt" END DESC,
                     candidate."CreatedAt",

@@ -113,6 +113,51 @@ public sealed class ZaloTrendMusicQueueTests
     }
 
     [Fact]
+    public async Task Requested_song_is_claimed_before_older_automatic_job()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloTrendMusicJobStore(db);
+        var target = new ZaloProactiveTarget("connection-1", "group-1", "account-1");
+        var now = DateTimeOffset.UtcNow;
+        const string automaticKey = "trend-music:connection-1:group-1:2026-11-10:night";
+        const string requestedKey = "trend-music:request:connection-1:group-1:message-priority";
+
+        Assert.True(await store.EnqueueAsync(
+            target,
+            "2026-11-10",
+            automaticKey,
+            "[{\"id\":\"automatic\"}]",
+            CancellationToken.None));
+        await Task.Delay(2);
+        Assert.True(await store.EnqueueAsync(
+            target,
+            "2026-11-10",
+            requestedKey,
+            "{\"candidates\":[],\"songQuery\":\"Gói con tim làm quà\"}",
+            CancellationToken.None));
+
+        var first = await store.TryClaimQueueAsync(
+            now,
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None);
+        Assert.NotNull(first);
+        Assert.Equal(requestedKey, first.IdempotencyKey);
+        await store.MarkQueueSentAsync(requestedKey, first.ClaimToken, CancellationToken.None);
+
+        var second = await store.TryClaimQueueAsync(
+            now.AddSeconds(1),
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None);
+        Assert.NotNull(second);
+        Assert.Equal(automaticKey, second.IdempotencyKey);
+    }
+
+    [Fact]
     public async Task Older_failed_duplicate_is_superseded_by_newer_requested_song()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
