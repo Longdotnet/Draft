@@ -1595,7 +1595,7 @@ public sealed class ZaloTrendMusicService(
                 var artist = CleanOverrideText(request.Artist, 120);
                 if (title is null || artist is null)
                     throw new InvalidOperationException("Matched trend music progress requires title and artist.");
-                message = $"🎵 Tìm thấy {title} — {artist}. Đang dựng video 20s…";
+                message = $"🎵 Tìm thấy {title} — {artist}. Đang dựng video…";
                 suffix = "matched";
                 break;
             }
@@ -2566,6 +2566,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         CancellationToken cancellationToken)
     {
         await EnsureAsync(cancellationToken);
+        await ExpireStaleAutomaticQueueAsync(now, cancellationToken);
         var claimToken = Guid.NewGuid().ToString("N");
         const string sql = """
             UPDATE "ZaloTrendMusicRenderQueue"
@@ -2681,6 +2682,29 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
             reader.GetString(4),
             reader.GetString(5),
             reader.GetString(6));
+    }
+
+    private async Task ExpireStaleAutomaticQueueAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        // Morning/night renders are useful only around their scheduled ritual. If an
+        // external renderer was unavailable for hours, do not replay an old greeting
+        // later in the day when the queue starts moving again. Explicit song requests
+        // remain retryable independently and are intentionally excluded here.
+        const string sql = """
+            UPDATE "ZaloTrendMusicRenderQueue"
+            SET "State" = 'failed',
+                "ClaimToken" = NULL,
+                "UpdatedAt" = @UpdatedAt
+            WHERE "IdempotencyKey" NOT LIKE 'trend-music:request:%'
+              AND "State" IN ('pending', 'claimed')
+              AND "CreatedAt" < @ExpiresBefore;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@UpdatedAt", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        Add(command, "@ExpiresBefore", now.AddHours(-2).ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<bool?> IsCurrentQueueClaimAsync(

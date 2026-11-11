@@ -158,6 +158,37 @@ public sealed class ZaloTrendMusicQueueTests
     }
 
     [Fact]
+    public async Task Automatic_job_older_than_two_hours_is_not_replayed_after_worker_recovers()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloTrendMusicJobStore(db);
+        var target = new ZaloProactiveTarget("connection-1", "group-1", "account-1");
+        var now = DateTimeOffset.UtcNow;
+        const string key = "trend-music:connection-1:group-1:2026-11-11:morning";
+
+        Assert.True(await store.EnqueueAsync(
+            target,
+            "2026-11-11",
+            key,
+            "[{\"id\":\"morning\"}]",
+            CancellationToken.None));
+
+        var oldTimestamp = now.AddHours(-3).ToUniversalTime().ToString("O");
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE \"ZaloTrendMusicRenderQueue\" SET \"CreatedAt\" = {oldTimestamp}, \"UpdatedAt\" = {oldTimestamp} WHERE \"IdempotencyKey\" = {key}");
+
+        Assert.Null(await store.TryClaimQueueAsync(
+            now,
+            TimeSpan.FromMinutes(10),
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Older_failed_duplicate_is_superseded_by_newer_requested_song()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
