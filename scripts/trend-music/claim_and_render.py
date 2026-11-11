@@ -447,11 +447,6 @@ def extract_spotdl_metadata(audio_path: pathlib.Path, work: pathlib.Path, query:
 
 
 def build_requested_candidate(query: str, work: pathlib.Path) -> dict:
-    if os.environ.get("TREND_MUSIC_LIGHTWEIGHT", "").strip().lower() in {"1", "true", "yes", "on"}:
-        candidate = itunes_preview_candidate(query, work)
-        print(f"lightweight iTunes preview matched requested song: {candidate['title']} — {candidate['artist']}")
-        return candidate
-
     try:
         audio_path = spotdl_download(query, work)
     except Exception as spotdl_error:

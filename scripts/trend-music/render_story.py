@@ -93,16 +93,7 @@ def local_candidate_file(candidate: dict, field: str) -> pathlib.Path | None:
 
 def run_ffmpeg(args: list[str]) -> None:
     timeout = max(180, min(900, int(math.ceil(DURATION_SECONDS * 6))))
-    resource_args = (
-        ["-filter_threads", "1", "-filter_complex_threads", "1", "-threads", "1"]
-        if truthy_env("TREND_MUSIC_LIGHTWEIGHT")
-        else []
-    )
-    subprocess.run(
-        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *resource_args, *args],
-        check=True,
-        timeout=timeout,
-    )
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args], check=True, timeout=timeout)
 
 
 def format_seconds(value: float) -> str:

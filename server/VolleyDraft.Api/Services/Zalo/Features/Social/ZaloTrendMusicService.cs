@@ -158,8 +158,7 @@ public sealed class ZaloTrendMusicService(
     ZaloBridgeClient bridge,
     IMemoryCache memoryCache,
     IConfiguration configuration,
-    ILogger<ZaloTrendMusicService> logger,
-    ZaloTrendMusicLocalRenderSignal? localRenderSignal = null)
+    ILogger<ZaloTrendMusicService> logger)
 {
     private static readonly TimeSpan VietnamOffset = TimeSpan.FromHours(7);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -340,16 +339,6 @@ public sealed class ZaloTrendMusicService(
                         target.GroupId,
                         idempotencyKey);
                 }
-            }
-            else if (queued &&
-                     configuration.GetValue("ZaloBot:Ambient:TrendMusic:LocalRendererEnabled", false) &&
-                     localRenderSignal is not null)
-            {
-                localRenderSignal.Wake();
-                logger.LogInformation(
-                    "Requested-song local Render worker woken Group={GroupId} Key={IdempotencyKey}",
-                    target.GroupId,
-                    idempotencyKey);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

@@ -97,7 +97,6 @@ builder.Services.AddHttpClient("ZaloQuotedMedia", client => client.Timeout = Tim
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<ZaloTrendMusicService>();
 builder.Services.AddScoped<ZaloTrendMusicRenderDispatcher>();
-builder.Services.AddSingleton<ZaloTrendMusicLocalRenderSignal>();
 builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();
 builder.Services.AddHostedService<ZaloSchedulerWorker>();
@@ -106,7 +105,6 @@ builder.Services.AddHostedService<ZaloOverbookWorker>();
 builder.Services.AddHostedService<ZaloActivityBackfillWorker>();
 builder.Services.AddHostedService<SettlementMessageWorker>();
 builder.Services.AddHostedService<ZaloTrendMusicWorker>();
-builder.Services.AddHostedService<ZaloTrendMusicLocalRenderWorker>();
 builder.Services.AddSingleton<ZaloCredentialProtector>();
 builder.Services.AddSingleton<ZaloQrLoginRegistry>();
 builder.Services.AddHttpClient<ZaloBridgeClient>((serviceProvider, client) =>
