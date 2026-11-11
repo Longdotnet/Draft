@@ -69,6 +69,7 @@ public sealed class ZaloRequestedSongCacheIntegrationTests
             var root = document.RootElement;
             Assert.Equal(Convert.ToBase64String([1, 2, 3, 4]), root.GetProperty("videoBase64").GetString());
             Assert.Equal(Convert.ToBase64String([5, 6]), root.GetProperty("thumbnailBase64").GetString());
+            Assert.Equal(75_000, root.GetProperty("durationMs").GetInt32());
             Assert.StartsWith("trend-music:request:", root.GetProperty("idempotencyKey").GetString());
         }
 
@@ -199,7 +200,7 @@ public sealed class ZaloRequestedSongCacheIntegrationTests
             1,
             [1, 2, 3, 4],
             [5, 6],
-            20_000,
+            75_000,
             720,
             1280,
             "https://music.apple.com/vn/album/example",

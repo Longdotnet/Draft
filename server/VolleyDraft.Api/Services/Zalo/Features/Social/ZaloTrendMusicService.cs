@@ -29,12 +29,13 @@ public sealed record ZaloTrendMusicRenderCompleteRequest(
     string VideoBase64,
     string ThumbnailBase64,
     int DurationMs = 20_000,
-    int Width = 720,
-    int Height = 1280,
+    int Width = 1080,
+    int Height = 1920,
     string? SourceUrl = null,
     string? LicenseUrl = null,
     string? LicenseLabel = null,
     string? GreetingText = null,
+    string? CanonicalGreetingText = null,
     string? ClaimToken = null);
 
 public sealed record ZaloTrendMusicRenderProgressRequest(
@@ -71,7 +72,8 @@ internal sealed record ZaloTrendMusicRenderSpec(
     string? DisplayTitle,
     string? DisplayArtist,
     string? ArtworkUrl,
-    bool ShowLogo);
+    bool ShowLogo,
+    string? CanonicalGreetingText = null);
 
 internal sealed record ZaloTrendMusicRenderEnvelope(
     IReadOnlyList<ZaloTrendMusicCandidate> Candidates,
@@ -172,7 +174,7 @@ public sealed class ZaloTrendMusicService(
     private const int RequestedSongCacheMaxEntries = 24;
     private const long RequestedSongCacheMaxTotalBytes = 96L * 1024 * 1024;
     private const int RequestedSongCacheMaxPayloadBytes = 10_500_000;
-    private const string RequestedSongCacheVersion = "v1";
+    private const string RequestedSongCacheVersion = "v4";
 
     public async Task<bool> TryHandleCommandAsync(
         ZaloIncomingMessageEvent incoming,
@@ -419,7 +421,7 @@ public sealed class ZaloTrendMusicService(
                 thumbnailFileName: $"trend-cache-{SanitizeId(cached.CandidateId)}.jpg",
                 videoBase64: videoBase64,
                 videoFileName: $"trend-cache-{SanitizeId(cached.CandidateId)}.mp4",
-                durationMs: Math.Clamp(cached.DurationMs, 1_000, 60_000),
+                durationMs: Math.Max(cached.DurationMs, 1_000),
                 width: Math.Clamp(cached.Width, 240, 2160),
                 height: Math.Clamp(cached.Height, 240, 3840),
                 idempotencyKey: idempotencyKey,
@@ -1162,7 +1164,7 @@ public sealed class ZaloTrendMusicService(
         var period = greeting.Kind == ZaloDailyGreetingKind.Night ? "night" : "morning";
         var greetingEnabled = oneShot?.GreetingDisabled != true;
         var greetingText = string.IsNullOrWhiteSpace(oneShot?.GreetingText)
-            ? greeting.Message.Trim()
+            ? StoryGreetingText(greeting.Kind)
             : oneShot!.GreetingText!.Trim();
         return new ZaloTrendMusicRenderSpec(
             period,
@@ -1171,8 +1173,14 @@ public sealed class ZaloTrendMusicService(
             CleanOverrideText(oneShot?.DisplayTitle, 120),
             CleanOverrideText(oneShot?.DisplayArtist, 120),
             IsHttpsUrl(oneShot?.ArtworkUrl) ? oneShot!.ArtworkUrl!.Trim() : null,
-            oneShot?.ShowLogo ?? settings.ShowZyroLogo);
+            oneShot?.ShowLogo ?? settings.ShowZyroLogo,
+            CanonicalGreetingText: greeting.Message.Trim());
     }
+
+    internal static string StoryGreetingText(ZaloDailyGreetingKind kind) =>
+        kind == ZaloDailyGreetingKind.Night
+            ? "Tối rồi nha. Chúc bạn ngủ ngon. Nghe đoạn nhạc nhẹ nhàng này trước khi ngủ nha, iu bạn."
+            : "Chào buổi sáng nha. Nghe đoạn nhạc nhẹ nhàng mở đầu ngày mới nè, chúc hôm nay thật dễ thương.";
 
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
@@ -1341,7 +1349,7 @@ public sealed class ZaloTrendMusicService(
                 thumbnailFileName: $"trend-{request.LocalDate}-{SanitizeId(request.CandidateId)}.jpg",
                 videoBase64: request.VideoBase64,
                 videoFileName: $"trend-{request.LocalDate}-{SanitizeId(request.CandidateId)}.mp4",
-                durationMs: Math.Clamp(request.DurationMs, 1_000, 60_000),
+                durationMs: Math.Max(request.DurationMs, 1_000),
                 width: Math.Clamp(request.Width, 240, 2160),
                 height: Math.Clamp(request.Height, 240, 3840),
                 idempotencyKey: request.IdempotencyKey,
@@ -1476,7 +1484,7 @@ public sealed class ZaloTrendMusicService(
                     request.Rank,
                     videoData,
                     thumbnailData,
-                    Math.Clamp(request.DurationMs, 1_000, 60_000),
+                    Math.Max(request.DurationMs, 1_000),
                     Math.Clamp(request.Width, 240, 2160),
                     Math.Clamp(request.Height, 240, 3840),
                     request.SourceUrl,
@@ -1620,7 +1628,10 @@ public sealed class ZaloTrendMusicService(
         string? providerMessageId = null)
     {
         var period = PeriodFromIdempotencyKey(request.IdempotencyKey);
-        var greeting = CleanOverrideText(request.GreetingText, 220);
+        // The overlay copy is deliberately short and story-friendly. Keep the original
+        // curated DailyRhythm phrase in history so exact-match duplicate/repeat policy
+        // remains compatible with ZaloDailyGreetingPhraseCatalog.IsKind().
+        var greeting = GreetingHistoryText(request);
         if (period == "manual" || greeting is null) return;
         await proactiveStore.RecordAsync(new ZaloProactiveMessageHistoryData(
             Guid.NewGuid().ToString("N"),
@@ -1637,6 +1648,10 @@ public sealed class ZaloTrendMusicService(
             providerMessageId,
             $"{request.IdempotencyKey}:greeting"), cancellationToken);
     }
+
+    internal static string? GreetingHistoryText(ZaloTrendMusicRenderCompleteRequest request) =>
+        CleanOverrideText(request.CanonicalGreetingText, 220)
+        ?? CleanOverrideText(request.GreetingText, 220);
 
     private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> LoadCandidatesAsync(
         ZaloTrendMusicSettings settings,

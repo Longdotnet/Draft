@@ -44,15 +44,28 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Ensure FFmpeg
+      - name: Ensure render dependencies
         shell: bash
         run: |
           set -euo pipefail
+          packages=()
           if ! command -v ffmpeg >/dev/null 2>&1; then
+            packages+=(ffmpeg)
+          fi
+          if [[ ! -f /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf || ! -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf ]]; then
+            packages+=(fonts-noto-core)
+          fi
+          if [[ ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf || ! -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf ]]; then
+            packages+=(fonts-dejavu-core)
+          fi
+          if (( ${#packages[@]} > 0 )); then
             sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            sudo apt-get install -y "${packages[@]}"
           fi
           ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+          (test -f /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf && test -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf) || \
+            (test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf)
       - name: Claim queued render and deliver story video
         if: github.event_name == 'schedule' || inputs.account_id == ''
         env:

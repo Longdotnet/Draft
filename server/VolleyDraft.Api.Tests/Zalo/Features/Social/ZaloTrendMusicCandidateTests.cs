@@ -7,6 +7,53 @@ namespace VolleyDraft.Api.Tests.Zalo.Features.Social;
 public sealed class ZaloTrendMusicCandidateTests
 {
     [Fact]
+    public void Story_greeting_combines_morning_wish_with_music_invitation()
+    {
+        var text = ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Morning);
+
+        Assert.Contains("Chào buổi sáng", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đoạn nhạc nhẹ nhàng", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ngày mới", text, StringComparison.OrdinalIgnoreCase);
+        Assert.True(text.Length < 100);
+    }
+
+    [Fact]
+    public void Story_greeting_combines_night_wish_with_bedtime_music_invitation()
+    {
+        var text = ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Night);
+
+        Assert.Contains("Chúc bạn ngủ ngon", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("trước khi ngủ", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("iu bạn", text, StringComparison.OrdinalIgnoreCase);
+        Assert.True(text.Length < 100);
+    }
+
+    [Fact]
+    public void Daily_greeting_history_prefers_canonical_copy_over_story_overlay_copy()
+    {
+        var request = new ZaloTrendMusicRenderCompleteRequest(
+            "account", "group", "connection", "2026-11-10", "key", "ccmixter-1",
+            "Come Home", "Gabriel Shellington", 1, "video", "thumb",
+            GreetingText: "Khuya rồi nha. Nghe đoạn nhạc nhẹ nhàng này trước khi ngủ nha, iu bạn.",
+            CanonicalGreetingText: "Ngủ ngoan nha mọi người. Mong đêm nay dịu dàng với mỗi người hơn một chút 🤍");
+
+        Assert.Equal(
+            "Ngủ ngoan nha mọi người. Mong đêm nay dịu dàng với mỗi người hơn một chút 🤍",
+            ZaloTrendMusicService.GreetingHistoryText(request));
+    }
+
+    [Fact]
+    public void Daily_greeting_history_keeps_backward_compatibility_for_old_renderer_callback()
+    {
+        var request = new ZaloTrendMusicRenderCompleteRequest(
+            "account", "group", "connection", "2026-11-10", "key", "ccmixter-1",
+            "Come Home", "Gabriel Shellington", 1, "video", "thumb",
+            GreetingText: "Legacy greeting");
+
+        Assert.Equal("Legacy greeting", ZaloTrendMusicService.GreetingHistoryText(request));
+    }
+
+    [Fact]
     public void Jamendo_parser_keeps_only_downloadable_content_id_free_permissive_tracks_in_weekly_order()
     {
         var json = """

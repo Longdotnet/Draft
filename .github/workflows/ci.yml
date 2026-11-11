@@ -84,6 +84,9 @@ jobs:
       - name: Compile trend music renderer
         run: python -m py_compile scripts/trend-music/render_story.py scripts/trend-music/claim_and_render.py
 
+      - name: Test trend music renderer
+        run: python -m unittest scripts/trend-music/test_render_story.py
+
   zalo-bridge:
     name: Zalo Bridge build and test
     runs-on: ubuntu-latest

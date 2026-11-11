@@ -24,7 +24,7 @@ public sealed class ZaloRequestedSongRenderCacheTests
             ZaloTrendMusicService.RequestedSongCacheKey(
                 "Gói con tim làm quà",
                 showLogo: false));
-        Assert.StartsWith("v1:logo1:", canonical);
+        Assert.StartsWith("v4:logo1:", canonical);
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public sealed class ZaloRequestedSongRenderCacheTests
             .Options;
         var now = new DateTimeOffset(2026, 11, 10, 11, 0, 0, TimeSpan.Zero);
         var entry = Entry(
-            "v1:logo1:key",
+            "v4:logo1:key",
             "Gói con tim làm quà",
             "itunes-6796615117",
             now,
@@ -148,9 +148,9 @@ public sealed class ZaloRequestedSongRenderCacheTests
             1,
             video,
             thumbnail,
-            20_000,
-            720,
-            1280,
+            75_000,
+            1080,
+            1920,
             null,
             null,
             null,
