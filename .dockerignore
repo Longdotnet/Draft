@@ -10,7 +10,9 @@ dist
 **/obj
 server/VolleyDraft.Api.Tests
 docs
-scripts
+scripts/*
+!scripts/trend-music/
+!scripts/trend-music/**
 *.log
 *.db
 *.sqlite
