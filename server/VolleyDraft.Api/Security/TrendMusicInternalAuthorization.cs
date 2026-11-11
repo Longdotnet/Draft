@@ -25,7 +25,7 @@ public static class TrendMusicInternalAuthorization
                CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes);
     }
 
-    private static string GetExpectedKey(IConfiguration configuration)
+    internal static string GetExpectedKey(IConfiguration configuration)
     {
         var dedicated = configuration["ZaloBot:Ambient:TrendMusic:CallbackKey"]?.Trim();
         if (!string.IsNullOrWhiteSpace(dedicated)) return dedicated;

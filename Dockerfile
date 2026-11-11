@@ -24,12 +24,17 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-dejavu-core ffmpeg python3 python3-venv \
+    && python3 -m venv /opt/trend-music \
+    && /opt/trend-music/bin/pip install --no-cache-dir spotdl==4.6.0 \
     && fc-cache -f \
     && fc-match "Noto Sans" | grep -qi "NotoSans" \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=api-build /app/publish ./
+COPY scripts/trend-music ./scripts/trend-music
+
+ENV TREND_MUSIC_PYTHON=/opt/trend-music/bin/python
 
 EXPOSE 8080
 ENTRYPOINT ["sh", "-c", "ASPNETCORE_URLS=http://0.0.0.0:${PORT:-8080} dotnet VolleyDraft.Api.dll"]
