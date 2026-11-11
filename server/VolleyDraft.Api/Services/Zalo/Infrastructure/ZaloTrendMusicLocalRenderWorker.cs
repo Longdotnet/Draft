@@ -33,6 +33,8 @@ public sealed class ZaloTrendMusicLocalRenderWorker(
         logger.LogInformation(
             "Trend music local Render worker initialized Enabled={Enabled}",
             configuration.GetValue("ZaloBot:Ambient:TrendMusic:LocalRendererEnabled", false));
+        if (configuration.GetValue("ZaloBot:Ambient:TrendMusic:LocalRendererEnabled", false))
+            signal.Wake();
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -113,6 +115,7 @@ public sealed class ZaloTrendMusicLocalRenderWorker(
             $"{publicBaseUrl}/api/internal/trend-music/render-complete";
         startInfo.Environment["PYTHONUNBUFFERED"] = "1";
         startInfo.Environment["PYTHONUTF8"] = "1";
+        startInfo.Environment["TREND_MUSIC_LIGHTWEIGHT"] = "1";
 
         using var process = new Process { StartInfo = startInfo };
         if (!process.Start())

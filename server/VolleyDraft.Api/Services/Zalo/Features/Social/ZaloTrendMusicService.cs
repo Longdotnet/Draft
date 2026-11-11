@@ -2578,6 +2578,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
     {
         await EnsureAsync(cancellationToken);
         await ExpireStaleAutomaticQueueAsync(now, cancellationToken);
+        await SupersedeOlderRequestedDuplicatesAsync(now, cancellationToken);
         var claimToken = Guid.NewGuid().ToString("N");
         const string sql = """
             UPDATE "ZaloTrendMusicRenderQueue"
@@ -2693,6 +2694,37 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
             reader.GetString(4),
             reader.GetString(5),
             reader.GetString(6));
+    }
+
+    private async Task SupersedeOlderRequestedDuplicatesAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE "ZaloTrendMusicRenderQueue"
+            SET "State" = 'superseded',
+                "ClaimedAt" = NULL,
+                "ClaimToken" = NULL,
+                "UpdatedAt" = @Now
+            WHERE "IdempotencyKey" LIKE 'trend-music:request:%'
+              AND "State" IN ('pending', 'claimed', 'failed')
+              AND EXISTS (
+                  SELECT 1
+                  FROM "ZaloTrendMusicRenderQueue" AS newer
+                  WHERE newer."ConnectionId" = "ZaloTrendMusicRenderQueue"."ConnectionId"
+                    AND newer."GroupId" = "ZaloTrendMusicRenderQueue"."GroupId"
+                    AND newer."CandidatesJson" = "ZaloTrendMusicRenderQueue"."CandidatesJson"
+                    AND newer."IdempotencyKey" LIKE 'trend-music:request:%'
+                    AND (
+                        newer."CreatedAt" > "ZaloTrendMusicRenderQueue"."CreatedAt"
+                        OR (newer."CreatedAt" = "ZaloTrendMusicRenderQueue"."CreatedAt"
+                            AND newer."IdempotencyKey" > "ZaloTrendMusicRenderQueue"."IdempotencyKey")
+                    )
+              );
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        Add(command, "@Now", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task ExpireStaleAutomaticQueueAsync(
