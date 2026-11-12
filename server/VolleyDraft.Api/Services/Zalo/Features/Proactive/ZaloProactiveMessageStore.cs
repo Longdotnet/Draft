@@ -192,6 +192,24 @@ internal sealed class ZaloProactiveMessageStore(VolleyDraftDbContext db)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task ReleaseGroupLeaseAsync(
+        string connectionId,
+        string groupId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            DELETE FROM "ZaloProactiveSendLease"
+            WHERE "ConnectionId" = @ConnectionId
+              AND "GroupId" = @GroupId;
+            """;
+
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        AddParameter(command, "@ConnectionId", CleanId(connectionId));
+        AddParameter(command, "@GroupId", CleanId(groupId));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<bool> RecordAsync(
         ZaloProactiveMessageHistoryData item,
         CancellationToken cancellationToken = default)

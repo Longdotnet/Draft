@@ -2304,10 +2304,9 @@ public sealed class ZaloTrendMusicService(
             target.GroupId,
             [idempotencyKey, $"{idempotencyKey}:greeting"],
             cancellationToken);
-        await proactiveStore.ReleaseLeaseAsync(
+        await proactiveStore.ReleaseGroupLeaseAsync(
             target.ConnectionId,
             target.GroupId,
-            idempotencyKey,
             cancellationToken);
         await jobs.ResetDailyRenderAsync(
             target.ConnectionId,
