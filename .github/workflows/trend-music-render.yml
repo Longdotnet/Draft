@@ -1,5 +1,4 @@
 name: Trend music story renderer
-# one-shot repair trigger: refresh the queued 2026-11-12 morning story on production (attempt 3)
 
 on:
   push:
@@ -38,7 +37,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[repair-morning-20261112]') && format('trend-music-repair-{0}', github.sha) || 'trend-music-render-worker' }}
+  group: trend-music-render-worker
   cancel-in-progress: false
 
 permissions:
@@ -51,28 +50,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Recover refreshed morning greeting
-        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[repair-morning-20261112]')
-        shell: bash
-        env:
-          TREND_MUSIC_CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
-        run: |
-          set -euo pipefail
-          endpoint="https://draft-i1mq.onrender.com/api/internal/trend-music/recover-daily-greeting"
-          for attempt in $(seq 1 18); do
-            status="$(curl --connect-timeout 5 --max-time 20 -sS -o /tmp/recover.json -w '%{http_code}' \
-              -X POST "$endpoint" \
-              -H 'Content-Type: application/json' \
-              -H "x-trend-music-key: ${TREND_MUSIC_CALLBACK_KEY}" \
-              --data '{"groupId":"8891776946862922179","localDate":"2026-11-12","period":"morning"}' || true)"
-            cat /tmp/recover.json 2>/dev/null || true
-            if [[ "$status" == "200" ]]; then
-              exit 0
-            fi
-            echo "Recovery endpoint not ready yet (HTTP ${status}, attempt ${attempt}/18)"
-            sleep 10
-          done
-          exit 1
       - name: Ensure render dependencies
         shell: bash
         run: |
