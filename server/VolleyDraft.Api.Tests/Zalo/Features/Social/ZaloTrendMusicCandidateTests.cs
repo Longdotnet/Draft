@@ -7,6 +7,15 @@ namespace VolleyDraft.Api.Tests.Zalo.Features.Social;
 
 public sealed class ZaloTrendMusicCandidateTests
 {
+    [Theory]
+    [InlineData("trend-music:test:connection:group:token", true)]
+    [InlineData("trend-music:request:connection:group:token", false)]
+    [InlineData("trend-music:connection:group:2026-11-12:morning", false)]
+    public void Only_explicit_manual_test_bypasses_shared_proactive_cooldown(string key, bool expected)
+    {
+        Assert.Equal(expected, ZaloTrendMusicService.IsExplicitManualTest(key));
+    }
+
     [Fact]
     public void Apple_chart_uri_uses_vietnam_most_played_feed()
     {

@@ -1413,6 +1413,16 @@ public sealed class ZaloTrendMusicService(
             throw new InvalidOperationException("Trend music callback claim is stale or invalid.");
 
         var now = DateTimeOffset.UtcNow;
+        if (IsExplicitManualTest(request.IdempotencyKey))
+        {
+            // An operator-triggered test is intentionally immediate. Do not let an
+            // unrelated ambient/community lane hold the shared proactive cooldown
+            // and turn a deliberate test send into HTTP 409.
+            await proactiveStore.ReleaseGroupLeaseAsync(
+                target.ConnectionId,
+                target.GroupId,
+                cancellationToken);
+        }
         if (!await proactiveStore.TryAcquireLeaseAsync(
                 target.ConnectionId,
                 target.GroupId,
@@ -2294,6 +2304,9 @@ public sealed class ZaloTrendMusicService(
             ? request.IdempotencyKey
             : $"{request.IdempotencyKey}:claim:{claimToken}";
     }
+
+    internal static bool IsExplicitManualTest(string? idempotencyKey) =>
+        (idempotencyKey ?? string.Empty).StartsWith("trend-music:test:", StringComparison.Ordinal);
 
     private static string PeriodFromIdempotencyKey(string? idempotencyKey)
     {
