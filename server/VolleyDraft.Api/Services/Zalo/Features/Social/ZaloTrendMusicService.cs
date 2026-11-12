@@ -1221,6 +1221,17 @@ public sealed class ZaloTrendMusicService(
             ? "Tối rồi nha. Nghe chút nhạc nhẹ trước khi ngủ, chúc bạn ngủ thật ngon."
             : "Chào buổi sáng nha. Nghe chút nhạc nhẹ, mở đầu ngày mới thật dễ thương.";
 
+    internal static string RefreshDailyGreetingPayload(string payload, ZaloDailyGreetingKind kind)
+    {
+        var envelope = JsonSerializer.Deserialize<ZaloTrendMusicRenderEnvelope>(payload, JsonOptions)
+            ?? throw new InvalidOperationException("Daily greeting render queue payload is invalid.");
+        var refreshed = envelope with
+        {
+            Spec = envelope.Spec with { GreetingText = StoryGreetingText(kind) }
+        };
+        return JsonSerializer.Serialize(refreshed, JsonOptions);
+    }
+
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
         var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
@@ -2260,6 +2271,13 @@ public sealed class ZaloTrendMusicService(
         if (sentVideo is null)
             return new ZaloDailyGreetingRecoveryResult(false, groupId, localDate, period, null, false);
 
+        var queuedPayload = await jobs.GetQueuePayloadAsync(idempotencyKey, cancellationToken);
+        if (string.IsNullOrWhiteSpace(queuedPayload))
+            throw new InvalidOperationException("Daily greeting render queue entry was not found.");
+        var refreshedPayload = RefreshDailyGreetingPayload(
+            queuedPayload,
+            period == "night" ? ZaloDailyGreetingKind.Night : ZaloDailyGreetingKind.Morning);
+
         string? removedProviderMessageId = null;
         try
         {
@@ -2295,6 +2313,7 @@ public sealed class ZaloTrendMusicService(
             target.GroupId,
             $"{localDate}|{period}",
             idempotencyKey,
+            refreshedPayload,
             cancellationToken);
 
         var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
@@ -2731,6 +2750,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         string groupId,
         string jobDateKey,
         string idempotencyKey,
+        string candidatesJson,
         CancellationToken cancellationToken)
     {
         await EnsureAsync(cancellationToken);
@@ -2742,6 +2762,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                              "AttemptCount" = 0,
                              "ClaimedAt" = NULL,
                              "ClaimToken" = NULL,
+                             "CandidatesJson" = @CandidatesJson,
                              "UpdatedAt" = @Now
                          WHERE "IdempotencyKey" = @IdempotencyKey;
                          """,
@@ -2749,6 +2770,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         {
             Add(queue, "@Now", now);
             Add(queue, "@IdempotencyKey", idempotencyKey);
+            Add(queue, "@CandidatesJson", candidatesJson);
             if (await queue.ExecuteNonQueryAsync(cancellationToken) == 0)
                 throw new InvalidOperationException("Daily greeting render queue entry was not found.");
         }

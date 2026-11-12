@@ -1,5 +1,6 @@
 using VolleyDraft.Api.Services;
 using VolleyDraft.Api.Contracts;
+using System.Text.Json;
 using Xunit;
 
 namespace VolleyDraft.Api.Tests.Zalo.Features.Social;
@@ -25,6 +26,42 @@ public sealed class ZaloTrendMusicCandidateTests
         Assert.Contains("ngủ thật ngon", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("trước khi ngủ", text, StringComparison.OrdinalIgnoreCase);
         Assert.True(text.Length < 100);
+    }
+
+    [Fact]
+    public void Daily_greeting_recovery_refreshes_only_story_overlay_copy()
+    {
+        var payload = """
+            {
+              "candidates": [{
+                "id":"ccmixter-1","title":"Song","artist":"Artist","rank":1,
+                "mediaType":"audio","mediaUrl":"https://example.com/song.mp3",
+                "sourceUrl":"https://example.com/source","licenseLabel":"CC BY 3.0"
+              }],
+              "spec": {
+                "period":"morning","greetingEnabled":true,
+                "greetingText":"Old long greeting",
+                "displayTitle":null,"displayArtist":null,"artworkUrl":null,
+                "showLogo":true,"canonicalGreetingText":"Canonical greeting"
+              },
+              "songQuery":null
+            }
+            """;
+
+        var refreshed = ZaloTrendMusicService.RefreshDailyGreetingPayload(
+            payload,
+            ZaloDailyGreetingKind.Morning);
+
+        using var document = JsonDocument.Parse(refreshed);
+        var spec = document.RootElement.GetProperty("spec");
+        Assert.Equal(
+            ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Morning),
+            spec.GetProperty("greetingText").GetString());
+        Assert.DoesNotContain("Old long greeting", refreshed, StringComparison.Ordinal);
+        Assert.Equal("Canonical greeting", spec.GetProperty("canonicalGreetingText").GetString());
+        var candidate = document.RootElement.GetProperty("candidates")[0];
+        Assert.Equal("ccmixter-1", candidate.GetProperty("id").GetString());
+        Assert.Equal("CC BY 3.0", candidate.GetProperty("licenseLabel").GetString());
     }
 
     [Fact]
