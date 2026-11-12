@@ -76,6 +76,7 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
              path.Equals("/api/internal/trend-music/render-claim", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/trend-music/render-progress", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/trend-music/render-complete", StringComparison.OrdinalIgnoreCase) ||
+             path.Equals("/api/internal/trend-music/recover-daily-greeting", StringComparison.OrdinalIgnoreCase) ||
              path.Equals("/api/internal/zyro-mapping/profiles/sync", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
