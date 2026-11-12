@@ -2259,6 +2259,13 @@ public sealed class ZaloTrendMusicService(
             throw new InvalidOperationException("The requested Zalo group is not an active proactive target.");
 
         var idempotencyKey = $"trend-music:{target.ConnectionId}:{target.GroupId}:{localDate}:{period}";
+        var queuedPayload = await jobs.GetQueuePayloadAsync(idempotencyKey, cancellationToken);
+        if (string.IsNullOrWhiteSpace(queuedPayload))
+            throw new InvalidOperationException("Daily greeting render queue entry was not found.");
+        var refreshedPayload = RefreshDailyGreetingPayload(
+            queuedPayload,
+            period == "night" ? ZaloDailyGreetingKind.Night : ZaloDailyGreetingKind.Morning);
+
         var history = await proactiveStore.GetHistoryAsync(
             target.ConnectionId,
             target.GroupId,
@@ -2268,34 +2275,28 @@ public sealed class ZaloTrendMusicService(
             string.Equals(item.IdempotencyKey, idempotencyKey, StringComparison.Ordinal) &&
             string.Equals(item.Lane, ZaloProactiveLane.TrendMusic, StringComparison.Ordinal) &&
             !string.IsNullOrWhiteSpace(item.ProviderMessageId));
-        if (sentVideo is null)
-            return new ZaloDailyGreetingRecoveryResult(false, groupId, localDate, period, null, false);
-
-        var queuedPayload = await jobs.GetQueuePayloadAsync(idempotencyKey, cancellationToken);
-        if (string.IsNullOrWhiteSpace(queuedPayload))
-            throw new InvalidOperationException("Daily greeting render queue entry was not found.");
-        var refreshedPayload = RefreshDailyGreetingPayload(
-            queuedPayload,
-            period == "night" ? ZaloDailyGreetingKind.Night : ZaloDailyGreetingKind.Morning);
 
         string? removedProviderMessageId = null;
-        try
+        if (sentVideo is not null)
         {
-            var undo = await bridge.UndoGroupMessageAsync(
-                target.AccountId,
-                target.GroupId,
-                sentVideo.ProviderMessageId!,
-                cancellationToken);
-            if (undo.Undone)
-                removedProviderMessageId = sentVideo.ProviderMessageId;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception,
-                "Could not withdraw legacy daily greeting; continuing replacement Group={GroupId} ProviderMessageId={ProviderMessageId}",
-                target.GroupId,
-                sentVideo.ProviderMessageId);
+            try
+            {
+                var undo = await bridge.UndoGroupMessageAsync(
+                    target.AccountId,
+                    target.GroupId,
+                    sentVideo.ProviderMessageId!,
+                    cancellationToken);
+                if (undo.Undone)
+                    removedProviderMessageId = sentVideo.ProviderMessageId;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Could not withdraw legacy daily greeting; continuing replacement Group={GroupId} ProviderMessageId={ProviderMessageId}",
+                    target.GroupId,
+                    sentVideo.ProviderMessageId);
+            }
         }
 
         await proactiveStore.DeleteByIdempotencyKeysAsync(
@@ -2763,6 +2764,7 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
                              "ClaimedAt" = NULL,
                              "ClaimToken" = NULL,
                              "CandidatesJson" = @CandidatesJson,
+                             "CreatedAt" = @Now,
                              "UpdatedAt" = @Now
                          WHERE "IdempotencyKey" = @IdempotencyKey;
                          """,
