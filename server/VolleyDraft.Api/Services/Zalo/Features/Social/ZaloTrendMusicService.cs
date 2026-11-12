@@ -1034,7 +1034,7 @@ public sealed class ZaloTrendMusicService(
         {
             candidates = await LoadDailyCandidatesCachedAsync(settings, now, cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning(
                 exception,
@@ -1119,6 +1119,32 @@ public sealed class ZaloTrendMusicService(
             localDate,
             period,
             candidates.Count);
+        if (snapshotInserted && settings.CanDirectDispatch)
+        {
+            try
+            {
+                await renderDispatcher.WakeQueueWorkerAsync(
+                    settings.GitHubToken,
+                    settings.GitHubRepository,
+                    settings.GitHubWorkflow,
+                    settings.GitHubRef,
+                    cancellationToken);
+                logger.LogInformation(
+                    "Daily greeting queue worker woken immediately Group={GroupId} Date={LocalDate} Period={Period}",
+                    target.GroupId,
+                    localDate,
+                    period);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Daily greeting immediate worker wake failed; queued cron fallback remains Group={GroupId} Date={LocalDate} Period={Period}",
+                    target.GroupId,
+                    localDate,
+                    period);
+            }
+        }
         return true;
     }
 
@@ -1186,7 +1212,27 @@ public sealed class ZaloTrendMusicService(
     {
         var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
         if (!settings.IsConfigured || !TrendMusicInternalAuthorization.IsConfigured(configuration)) return;
-        if (settings.UseDailyRhythm) return;
+        if (settings.UseDailyRhythm)
+        {
+            if (settings.CanDirectDispatch && await jobs.HasPendingQueueAsync(cancellationToken))
+            {
+                try
+                {
+                    await renderDispatcher.WakeQueueWorkerAsync(
+                        settings.GitHubToken,
+                        settings.GitHubRepository,
+                        settings.GitHubWorkflow,
+                        settings.GitHubRef,
+                        cancellationToken);
+                    logger.LogInformation("Pending daily trend-music queue worker woken during reconciliation");
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogWarning(exception, "Pending daily trend-music queue wake failed; cron fallback remains");
+                }
+            }
+            return;
+        }
 
         var now = DateTimeOffset.UtcNow;
         var local = now.ToOffset(VietnamOffset);
@@ -2558,6 +2604,21 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         Add(command, "@IdempotencyKey", idempotencyKey.Trim());
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
+    }
+
+    public async Task<bool> HasPendingQueueAsync(CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM "ZaloTrendMusicRenderQueue"
+                WHERE "State" = 'pending'
+            );
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null and not DBNull && Convert.ToBoolean(result, CultureInfo.InvariantCulture);
     }
 
     public async Task<ZaloTrendMusicRenderClaim?> TryClaimQueueAsync(
