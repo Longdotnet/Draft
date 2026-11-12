@@ -354,7 +354,7 @@ public sealed class ZaloTrendMusicService(
                 }
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning(
                 exception,
@@ -2260,13 +2260,25 @@ public sealed class ZaloTrendMusicService(
         if (sentVideo is null)
             return new ZaloDailyGreetingRecoveryResult(false, groupId, localDate, period, null, false);
 
-        var undo = await bridge.UndoGroupMessageAsync(
-            target.AccountId,
-            target.GroupId,
-            sentVideo.ProviderMessageId!,
-            cancellationToken);
-        if (!undo.Undone)
-            throw new InvalidOperationException("Zalo did not confirm the old daily greeting was withdrawn.");
+        string? removedProviderMessageId = null;
+        try
+        {
+            var undo = await bridge.UndoGroupMessageAsync(
+                target.AccountId,
+                target.GroupId,
+                sentVideo.ProviderMessageId!,
+                cancellationToken);
+            if (undo.Undone)
+                removedProviderMessageId = sentVideo.ProviderMessageId;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Could not withdraw legacy daily greeting; continuing replacement Group={GroupId} ProviderMessageId={ProviderMessageId}",
+                target.GroupId,
+                sentVideo.ProviderMessageId);
+        }
 
         await proactiveStore.DeleteByIdempotencyKeysAsync(
             target.ConnectionId,
@@ -2302,14 +2314,14 @@ public sealed class ZaloTrendMusicService(
             target.GroupId,
             localDate,
             period,
-            sentVideo.ProviderMessageId,
+            removedProviderMessageId,
             workerWoken);
         return new ZaloDailyGreetingRecoveryResult(
             true,
             groupId,
             localDate,
             period,
-            sentVideo.ProviderMessageId,
+            removedProviderMessageId,
             workerWoken);
     }
 }

@@ -381,13 +381,14 @@ app.post("/v1/group-messages/undo", async (request, response) => {
   const accountId = String(request.body?.accountId ?? "").trim();
   const groupId = String(request.body?.groupId ?? "").trim();
   const messageId = String(request.body?.messageId ?? "").trim();
+  const cliMsgId = String(request.body?.cliMsgId ?? "").trim() || null;
   if (!accountId || !groupId || !messageId) {
     response.status(400).json({ error: "accountId, groupId and messageId are required" });
     return;
   }
   response.json(await zaloProviderTrafficGovernor.runWithAccount(
     accountId,
-    () => undoGroupMessage(accountId, groupId, messageId),
+    () => undoGroupMessage(accountId, groupId, messageId, cliMsgId),
     "message.undo",
   ));
 });

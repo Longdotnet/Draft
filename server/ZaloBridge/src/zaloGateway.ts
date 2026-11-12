@@ -257,6 +257,7 @@ export type QrLoginSession = {
 const qrSessions = new Map<string, QrLoginSession>();
 const apiCache = new Map<string, { api: MinimalZaloApi; lastUsed: number }>();
 const activeListeners = new Map<string, ActiveListener>();
+const outboundCliMsgIds = new Map<string, { cliMsgId: string; expiresAt: number }>();
 const unavailableGroupLinkDirectories = new Map<string, number>();
 const unavailableGroupLinkDirectoryRetryMs = 15 * 60_000;
 const mockMode = process.env.ZALO_BRIDGE_MOCK === "true";
@@ -309,7 +310,7 @@ async function getApi(credentials: ZaloCredentials, governLogin = true): Promise
     return governReadApi(credentials, cached.api);
   }
 
-  const zalo = new Zalo({ logging: false, checkUpdate: false });
+  const zalo = new Zalo({ logging: false, checkUpdate: false, selfListen: true });
   const api = governLogin
     ? await zaloProviderTrafficGovernor.runWithCredentials(
         credentials,
@@ -516,9 +517,22 @@ function handleSeenMessages(accountId: string, listener: ActiveListener, events:
 }
 
 async function handleIncomingMessage(accountId: string, listener: ActiveListener, message: MinimalMessage) {
-  if (message.type !== ThreadType.Group || message.isSelf || typeof message.data.content !== "string") return;
+  if (message.type !== ThreadType.Group) return;
   const groupId = normalizeId(message.threadId);
   if (!listener.groupIds.has(groupId)) return;
+
+  if (message.isSelf) {
+    const messageId = normalizeId(String(message.data.msgId ?? ""));
+    const cliMsgId = normalizeId(String(message.data.cliMsgId ?? ""));
+    if (messageId && cliMsgId) {
+      outboundCliMsgIds.set(`${accountId}:${groupId}:${messageId}`, {
+        cliMsgId,
+        expiresAt: Date.now() + 30 * 24 * 60 * 60_000,
+      });
+    }
+    return;
+  }
+  if (typeof message.data.content !== "string") return;
 
   const messageId = normalizeId(String(message.data.msgId || message.data.cliMsgId || ""));
   const senderId = normalizeMemberId(String(message.data.uidFrom ?? ""));
@@ -830,6 +844,7 @@ export async function undoGroupMessage(
   accountIdValue: string,
   groupIdValue: string,
   messageIdValue: string,
+  cliMsgIdValue?: string | null,
 ): Promise<{ undone: boolean; messageId: string; status: number | null }> {
   const accountId = normalizeMemberId(accountIdValue);
   const groupId = normalizeId(groupIdValue);
@@ -839,21 +854,21 @@ export async function undoGroupMessage(
   if (!listener.api) throw new Error("Zalo provider API is not available for undo");
   if (!groupId || !messageId) throw new Error("Group ID and message ID are required");
   if (mockMode) return { undone: true, messageId, status: 0 };
-
-  const history = await listener.api.getGroupChatHistory(groupId, 500);
-  const match = (history.groupMsgs ?? []).find((item) => {
-    const data = item.data;
-    if (!data) return false;
-    return normalizeId(String(data.msgId ?? data.actionId ?? "")) === messageId &&
-      (item.isSelf === true || normalizeMemberId(String(data.uidFrom ?? "")) === listener.botId);
-  });
-  const cliMsgId = normalizeId(String(match?.data?.cliMsgId ?? ""));
-  if (!match?.data || !cliMsgId) throw new Error("Could not resolve cliMsgId for the outbound Zalo message");
+  const cacheKey = `${accountId}:${groupId}:${messageId}`;
+  const cached = outboundCliMsgIds.get(cacheKey);
+  if (cached && cached.expiresAt <= Date.now()) outboundCliMsgIds.delete(cacheKey);
+  const cliMsgId = normalizeId(String(
+    (cached && cached.expiresAt > Date.now() ? cached.cliMsgId : null) ?? cliMsgIdValue ?? "",
+  ));
+  if (!cliMsgId) {
+    throw new Error("Outbound cliMsgId is unavailable; this message predates self-listen recall tracking");
+  }
   const result = await listener.api.undo(
     { msgId: messageId, cliMsgId },
     groupId,
     ThreadType.Group,
   );
+  outboundCliMsgIds.delete(cacheKey);
   return { undone: true, messageId, status: Number(result.status ?? 0) };
 }
 
