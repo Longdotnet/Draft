@@ -216,10 +216,15 @@ def clean_story_text(value: str, limit: int) -> str:
 def safe_text(path: pathlib.Path, value: str, limit: int = 140) -> None:
     path.write_text(clean_story_text(value, limit), encoding="utf-8")
 
-def safe_greeting(path: pathlib.Path, value: str) -> None:
+def safe_greeting(path: pathlib.Path, value: str) -> tuple[pathlib.Path, ...]:
     clean = clean_story_text(value, 280)
     lines = textwrap.wrap(clean, width=28, break_long_words=False, break_on_hyphens=False)[:3]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    line_files: list[pathlib.Path] = []
+    for index, line in enumerate(lines, start=1):
+        line_path = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        line_path.write_bytes(line.encode("utf-8"))
+        line_files.append(line_path)
+    return tuple(line_files)
 
 def safe_wrapped_text(path: pathlib.Path, value: str, width: int, max_lines: int, limit: int) -> None:
     clean = clean_story_text(value, limit)
@@ -261,7 +266,7 @@ def font_files() -> tuple[pathlib.Path, pathlib.Path]:
 def draw_filters(
     title_file: pathlib.Path,
     artist_file: pathlib.Path,
-    greeting_file: pathlib.Path,
+    greeting_files: tuple[pathlib.Path, ...],
     greeting_enabled: bool,
 ) -> str:
     bold, regular = font_files()
@@ -269,12 +274,14 @@ def draw_filters(
     regular_path = filter_path(regular)
     title_path = filter_path(title_file)
     artist_path = filter_path(artist_file)
-    greeting_path = filter_path(greeting_file)
-    greeting = (
-        f"drawtext=fontfile={bold_path}:textfile={greeting_path}:fontcolor=0xF8FAFC:fontsize=58:"
-        "line_spacing=18:x=92:y=190:fix_bounds=true:shadowcolor=black@0.72:shadowx=3:shadowy=4,"
-        if greeting_enabled else ""
-    )
+    greeting = ""
+    if greeting_enabled:
+        greeting = "".join(
+            f"drawtext=fontfile={bold_path}:textfile={filter_path(line_file)}:"
+            "fontcolor=0xF8FAFC:fontsize=58:x=92:"
+            f"y={190 + (index * 82)}:fix_bounds=true:shadowcolor=black@0.72:shadowx=3:shadowy=4,"
+            for index, line_file in enumerate(greeting_files)
+        )
     return (
         greeting
         + "drawbox=x=92:y=1414:w=104:h=6:color=0xF8FAFC@0.92:t=fill,"
@@ -284,14 +291,18 @@ def draw_filters(
           "x=94:y=1620:fix_bounds=true:shadowcolor=black@0.62:shadowx=2:shadowy=3"
     )
 
-def prepare_text_files(candidate: dict, spec: dict, work: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+def prepare_text_files(
+    candidate: dict,
+    spec: dict,
+    work: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path, tuple[pathlib.Path, ...]]:
     title_file = work / "title.txt"
     artist_file = work / "artist.txt"
     greeting_file = work / "greeting.txt"
     safe_wrapped_text(title_file, str(spec.get("displayTitle") or candidate.get("title") or "Daily Mix"), 22, 2, 96)
     safe_wrapped_text(artist_file, str(spec.get("displayArtist") or candidate.get("artist") or "Zyro Volleyball Club"), 30, 1, 72)
-    safe_greeting(greeting_file, str(spec.get("greetingText") or ""))
-    return title_file, artist_file, greeting_file
+    greeting_files = safe_greeting(greeting_file, str(spec.get("greetingText") or ""))
+    return title_file, artist_file, greeting_files
 
 def is_small_profile_artwork(url: str) -> bool:
     match = re.search(r"(?<!\d)(\d{2,3})x(\d{2,3})(?=\D|$)", url, re.IGNORECASE)
@@ -460,7 +471,7 @@ def render_curated_audio_story(
     background: pathlib.Path,
     title_file: pathlib.Path,
     artist_file: pathlib.Path,
-    greeting_file: pathlib.Path,
+    greeting_files: tuple[pathlib.Path, ...],
     greeting_enabled: bool,
     logo: pathlib.Path | None,
     output: pathlib.Path,
@@ -470,7 +481,7 @@ def render_curated_audio_story(
         f"[aout0]afade=t=in:st=0:d=0.7,afade=t=out:st={fade_out_start(2.0)}:d=2[aout];"
         "[viz]anullsink;"
         + curated_background_filters("0:v", spec)
-        + f"[storybg]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+        + f"[storybg]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
     )
     logo_input = 2 if logo is not None else None
     filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -491,7 +502,7 @@ def render_curated_audio_story(
 def render_video_candidate(candidate: dict, spec: dict, work: pathlib.Path, output: pathlib.Path) -> None:
     media = work / "source-video"
     download(candidate["mediaUrl"], media, candidate.get("sourceUrl"))
-    title_file, artist_file, greeting_file = prepare_text_files(candidate, spec, work)
+    title_file, artist_file, greeting_files = prepare_text_files(candidate, spec, work)
     greeting_enabled = bool(spec.get("greetingEnabled", False) and spec.get("greetingText"))
     logo = logo_file(work) if bool(spec.get("showLogo", True)) else None
     override_artwork_url = str(spec.get("artworkUrl") or "").strip()
@@ -501,7 +512,7 @@ def render_video_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
             download(override_artwork_url, artwork)
             filters = (
                 story_artwork_filters("0:v", spec)
-                + f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+                + f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
             )
             logo_input = 2 if logo is not None else None
             filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -528,7 +539,7 @@ def render_video_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
         "setsar=1,boxblur=36:3,eq=brightness=-0.24:contrast=1.05:saturation=0.82,vignette=PI/5[bg];"
         "[fg0]scale=900:1080:force_original_aspect_ratio=decrease:flags=lanczos,setsar=1[fg];"
         "[bg][fg]overlay=(W-w)/2:520:eval=frame,setsar=1[visual];"
-        f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+        f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
     )
     logo_input = 1 if logo is not None else None
     filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -556,7 +567,7 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
     configure_duration_for_audio(audio)
     artwork_url = str(spec.get("artworkUrl") or candidate.get("artworkUrl") or "").strip()
     local_artwork = local_candidate_file(candidate, "artworkPath")
-    title_file, artist_file, greeting_file = prepare_text_files(candidate, spec, work)
+    title_file, artist_file, greeting_files = prepare_text_files(candidate, spec, work)
     greeting_enabled = bool(spec.get("greetingEnabled", False) and spec.get("greetingText"))
     logo = logo_file(work) if bool(spec.get("showLogo", True)) else None
     if local_artwork is not None:
@@ -572,7 +583,7 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
         if curated is not None:
             render_curated_audio_story(
                 candidate, spec, audio, curated,
-                title_file, artist_file, greeting_file, greeting_enabled, logo, output)
+                title_file, artist_file, greeting_files, greeting_enabled, logo, output)
             return
         filters = (
             "[1:a]asplit=2[aout0][viz];"
@@ -580,7 +591,7 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
             "[viz]showwaves=s=920x420:mode=cline:rate=30:colors=0xE5E7EB,format=rgba[wave];"
             "[0:v]noise=alls=2:allf=t,eq=brightness=-0.08:saturation=0.65[bg];"
             "[bg][wave]overlay=80:650[visual];"
-            f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+            f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
         )
         logo_input = 2 if logo is not None else None
         filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -609,17 +620,17 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
             )
             render_curated_audio_story(
                 candidate, spec, audio, curated,
-                title_file, artist_file, greeting_file, greeting_enabled, logo, output)
+                title_file, artist_file, greeting_files, greeting_enabled, logo, output)
             return
         if is_low_resolution_artwork(artwork, artwork_url):
             filters = (
                 story_artwork_filters("0:v", spec, small_profile=True)
-                + f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+                + f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
             )
         else:
             filters = (
                 story_artwork_filters("0:v", spec)
-                + f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+                + f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
             )
         logo_input = 2 if logo is not None else None
         filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -647,7 +658,7 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
 
 def render_fallback(spec: dict, work: pathlib.Path, output: pathlib.Path) -> dict:
     selected = {"id": "zyro-daily-fallback", "title": "Zyro Daily Mix", "artist": "Zyro Volleyball Club", "rank": 0}
-    title_file, artist_file, greeting_file = prepare_text_files(selected, spec, work)
+    title_file, artist_file, greeting_files = prepare_text_files(selected, spec, work)
     greeting_enabled = bool(spec.get("greetingEnabled", False) and spec.get("greetingText"))
     logo = logo_file(work) if bool(spec.get("showLogo", True)) else None
     original_audio = (
@@ -664,7 +675,7 @@ def render_fallback(spec: dict, work: pathlib.Path, output: pathlib.Path) -> dic
             filters = (
                 f"[1:a]volume=0.70,afade=t=in:st=0:d=1,afade=t=out:st={fade_out_start(2.0)}:d=2[aout];"
                 + story_artwork_filters("0:v", spec)
-                + f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+                + f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
             )
             logo_input = 2 if logo is not None else None
             filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -692,7 +703,7 @@ def render_fallback(spec: dict, work: pathlib.Path, output: pathlib.Path) -> dic
             f"[raw]volume=0.70,afade=t=in:st=0:d=1,afade=t=out:st={fade_out_start(2.0)}:d=2[aout];"
             "[viz]anullsink;"
             + curated_background_filters("0:v", spec)
-            + f"[storybg]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+            + f"[storybg]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
         )
         logo_input = 2 if logo is not None else None
         filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -717,7 +728,7 @@ def render_fallback(spec: dict, work: pathlib.Path, output: pathlib.Path) -> dic
         "[viz]showwaves=s=920x420:mode=cline:rate=30:colors=0xE5E7EB,format=rgba[wave];"
         "[0:v]noise=alls=2:allf=t,eq=brightness=-0.08:saturation=0.65[bg];"
         "[bg][wave]overlay=80:650[visual];"
-        f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+        f"[visual]{draw_filters(title_file, artist_file, greeting_files, greeting_enabled)}[base]"
     )
     logo_input = 2 if logo is not None else None
     filters, video_map = finish_with_logo(filters, "base", logo_input)

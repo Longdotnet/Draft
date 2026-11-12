@@ -58,15 +58,29 @@ class StoryRenderContractTests(unittest.TestCase):
     def test_greeting_wrap_is_bounded_for_story_safe_zone(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             target = pathlib.Path(temp) / "greeting.txt"
-            render_story.safe_greeting(
+            line_files = render_story.safe_greeting(
                 target,
                 "Chúc bạn ngủ ngon nha. Nghe đoạn nhạc nhẹ nhàng này trước khi ngủ nha, iu bạn. "
                 "Mong ngày mai thức dậy với một chiếc mood thật dễ thương.",
             )
-            lines = target.read_text(encoding="utf-8").splitlines()
+            lines = [path.read_text(encoding="utf-8") for path in line_files]
 
-        self.assertLessEqual(len(lines), 4)
-        self.assertTrue(all(len(line) <= 46 for line in lines))
+        self.assertLessEqual(len(lines), 3)
+        self.assertTrue(all(len(line) <= 28 for line in lines))
+
+    def test_greeting_drawtext_never_receives_newline_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            line_files = render_story.safe_greeting(
+                root / "greeting.txt",
+                "Chào buổi sáng nha. Nghe chút nhạc nhẹ, mở đầu ngày mới thật dễ thương.",
+            )
+
+            self.assertEqual(3, len(line_files))
+            for path in line_files:
+                payload = path.read_bytes()
+                self.assertNotIn(b"\n", payload)
+                self.assertNotIn(b"\r", payload)
 
     def test_image_dimensions_detects_small_ccmixter_style_jpeg_without_pillow(self) -> None:
         # Minimal JPEG SOF0 stream; enough to exercise the stdlib-only dimension parser.
