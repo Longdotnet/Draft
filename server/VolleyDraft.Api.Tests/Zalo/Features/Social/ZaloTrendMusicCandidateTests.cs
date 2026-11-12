@@ -8,6 +8,84 @@ namespace VolleyDraft.Api.Tests.Zalo.Features.Social;
 public sealed class ZaloTrendMusicCandidateTests
 {
     [Fact]
+    public void Apple_chart_uri_uses_vietnam_most_played_feed()
+    {
+        var uri = ZaloTrendMusicService.BuildAppleChartUri("VN", 25);
+
+        Assert.Equal("https://rss.applemarketingtools.com/api/v2/vn/music/most-played/25/songs.json", uri);
+    }
+
+    [Fact]
+    public void Apple_chart_and_lookup_parser_keep_hot_order_and_preview_assets()
+    {
+        var chart = """
+            {"feed":{"results":[
+              {"id":"6827404203","name":"Như Một Người Rưng"},
+              {"id":"6808519787","name":"LAVIEM"},
+              {"id":"6827404203","name":"Duplicate"}
+            ]}}
+            """;
+        var ids = ZaloTrendMusicService.ParseAppleChartTrackIds(chart, 25);
+        Assert.Equal(new[] { "6827404203", "6808519787" }, ids);
+
+        var lookup = """
+            {"results":[
+              {
+                "trackId":6808519787,"trackName":"LAVIEM","artistName":"TINH HÀ SAY HI",
+                "previewUrl":"https://audio-ssl.itunes.apple.com/itunes-assets/laviem.m4a",
+                "trackViewUrl":"https://music.apple.com/vn/album/laviem/6808519787",
+                "artworkUrl100":"https://is1-ssl.mzstatic.com/image/thumb/laviem/100x100bb.jpg"
+              },
+              {
+                "trackId":6827404203,"trackName":"Như Một Người Rưng","artistName":"OSAD & Hà An Huy",
+                "previewUrl":"https://audio-ssl.itunes.apple.com/itunes-assets/rung.m4a",
+                "trackViewUrl":"https://music.apple.com/vn/album/nhu-mot-nguoi-rung/6827404203",
+                "artworkUrl100":"https://is1-ssl.mzstatic.com/image/thumb/rung/100x100bb.jpg"
+              }
+            ]}
+            """;
+
+        var candidates = ZaloTrendMusicService.ParseAppleLookupCandidates(lookup, ids, 8);
+
+        Assert.Collection(candidates,
+            first =>
+            {
+                Assert.Equal("itunes-6827404203", first.Id);
+                Assert.Equal("Như Một Người Rưng", first.Title);
+                Assert.Equal(1, first.Rank);
+                Assert.Equal("Apple Music preview", first.LicenseLabel);
+                Assert.Contains("600x600bb.jpg", first.ArtworkUrl);
+            },
+            second =>
+            {
+                Assert.Equal("itunes-6808519787", second.Id);
+                Assert.Equal("LAVIEM", second.Title);
+                Assert.Equal(2, second.Rank);
+            });
+    }
+
+    [Fact]
+    public void Daily_rotation_advances_between_morning_night_and_next_morning()
+    {
+        var candidates = Enumerable.Range(1, 8)
+            .Select(rank => new ZaloTrendMusicCandidate(
+                $"itunes-{rank}", $"Song {rank}", "Artist", rank, "audio",
+                $"https://audio-ssl.itunes.apple.com/{rank}.m4a",
+                $"https://is1-ssl.mzstatic.com/{rank}.jpg", $"TOP #{rank}",
+                $"https://music.apple.com/vn/song/{rank}", null, "Apple Music preview"))
+            .ToArray();
+
+        var morning = ZaloTrendMusicService.RotateDailyCandidates(candidates, "group-1", "2026-11-12", "morning");
+        var night = ZaloTrendMusicService.RotateDailyCandidates(candidates, "group-1", "2026-11-12", "night");
+        var nextMorning = ZaloTrendMusicService.RotateDailyCandidates(candidates, "group-1", "2026-11-13", "morning");
+
+        Assert.NotEqual(morning[0].Id, night[0].Id);
+        Assert.NotEqual(night[0].Id, nextMorning[0].Id);
+        Assert.NotEqual(morning[0].Id, nextMorning[0].Id);
+        Assert.Equal(8, morning.Select(item => item.Id).Distinct().Count());
+    }
+
+    [Fact]
     public void Story_greeting_combines_morning_wish_with_music_invitation()
     {
         var text = ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Morning);

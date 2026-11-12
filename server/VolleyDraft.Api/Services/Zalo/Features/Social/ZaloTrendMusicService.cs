@@ -127,6 +127,8 @@ internal sealed record ZaloTrendMusicSettings(
     bool Enabled,
     string FeedUrl,
     string JamendoClientId,
+    string AppleStorefront,
+    int AppleChartLimit,
     string GitHubToken,
     string GitHubRepository,
     string GitHubWorkflow,
@@ -144,6 +146,8 @@ internal sealed record ZaloTrendMusicSettings(
             configuration.GetValue("ZaloBot:Ambient:TrendMusic:Enabled", false),
             configuration["ZaloBot:Ambient:TrendMusic:FeedUrl"]?.Trim() ?? string.Empty,
             configuration["ZaloBot:Ambient:TrendMusic:JamendoClientId"]?.Trim() ?? string.Empty,
+            NormalizeAppleStorefront(configuration["ZaloBot:Ambient:TrendMusic:AppleStorefront"]),
+            Math.Clamp(configuration.GetValue("ZaloBot:Ambient:TrendMusic:AppleChartLimit", 25), 10, 100),
             configuration["ZaloBot:Ambient:TrendMusic:GitHubToken"]?.Trim() ?? string.Empty,
             configuration["ZaloBot:Ambient:TrendMusic:GitHubRepository"]?.Trim() ?? "Longdotnet/Draft",
             configuration["ZaloBot:Ambient:TrendMusic:GitHubWorkflow"]?.Trim() ?? "trend-music-render.yml",
@@ -154,6 +158,12 @@ internal sealed record ZaloTrendMusicSettings(
             Math.Clamp(configuration.GetValue("ZaloBot:Ambient:TrendMusic:EndHour", 9), 1, 24),
             Math.Clamp(configuration.GetValue("ZaloBot:Ambient:TrendMusic:MaxCandidates", 5), 1, 8),
             Math.Clamp(configuration.GetValue("ZaloBot:Ambient:TrendMusic:RetryMinutes", 35), 10, 180));
+    }
+
+    private static string NormalizeAppleStorefront(string? value)
+    {
+        var normalized = (value ?? "VN").Trim().ToUpperInvariant();
+        return normalized.Length == 2 && normalized.All(char.IsLetter) ? normalized : "VN";
     }
 
     public bool IsConfigured => Enabled;
@@ -1046,6 +1056,7 @@ public sealed class ZaloTrendMusicService(
         try
         {
             candidates = await LoadDailyCandidatesCachedAsync(settings, now, cancellationToken);
+            candidates = RotateDailyCandidates(candidates, target.GroupId, localDate, period);
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -1166,7 +1177,11 @@ public sealed class ZaloTrendMusicService(
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var cacheKey = ("ZaloTrendMusicDailyCandidates", settings.FeedUrl, settings.JamendoClientId, settings.MaxCandidates);
+        var cacheKey = (
+            "ZaloTrendMusicDailyCandidatesApple",
+            settings.AppleStorefront,
+            settings.AppleChartLimit,
+            settings.MaxCandidates);
         if (memoryCache.TryGetValue<IReadOnlyList<ZaloTrendMusicCandidate>>(cacheKey, out var cached) && cached is not null)
             return cached;
 
@@ -1727,21 +1742,170 @@ public sealed class ZaloTrendMusicService(
         ZaloTrendMusicSettings settings,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(settings.JamendoClientId))
-            return await LoadJamendoCandidatesAsync(settings, cancellationToken);
-        if (!settings.FeedUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            return await LoadCcMixterCandidatesAsync(settings.MaxCandidates, cancellationToken);
+        return await LoadAppleHotCandidatesAsync(settings, cancellationToken);
+    }
 
+    private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> LoadAppleHotCandidatesAsync(
+        ZaloTrendMusicSettings settings,
+        CancellationToken cancellationToken)
+    {
         var client = httpClientFactory.CreateClient("TrendMusicFeed");
-        using var response = await client.GetAsync(settings.FeedUrl, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        var feed = JsonSerializer.Deserialize<ZaloTrendMusicFeed>(json, JsonOptions);
-        return (feed?.Items ?? [])
-            .Where(IsUsableCandidate)
-            .OrderBy(item => item.Rank <= 0 ? int.MaxValue : item.Rank)
-            .Take(settings.MaxCandidates)
+        using var chartResponse = await client.GetAsync(
+            BuildAppleChartUri(settings.AppleStorefront, settings.AppleChartLimit),
+            cancellationToken);
+        chartResponse.EnsureSuccessStatusCode();
+        var chartJson = await chartResponse.Content.ReadAsStringAsync(cancellationToken);
+        var chartIds = ParseAppleChartTrackIds(chartJson, settings.AppleChartLimit);
+        if (chartIds.Count == 0) return [];
+
+        using var lookupResponse = await client.GetAsync(
+            BuildAppleLookupUri(settings.AppleStorefront, chartIds),
+            cancellationToken);
+        lookupResponse.EnsureSuccessStatusCode();
+        var lookupJson = await lookupResponse.Content.ReadAsStringAsync(cancellationToken);
+        return ParseAppleLookupCandidates(lookupJson, chartIds, settings.MaxCandidates);
+    }
+
+    internal static string BuildAppleChartUri(string storefront, int chartLimit)
+    {
+        var country = NormalizeAppleCountry(storefront);
+        var limit = Math.Clamp(chartLimit, 10, 100);
+        return $"https://rss.applemarketingtools.com/api/v2/{country.ToLowerInvariant()}/music/most-played/{limit}/songs.json";
+    }
+
+    internal static string BuildAppleLookupUri(string storefront, IReadOnlyList<string> trackIds)
+    {
+        var country = NormalizeAppleCountry(storefront);
+        var ids = trackIds
+            .Select(id => id?.Trim() ?? string.Empty)
+            .Where(id => id.Length > 0 && id.All(char.IsDigit))
+            .Distinct(StringComparer.Ordinal)
+            .Take(100)
             .ToArray();
+        return "https://itunes.apple.com/lookup?" + string.Join('&', new[]
+        {
+            $"id={Uri.EscapeDataString(string.Join(',', ids))}",
+            $"country={Uri.EscapeDataString(country)}",
+            "entity=song"
+        });
+    }
+
+    internal static IReadOnlyList<string> ParseAppleChartTrackIds(string json, int maxItems)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("feed", out var feed) ||
+            feed.ValueKind != JsonValueKind.Object ||
+            !feed.TryGetProperty("results", out var results) ||
+            results.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var output = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in results.EnumerateArray())
+        {
+            if (output.Count >= Math.Clamp(maxItems, 1, 100)) break;
+            var id = JsonString(item, "id")?.Trim() ?? string.Empty;
+            if (id.Length == 0 || !id.All(char.IsDigit) || !seen.Add(id)) continue;
+            output.Add(id);
+        }
+        return output;
+    }
+
+    internal static IReadOnlyList<ZaloTrendMusicCandidate> ParseAppleLookupCandidates(
+        string json,
+        IReadOnlyList<string> chartTrackIds,
+        int maxCandidates)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("results", out var results) ||
+            results.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var lookup = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var item in results.EnumerateArray())
+        {
+            var trackId = item.TryGetProperty("trackId", out var trackIdElement)
+                ? trackIdElement.ToString().Trim()
+                : string.Empty;
+            if (trackId.Length > 0 && !lookup.ContainsKey(trackId))
+                lookup[trackId] = item.Clone();
+        }
+
+        var output = new List<ZaloTrendMusicCandidate>();
+        for (var chartIndex = 0; chartIndex < chartTrackIds.Count; chartIndex++)
+        {
+            if (output.Count >= Math.Clamp(maxCandidates, 1, 8)) break;
+            var trackId = chartTrackIds[chartIndex];
+            if (!lookup.TryGetValue(trackId, out var item)) continue;
+            var title = JsonString(item, "trackName");
+            var artist = JsonString(item, "artistName");
+            var previewUrl = JsonString(item, "previewUrl");
+            var sourceUrl = JsonString(item, "trackViewUrl");
+            var artworkUrl = UpgradeAppleArtwork(JsonString(item, "artworkUrl100"));
+            if (string.IsNullOrWhiteSpace(title) ||
+                string.IsNullOrWhiteSpace(artist) ||
+                !IsApplePreviewUrl(previewUrl) ||
+                !IsAppleMusicUrl(sourceUrl) ||
+                !IsAppleArtworkUrl(artworkUrl))
+                continue;
+
+            var rank = chartIndex + 1;
+            output.Add(new ZaloTrendMusicCandidate(
+                $"itunes-{trackId}",
+                title!,
+                artist!,
+                rank,
+                "audio",
+                previewUrl!,
+                artworkUrl,
+                $"APPLE MUSIC {NormalizeAppleCountry("VN")} TOP #{rank}",
+                sourceUrl,
+                null,
+                "Apple Music preview"));
+        }
+        return output;
+    }
+
+    internal static IReadOnlyList<ZaloTrendMusicCandidate> RotateDailyCandidates(
+        IReadOnlyList<ZaloTrendMusicCandidate> candidates,
+        string groupId,
+        string localDate,
+        string period)
+    {
+        if (candidates.Count <= 1 ||
+            !DateOnly.TryParseExact(localDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+            return candidates;
+
+        var digest = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(groupId?.Trim() ?? string.Empty));
+        var groupOffset = BitConverter.ToUInt32(digest, 0);
+        var slot = (long)date.DayNumber * 2L + (string.Equals(period, "night", StringComparison.OrdinalIgnoreCase) ? 1L : 0L);
+        var start = (int)((groupOffset + (ulong)slot) % (ulong)candidates.Count);
+        return candidates.Skip(start).Concat(candidates.Take(start)).ToArray();
+    }
+
+    private static string NormalizeAppleCountry(string? value)
+    {
+        var normalized = (value ?? "VN").Trim().ToUpperInvariant();
+        return normalized.Length == 2 && normalized.All(char.IsLetter) ? normalized : "VN";
+    }
+
+    private static string? UpgradeAppleArtwork(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return Regex.Replace(value.Trim(), @"/\d+x\d+bb\.(jpg|png)$", "/600x600bb.$1", RegexOptions.IgnoreCase);
+    }
+
+    private static bool IsApplePreviewUrl(string? value) => IsHttpsHost(value, "itunes.apple.com");
+    private static bool IsAppleMusicUrl(string? value) => IsHttpsHost(value, "music.apple.com");
+    private static bool IsAppleArtworkUrl(string? value) => IsHttpsHost(value, "mzstatic.com");
+
+    private static bool IsHttpsHost(string? value, string hostSuffix)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return string.Equals(uri.Host, hostSuffix, StringComparison.OrdinalIgnoreCase) ||
+               uri.Host.EndsWith($".{hostSuffix}", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> LoadCcMixterCandidatesAsync(
