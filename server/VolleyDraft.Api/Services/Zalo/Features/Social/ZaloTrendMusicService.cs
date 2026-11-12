@@ -1422,7 +1422,7 @@ public sealed class ZaloTrendMusicService(
                 durationMs: Math.Max(request.DurationMs, 1_000),
                 width: Math.Clamp(request.Width, 240, 2160),
                 height: Math.Clamp(request.Height, 240, 3840),
-                idempotencyKey: request.IdempotencyKey,
+                idempotencyKey: BuildBridgeVideoIdempotencyKey(request),
                 cancellationToken: cancellationToken);
             if (!response.Sent)
             {
@@ -2121,6 +2121,14 @@ public sealed class ZaloTrendMusicService(
         var period = PeriodFromIdempotencyKey(request.IdempotencyKey);
         if (period is "morning" or "night") return string.Empty;
         return $"🎵 {request.Title.Trim()} — {request.Artist.Trim()}";
+    }
+
+    internal static string BuildBridgeVideoIdempotencyKey(ZaloTrendMusicRenderCompleteRequest request)
+    {
+        var claimToken = request.ClaimToken?.Trim();
+        return string.IsNullOrWhiteSpace(claimToken)
+            ? request.IdempotencyKey
+            : $"{request.IdempotencyKey}:claim:{claimToken}";
     }
 
     private static string PeriodFromIdempotencyKey(string? idempotencyKey)

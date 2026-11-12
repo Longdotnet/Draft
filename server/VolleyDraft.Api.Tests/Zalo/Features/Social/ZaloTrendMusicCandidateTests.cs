@@ -352,6 +352,38 @@ public sealed class ZaloTrendMusicCandidateTests
         Assert.Equal("🎵 Song — Artist", caption);
     }
 
+    [Fact]
+    public void Bridge_video_idempotency_is_stable_for_same_claim_and_changes_for_recovery_claim()
+    {
+        const string key = "trend-music:connection:group:2026-11-12:morning";
+        var first = new ZaloTrendMusicRenderCompleteRequest(
+            "account", "group", "connection", "2026-11-12", key, "candidate",
+            "Song", "Artist", 1, "video", "thumb", ClaimToken: "claim-a");
+        var retry = first with { VideoBase64 = "video", ClaimToken = "claim-a" };
+        var recovery = first with { ClaimToken = "claim-b" };
+
+        Assert.Equal(
+            ZaloTrendMusicService.BuildBridgeVideoIdempotencyKey(first),
+            ZaloTrendMusicService.BuildBridgeVideoIdempotencyKey(retry));
+        Assert.NotEqual(
+            ZaloTrendMusicService.BuildBridgeVideoIdempotencyKey(first),
+            ZaloTrendMusicService.BuildBridgeVideoIdempotencyKey(recovery));
+        Assert.Equal(
+            $"{key}:claim:claim-a",
+            ZaloTrendMusicService.BuildBridgeVideoIdempotencyKey(first));
+    }
+
+    [Fact]
+    public void Bridge_video_idempotency_falls_back_to_legacy_key_without_claim_token()
+    {
+        const string key = "trend-music:request:connection:group:manual";
+        var request = new ZaloTrendMusicRenderCompleteRequest(
+            "account", "group", "connection", "2026-11-12", key, "candidate",
+            "Song", "Artist", 1, "video", "thumb");
+
+        Assert.Equal(key, ZaloTrendMusicService.BuildBridgeVideoIdempotencyKey(request));
+    }
+
     [Theory]
     [InlineData("test nhạc trend", true)]
     [InlineData("test nhạc", true)]
