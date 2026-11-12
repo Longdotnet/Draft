@@ -1,5 +1,5 @@
 name: Trend music story renderer
-# one-shot repair trigger: refresh the queued 2026-11-12 morning story on production
+# one-shot repair trigger: refresh the queued 2026-11-12 morning story on production (attempt 2)
 
 on:
   push:
