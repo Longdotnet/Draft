@@ -1,4 +1,5 @@
 name: Trend music story renderer
+# one-shot afternoon Apple story test requested on 2026-11-12
 
 on:
   push:
@@ -37,7 +38,7 @@ on:
         type: string
 
 concurrency:
-  group: trend-music-render-worker
+  group: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[afternoon-test-20261112]') && format('trend-music-afternoon-test-{0}', github.sha) || 'trend-music-render-worker' }}
   cancel-in-progress: false
 
 permissions:
@@ -73,13 +74,28 @@ jobs:
           (test -f /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf && test -f /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf) || \
             (test -f /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf && test -f /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf)
       - name: Claim queued render and deliver story video
-        if: github.event_name == 'schedule' || inputs.account_id == ''
+        if: (github.event_name == 'schedule' || inputs.account_id == '') && !(github.event_name == 'push' && contains(github.event.head_commit.message, '[afternoon-test-20261112]'))
         env:
           SCHEDULER_URL: ${{ vars.SCHEDULER_URL }}
           SCHEDULER_KEY: ${{ secrets.SCHEDULER_KEY }}
           TREND_MUSIC_CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
           TREND_MUSIC_CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL || 'https://draft-i1mq.onrender.com/api/internal/trend-music/render-complete' }}
         run: python3 scripts/trend-music/claim_and_render.py
+      - name: Send one-shot afternoon Apple story
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[afternoon-test-20261112]')
+        shell: bash
+        env:
+          ACCOUNT_ID: "615219442248549935"
+          GROUP_ID: "8891776946862922179"
+          CONNECTION_ID: "2343a973ce4a41feac6b73631374f41f"
+          LOCAL_DATE: "2026-11-12"
+          IDEMPOTENCY_KEY: "trend-music:test:2343a973ce4a41feac6b73631374f41f:8891776946862922179:afternoon-20261112-1626"
+          CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL || 'https://draft-i1mq.onrender.com/api/internal/trend-music/render-complete' }}
+          CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
+        run: |
+          set -euo pipefail
+          export CANDIDATES_JSON='{"candidates":[{"id":"itunes-6827404203","title":"Như Một Người Rưng","artist":"OSAD & Hà An Huy","rank":1,"mediaType":"audio","mediaUrl":"https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/f9/bd/a9/f9bda98b-b6b5-bfef-1dcb-bb51e3c59921/mzaf_2290608759897843218.plus.aac.p.m4a","artworkUrl":"https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/99/2a/fa/992afa04-272d-b2b2-b6ca-9cc06f2c94dc/196874938225.jpg/600x600bb.jpg","trendLabel":"APPLE MUSIC VN TOP #1","sourceUrl":"https://music.apple.com/vn/album/nh%C6%B0-m%E1%BB%99t-ng%C6%B0%E1%BB%9Di-r%C6%B0ng/6827404200?i=6827404203&uo=4","licenseUrl":null,"licenseLabel":"Apple Music preview"}],"spec":{"period":"manual","greetingEnabled":true,"greetingText":"Chiều nay không có đánh nha. Tui gửi mọi người video nghe đỡ buồn nhé. Hẹn T7, CN!","displayTitle":null,"displayArtist":null,"artworkUrl":null,"showLogo":true,"canonicalGreetingText":null},"songQuery":null}'
+          python3 scripts/trend-music/render_story.py
       - name: Render direct workflow-dispatch request
         if: github.event_name == 'workflow_dispatch' && inputs.account_id != ''
         env:
