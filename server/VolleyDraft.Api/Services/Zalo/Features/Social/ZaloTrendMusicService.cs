@@ -50,6 +50,19 @@ public sealed record ZaloTrendMusicRenderProgressRequest(
     string? Error = null,
     string? ClaimToken = null);
 
+public sealed record ZaloDailyGreetingRecoveryRequest(
+    string GroupId,
+    string LocalDate,
+    string Period);
+
+public sealed record ZaloDailyGreetingRecoveryResult(
+    bool Recovered,
+    string GroupId,
+    string LocalDate,
+    string Period,
+    string? RemovedProviderMessageId,
+    bool WorkerWoken);
+
 internal sealed record ZaloTrendMusicCandidate(
     string Id,
     string Title,
@@ -1205,8 +1218,8 @@ public sealed class ZaloTrendMusicService(
 
     internal static string StoryGreetingText(ZaloDailyGreetingKind kind) =>
         kind == ZaloDailyGreetingKind.Night
-            ? "Tối rồi nha. Chúc bạn ngủ ngon. Nghe đoạn nhạc nhẹ nhàng này trước khi ngủ nha, iu bạn."
-            : "Chào buổi sáng nha. Nghe đoạn nhạc nhẹ nhàng mở đầu ngày mới nè, chúc hôm nay thật dễ thương.";
+            ? "Tối rồi nha. Nghe chút nhạc nhẹ trước khi ngủ, chúc bạn ngủ thật ngon."
+            : "Chào buổi sáng nha. Nghe chút nhạc nhẹ, mở đầu ngày mới thật dễ thương.";
 
     public async Task ReconcileAsync(CancellationToken cancellationToken = default)
     {
@@ -2094,17 +2107,9 @@ public sealed class ZaloTrendMusicService(
 
     internal static string BuildCaption(ZaloTrendMusicRenderCompleteRequest request)
     {
-        var caption = $"🎵 {request.Title.Trim()} — {request.Artist.Trim()}";
-        if (IsHttpsUrl(request.SourceUrl) &&
-            TryGetPermissiveLicense(request.LicenseUrl, out var canonicalLabel) &&
-            (string.IsNullOrWhiteSpace(request.LicenseLabel) ||
-             string.Equals(request.LicenseLabel.Trim(), canonicalLabel, StringComparison.OrdinalIgnoreCase)))
-        {
-            caption += $"\nNguồn: {request.SourceUrl!.Trim()}";
-            caption += $"\nLicense: {canonicalLabel} {request.LicenseUrl!.Trim()}";
-            caption += "\nĐã cắt/ghép thành video dọc 20s.";
-        }
-        return caption;
+        var period = PeriodFromIdempotencyKey(request.IdempotencyKey);
+        if (period is "morning" or "night") return string.Empty;
+        return $"🎵 {request.Title.Trim()} — {request.Artist.Trim()}";
     }
 
     private static string PeriodFromIdempotencyKey(string? idempotencyKey)
@@ -2219,6 +2224,94 @@ public sealed class ZaloTrendMusicService(
             DateTimeOffset.UtcNow,
             TimeSpan.FromMinutes(10),
             cancellationToken);
+
+    public async Task<ZaloDailyGreetingRecoveryResult> RecoverDailyGreetingAsync(
+        ZaloDailyGreetingRecoveryRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var groupId = request.GroupId?.Trim() ?? string.Empty;
+        var period = request.Period?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (groupId.Length == 0 || period is not ("morning" or "night") ||
+            !DateOnly.TryParseExact(
+                request.LocalDate?.Trim(),
+                "yyyy-MM-dd",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsedDate))
+        {
+            throw new InvalidOperationException("GroupId, LocalDate yyyy-MM-dd and Period morning|night are required.");
+        }
+        var localDate = parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var target = (await new ZaloProactiveTargetResolver(db).GetTargetsAsync(cancellationToken))
+            .FirstOrDefault(item => string.Equals(item.GroupId, groupId, StringComparison.Ordinal));
+        if (target is null)
+            throw new InvalidOperationException("The requested Zalo group is not an active proactive target.");
+
+        var idempotencyKey = $"trend-music:{target.ConnectionId}:{target.GroupId}:{localDate}:{period}";
+        var history = await proactiveStore.GetHistoryAsync(
+            target.ConnectionId,
+            target.GroupId,
+            300,
+            cancellationToken);
+        var sentVideo = history.FirstOrDefault(item =>
+            string.Equals(item.IdempotencyKey, idempotencyKey, StringComparison.Ordinal) &&
+            string.Equals(item.Lane, ZaloProactiveLane.TrendMusic, StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(item.ProviderMessageId));
+        if (sentVideo is null)
+            return new ZaloDailyGreetingRecoveryResult(false, groupId, localDate, period, null, false);
+
+        var undo = await bridge.UndoGroupMessageAsync(
+            target.AccountId,
+            target.GroupId,
+            sentVideo.ProviderMessageId!,
+            cancellationToken);
+        if (!undo.Undone)
+            throw new InvalidOperationException("Zalo did not confirm the old daily greeting was withdrawn.");
+
+        await proactiveStore.DeleteByIdempotencyKeysAsync(
+            target.ConnectionId,
+            target.GroupId,
+            [idempotencyKey, $"{idempotencyKey}:greeting"],
+            cancellationToken);
+        await proactiveStore.ReleaseLeaseAsync(
+            target.ConnectionId,
+            target.GroupId,
+            idempotencyKey,
+            cancellationToken);
+        await jobs.ResetDailyRenderAsync(
+            target.ConnectionId,
+            target.GroupId,
+            $"{localDate}|{period}",
+            idempotencyKey,
+            cancellationToken);
+
+        var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
+        var workerWoken = false;
+        if (settings.CanDirectDispatch)
+        {
+            await renderDispatcher.WakeQueueWorkerAsync(
+                settings.GitHubToken,
+                settings.GitHubRepository,
+                settings.GitHubWorkflow,
+                settings.GitHubRef,
+                cancellationToken);
+            workerWoken = true;
+        }
+        logger.LogInformation(
+            "Recovered daily greeting Group={GroupId} Date={LocalDate} Period={Period} RemovedProviderMessageId={ProviderMessageId} WorkerWoken={WorkerWoken}",
+            target.GroupId,
+            localDate,
+            period,
+            sentVideo.ProviderMessageId,
+            workerWoken);
+        return new ZaloDailyGreetingRecoveryResult(
+            true,
+            groupId,
+            localDate,
+            period,
+            sentVideo.ProviderMessageId,
+            workerWoken);
+    }
 }
 
 public sealed record ZaloTrendMusicRenderClaim(
@@ -2619,6 +2712,51 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null and not DBNull && Convert.ToBoolean(result, CultureInfo.InvariantCulture);
+    }
+
+    public async Task ResetDailyRenderAsync(
+        string connectionId,
+        string groupId,
+        string jobDateKey,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        await using (var queue = await CreateCommandAsync(
+                         """
+                         UPDATE "ZaloTrendMusicRenderQueue"
+                         SET "State" = 'pending',
+                             "AttemptCount" = 0,
+                             "ClaimedAt" = NULL,
+                             "ClaimToken" = NULL,
+                             "UpdatedAt" = @Now
+                         WHERE "IdempotencyKey" = @IdempotencyKey;
+                         """,
+                         cancellationToken))
+        {
+            Add(queue, "@Now", now);
+            Add(queue, "@IdempotencyKey", idempotencyKey);
+            if (await queue.ExecuteNonQueryAsync(cancellationToken) == 0)
+                throw new InvalidOperationException("Daily greeting render queue entry was not found.");
+        }
+        await using var job = await CreateCommandAsync(
+            """
+            UPDATE "ZaloTrendMusicRenderJob"
+            SET "State" = 'rendering',
+                "ProviderMessageId" = NULL,
+                "LastAttemptAt" = @Now,
+                "UpdatedAt" = @Now
+            WHERE "ConnectionId" = @ConnectionId
+              AND "GroupId" = @GroupId
+              AND "LocalDate" = @JobDateKey;
+            """,
+            cancellationToken);
+        Add(job, "@Now", now);
+        Add(job, "@ConnectionId", connectionId.Trim());
+        Add(job, "@GroupId", groupId.Trim());
+        Add(job, "@JobDateKey", jobDateKey);
+        await job.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<ZaloTrendMusicRenderClaim?> TryClaimQueueAsync(

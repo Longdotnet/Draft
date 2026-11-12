@@ -106,6 +106,7 @@ type MinimalZaloApi = AvatarProfileApi & {
       };
     }>;
   }>;
+  undo(payload: { msgId: string | number; cliMsgId: string | number }, threadId: string, type?: number): Promise<{ status: number }>;
   listener: {
     on(event: "message", callback: (message: MinimalMessage) => unknown): void;
     on(event: "group_event", callback: (event: MinimalGroupEvent) => unknown): void;
@@ -823,6 +824,37 @@ export async function sendGroupVideo(request: SendGroupVideoRequest): Promise<Br
   if (!listener.api) throw new Error("Zalo provider API is not available for video send");
 
   return sendGroupVideoWithApi(listener.api, request, groupId);
+}
+
+export async function undoGroupMessage(
+  accountIdValue: string,
+  groupIdValue: string,
+  messageIdValue: string,
+): Promise<{ undone: boolean; messageId: string; status: number | null }> {
+  const accountId = normalizeMemberId(accountIdValue);
+  const groupId = normalizeId(groupIdValue);
+  const messageId = normalizeId(messageIdValue);
+  const listener = activeListeners.get(accountId);
+  if (!listener) throw new Error("Zalo listener is not active for this account");
+  if (!listener.api) throw new Error("Zalo provider API is not available for undo");
+  if (!groupId || !messageId) throw new Error("Group ID and message ID are required");
+  if (mockMode) return { undone: true, messageId, status: 0 };
+
+  const history = await listener.api.getGroupChatHistory(groupId, 500);
+  const match = (history.groupMsgs ?? []).find((item) => {
+    const data = item.data;
+    if (!data) return false;
+    return normalizeId(String(data.msgId ?? data.actionId ?? "")) === messageId &&
+      (item.isSelf === true || normalizeMemberId(String(data.uidFrom ?? "")) === listener.botId);
+  });
+  const cliMsgId = normalizeId(String(match?.data?.cliMsgId ?? ""));
+  if (!match?.data || !cliMsgId) throw new Error("Could not resolve cliMsgId for the outbound Zalo message");
+  const result = await listener.api.undo(
+    { msgId: messageId, cliMsgId },
+    groupId,
+    ThreadType.Group,
+  );
+  return { undone: true, messageId, status: Number(result.status ?? 0) };
 }
 
 export type NativeVideoApi = {

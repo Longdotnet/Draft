@@ -218,7 +218,7 @@ def safe_text(path: pathlib.Path, value: str, limit: int = 140) -> None:
 
 def safe_greeting(path: pathlib.Path, value: str) -> None:
     clean = clean_story_text(value, 280)
-    lines = textwrap.wrap(clean, width=34, break_long_words=False, break_on_hyphens=False)[:4]
+    lines = textwrap.wrap(clean, width=28, break_long_words=False, break_on_hyphens=False)[:3]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 def safe_wrapped_text(path: pathlib.Path, value: str, width: int, max_lines: int, limit: int) -> None:
@@ -271,24 +271,25 @@ def draw_filters(
     artist_path = filter_path(artist_file)
     greeting_path = filter_path(greeting_file)
     greeting = (
-        f"drawtext=fontfile={regular_path}:textfile={greeting_path}:fontcolor=white@0.96:fontsize=50:"
-        "line_spacing=14:x=96:y=260:fix_bounds=true:shadowcolor=black@0.40:shadowx=2:shadowy=3,"
+        f"drawtext=fontfile={bold_path}:textfile={greeting_path}:fontcolor=0xF8FAFC:fontsize=58:"
+        "line_spacing=18:x=92:y=190:fix_bounds=true:shadowcolor=black@0.72:shadowx=3:shadowy=4,"
         if greeting_enabled else ""
     )
     return (
         greeting
-        + f"drawtext=fontfile={bold_path}:textfile={title_path}:fontcolor=white:fontsize=60:line_spacing=10:"
-          "x=96:y=1470:fix_bounds=true:shadowcolor=black@0.45:shadowx=2:shadowy=3,"
-        + f"drawtext=fontfile={regular_path}:textfile={artist_path}:fontcolor=white@0.78:fontsize=34:"
-          "x=98:y=1628:fix_bounds=true:shadowcolor=black@0.35:shadowx=2:shadowy=2"
+        + "drawbox=x=92:y=1414:w=104:h=6:color=0xF8FAFC@0.92:t=fill,"
+        + f"drawtext=fontfile={bold_path}:textfile={title_path}:fontcolor=0xFFFFFF:fontsize=68:line_spacing=12:"
+          "x=92:y=1460:fix_bounds=true:shadowcolor=black@0.72:shadowx=3:shadowy=4,"
+        + f"drawtext=fontfile={regular_path}:textfile={artist_path}:fontcolor=0xE5E7EB@0.92:fontsize=38:"
+          "x=94:y=1620:fix_bounds=true:shadowcolor=black@0.62:shadowx=2:shadowy=3"
     )
 
 def prepare_text_files(candidate: dict, spec: dict, work: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     title_file = work / "title.txt"
     artist_file = work / "artist.txt"
     greeting_file = work / "greeting.txt"
-    safe_wrapped_text(title_file, str(spec.get("displayTitle") or candidate.get("title") or "Daily Mix"), 24, 2, 96)
-    safe_wrapped_text(artist_file, str(spec.get("displayArtist") or candidate.get("artist") or "Zyro Volleyball Club"), 34, 1, 72)
+    safe_wrapped_text(title_file, str(spec.get("displayTitle") or candidate.get("title") or "Daily Mix"), 22, 2, 96)
+    safe_wrapped_text(artist_file, str(spec.get("displayArtist") or candidate.get("artist") or "Zyro Volleyball Club"), 30, 1, 72)
     safe_greeting(greeting_file, str(spec.get("greetingText") or ""))
     return title_file, artist_file, greeting_file
 
@@ -395,9 +396,9 @@ def finish_with_logo(filters: str, base_label: str, logo_input: int | None) -> t
             "[v]",
         )
     filters += (
-        separator + f"[{logo_input}:v]scale=82:-1:force_original_aspect_ratio=decrease,format=rgba,"
-        "colorkey=0xFFFFFF:0.18:0.08,colorchannelmixer=aa=0.78[logo];"
-        f"[{base_label}][logo]overlay=W-w-58:78:format=auto[branded];"
+        separator + f"[{logo_input}:v]scale=118:-1:force_original_aspect_ratio=decrease,format=rgba,"
+        "colorkey=0xFFFFFF:0.18:0.08,colorchannelmixer=aa=0.90[logo];"
+        f"[{base_label}][logo]overlay=W-w-70:64:format=auto[branded];"
         f"[branded]fade=t=in:st=0:d=0.7,fade=t=out:st={video_fade_start}:d=1[v]"
     )
     return filters, "[v]"
@@ -424,7 +425,9 @@ def story_artwork_filters(input_label: str, spec: dict, *, small_profile: bool =
         f"crop={WIDTH}:{HEIGHT}:"
         "x='(in_w-out_w)/2+8*sin(2*PI*t/14)':y='(in_h-out_h)/2+8*cos(2*PI*t/16)',"
         f"setsar=1,boxblur=44:4,{grade},vignette=PI/5[bggraded];"
-        f"[bggraded]drawbox=x=0:y=0:w={WIDTH}:h={HEIGHT}:color={veil}:t=fill[bg];"
+        f"[bggraded]drawbox=x=0:y=0:w={WIDTH}:h={HEIGHT}:color={veil}:t=fill,"
+        f"drawbox=x=0:y=0:w={WIDTH}:h=560:color=black@0.34:t=fill,"
+        f"drawbox=x=0:y=1370:w={WIDTH}:h=550:color=black@0.44:t=fill[bg];"
         f"[cover0]scale={cover_size}:{cover_size}:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={cover_size}:{cover_size},setsar=1,eq=contrast=1.03:saturation=1.04[cover];"
         f"[bg][cover]overlay={cover_x}:'{cover_y}+3*sin(2*PI*t/7)':eval=frame,setsar=1[visual];"
@@ -434,17 +437,19 @@ def story_artwork_filters(input_label: str, spec: dict, *, small_profile: bool =
 def curated_background_filters(input_label: str, spec: dict) -> str:
     period = str(spec.get("period") or "").strip().lower()
     if period == "morning":
-        grade = "eq=brightness=-0.03:contrast=1.03:saturation=0.96"
-        veil = "black@0.14"
+        grade = "eq=brightness=-0.08:contrast=1.04:saturation=0.93"
+        veil = "black@0.10"
     else:
-        grade = "eq=brightness=-0.08:contrast=1.05:saturation=0.86"
-        veil = "black@0.20"
+        grade = "eq=brightness=-0.14:contrast=1.06:saturation=0.82"
+        veil = "black@0.16"
     return (
         f"[{input_label}]scale=1140:2020:force_original_aspect_ratio=increase:flags=lanczos,"
         f"crop={WIDTH}:{HEIGHT}:"
         "x='(in_w-out_w)/2+8*sin(2*PI*t/14)':y='(in_h-out_h)/2+8*cos(2*PI*t/16)',"
         f"setsar=1,{grade},vignette=PI/5,"
-        f"drawbox=x=0:y=0:w={WIDTH}:h={HEIGHT}:color={veil}:t=fill[storybg];"
+        f"drawbox=x=0:y=0:w={WIDTH}:h={HEIGHT}:color={veil}:t=fill,"
+        f"drawbox=x=0:y=0:w={WIDTH}:h=560:color=black@0.32:t=fill,"
+        f"drawbox=x=0:y=1370:w={WIDTH}:h=550:color=black@0.42:t=fill[storybg];"
     )
 
 
@@ -463,10 +468,9 @@ def render_curated_audio_story(
     filters = (
         "[1:a]asplit=2[aout0][viz];"
         f"[aout0]afade=t=in:st=0:d=0.7,afade=t=out:st={fade_out_start(2.0)}:d=2[aout];"
-        "[viz]showwaves=s=760x220:mode=cline:rate=30:colors=0xE5E7EB,format=rgba[wave];"
+        "[viz]anullsink;"
         + curated_background_filters("0:v", spec)
-        + "[storybg][wave]overlay=160:1030[visual];"
-        + f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+        + f"[storybg]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
     )
     logo_input = 2 if logo is not None else None
     filters, video_map = finish_with_logo(filters, "base", logo_input)
@@ -686,10 +690,9 @@ def render_fallback(spec: dict, work: pathlib.Path, output: pathlib.Path) -> dic
         filters = (
             "[1:a]asplit=2[raw][viz];"
             f"[raw]volume=0.70,afade=t=in:st=0:d=1,afade=t=out:st={fade_out_start(2.0)}:d=2[aout];"
-            "[viz]showwaves=s=760x220:mode=cline:rate=30:colors=0xE5E7EB,format=rgba[wave];"
+            "[viz]anullsink;"
             + curated_background_filters("0:v", spec)
-            + "[storybg][wave]overlay=160:1030[visual];"
-            + f"[visual]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
+            + f"[storybg]{draw_filters(title_file, artist_file, greeting_file, greeting_enabled)}[base]"
         )
         logo_input = 2 if logo is not None else None
         filters, video_map = finish_with_logo(filters, "base", logo_input)

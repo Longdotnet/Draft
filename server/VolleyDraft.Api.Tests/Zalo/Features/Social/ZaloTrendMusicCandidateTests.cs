@@ -12,7 +12,7 @@ public sealed class ZaloTrendMusicCandidateTests
         var text = ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Morning);
 
         Assert.Contains("Chào buổi sáng", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("đoạn nhạc nhẹ nhàng", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("nhạc nhẹ", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("ngày mới", text, StringComparison.OrdinalIgnoreCase);
         Assert.True(text.Length < 100);
     }
@@ -22,9 +22,8 @@ public sealed class ZaloTrendMusicCandidateTests
     {
         var text = ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Night);
 
-        Assert.Contains("Chúc bạn ngủ ngon", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ngủ thật ngon", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("trước khi ngủ", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("iu bạn", text, StringComparison.OrdinalIgnoreCase);
         Assert.True(text.Length < 100);
     }
 
@@ -285,10 +284,11 @@ public sealed class ZaloTrendMusicCandidateTests
     }
 
     [Fact]
-    public void Caption_includes_cc_by_attribution_and_adaptation_notice()
+    public void Daily_greeting_caption_is_empty()
     {
         var request = new ZaloTrendMusicRenderCompleteRequest(
-            "account", "group", "connection", "2026-11-10", "key", "jamendo-1",
+            "account", "group", "connection", "2026-11-10",
+            "trend-music:connection:group:2026-11-10:morning", "jamendo-1",
             "Song", "Artist", 1, "video", "thumb",
             SourceUrl: "https://www.jamendo.com/track/1/song",
             LicenseUrl: "http://creativecommons.org/licenses/by/4.0/",
@@ -296,9 +296,23 @@ public sealed class ZaloTrendMusicCandidateTests
 
         var caption = ZaloTrendMusicService.BuildCaption(request);
 
-        Assert.Contains("Nguồn: https://www.jamendo.com/track/1/song", caption);
-        Assert.Contains("License: CC BY 4.0 http://creativecommons.org/licenses/by/4.0/", caption);
-        Assert.Contains("Đã cắt/ghép thành video dọc 20s.", caption);
+        Assert.Equal(string.Empty, caption);
+    }
+
+    [Fact]
+    public void Requested_song_caption_keeps_only_song_and_artist()
+    {
+        var request = new ZaloTrendMusicRenderCompleteRequest(
+            "account", "group", "connection", "2026-11-10",
+            "trend-music:request:connection:group:message", "jamendo-1",
+            "Song", "Artist", 1, "video", "thumb",
+            SourceUrl: "https://www.jamendo.com/track/1/song",
+            LicenseUrl: "http://creativecommons.org/licenses/by/4.0/",
+            LicenseLabel: "CC BY 4.0");
+
+        var caption = ZaloTrendMusicService.BuildCaption(request);
+
+        Assert.Equal("🎵 Song — Artist", caption);
     }
 
     [Theory]
@@ -556,7 +570,8 @@ public sealed class ZaloTrendMusicCandidateTests
     public void Caption_has_real_track_identity_without_npc_labels()
     {
         var request = new ZaloTrendMusicRenderCompleteRequest(
-            "account", "group", "connection", "2026-11-10", "key", "ccmixter-1",
+            "account", "group", "connection", "2026-11-10",
+            "trend-music:request:connection:group:message", "ccmixter-1",
             "Come Home", "Gabriel Shellington", 1, "video", "thumb");
 
         var caption = ZaloTrendMusicService.BuildCaption(request);

@@ -50,6 +50,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Recover refreshed morning greeting
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[repair-morning-20261112]')
+        shell: bash
+        env:
+          TREND_MUSIC_CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
+          TREND_MUSIC_CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL || 'https://draft-i1mq.onrender.com/api/internal/trend-music/render-complete' }}
+        run: |
+          set -euo pipefail
+          endpoint="${TREND_MUSIC_CALLBACK_URL%/render-complete}/recover-daily-greeting"
+          for attempt in $(seq 1 42); do
+            status="$(curl -sS -o /tmp/recover.json -w '%{http_code}' \
+              -X POST "$endpoint" \
+              -H 'Content-Type: application/json' \
+              -H "x-trend-music-key: ${TREND_MUSIC_CALLBACK_KEY}" \
+              --data '{"groupId":"8891776946862922179","localDate":"2026-11-12","period":"morning"}' || true)"
+            cat /tmp/recover.json 2>/dev/null || true
+            if [[ "$status" == "200" ]]; then
+              exit 0
+            fi
+            echo "Recovery endpoint not ready yet (HTTP ${status}, attempt ${attempt}/42)"
+            sleep 10
+          done
+          exit 1
       - name: Ensure render dependencies
         shell: bash
         run: |

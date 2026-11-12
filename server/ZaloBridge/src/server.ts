@@ -44,6 +44,7 @@ import {
   getQrLogin,
   sendGroupMessage,
   sendGroupVideo,
+  undoGroupMessage,
   startListener,
   stopListener,
 } from "./zaloGateway.js";
@@ -373,6 +374,21 @@ app.post("/v1/group-videos", async (request, response) => {
       () => sendGroupVideo(outbound),
       "video.send",
     ),
+  ));
+});
+
+app.post("/v1/group-messages/undo", async (request, response) => {
+  const accountId = String(request.body?.accountId ?? "").trim();
+  const groupId = String(request.body?.groupId ?? "").trim();
+  const messageId = String(request.body?.messageId ?? "").trim();
+  if (!accountId || !groupId || !messageId) {
+    response.status(400).json({ error: "accountId, groupId and messageId are required" });
+    return;
+  }
+  response.json(await zaloProviderTrafficGovernor.runWithAccount(
+    accountId,
+    () => undoGroupMessage(accountId, groupId, messageId),
+    "message.undo",
   ));
 });
 

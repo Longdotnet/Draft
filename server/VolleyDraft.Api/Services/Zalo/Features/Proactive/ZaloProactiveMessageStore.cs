@@ -226,6 +226,36 @@ internal sealed class ZaloProactiveMessageStore(VolleyDraftDbContext db)
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    public async Task DeleteByIdempotencyKeysAsync(
+        string connectionId,
+        string groupId,
+        IReadOnlyCollection<string> idempotencyKeys,
+        CancellationToken cancellationToken = default)
+    {
+        var keys = idempotencyKeys
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Take(20)
+            .ToArray();
+        if (keys.Length == 0) return;
+        await EnsureAsync(cancellationToken);
+        var parameterNames = keys.Select((_, index) => $"@Key{index}").ToArray();
+        await using var command = await CreateCommandAsync(
+            $"""
+            DELETE FROM "ZaloProactiveMessageHistory"
+            WHERE "ConnectionId" = @ConnectionId
+              AND "GroupId" = @GroupId
+              AND "IdempotencyKey" IN ({string.Join(", ", parameterNames)});
+            """,
+            cancellationToken);
+        AddParameter(command, "@ConnectionId", CleanId(connectionId));
+        AddParameter(command, "@GroupId", CleanId(groupId));
+        for (var index = 0; index < keys.Length; index++)
+            AddParameter(command, parameterNames[index], keys[index]);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task<DbCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
     {
         var connection = db.Database.GetDbConnection();

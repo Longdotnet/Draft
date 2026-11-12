@@ -41,6 +41,19 @@ public sealed class ZaloBridgeClient
         return await ReadAsync<BridgeQrStatusResponse>(response);
     }
 
+    public async Task<BridgeUndoMessageResponse> UndoGroupMessageAsync(
+        string accountId,
+        string groupId,
+        string messageId,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "v1/group-messages/undo",
+            new { accountId, groupId, messageId },
+            cancellationToken);
+        return await ReadAsync<BridgeUndoMessageResponse>(response);
+    }
+
     public async Task<IReadOnlyList<BridgeGroup>> GetGroupsAsync(JsonElement credentials)
     {
         using var response = await httpClient.PostAsJsonAsync("v1/groups", new { credentials });
@@ -713,5 +726,6 @@ public sealed record BridgeStopListenerResponse(bool Stopped);
 public sealed record BridgeOutgoingMention(string Uid, int Pos, int Len);
 public sealed record BridgeSendMessageResponse(bool Sent, bool Mock, string? MessageId = null);
 public sealed record BridgeSendVideoResponse(bool Sent, bool Mock, string? MessageId = null);
+public sealed record BridgeUndoMessageResponse(bool Undone, string MessageId, int? Status = null);
 public sealed record BridgeSendStickerResponse(bool Sent, bool Mock, string? MessageId = null);
 public sealed record BridgeErrorResponse(string? Error);

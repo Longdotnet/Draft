@@ -253,6 +253,27 @@ app.MapPost("/api/internal/trend-music/render-claim", async (
     return claim is null ? Results.NoContent() : Results.Ok(claim);
 });
 
+app.MapPost("/api/internal/trend-music/recover-daily-greeting", async (
+    HttpContext httpContext,
+    ZaloDailyGreetingRecoveryRequest request,
+    ZaloTrendMusicService service,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    if (!TrendMusicInternalAuthorization.IsAuthorized(httpContext, configuration))
+        return Results.Unauthorized();
+    try
+    {
+        return Results.Ok(await service.RecoverDailyGreetingAsync(request, cancellationToken));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
+});
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
