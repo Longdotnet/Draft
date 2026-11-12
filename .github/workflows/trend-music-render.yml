@@ -55,11 +55,10 @@ jobs:
         shell: bash
         env:
           TREND_MUSIC_CALLBACK_KEY: ${{ secrets.TREND_MUSIC_CALLBACK_KEY || secrets.SCHEDULER_KEY }}
-          TREND_MUSIC_CALLBACK_URL: ${{ vars.TREND_MUSIC_CALLBACK_URL || 'https://draft-i1mq.onrender.com/api/internal/trend-music/render-complete' }}
         run: |
           set -euo pipefail
-          endpoint="${TREND_MUSIC_CALLBACK_URL%/render-complete}/recover-daily-greeting"
-          for attempt in $(seq 1 42); do
+          endpoint="https://draft-i1mq.onrender.com/api/internal/trend-music/recover-daily-greeting"
+          for attempt in $(seq 1 18); do
             status="$(curl -sS -o /tmp/recover.json -w '%{http_code}' \
               -X POST "$endpoint" \
               -H 'Content-Type: application/json' \
@@ -69,7 +68,7 @@ jobs:
             if [[ "$status" == "200" ]]; then
               exit 0
             fi
-            echo "Recovery endpoint not ready yet (HTTP ${status}, attempt ${attempt}/42)"
+            echo "Recovery endpoint not ready yet (HTTP ${status}, attempt ${attempt}/18)"
             sleep 10
           done
           exit 1
