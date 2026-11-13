@@ -50,6 +50,18 @@ test("treats Zalo code 114 without an HTTP status as a non-retryable upstream re
   });
 });
 
+test("treats missing Zalo group code 161 as a non-retryable upstream rejection", () => {
+  const error = { name: "ZcaApiError", code: 161, message: "Nhóm này không tồn tại." };
+
+  assert.deepEqual(classifyBridgeError(error), {
+    status: 400,
+    source: "upstream-zalo",
+    kind: "upstream_rejected",
+    retryable: false,
+    publicMessage: "Zalo upstream rejected the request.",
+  });
+});
+
 test("logs only the bounded provider message from a zca api error", () => {
   const error = {
     name: "ZcaApiError",
@@ -59,10 +71,10 @@ test("logs only the bounded provider message from a zca api error", () => {
   const descriptor = classifyBridgeError(error);
 
   assert.deepEqual(bridgeErrorLogFields(error, descriptor), {
-    source: "bridge-internal",
-    kind: "bridge_failure",
-    status: 502,
-    retryable: true,
+    source: "upstream-zalo",
+    kind: "upstream_rejected",
+    status: 400,
+    retryable: false,
     upstreamCode: "161",
     providerMessage: "provider reason with detail",
   });

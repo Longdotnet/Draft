@@ -70,6 +70,29 @@ public sealed class ZaloMemberIntegrationDeliveryPolicyTests
     }
 
     [Fact]
+    public void Fresh_verified_join_welcome_is_immediate()
+    {
+        var context = Context(joinedDaysAgo: 0) with { JoinedAt = Now.AddMinutes(-2) };
+        var selection = new ZaloMemberIntegrationSelection(
+            context,
+            new ZaloMemberIntegrationSuggestion(
+                "welcome",
+                100,
+                "Welcome",
+                "welcome:user",
+                "verified_join",
+                []));
+
+        Assert.True(ZaloMemberIntegrationDeliveryPolicy.IsImmediateWelcome(selection, Now));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsImmediateWelcome(
+            selection with { Context = context with { JoinedAt = Now.AddMinutes(-16) } },
+            Now));
+        Assert.False(ZaloMemberIntegrationDeliveryPolicy.IsImmediateWelcome(
+            selection with { Context = context with { IsRecoveredNewcomer = true } },
+            Now));
+    }
+
+    [Fact]
     public void Same_day_match_guide_recipient_counts_as_member_integration_touch()
     {
         var marker = new ZaloProactiveMessageHistoryData(

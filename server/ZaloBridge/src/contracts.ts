@@ -192,6 +192,10 @@ export type GroupMembershipChangedEvent = {
   memberIds: string[];
   eventId: string;
   occurredAtUnixMs: number;
+  members?: Array<{
+    zaloUserId: string;
+    displayName: string;
+  }>;
 };
 
 export type GroupPresenceSignalEvent = {

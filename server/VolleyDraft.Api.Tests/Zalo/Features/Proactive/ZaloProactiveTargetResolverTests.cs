@@ -25,6 +25,33 @@ public sealed class ZaloProactiveTargetResolverTests
     }
 
     [Fact]
+    public async Task Provider_confirmed_missing_group_is_excluded_and_can_recover()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.AddTrackedGroupAsync("g-current");
+        await fixture.AddTrackedGroupAsync("g-stale");
+        var visibility = new ZaloProviderGroupVisibilityStore(fixture.Db);
+
+        await visibility.RefreshAsync(
+            [fixture.Connection.Id],
+            ["g-current"],
+            DateTimeOffset.UtcNow);
+
+        var targets = await new ZaloProactiveTargetResolver(fixture.Db).GetTargetsAsync();
+        Assert.Equal(["g-current"], targets.Select(item => item.GroupId).OrderBy(item => item).ToArray());
+
+        await visibility.RefreshAsync(
+            [fixture.Connection.Id],
+            ["g-current", "g-stale"],
+            DateTimeOffset.UtcNow.AddMinutes(1));
+
+        targets = await new ZaloProactiveTargetResolver(fixture.Db).GetTargetsAsync();
+        Assert.Equal(
+            ["g-current", "g-stale"],
+            targets.Select(item => item.GroupId).OrderBy(item => item).ToArray());
+    }
+
+    [Fact]
     public async Task Inbound_account_group_resolves_from_durable_tracking_without_session()
     {
         await using var fixture = await Fixture.CreateAsync();

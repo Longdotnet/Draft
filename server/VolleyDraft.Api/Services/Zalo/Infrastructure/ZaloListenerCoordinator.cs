@@ -54,20 +54,45 @@ public sealed class ZaloListenerCoordinator(
         }
         var connectionIds = connections.Select(item => item.Id).ToList();
         var listenerTargets = await ResolveListenerTargetsAsync(db, connectionIds, cancellationToken);
-        var groupIds = listenerTargets
-            .Select(target => target.GroupId)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
         try
         {
+            using var document = JsonDocument.Parse(credentialProtector.Unprotect(connection.EncryptedCredentials));
+            var credentials = document.RootElement.Clone();
+            try
+            {
+                var providerGroups = await bridge.GetGroupsAsync(credentials);
+                var providerGroupIds = providerGroups
+                    .Select(group => NormalizeGroupId(group.Id))
+                    .Where(id => id.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                await new ZaloProviderGroupVisibilityStore(db).RefreshAsync(
+                    connectionIds,
+                    providerGroupIds,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+                listenerTargets = await ResolveListenerTargetsAsync(db, connectionIds, cancellationToken);
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+            {
+                // A failed directory read is not evidence that configured groups disappeared.
+                // Keep the last verified visibility and continue reconciling the listener.
+                logger.LogWarning(
+                    exception,
+                    "Could not refresh provider-visible Zalo groups for account {AccountId}; keeping last verified targets",
+                    accountId);
+            }
+
+            var groupIds = listenerTargets
+                .Select(target => target.GroupId)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
             if (groupIds.Count == 0)
             {
                 await bridge.StopListenerAsync(connection.AccountZaloId);
                 return true;
             }
 
-            using var document = JsonDocument.Parse(credentialProtector.Unprotect(connection.EncryptedCredentials));
-            var credentials = document.RootElement.Clone();
             var webhookUrl = configuration["Zalo:WebhookUrl"]
                 ?? "http://localhost:5030/api/internal/zalo/events";
             var webhookKey = configuration["Zalo:WebhookKey"]
@@ -92,6 +117,12 @@ public sealed class ZaloListenerCoordinator(
             logger.LogWarning(exception, "Could not reconcile Zalo listener for account {AccountId}", accountId);
             return false;
         }
+    }
+
+    private static string NormalizeGroupId(string? value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        return text.EndsWith("_0", StringComparison.Ordinal) ? text[..^2] : text;
     }
 
     private async Task QueueMissedEventRecoveryAsync(

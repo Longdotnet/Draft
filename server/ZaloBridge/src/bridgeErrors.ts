@@ -132,7 +132,7 @@ export function classifyBridgeError(error: unknown): BridgeErrorDescriptor {
 
   const status = upstreamStatus(error);
   const code = upstreamErrorCode(error);
-  if (status === null && code === "114") {
+  if (status === null && (code === "114" || code === "161")) {
     return {
       status: 400,
       source: "upstream-zalo",

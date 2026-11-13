@@ -27,6 +27,8 @@ internal sealed class ZaloProactiveTargetResolver(VolleyDraftDbContext db)
         CancellationToken cancellationToken = default)
     {
         await new ZaloAutoSessionStore(db).EnsureAsync(cancellationToken);
+        var confirmedMissing = await new ZaloProviderGroupVisibilityStore(db)
+            .GetConfirmedMissingAsync(cancellationToken);
 
         var configured = await ReadConfiguredKeysAsync(cancellationToken);
         var legacy = await db.MatchSessions
@@ -46,6 +48,9 @@ internal sealed class ZaloProactiveTargetResolver(VolleyDraftDbContext db)
             .Concat(legacy.Select(item => new TargetKey(item.ConnectionId, item.GroupId)))
             .Select(item => new TargetKey(CleanId(item.ConnectionId), CleanId(item.GroupId)))
             .Where(item => item.ConnectionId.Length > 0 && item.GroupId.Length > 0)
+            .Where(item => !confirmedMissing.Contains(new ZaloProviderGroupVisibilityKey(
+                item.ConnectionId,
+                item.GroupId)))
             .Distinct()
             .ToList();
         if (keys.Count == 0) return [];

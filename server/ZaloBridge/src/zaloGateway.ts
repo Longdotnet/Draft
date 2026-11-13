@@ -432,9 +432,13 @@ function handleMembershipEvent(accountId: string, listener: ActiveListener, even
 
   const rawMembers = event.data?.updateMembers;
   if (!Array.isArray(rawMembers)) return;
-  const memberIds = [...new Set(rawMembers
-    .map((member) => normalizeMemberId(String(member?.id ?? "")))
-    .filter(Boolean))].sort();
+  const members = rawMembers
+    .map((member) => ({
+      zaloUserId: normalizeMemberId(String(member?.id ?? "")),
+      displayName: String(member?.dName ?? "").trim(),
+    }))
+    .filter((member) => member.zaloUserId.length > 0);
+  const memberIds = [...new Set(members.map((member) => member.zaloUserId))].sort();
   if (memberIds.length === 0) return;
 
   // Only a provider-supplied timestamp proves when membership changed. Falling
@@ -460,6 +464,7 @@ function handleMembershipEvent(accountId: string, listener: ActiveListener, even
     memberIds,
     eventId,
     occurredAtUnixMs,
+    members,
   };
   void postWebhook(listener, payload, membershipWebhookUrl(listener.webhookUrl)).catch((error) =>
     console.error(`[Zalo listener ${accountId}] Failed to forward membership event:`, error),

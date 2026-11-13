@@ -243,11 +243,36 @@ public sealed class ZaloMembershipHistoryService(
                 var profile = await db.ZaloGroupMembers.SingleOrDefaultAsync(member =>
                     member.ZaloConnectionId == connectionId && member.GroupId == groupId &&
                     member.ZaloUserId == memberId, cancellationToken);
+                var eventDisplayName = incoming.Members?
+                    .FirstOrDefault(member => NormalizeId(member.ZaloUserId) == memberId)?
+                    .DisplayName
+                    ?.Trim();
+                if (profile is null &&
+                    incoming.EventType == "join" &&
+                    !string.IsNullOrWhiteSpace(eventDisplayName))
+                {
+                    profile = new ZaloGroupMember
+                    {
+                        ZaloConnectionId = connectionId,
+                        GroupId = groupId,
+                        ZaloUserId = memberId,
+                        DisplayName = eventDisplayName,
+                        FirstSeenAt = now,
+                        LastSeenAt = now,
+                        LastSyncedAt = now,
+                        IsCurrentMember = true,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    };
+                    db.ZaloGroupMembers.Add(profile);
+                }
                 if (profile is not null && occurredAt >= profile.LastSyncedAt)
                 {
                     profile.IsCurrentMember = incoming.EventType == "join";
                     profile.LeftAt = incoming.EventType == "join" ? null : occurredAt;
                     if (incoming.EventType == "join") profile.LastSeenAt = now;
+                    if (incoming.EventType == "join" && !string.IsNullOrWhiteSpace(eventDisplayName))
+                        profile.DisplayName = eventDisplayName;
                     profile.UpdatedAt = now;
                 }
             }

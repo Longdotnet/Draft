@@ -350,7 +350,12 @@ public sealed record ZaloMembershipChangedEvent(
     string? ActorId,
     IReadOnlyList<string> MemberIds,
     string EventId,
-    long OccurredAtUnixMs);
+    long OccurredAtUnixMs,
+    IReadOnlyList<ZaloMembershipChangedMember>? Members = null);
+
+public sealed record ZaloMembershipChangedMember(
+    string ZaloUserId,
+    string DisplayName);
 
 public sealed record ZaloMemberPresenceSignalEvent(
     string AccountId,

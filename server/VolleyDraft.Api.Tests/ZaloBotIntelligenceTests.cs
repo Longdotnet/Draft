@@ -692,6 +692,29 @@ public sealed class ZaloMembershipHistoryEventTests
     }
 
     [Fact]
+    public async Task Join_event_keeps_provider_display_name_for_immediate_welcome()
+    {
+        await using var fixture = await MembershipFixture.CreateAsync();
+        await fixture.TrackAsync("connection-a", "group-1");
+        var joinedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+
+        Assert.True(await fixture.Service.RecordProviderEventAsync(
+            new ZaloMembershipChangedEvent(
+                "bot-a",
+                "group-1",
+                "join",
+                null,
+                ["member-a"],
+                "join-with-name",
+                joinedAt.ToUnixTimeMilliseconds(),
+                [new ZaloMembershipChangedMember("member-a", "Thành Viên Mới")])));
+
+        var profile = Assert.Single(await fixture.Db.ZaloGroupMembers.ToListAsync());
+        Assert.Equal("Thành Viên Mới", profile.DisplayName);
+        Assert.True(profile.IsCurrentMember);
+    }
+
+    [Fact]
     public async Task Replayed_and_late_membership_events_do_not_resurrect_or_close_a_newer_period()
     {
         await using var fixture = await MembershipFixture.CreateAsync();

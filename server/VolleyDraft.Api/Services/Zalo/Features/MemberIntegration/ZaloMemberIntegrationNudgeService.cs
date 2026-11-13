@@ -37,6 +37,8 @@ internal sealed record ZaloMemberIntegrationActivityHint(
 
 internal static class ZaloMemberIntegrationDeliveryPolicy
 {
+    private static readonly TimeSpan ImmediateWelcomeWindow = TimeSpan.FromMinutes(15);
+
     public static bool IsInsideWindow(int hour, ZaloMemberIntegrationDeliverySettings settings) =>
         settings.EndHour == 24
             ? hour >= settings.StartHour
@@ -67,6 +69,17 @@ internal static class ZaloMemberIntegrationDeliveryPolicy
         if (sentToday >= lifecycle.TargetPerDay) return false;
         return lastSentAt is null ||
                now - lastSentAt >= lifecycle.MinimumMemberSpacing;
+    }
+
+    public static bool IsImmediateWelcome(
+        ZaloMemberIntegrationSelection selection,
+        DateTimeOffset now)
+    {
+        if (!string.Equals(selection.Suggestion.CapabilityKey, "welcome", StringComparison.Ordinal))
+            return false;
+        if (selection.Context.IsRecoveredNewcomer || selection.Context.JoinedAt is not { } joinedAt)
+            return false;
+        return joinedAt <= now && now - joinedAt <= ImmediateWelcomeWindow;
     }
 }
 
@@ -112,11 +125,6 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 .Where(item => string.Equals(item.Lane, ZaloProactiveLane.MemberIntegration, StringComparison.Ordinal))
                 .OrderByDescending(item => item.SentAt)
                 .ToList();
-            if (laneHistory.Count(item => item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date) >= settings.MaxPerDay)
-                continue;
-            if (laneHistory.FirstOrDefault() is { } lastLane &&
-                now - lastLane.SentAt < TimeSpan.FromMinutes(settings.MinGroupIntervalMinutes))
-                continue;
 
             var memberIntegration = new ZaloMemberIntegrationService(db, bridge, configuration);
             var contexts = await memberIntegration.BuildContextsAsync(
@@ -126,40 +134,53 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 cancellationToken);
             if (contexts.Count == 0) continue;
 
-            var recentMessages = await LoadRecentHumanMessagesAsync(connectionId, groupId, now, cancellationToken);
-            var lastHumanMessageAt = recentMessages.Count == 0
-                ? (DateTimeOffset?)null
-                : recentMessages.Max(item => item.SentAt);
-
-            var guideOutcome = await new ZaloMemberMatchGuideService(
-                    db,
-                    bridge,
-                    proactiveStore,
-                    textGenerator,
-                    logger)
-                .TrySendAsync(
-                accountId,
-                connectionId,
-                groupId,
-                contexts,
-                history,
-                settings,
-                now,
-                localNow,
-                lastHumanMessageAt,
-                cancellationToken);
-            if (guideOutcome != ZaloMemberMatchGuideOutcome.None)
-            {
-                if (guideOutcome == ZaloMemberMatchGuideOutcome.Sent) sent += 1;
-                continue;
-            }
-
             var selections = await memberIntegration.BuildFromContextsAsync(
                 contexts,
                 history,
                 now,
                 cancellationToken);
             if (selections.Count == 0) continue;
+            var hasImmediateWelcome = selections.Any(selection =>
+                ZaloMemberIntegrationDeliveryPolicy.IsImmediateWelcome(selection, now));
+
+            if (!hasImmediateWelcome &&
+                laneHistory.Count(item => item.SentAt.ToOffset(VietnamOffset).Date == localNow.Date) >= settings.MaxPerDay)
+                continue;
+            if (!hasImmediateWelcome &&
+                laneHistory.FirstOrDefault() is { } lastLane &&
+                now - lastLane.SentAt < TimeSpan.FromMinutes(settings.MinGroupIntervalMinutes))
+                continue;
+
+            var recentMessages = await LoadRecentHumanMessagesAsync(connectionId, groupId, now, cancellationToken);
+            var lastHumanMessageAt = recentMessages.Count == 0
+                ? (DateTimeOffset?)null
+                : recentMessages.Max(item => item.SentAt);
+
+            if (!hasImmediateWelcome)
+            {
+                var guideOutcome = await new ZaloMemberMatchGuideService(
+                        db,
+                        bridge,
+                        proactiveStore,
+                        textGenerator,
+                        logger)
+                    .TrySendAsync(
+                    accountId,
+                    connectionId,
+                    groupId,
+                    contexts,
+                    history,
+                    settings,
+                    now,
+                    localNow,
+                    lastHumanMessageAt,
+                    cancellationToken);
+                if (guideOutcome != ZaloMemberMatchGuideOutcome.None)
+                {
+                    if (guideOutcome == ZaloMemberMatchGuideOutcome.Sent) sent += 1;
+                    continue;
+                }
+            }
 
             var memberIntegrationHistory = history
                 .Where(ZaloMemberMatchGuidePolicy.CountsTowardMemberDelivery)
@@ -201,6 +222,7 @@ public sealed class ZaloMemberIntegrationNudgeService(
                     {
                         Selection = selection,
                         Lifecycle = lifecycle,
+                        IsImmediateWelcome = ZaloMemberIntegrationDeliveryPolicy.IsImmediateWelcome(selection, now),
                         IsGraduationNotice = isGraduationNotice,
                         DailyDeliveryCount = today?.Count ?? 0,
                         LastSentAt = lastSentAt == default ? (DateTimeOffset?)null : lastSentAt,
@@ -210,13 +232,15 @@ public sealed class ZaloMemberIntegrationNudgeService(
                     };
                 })
                 .Where(item =>
+                    item.IsImmediateWelcome ||
                     item.IsGraduationNotice ||
                     ZaloMemberIntegrationDeliveryPolicy.IsMemberDue(
                         now,
                         item.DailyDeliveryCount,
                         item.LastSentAt,
                         item.Lifecycle))
-                .OrderByDescending(item => item.IsGraduationNotice)
+                .OrderByDescending(item => item.IsImmediateWelcome)
+                .ThenByDescending(item => item.IsGraduationNotice)
                 .ThenBy(item => item.DailyDeliveryCount)
                 .ThenByDescending(item =>
                     item.Activity.LastActivityAt is { } activityAt &&
@@ -226,10 +250,12 @@ public sealed class ZaloMemberIntegrationNudgeService(
                 .ThenBy(item => item.Selection.Context.IntegrationStartedAt ?? item.Selection.Context.JoinedAt)
                 .ToList();
 
-            var chosen = ordered.FirstOrDefault(item => IsQuietEnough(
-                now,
-                lastHumanMessageAt,
-                item.Activity));
+            var chosen = ordered.FirstOrDefault(item =>
+                item.IsImmediateWelcome ||
+                IsQuietEnough(
+                    now,
+                    lastHumanMessageAt,
+                    item.Activity));
             if (chosen is null) continue;
 
             var suggestion = chosen.Selection.Suggestion;
