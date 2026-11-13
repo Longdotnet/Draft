@@ -50,6 +50,24 @@ test("treats Zalo code 114 without an HTTP status as a non-retryable upstream re
   });
 });
 
+test("logs only the bounded provider message from a zca api error", () => {
+  const error = {
+    name: "ZcaApiError",
+    code: 161,
+    message: "  provider reason\nwith detail  ",
+  };
+  const descriptor = classifyBridgeError(error);
+
+  assert.deepEqual(bridgeErrorLogFields(error, descriptor), {
+    source: "bridge-internal",
+    kind: "bridge_failure",
+    status: 502,
+    retryable: true,
+    upstreamCode: "161",
+    providerMessage: "provider reason with detail",
+  });
+});
+
 test("preserves intentional bridge validation errors", () => {
   const result = classifyBridgeError(new BridgeHttpError(
     400,

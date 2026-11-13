@@ -51,6 +51,16 @@ export function upstreamErrorCode(error: unknown): string | null {
   return null;
 }
 
+function upstreamProviderMessage(error: unknown): string | null {
+  const root = readObject(error);
+  if (!root || root.name !== "ZcaApiError" || upstreamErrorCode(error) === null) return null;
+  const message = typeof root.message === "string"
+    ? root.message.replace(/[\r\n\t]+/g, " ").trim()
+    : "";
+  if (!message) return null;
+  return message.slice(0, 160);
+}
+
 function readHeader(headers: unknown, name: string): string | null {
   if (!headers) return null;
   const normalizedName = name.toLowerCase();
@@ -184,12 +194,14 @@ export function isZaloRateLimitError(error: unknown): boolean {
 
 export function bridgeErrorLogFields(error: unknown, descriptor: BridgeErrorDescriptor) {
   const retryAfterSeconds = upstreamRetryAfterSeconds(error);
+  const providerMessage = upstreamProviderMessage(error);
   return {
     source: descriptor.source,
     kind: descriptor.kind,
     status: descriptor.status,
     retryable: descriptor.retryable,
     upstreamCode: upstreamErrorCode(error),
+    ...(providerMessage === null ? {} : { providerMessage }),
     ...(retryAfterSeconds === null ? {} : { retryAfterSeconds }),
   };
 }
