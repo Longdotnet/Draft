@@ -21,7 +21,7 @@ public sealed class ZaloTrendMusicCandidateTests
     {
         var uri = ZaloTrendMusicService.BuildAppleChartUri("VN", 25);
 
-        Assert.Equal("https://rss.applemarketingtools.com/api/v2/vn/music/most-played/25/songs.json", uri);
+        Assert.Equal("https://rss.marketingtools.apple.com/api/v2/vn/music/most-played/25/songs.json", uri);
     }
 
     [Fact]
@@ -116,7 +116,46 @@ public sealed class ZaloTrendMusicCandidateTests
     }
 
     [Fact]
-    public void Daily_greeting_recovery_refreshes_only_story_overlay_copy()
+    public void Daily_story_uses_selected_customized_greeting_instead_of_fixed_copy()
+    {
+        var greeting = new ZaloDailyGreetingPlan(
+            ZaloDailyGreetingKind.Morning,
+            ZaloDailyGreetingMood.PlayfulRomantic,
+            "Morning mấy bạn trẻ ☀️ cứ đẹp trai xinh gái và vui vẻ trước, biết đâu duyên tự tìm tới 😌",
+            UseImage: true,
+            ServiceDate: new DateOnly(2026, 11, 14));
+
+        var text = ZaloTrendMusicService.ResolveGreetingText(greeting, oneShot: null);
+
+        Assert.Equal(greeting.Message, text);
+        Assert.NotEqual(ZaloTrendMusicService.StoryGreetingText(greeting.Kind), text);
+    }
+
+    [Fact]
+    public void Daily_story_one_shot_greeting_still_overrides_randomized_greeting()
+    {
+        var greeting = new ZaloDailyGreetingPlan(
+            ZaloDailyGreetingKind.Night,
+            ZaloDailyGreetingMood.LonelyComfort,
+            "Ai tối nay thấy lòng hơi trống thì nhận lời chúc này nha.",
+            UseImage: true,
+            ServiceDate: new DateOnly(2026, 11, 14));
+        var oneShot = new ZaloTrendMusicOneShotOverride(
+            "night",
+            GreetingDisabled: false,
+            GreetingText: "Ngủ ngon cả nhà, mai chiến tiếp nha.",
+            DisplayTitle: null,
+            DisplayArtist: null,
+            ArtworkUrl: null,
+            ShowLogo: null);
+
+        var text = ZaloTrendMusicService.ResolveGreetingText(greeting, oneShot);
+
+        Assert.Equal("Ngủ ngon cả nhà, mai chiến tiếp nha.", text);
+    }
+
+    [Fact]
+    public void Daily_greeting_recovery_restores_canonical_customized_overlay_copy()
     {
         var payload = """
             {
@@ -127,7 +166,7 @@ public sealed class ZaloTrendMusicCandidateTests
               }],
               "spec": {
                 "period":"morning","greetingEnabled":true,
-                "greetingText":"Old long greeting",
+                "greetingText":"Chào buổi sáng nha. Nghe chút nhạc nhẹ, mở đầu ngày mới thật dễ thương.",
                 "displayTitle":null,"displayArtist":null,"artworkUrl":null,
                 "showLogo":true,"canonicalGreetingText":"Canonical greeting"
               },
@@ -141,14 +180,38 @@ public sealed class ZaloTrendMusicCandidateTests
 
         using var document = JsonDocument.Parse(refreshed);
         var spec = document.RootElement.GetProperty("spec");
-        Assert.Equal(
-            ZaloTrendMusicService.StoryGreetingText(ZaloDailyGreetingKind.Morning),
-            spec.GetProperty("greetingText").GetString());
-        Assert.DoesNotContain("Old long greeting", refreshed, StringComparison.Ordinal);
+        Assert.Equal("Canonical greeting", spec.GetProperty("greetingText").GetString());
+        Assert.DoesNotContain("Chào buổi sáng nha. Nghe chút nhạc nhẹ", refreshed, StringComparison.Ordinal);
         Assert.Equal("Canonical greeting", spec.GetProperty("canonicalGreetingText").GetString());
         var candidate = document.RootElement.GetProperty("candidates")[0];
         Assert.Equal("ccmixter-1", candidate.GetProperty("id").GetString());
         Assert.Equal("CC BY 3.0", candidate.GetProperty("licenseLabel").GetString());
+    }
+
+    [Fact]
+    public void Daily_greeting_recovery_keeps_one_shot_custom_overlay_copy()
+    {
+        var payload = """
+            {
+              "candidates": [],
+              "spec": {
+                "period":"night","greetingEnabled":true,
+                "greetingText":"Ngủ ngon cả nhà, mai chiến tiếp nha.",
+                "displayTitle":null,"displayArtist":null,"artworkUrl":null,
+                "showLogo":true,"canonicalGreetingText":"Ai tối nay thấy lòng hơi trống thì nhận lời chúc này nha."
+              },
+              "songQuery":null
+            }
+            """;
+
+        var refreshed = ZaloTrendMusicService.RefreshDailyGreetingPayload(
+            payload,
+            ZaloDailyGreetingKind.Night);
+
+        using var document = JsonDocument.Parse(refreshed);
+        Assert.Equal(
+            "Ngủ ngon cả nhà, mai chiến tiếp nha.",
+            document.RootElement.GetProperty("spec").GetProperty("greetingText").GetString());
     }
 
     [Fact]

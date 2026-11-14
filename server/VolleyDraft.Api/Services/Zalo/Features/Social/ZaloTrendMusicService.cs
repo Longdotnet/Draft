@@ -193,6 +193,10 @@ public sealed class ZaloTrendMusicService(
     private readonly ZaloTrendMusicRenderCacheStore renderCache = new(db);
     private readonly ZaloProactiveMessageStore proactiveStore = new(db);
     private static readonly SemaphoreSlim DailyCandidateCacheLock = new(1, 1);
+    private static readonly TimeSpan DailyCandidateFreshTtl = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan DailyCandidateLastGoodTtl = TimeSpan.FromHours(24);
+    private static readonly TimeSpan AppleRequestAttemptTimeout = TimeSpan.FromSeconds(6);
+    private const int AppleRequestAttempts = 3;
     private static readonly TimeSpan RequestedSongCacheTtl = TimeSpan.FromDays(30);
     private const int RequestedSongCacheMaxEntries = 24;
     private const long RequestedSongCacheMaxTotalBytes = 96L * 1024 * 1024;
@@ -1182,6 +1186,11 @@ public sealed class ZaloTrendMusicService(
             settings.AppleStorefront,
             settings.AppleChartLimit,
             settings.MaxCandidates);
+        var lastGoodCacheKey = (
+            "ZaloTrendMusicDailyCandidatesAppleLastGood",
+            settings.AppleStorefront,
+            settings.AppleChartLimit,
+            settings.MaxCandidates);
         if (memoryCache.TryGetValue<IReadOnlyList<ZaloTrendMusicCandidate>>(cacheKey, out var cached) && cached is not null)
             return cached;
 
@@ -1193,11 +1202,50 @@ public sealed class ZaloTrendMusicService(
             try
             {
                 var loaded = await LoadCandidatesAsync(settings, cancellationToken);
-                memoryCache.Set(cacheKey, loaded, TimeSpan.FromMinutes(15));
+                if (loaded.Count == 0)
+                    throw new InvalidOperationException("Apple Music chart returned no usable preview candidates.");
+
+                memoryCache.Set(cacheKey, loaded, DailyCandidateFreshTtl);
+                memoryCache.Set(lastGoodCacheKey, loaded, DailyCandidateLastGoodTtl);
                 return loaded;
             }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
+                if (memoryCache.TryGetValue<IReadOnlyList<ZaloTrendMusicCandidate>>(
+                        lastGoodCacheKey,
+                        out var lastGood) &&
+                    lastGood is { Count: > 0 })
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Apple Music chart unavailable; using last known good in-memory candidates Count={Count}",
+                        lastGood.Count);
+                    memoryCache.Set(cacheKey, lastGood, TimeSpan.FromMinutes(5));
+                    return lastGood;
+                }
+
+                try
+                {
+                    var persistedPayload = await jobs.GetLatestAutomaticCandidatePayloadAsync(cancellationToken);
+                    var persisted = CandidatesFromRenderPayload(persistedPayload);
+                    if (persisted.Count > 0)
+                    {
+                        logger.LogWarning(
+                            exception,
+                            "Apple Music chart unavailable; using last successful persisted candidates Count={Count}",
+                            persisted.Count);
+                        memoryCache.Set(cacheKey, persisted, TimeSpan.FromMinutes(5));
+                        memoryCache.Set(lastGoodCacheKey, persisted, DailyCandidateLastGoodTtl);
+                        return persisted;
+                    }
+                }
+                catch (Exception persistedException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogWarning(
+                        persistedException,
+                        "Could not load persisted trend-music candidates after Apple Music chart failure");
+                }
+
                 // Cache the explicit fallback briefly so a source outage does not repeat the same
                 // timeout sequence for every due group or every short-lived DI scope.
                 memoryCache.Set<IReadOnlyList<ZaloTrendMusicCandidate>>(cacheKey, [], TimeSpan.FromMinutes(2));
@@ -1210,6 +1258,20 @@ public sealed class ZaloTrendMusicService(
         }
     }
 
+    internal static IReadOnlyList<ZaloTrendMusicCandidate> CandidatesFromRenderPayload(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<ZaloTrendMusicRenderEnvelope>(payload, JsonOptions)?.Candidates
+                   ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
     private static ZaloTrendMusicRenderSpec BuildRenderSpec(
         ZaloDailyGreetingPlan greeting,
         ZaloTrendMusicSettings settings,
@@ -1217,9 +1279,7 @@ public sealed class ZaloTrendMusicService(
     {
         var period = greeting.Kind == ZaloDailyGreetingKind.Night ? "night" : "morning";
         var greetingEnabled = oneShot?.GreetingDisabled != true;
-        var greetingText = string.IsNullOrWhiteSpace(oneShot?.GreetingText)
-            ? StoryGreetingText(greeting.Kind)
-            : oneShot!.GreetingText!.Trim();
+        var greetingText = ResolveGreetingText(greeting, oneShot);
         return new ZaloTrendMusicRenderSpec(
             period,
             greetingEnabled,
@@ -1231,6 +1291,15 @@ public sealed class ZaloTrendMusicService(
             CanonicalGreetingText: greeting.Message.Trim());
     }
 
+    internal static string ResolveGreetingText(
+        ZaloDailyGreetingPlan greeting,
+        ZaloTrendMusicOneShotOverride? oneShot)
+    {
+        return CleanOverrideText(oneShot?.GreetingText, 220)
+               ?? CleanOverrideText(greeting.Message, 220)
+               ?? StoryGreetingText(greeting.Kind);
+    }
+
     internal static string StoryGreetingText(ZaloDailyGreetingKind kind) =>
         kind == ZaloDailyGreetingKind.Night
             ? "Tối rồi nha. Nghe chút nhạc nhẹ trước khi ngủ, chúc bạn ngủ thật ngon."
@@ -1240,9 +1309,16 @@ public sealed class ZaloTrendMusicService(
     {
         var envelope = JsonSerializer.Deserialize<ZaloTrendMusicRenderEnvelope>(payload, JsonOptions)
             ?? throw new InvalidOperationException("Daily greeting render queue payload is invalid.");
+        var currentGreeting = CleanOverrideText(envelope.Spec.GreetingText, 220);
+        var canonicalGreeting = CleanOverrideText(envelope.Spec.CanonicalGreetingText, 220);
+        var legacyFixedGreeting = StoryGreetingText(kind);
+        var greetingText = currentGreeting is null ||
+                           string.Equals(currentGreeting, legacyFixedGreeting, StringComparison.Ordinal)
+            ? canonicalGreeting ?? currentGreeting ?? legacyFixedGreeting
+            : currentGreeting;
         var refreshed = envelope with
         {
-            Spec = envelope.Spec with { GreetingText = StoryGreetingText(kind) }
+            Spec = envelope.Spec with { GreetingText = greetingText }
         };
         return JsonSerializer.Serialize(refreshed, JsonOptions);
     }
@@ -1760,27 +1836,62 @@ public sealed class ZaloTrendMusicService(
         CancellationToken cancellationToken)
     {
         var client = httpClientFactory.CreateClient("TrendMusicFeed");
-        using var chartResponse = await client.GetAsync(
+        var chartJson = await GetJsonWithRetryAsync(
+            client,
             BuildAppleChartUri(settings.AppleStorefront, settings.AppleChartLimit),
+            "Apple Music chart",
             cancellationToken);
-        chartResponse.EnsureSuccessStatusCode();
-        var chartJson = await chartResponse.Content.ReadAsStringAsync(cancellationToken);
         var chartIds = ParseAppleChartTrackIds(chartJson, settings.AppleChartLimit);
         if (chartIds.Count == 0) return [];
 
-        using var lookupResponse = await client.GetAsync(
+        var lookupJson = await GetJsonWithRetryAsync(
+            client,
             BuildAppleLookupUri(settings.AppleStorefront, chartIds),
+            "iTunes lookup",
             cancellationToken);
-        lookupResponse.EnsureSuccessStatusCode();
-        var lookupJson = await lookupResponse.Content.ReadAsStringAsync(cancellationToken);
         return ParseAppleLookupCandidates(lookupJson, chartIds, settings.MaxCandidates);
+    }
+
+    private async Task<string> GetJsonWithRetryAsync(
+        HttpClient client,
+        string uri,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= AppleRequestAttempts; attempt++)
+        {
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptCts.CancelAfter(AppleRequestAttemptTimeout);
+            try
+            {
+                using var response = await client.GetAsync(uri, attemptCts.Token);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync(attemptCts.Token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (attempt < AppleRequestAttempts)
+            {
+                logger.LogWarning(
+                    exception,
+                    "{Source} request failed attempt {Attempt}/{Attempts}; retrying",
+                    source,
+                    attempt,
+                    AppleRequestAttempts);
+                await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), cancellationToken);
+            }
+        }
+
+        throw new HttpRequestException($"{source} request failed after {AppleRequestAttempts} attempts.");
     }
 
     internal static string BuildAppleChartUri(string storefront, int chartLimit)
     {
         var country = NormalizeAppleCountry(storefront);
         var limit = Math.Clamp(chartLimit, 10, 100);
-        return $"https://rss.applemarketingtools.com/api/v2/{country.ToLowerInvariant()}/music/most-played/{limit}/songs.json";
+        return $"https://rss.marketingtools.apple.com/api/v2/{country.ToLowerInvariant()}/music/most-played/{limit}/songs.json";
     }
 
     internal static string BuildAppleLookupUri(string storefront, IReadOnlyList<string> trackIds)
@@ -2911,6 +3022,24 @@ internal sealed class ZaloTrendMusicJobStore(VolleyDraftDbContext db)
             """;
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         Add(command, "@IdempotencyKey", idempotencyKey.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
+    }
+
+    public async Task<string?> GetLatestAutomaticCandidatePayloadAsync(
+        CancellationToken cancellationToken)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            SELECT "CandidatesJson"
+            FROM "ZaloTrendMusicRenderQueue"
+            WHERE "State" = 'sent'
+              AND "IdempotencyKey" NOT LIKE 'trend-music:request:%'
+              AND "CandidatesJson" LIKE '%"candidates":[{%'
+            ORDER BY "UpdatedAt" DESC
+            LIMIT 1;
+            """;
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
     }

@@ -9,6 +9,34 @@ namespace VolleyDraft.Api.Tests.Zalo.Features.Social;
 public sealed class ZaloTrendMusicQueueTests
 {
     [Fact]
+    public async Task Last_successful_automatic_payload_can_seed_daily_candidate_fallback()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VolleyDraftDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new VolleyDraftDbContext(options);
+        var store = new ZaloTrendMusicJobStore(db);
+        var target = new ZaloProactiveTarget("connection-1", "group-1", "account-1");
+        var now = DateTimeOffset.UtcNow;
+        const string key = "trend-music:connection-1:group-1:2026-11-14:morning";
+        const string payload = """
+            {"candidates":[{"id":"itunes-1","title":"Song","artist":"Artist","rank":1,"mediaType":"audio","mediaUrl":"https://audio-ssl.itunes.apple.com/1.m4a"}],"spec":{"period":"morning","greetingEnabled":true,"greetingText":"Morning","displayTitle":null,"displayArtist":null,"artworkUrl":null,"showLogo":true},"songQuery":null}
+            """;
+
+        Assert.True(await store.EnqueueAsync(target, "2026-11-14", key, payload, CancellationToken.None));
+        var claim = await store.TryClaimQueueAsync(now, TimeSpan.FromMinutes(10), CancellationToken.None);
+        Assert.NotNull(claim);
+        await store.MarkQueueSentAsync(key, claim.ClaimToken, CancellationToken.None);
+
+        var persisted = await store.GetLatestAutomaticCandidatePayloadAsync(CancellationToken.None);
+
+        Assert.Equal(payload, persisted);
+        Assert.Equal("itunes-1", Assert.Single(ZaloTrendMusicService.CandidatesFromRenderPayload(persisted)).Id);
+    }
+
+    [Fact]
     public async Task Queue_claim_is_durable_stale_retryable_and_sent_fenced()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
