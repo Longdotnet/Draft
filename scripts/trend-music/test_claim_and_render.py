@@ -72,7 +72,9 @@ class RequestedSongAppleFallbackTests(unittest.TestCase):
     def test_itunes_preview_downloads_strong_match_and_prefers_original_soundtrack(self) -> None:
         query = "Gói con tim làm quà"
         preview_original = "https://audio-ssl.itunes.apple.com/itunes-assets/original.m4a"
+        preview_extended = "https://audio-ssl.itunes.apple.com/itunes-assets/original.ep.m4a"
         preview_film = "https://audio-ssl.itunes.apple.com/itunes-assets/film.m4a"
+        source_original = "https://music.apple.com/vn/album/original/22"
         payload = {
             "results": [
                 {
@@ -87,7 +89,7 @@ class RequestedSongAppleFallbackTests(unittest.TestCase):
                     "trackName": "Gói Con Tim Làm Quà (feat. Mounter) [Bò Sữa Bay Original Soundtrack]",
                     "artistName": "Nguyễn Hùng",
                     "previewUrl": preview_original,
-                    "trackViewUrl": "https://music.apple.com/vn/album/original/22",
+                    "trackViewUrl": source_original,
                     "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/cover/100x100bb.jpg",
                 },
                 {
@@ -108,7 +110,13 @@ class RequestedSongAppleFallbackTests(unittest.TestCase):
                     json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                     url=url,
                 )
-            if url == preview_original:
+            if url == source_original:
+                html = (
+                    '{"id":"track-lockup - 123 - 22","title":"Gói Con Tim Làm Quà",'
+                    f'"previewUrl":"{preview_extended}"}}'
+                )
+                return FakeResponse(html.encode("utf-8"), url=url)
+            if url == preview_extended:
                 return FakeResponse(b"apple-preview-audio", url=url)
             self.fail(f"unexpected URL opened: {url}")
 
@@ -121,7 +129,7 @@ class RequestedSongAppleFallbackTests(unittest.TestCase):
             self.assertEqual("Nguyễn Hùng", candidate["artist"])
             self.assertEqual("Apple Music preview", candidate["licenseLabel"])
             self.assertTrue(pathlib.Path(candidate["mediaPath"]).read_bytes())
-            self.assertEqual(preview_original, seen_urls[-1])
+            self.assertEqual(preview_extended, seen_urls[-1])
 
     def test_itunes_preview_rejects_weak_or_unrelated_title(self) -> None:
         query = "Gói con tim làm quà"

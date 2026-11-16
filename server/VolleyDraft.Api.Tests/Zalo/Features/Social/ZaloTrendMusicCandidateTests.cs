@@ -74,6 +74,21 @@ public sealed class ZaloTrendMusicCandidateTests
     }
 
     [Fact]
+    public void Apple_music_page_parser_prefers_extended_track_preview()
+    {
+        var html = """
+            <script>{"id":"track-lockup - 6808519782 - 6808519787","title":"LAVIEM",
+            "previewUrl":"https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/example/mzaf_example.plus.aac.ep.m4a"}</script>
+            """;
+
+        var preview = ZaloTrendMusicService.ParseAppleMusicExtendedPreviewUrl(html, "6808519787");
+
+        Assert.Equal(
+            "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/example/mzaf_example.plus.aac.ep.m4a",
+            preview);
+    }
+
+    [Fact]
     public void Daily_rotation_advances_between_morning_night_and_next_morning()
     {
         var candidates = Enumerable.Range(1, 8)

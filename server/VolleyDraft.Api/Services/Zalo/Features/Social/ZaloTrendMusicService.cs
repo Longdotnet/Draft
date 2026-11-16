@@ -1849,7 +1849,49 @@ public sealed class ZaloTrendMusicService(
             BuildAppleLookupUri(settings.AppleStorefront, chartIds),
             "iTunes lookup",
             cancellationToken);
-        return ParseAppleLookupCandidates(lookupJson, chartIds, settings.MaxCandidates);
+        var candidates = ParseAppleLookupCandidates(lookupJson, chartIds, settings.MaxCandidates);
+        return await EnrichApplePreviewCandidatesAsync(client, candidates, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> EnrichApplePreviewCandidatesAsync(
+        HttpClient client,
+        IReadOnlyList<ZaloTrendMusicCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        if (candidates.Count == 0) return candidates;
+
+        var tasks = candidates.Select(async candidate =>
+        {
+            if (!candidate.Id.StartsWith("itunes-", StringComparison.Ordinal) ||
+                string.IsNullOrWhiteSpace(candidate.SourceUrl))
+                return candidate;
+
+            var trackId = candidate.Id["itunes-".Length..];
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptCts.CancelAfter(TimeSpan.FromSeconds(12));
+            try
+            {
+                using var response = await client.GetAsync(candidate.SourceUrl, attemptCts.Token);
+                response.EnsureSuccessStatusCode();
+                var html = await response.Content.ReadAsStringAsync(attemptCts.Token);
+                var extendedPreview = ParseAppleMusicExtendedPreviewUrl(html, trackId);
+                return extendedPreview is null ? candidate : candidate with { MediaUrl = extendedPreview };
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogDebug(
+                    exception,
+                    "Apple Music extended preview unavailable TrackId={TrackId}; keeping iTunes lookup preview",
+                    trackId);
+                return candidate;
+            }
+        });
+
+        return await Task.WhenAll(tasks);
     }
 
     private async Task<string> GetJsonWithRetryAsync(
@@ -1985,6 +2027,28 @@ public sealed class ZaloTrendMusicService(
                 "Apple Music preview"));
         }
         return output;
+    }
+
+    internal static string? ParseAppleMusicExtendedPreviewUrl(string html, string trackId)
+    {
+        if (string.IsNullOrWhiteSpace(html) || string.IsNullOrWhiteSpace(trackId)) return null;
+        var match = Regex.Match(
+            html,
+            $"\\\"id\\\":\\\"track-lockup - [^\\\"]* - {Regex.Escape(trackId.Trim())}\\\".{{0,16000}}?\\\"previewUrl\\\":\\\"([^\\\"]+)\\\"",
+            RegexOptions.Singleline);
+        if (!match.Success) return null;
+
+        string? previewUrl;
+        try
+        {
+            previewUrl = JsonSerializer.Deserialize<string>($"\"{match.Groups[1].Value}\"");
+        }
+        catch (JsonException)
+        {
+            previewUrl = match.Groups[1].Value.Replace("\\/", "/", StringComparison.Ordinal);
+        }
+
+        return IsApplePreviewUrl(previewUrl) ? previewUrl : null;
     }
 
     internal static IReadOnlyList<ZaloTrendMusicCandidate> RotateDailyCandidates(

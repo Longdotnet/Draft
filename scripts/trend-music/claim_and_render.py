@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import hashlib
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ import urllib.request
 SPOTDL_VERSION = "4.6.0"
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 APPLE_AUDIO_HOST = "audio-ssl.itunes.apple.com"
+APPLE_MUSIC_HOST = "music.apple.com"
 
 for _stream_name in ("stdout", "stderr"):
     _stream = getattr(sys, _stream_name, None)
@@ -173,6 +175,44 @@ def _validated_https_url(value: object, *, allowed_hosts: tuple[str, ...]) -> st
     return raw
 
 
+def apple_music_preview_from_html(html: str, track_id: str) -> str | None:
+    if not track_id:
+        return None
+    match = re.search(
+        rf'"id":"track-lockup - [^"]* - {re.escape(track_id)}".{{0,16000}}?"previewUrl":"([^"]+)"',
+        html,
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    raw = match.group(1)
+    try:
+        url = json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        url = raw.replace("\\/", "/")
+    return _validated_https_url(url, allowed_hosts=(APPLE_AUDIO_HOST,))
+
+
+def apple_music_extended_preview(source_url: str | None, track_id: str) -> str | None:
+    source = _validated_https_url(source_url, allowed_hosts=(APPLE_MUSIC_HOST,))
+    if source is None or not track_id:
+        return None
+    request = urllib.request.Request(
+        source,
+        headers={"User-Agent": "VolleyDraft-TrendMusic-Renderer/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            if _validated_https_url(response.geturl(), allowed_hosts=(APPLE_MUSIC_HOST,)) is None:
+                return None
+            body = response.read(2 * 1024 * 1024 + 1)
+            if len(body) > 2 * 1024 * 1024:
+                return None
+        return apple_music_preview_from_html(body.decode("utf-8", errors="ignore"), track_id)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return None
+
+
 def itunes_preview_candidate(query: str, work: pathlib.Path) -> dict:
     params = urllib.parse.urlencode(
         {
@@ -227,9 +267,13 @@ def itunes_preview_candidate(query: str, work: pathlib.Path) -> dict:
         raise RuntimeError("iTunes search found no confident title match with an Apple preview")
 
     _, _, selected, preview_url = min(matches, key=lambda entry: (entry[0], entry[1]))
+    track_id = str(selected.get("trackId") or "").strip()
+    source_url = _validated_https_url(selected.get("trackViewUrl"), allowed_hosts=(APPLE_MUSIC_HOST,))
+    extended_preview = apple_music_extended_preview(source_url, track_id)
+    download_url = extended_preview or preview_url
     audio_path = work / "itunes-preview.m4a"
     audio_request = urllib.request.Request(
-        preview_url,
+        download_url,
         headers={"User-Agent": "VolleyDraft-TrendMusic-Renderer/1.0"},
     )
     try:
@@ -256,9 +300,7 @@ def itunes_preview_candidate(query: str, work: pathlib.Path) -> dict:
         raise RuntimeError("Apple preview download returned an empty file")
 
     artist = str(selected.get("artistName") or "").strip() or "Không rõ nghệ sĩ"
-    source_url = _validated_https_url(selected.get("trackViewUrl"), allowed_hosts=("music.apple.com",))
     artwork_url = _validated_https_url(selected.get("artworkUrl100"), allowed_hosts=("mzstatic.com",))
-    track_id = str(selected.get("trackId") or "").strip()
     if not track_id:
         track_id = hashlib.sha256(
             f"{query}\n{artist}\n{preview_url}".encode("utf-8")
