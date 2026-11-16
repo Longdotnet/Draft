@@ -7,6 +7,7 @@ namespace VolleyDraft.Api.Services;
 public sealed class ZaloBirthdayService(
     VolleyDraftDbContext db,
     ZaloIntegrationService zaloIntegration,
+    ZaloBridgeClient bridge,
     ZaloMemberActivityService activity,
     ZaloMembershipHistoryService membershipHistory,
     ZaloTrendMusicService trendMusic,
@@ -46,19 +47,167 @@ public sealed class ZaloBirthdayService(
             if (members.Count == 0) continue;
 
             var profiles = await GetProfilesAsync(target, members, today, cancellationToken);
-            foreach (var profile in profiles)
-            {
-                if (!ZaloMemberIntelligenceBotService.TryParseBirthday(profile, out var birthday) ||
-                    birthday.Month != today.Month || birthday.Day != today.Day)
-                    continue;
+            var memberById = members
+                .GroupBy(item => NormalizeId(item.ZaloUserId), StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var birthdays = profiles
+                .Select(profile =>
+                {
+                    if (!ZaloMemberIntelligenceBotService.TryParseBirthday(profile, out var birthday))
+                        return null;
+                    var userId = NormalizeId(profile.ZaloUserId);
+                    if (!memberById.TryGetValue(userId, out var member))
+                        return null;
+                    var occurrence = ZaloMemberIntelligenceBotService.GetNextBirthdayOccurrence(today, birthday);
+                    return new BirthdayProfile(member, profile, birthday, occurrence, occurrence.DayNumber - today.DayNumber);
+                })
+                .Where(item => item is not null)
+                .Select(item => item!)
+                .OrderBy(item => item.DaysUntil)
+                .ThenBy(item => item.Member.DisplayName)
+                .ToList();
 
-                var userId = NormalizeId(profile.ZaloUserId);
-                var member = members.FirstOrDefault(item => NormalizeId(item.ZaloUserId) == userId);
-                if (member is null) continue;
-                var plan = await BuildPlanAsync(target, member, profile, localNow, cancellationToken);
+            foreach (var birthday in birthdays.Where(item => item.DaysUntil == 0))
+            {
+                var plan = await BuildPlanAsync(target, birthday.Member, birthday.Profile, localNow, cancellationToken);
                 await trendMusic.TryScheduleBirthdayAsync(target, today, plan, cancellationToken);
             }
+
+            await TrySendDigestAsync(target, today, localNow, birthdays, cancellationToken);
         }
+    }
+
+    private async Task TrySendDigestAsync(
+        ZaloProactiveTarget target,
+        DateOnly today,
+        DateTimeOffset localNow,
+        IReadOnlyList<BirthdayProfile> birthdays,
+        CancellationToken cancellationToken)
+    {
+        if (!configuration.GetValue("ZaloBot:Ambient:Birthday:DigestEnabled", true))
+            return;
+
+        var digestHour = Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Birthday:DigestHour", 8), 0, 23);
+        if (localNow.Hour < digestHour) return;
+
+        var upcomingDays = Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Birthday:UpcomingDays", 7), 1, 14);
+        var soonDays = Math.Clamp(configuration.GetValue("ZaloBot:Ambient:Birthday:SoonDays", 30), upcomingDays + 1, 60);
+        var todayBirthdays = birthdays.Where(item => item.DaysUntil == 0).ToArray();
+        var upcoming = birthdays.Where(item => item.DaysUntil >= 1 && item.DaysUntil <= upcomingDays).ToArray();
+        var soon = birthdays.Where(item => item.DaysUntil > upcomingDays && item.DaysUntil <= soonDays).ToArray();
+        var hasTomorrow = upcoming.Any(item => item.DaysUntil == 1);
+        var weeklyDigestDay = localNow.DayOfWeek == DayOfWeek.Monday;
+        if (todayBirthdays.Length == 0 && !hasTomorrow && !weeklyDigestDay)
+            return;
+        if (todayBirthdays.Length == 0 && upcoming.Length == 0 && soon.Length == 0)
+            return;
+
+        var message = BuildDigestText(todayBirthdays, upcoming, soon, upcomingDays, soonDays);
+        var localDate = $"{today:yyyy-MM-dd}";
+        var idempotencyKey = $"birthday-digest:{target.ConnectionId}:{target.GroupId}:{today:yyyyMMdd}";
+        var proactiveStore = new ZaloProactiveMessageStore(db);
+        var history = await proactiveStore.GetHistoryAsync(target.ConnectionId, target.GroupId, 120, cancellationToken);
+        if (history.Any(item => string.Equals(item.IdempotencyKey, idempotencyKey, StringComparison.Ordinal)))
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        if (!await proactiveStore.TryAcquireLeaseAsync(
+                target.ConnectionId,
+                target.GroupId,
+                idempotencyKey,
+                now,
+                TimeSpan.FromMinutes(2),
+                cancellationToken))
+            return;
+
+        var accepted = false;
+        try
+        {
+            var response = await bridge.SendGroupMessageAsync(
+                target.AccountId,
+                target.GroupId,
+                message,
+                [],
+                idempotencyKey: idempotencyKey);
+            if (!response.Sent)
+            {
+                await proactiveStore.ReleaseLeaseAsync(target.ConnectionId, target.GroupId, idempotencyKey, cancellationToken);
+                return;
+            }
+
+            accepted = true;
+            await proactiveStore.RecordAsync(new ZaloProactiveMessageHistoryData(
+                Guid.NewGuid().ToString("N"),
+                target.ConnectionId,
+                target.GroupId,
+                localDate,
+                ZaloProactiveLane.Birthday,
+                "BirthdayDigest",
+                $"birthday:{localDate}",
+                null,
+                null,
+                message,
+                now,
+                response.MessageId,
+                idempotencyKey), cancellationToken);
+            await proactiveStore.CommitCooldownAsync(
+                target.ConnectionId,
+                target.GroupId,
+                idempotencyKey,
+                now.AddMinutes(2),
+                cancellationToken);
+            logger.LogInformation(
+                "Birthday digest sent Group={GroupId} Today={TodayCount} Upcoming={UpcomingCount} Soon={SoonCount}",
+                target.GroupId,
+                todayBirthdays.Length,
+                upcoming.Length,
+                soon.Length);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            if (!accepted)
+            {
+                try
+                {
+                    await proactiveStore.ReleaseLeaseAsync(target.ConnectionId, target.GroupId, idempotencyKey, cancellationToken);
+                }
+                catch
+                {
+                    // Best-effort release; the short lease expires on its own.
+                }
+            }
+            logger.LogWarning(exception, "Birthday digest send failed Group={GroupId}", target.GroupId);
+        }
+    }
+
+    internal static string BuildDigestText(
+        IReadOnlyList<BirthdayProfile> today,
+        IReadOnlyList<BirthdayProfile> upcoming,
+        IReadOnlyList<BirthdayProfile> soon,
+        int upcomingDays,
+        int soonDays)
+    {
+        var sections = new List<string> { "🎂 Lịch sinh nhật trong nhóm" };
+        if (today.Count > 0)
+        {
+            sections.Add("🎉 Hôm nay\n" + string.Join('\n', today.Select(item => $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM}")));
+        }
+        if (upcoming.Count > 0)
+        {
+            sections.Add($"📅 {upcomingDays} ngày tới\n" + string.Join('\n', upcoming.Select(item =>
+                $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM} (còn {item.DaysUntil} ngày)")));
+        }
+        if (soon.Count > 0)
+        {
+            sections.Add($"🔜 Sắp tới ({soonDays} ngày)\n" + string.Join('\n', soon.Select(item =>
+                $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM}")));
+        }
+        sections.Add("Bott sẽ tự chúc đúng ngày, không cần nhắc.");
+        return string.Join("\n\n", sections);
     }
 
     private async Task<IReadOnlyList<BridgeUserProfile>> GetProfilesAsync(
@@ -114,12 +263,13 @@ public sealed class ZaloBirthdayService(
             userId,
             cancellationToken);
 
-        var activityStart = localNow.AddDays(-365);
+        var activityStart = localNow.AddDays(-365).ToUniversalTime();
+        var activityEnd = localNow.AddDays(1).ToUniversalTime();
         var memberActivity = await activity.GetMemberActivityAsync(
             target.ConnectionId,
             target.GroupId,
             userId,
-            new ZaloActivityPeriod(activityStart, localNow.AddDays(1), "12 tháng gần nhất"),
+            new ZaloActivityPeriod(activityStart, activityEnd, "12 tháng gần nhất"),
             cancellationToken);
 
         var sessionRows = await db.SessionPlayers
@@ -137,12 +287,12 @@ public sealed class ZaloBirthdayService(
             target.ConnectionId,
             target.GroupId,
             userId,
-            localNow.AddDays(-365),
+            activityStart,
             cancellationToken);
         var interactionPeerCount = await CountInteractionPeersAsync(
             target,
             userId,
-            localNow.AddDays(-365),
+            activityStart,
             cancellationToken);
 
         var facts = new List<string>();
@@ -173,12 +323,16 @@ public sealed class ZaloBirthdayService(
         var ending = endings[userId.Aggregate(0, (sum, character) => sum + character) % endings.Length];
         var greeting = $"Chúc mừng sinh nhật {displayName}! {detail} {ending}";
         var songQuery = configuration["ZaloBot:Ambient:Birthday:SongQuery"]?.Trim();
+        var songArtist = configuration["ZaloBot:Ambient:Birthday:SongArtist"]?.Trim();
+        var songTrackId = configuration["ZaloBot:Ambient:Birthday:SongTrackId"]?.Trim();
         return new ZaloBirthdayVideoPlan(
             userId,
             displayName,
             greeting,
-            profile.AvatarUrl ?? member.AvatarUrl,
-            string.IsNullOrWhiteSpace(songQuery) ? null : songQuery);
+            NormalizeArtworkUrl(profile.AvatarUrl ?? member.AvatarUrl),
+            string.IsNullOrWhiteSpace(songQuery) ? null : songQuery,
+            string.IsNullOrWhiteSpace(songArtist) ? null : songArtist,
+            string.IsNullOrWhiteSpace(songTrackId) ? null : songTrackId);
     }
 
     private async Task<string?> FindBirthdayMemoryAsync(
@@ -303,9 +457,25 @@ public sealed class ZaloBirthdayService(
         return normalized.EndsWith("_0", StringComparison.Ordinal) ? normalized[..^2] : normalized;
     }
 
-    private sealed record BirthdayCurrentMember(
+    internal static string? NormalizeArtworkUrl(string? value)
+    {
+        var normalized = value?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized)) return null;
+        return normalized.StartsWith("//", StringComparison.Ordinal)
+            ? $"https:{normalized}"
+            : normalized;
+    }
+
+    internal sealed record BirthdayCurrentMember(
         string ZaloUserId,
         string DisplayName,
         string? AvatarUrl,
         DateTimeOffset FirstSeenAt);
+
+    internal sealed record BirthdayProfile(
+        BirthdayCurrentMember Member,
+        BridgeUserProfile Profile,
+        DateOnly Birthday,
+        DateOnly Occurrence,
+        int DaysUntil);
 }

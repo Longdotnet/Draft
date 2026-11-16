@@ -91,14 +91,18 @@ internal sealed record ZaloTrendMusicRenderSpec(
 internal sealed record ZaloTrendMusicRenderEnvelope(
     IReadOnlyList<ZaloTrendMusicCandidate> Candidates,
     ZaloTrendMusicRenderSpec Spec,
-    string? SongQuery = null);
+    string? SongQuery = null,
+    string? SongArtist = null,
+    string? SongTrackId = null);
 
 internal sealed record ZaloBirthdayVideoPlan(
     string ZaloUserId,
     string DisplayName,
     string GreetingText,
     string? ArtworkUrl,
-    string? SongQuery = null);
+    string? SongQuery = null,
+    string? SongArtist = null,
+    string? SongTrackId = null);
 
 internal sealed record ZaloTrendMusicRenderCacheEntry(
     string CacheKey,
@@ -1201,8 +1205,8 @@ public sealed class ZaloTrendMusicService(
             "birthday",
             GreetingEnabled: true,
             GreetingText: CleanOverrideText(birthday.GreetingText, 220) ?? $"Chúc mừng sinh nhật {birthday.DisplayName}!",
-            DisplayTitle: CleanOverrideText($"Happy Birthday {birthday.DisplayName}", 120),
-            DisplayArtist: "ZYRO Volleyball Club",
+            DisplayTitle: "Happy Birthday",
+            DisplayArtist: CleanOverrideText(birthday.DisplayName, 72),
             ArtworkUrl: IsHttpsUrl(birthday.ArtworkUrl) ? birthday.ArtworkUrl!.Trim() : null,
             ShowLogo: settings.ShowZyroLogo,
             CanonicalGreetingText: CleanOverrideText(birthday.GreetingText, 220));
@@ -1215,7 +1219,9 @@ public sealed class ZaloTrendMusicService(
             new ZaloTrendMusicRenderEnvelope(
                 [],
                 spec,
-                string.IsNullOrWhiteSpace(birthday.SongQuery) ? null : CleanOverrideText(birthday.SongQuery, 120)),
+                SongQuery: string.IsNullOrWhiteSpace(birthday.SongQuery) ? null : CleanOverrideText(birthday.SongQuery, 120),
+                SongArtist: string.IsNullOrWhiteSpace(birthday.SongArtist) ? null : CleanOverrideText(birthday.SongArtist, 120),
+                SongTrackId: string.IsNullOrWhiteSpace(birthday.SongTrackId) ? null : CleanOverrideText(birthday.SongTrackId, 40)),
             cancellationToken,
             forceQueue: true);
         if (inserted && settings.CanDirectDispatch)

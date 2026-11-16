@@ -21,6 +21,10 @@ class StoryRenderContractTests(unittest.TestCase):
         self.assertEqual(60.0, render_story.requested_media_duration_seconds(60.0))
         self.assertEqual(187.2, render_story.requested_media_duration_seconds(187.2))
 
+    def test_ffmpeg_duration_parser_supports_ninety_second_preview(self) -> None:
+        output = "Duration: 00:01:29.98, start: 0.000000, bitrate: 282 kb/s"
+        self.assertAlmostEqual(89.98, render_story.parse_ffmpeg_duration_seconds(output), places=2)
+
     def test_automatic_story_preserves_apple_preview_duration(self) -> None:
         original_duration = render_story.DURATION_SECONDS
         original_probe = render_story.probe_media_duration_seconds

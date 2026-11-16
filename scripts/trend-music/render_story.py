@@ -118,31 +118,53 @@ def ffprobe_binary() -> str:
     return shutil.which("ffprobe") or ""
 
 
+def parse_ffmpeg_duration_seconds(output: str) -> float:
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+    if match is None:
+        raise RuntimeError("ffmpeg did not report media duration")
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+    seconds = float(match.group(3))
+    duration = hours * 3600 + minutes * 60 + seconds
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("ffmpeg returned a non-positive media duration")
+    return duration
+
+
 def probe_media_duration_seconds(path: pathlib.Path) -> float:
     ffprobe = ffprobe_binary()
-    if not ffprobe:
-        raise RuntimeError("ffprobe is required to preserve media duration")
+    if ffprobe:
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    str(path),
+                ],
+                check=True,
+                timeout=30,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            duration = float(result.stdout.strip())
+            if not math.isfinite(duration) or duration <= 0:
+                raise RuntimeError("ffprobe returned a non-positive media duration")
+            return duration
+        except (FileNotFoundError, ValueError, subprocess.CalledProcessError):
+            pass
+
     result = subprocess.run(
-        [
-            ffprobe,
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        check=True,
+        [FFMPEG, "-hide_banner", "-i", str(path)],
+        check=False,
         timeout=30,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
-    try:
-        duration = float(result.stdout.strip())
-    except ValueError as exc:
-        raise RuntimeError("ffprobe returned an invalid media duration") from exc
-    if not math.isfinite(duration) or duration <= 0:
-        raise RuntimeError("ffprobe returned a non-positive media duration")
-    return duration
+    return parse_ffmpeg_duration_seconds(result.stdout)
 
 
 def requested_media_duration_seconds(media_duration: float) -> float:

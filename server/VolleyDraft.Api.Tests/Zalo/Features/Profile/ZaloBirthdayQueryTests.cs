@@ -26,6 +26,34 @@ public sealed class ZaloBirthdayQueryTests
         Assert.False(ZaloMemberIntelligenceBotService.TryParseBirthdayMonth(question, out _));
     }
 
+    [Theory]
+    [InlineData("@bott sinh nhật hôm nay", 0)]
+    [InlineData("sinh nhật 7 ngày tới", 7)]
+    [InlineData("birthday tuần tới", 7)]
+    [InlineData("sinh nhật sắp tới", 30)]
+    public void Birthday_window_is_read_from_natural_command(string question, int expectedDays)
+    {
+        Assert.True(ZaloMemberIntelligenceBotService.TryParseBirthdayWindow(question, out var days));
+        Assert.Equal(expectedDays, days);
+    }
+
+    [Fact]
+    public void Month_query_is_not_misread_as_upcoming_window()
+    {
+        Assert.False(ZaloMemberIntelligenceBotService.TryParseBirthdayWindow("sinh nhật tháng 11", out _));
+    }
+
+    [Fact]
+    public void Next_birthday_occurrence_rolls_into_next_year()
+    {
+        var today = new DateOnly(2026, 12, 29);
+        var birthday = new DateOnly(1995, 1, 3);
+
+        Assert.Equal(
+            new DateOnly(2027, 1, 3),
+            ZaloMemberIntelligenceBotService.GetNextBirthdayOccurrence(today, birthday));
+    }
+
     [Fact]
     public void Birthday_parser_accepts_string_date_for_non_friend_profile()
     {

@@ -187,6 +187,73 @@ class RequestedSongAppleFallbackTests(unittest.TestCase):
         self.assertIs(expected, actual)
         apple.assert_called_once()
 
+    def test_fixed_apple_track_requires_exact_title_and_artist(self) -> None:
+        preview = "https://audio-ssl.itunes.apple.com/itunes-assets/birthday.m4a"
+        source = "https://music.apple.com/vn/album/hat-nhan/1691944118?i=1691944123"
+        payload = {
+            "results": [
+                {
+                    "trackId": 1691944123,
+                    "trackName": "Khúc Hát Mừng Sinh Nhật",
+                    "artistName": "Phan Đình Tùng",
+                    "previewUrl": preview,
+                    "trackViewUrl": source,
+                }
+            ]
+        }
+
+        def fake_urlopen(request, timeout=0):
+            url = request.full_url
+            if url.startswith(claim_and_render.ITUNES_LOOKUP_URL):
+                return FakeResponse(json.dumps(payload, ensure_ascii=False).encode("utf-8"), url=url)
+            if url == source:
+                return FakeResponse(b"<html></html>", url=url)
+            if url == preview:
+                return FakeResponse(b"apple-preview-audio", url=url)
+            self.fail(f"unexpected URL opened: {url}")
+
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(claim_and_render.urllib.request, "urlopen", side_effect=fake_urlopen):
+                candidate = claim_and_render.build_requested_candidate(
+                    "Khúc Hát Mừng Sinh Nhật",
+                    pathlib.Path(temp),
+                    expected_artist="Phan Đình Tùng",
+                    track_id="1691944123",
+                )
+
+        self.assertEqual("itunes-1691944123", candidate["id"])
+        self.assertEqual("Khúc Hát Mừng Sinh Nhật", candidate["title"])
+        self.assertEqual("Phan Đình Tùng", candidate["artist"])
+
+    def test_fixed_apple_track_rejects_wrong_artist(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "trackId": 1691944123,
+                    "trackName": "Khúc Hát Mừng Sinh Nhật",
+                    "artistName": "Ca sĩ khác",
+                    "previewUrl": "https://audio-ssl.itunes.apple.com/itunes-assets/birthday.m4a",
+                    "trackViewUrl": "https://music.apple.com/vn/album/hat-nhan/1691944118?i=1691944123",
+                }
+            ]
+        }
+
+        def fake_urlopen(request, timeout=0):
+            return FakeResponse(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                url=request.full_url,
+            )
+
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(claim_and_render.urllib.request, "urlopen", side_effect=fake_urlopen):
+                with self.assertRaisesRegex(RuntimeError, "artist mismatch"):
+                    claim_and_render.build_requested_candidate(
+                        "Khúc Hát Mừng Sinh Nhật",
+                        pathlib.Path(temp),
+                        expected_artist="Phan Đình Tùng",
+                        track_id="1691944123",
+                    )
+
     def test_spotdl_metadata_rejects_unrelated_resolved_title(self) -> None:
         class FakeFrame:
             def __init__(self, value: str):
