@@ -28,17 +28,16 @@ public sealed class ZaloBirthdayVideoTests
     }
 
     [Fact]
-    public void Birthday_memory_uses_message_content_as_a_safe_topic_and_ignores_links_or_bot_commands()
+    public void Birthday_greeting_reads_like_a_friend_not_a_system_summary()
     {
-        var messages = new[]
-        {
-            "@Bott test nhạc trend",
-            "https://example.com/san-bong",
-            "Chiều nay kèo sân cũ nha anh em, đánh 3 set luôn"
-        };
+        var text = ZaloBirthdayService.BuildFriendlyGreeting("Huyền Châu", "1928290555510447972");
 
-        Assert.True(ZaloBirthdayService.TrySelectBirthdayMemory(messages, out var memory));
-        Assert.Equal("hay nhắc chuyện kèo/sân trong group", memory);
+        Assert.Contains("Huyền Châu", text);
+        Assert.Contains("Sinh nhật", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Bott nhớ", text);
+        Assert.DoesNotContain("roster", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("poll", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("tin nhắn", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -50,13 +49,15 @@ public sealed class ZaloBirthdayVideoTests
 
         var text = ZaloBirthdayService.BuildDigestText([today], [upcoming], [soon], 7, 30);
 
-        Assert.Contains("🎉 Hôm nay", text);
+        Assert.Contains("🎂 Hôm nay có sinh nhật nè 🎉", text);
         Assert.Contains("Huyền Châu — 16/11", text);
-        Assert.Contains("📅 7 ngày tới", text);
+        Assert.Contains("Chúc Huyền Châu có một ngày sinh nhật thật vui nha ❤️", text);
+        Assert.Contains("📅 Trong 7 ngày tới", text);
         Assert.Contains("Minh — 20/11 (còn 4 ngày)", text);
-        Assert.Contains("🔜 Sắp tới (30 ngày)", text);
+        Assert.Contains("🔜 Sắp tới", text);
         Assert.Contains("An — 01/12", text);
-        Assert.Contains("Bott sẽ tự chúc đúng ngày", text);
+        Assert.DoesNotContain("Bott sẽ tự chúc", text);
+        Assert.DoesNotContain("Lịch sinh nhật trong nhóm", text);
     }
 
     [Theory]

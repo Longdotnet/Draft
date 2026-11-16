@@ -8,8 +8,6 @@ public sealed class ZaloBirthdayService(
     VolleyDraftDbContext db,
     ZaloIntegrationService zaloIntegration,
     ZaloBridgeClient bridge,
-    ZaloMemberActivityService activity,
-    ZaloMembershipHistoryService membershipHistory,
     ZaloTrendMusicService trendMusic,
     IMemoryCache memoryCache,
     IConfiguration configuration,
@@ -69,7 +67,7 @@ public sealed class ZaloBirthdayService(
 
             foreach (var birthday in birthdays.Where(item => item.DaysUntil == 0))
             {
-                var plan = await BuildPlanAsync(target, birthday.Member, birthday.Profile, localNow, cancellationToken);
+                var plan = BuildPlan(birthday.Member, birthday.Profile);
                 await trendMusic.TryScheduleBirthdayAsync(target, today, plan, cancellationToken);
             }
 
@@ -191,22 +189,25 @@ public sealed class ZaloBirthdayService(
         int upcomingDays,
         int soonDays)
     {
-        var sections = new List<string> { "🎂 Lịch sinh nhật trong nhóm" };
+        var sections = new List<string>();
         if (today.Count > 0)
         {
-            sections.Add("🎉 Hôm nay\n" + string.Join('\n', today.Select(item => $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM}")));
+            var wish = today.Count == 1
+                ? $"Chúc {today[0].Member.DisplayName} có một ngày sinh nhật thật vui nha ❤️"
+                : "Chúc mọi người có một ngày sinh nhật thật vui nha ❤️";
+            sections.Add("🎂 Hôm nay có sinh nhật nè 🎉\n" + string.Join('\n', today.Select(item =>
+                $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM}")) + $"\n{wish}");
         }
         if (upcoming.Count > 0)
         {
-            sections.Add($"📅 {upcomingDays} ngày tới\n" + string.Join('\n', upcoming.Select(item =>
+            sections.Add($"📅 Trong {upcomingDays} ngày tới\n" + string.Join('\n', upcoming.Select(item =>
                 $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM} (còn {item.DaysUntil} ngày)")));
         }
         if (soon.Count > 0)
         {
-            sections.Add($"🔜 Sắp tới ({soonDays} ngày)\n" + string.Join('\n', soon.Select(item =>
+            sections.Add("🔜 Sắp tới\n" + string.Join('\n', soon.Select(item =>
                 $"• {item.Member.DisplayName} — {item.Occurrence:dd/MM}")));
         }
-        sections.Add("Bott sẽ tự chúc đúng ngày, không cần nhắc.");
         return string.Join("\n\n", sections);
     }
 
@@ -248,80 +249,13 @@ public sealed class ZaloBirthdayService(
         }
     }
 
-    private async Task<ZaloBirthdayVideoPlan> BuildPlanAsync(
-        ZaloProactiveTarget target,
+    private ZaloBirthdayVideoPlan BuildPlan(
         BirthdayCurrentMember member,
-        BridgeUserProfile profile,
-        DateTimeOffset localNow,
-        CancellationToken cancellationToken)
+        BridgeUserProfile profile)
     {
         var userId = NormalizeId(member.ZaloUserId);
         var displayName = string.IsNullOrWhiteSpace(member.DisplayName) ? profile.DisplayName : member.DisplayName.Trim();
-        var join = await membershipHistory.GetJoinDateAsync(
-            target.ConnectionId,
-            target.GroupId,
-            userId,
-            cancellationToken);
-
-        var activityStart = localNow.AddDays(-365).ToUniversalTime();
-        var activityEnd = localNow.AddDays(1).ToUniversalTime();
-        var memberActivity = await activity.GetMemberActivityAsync(
-            target.ConnectionId,
-            target.GroupId,
-            userId,
-            new ZaloActivityPeriod(activityStart, activityEnd, "12 tháng gần nhất"),
-            cancellationToken);
-
-        var sessionRows = await db.SessionPlayers
-            .AsNoTracking()
-            .Where(item =>
-                item.IsPresent &&
-                item.PlayerProfile != null &&
-                item.PlayerProfile.ZaloUserId == userId &&
-                item.Session.ZaloConnectionId == target.ConnectionId &&
-                item.Session.ZaloGroupId == target.GroupId)
-            .Select(item => new { item.SessionId, item.Session.StartTime })
-            .ToListAsync(cancellationToken);
-        var rosterCount = sessionRows.Select(item => item.SessionId).Distinct(StringComparer.Ordinal).Count();
-        var memory = await FindBirthdayMemoryAsync(
-            target.ConnectionId,
-            target.GroupId,
-            userId,
-            activityStart,
-            cancellationToken);
-        var interactionPeerCount = await CountInteractionPeersAsync(
-            target,
-            userId,
-            activityStart,
-            cancellationToken);
-
-        var facts = new List<string>();
-        if (join?.HasVerifiedEvidence == true && join.JoinedAt is { } joinedAt)
-            facts.Add($"{DescribeDuration(joinedAt, localNow)} cùng nhóm");
-        else if (member.FirstSeenAt != default)
-            facts.Add($"Bott ghi nhận từ {member.FirstSeenAt.ToOffset(VietnamOffset):dd/MM/yyyy}");
-        if (rosterCount > 0)
-            facts.Add($"có tên roster {rosterCount} buổi");
-        if (!string.IsNullOrWhiteSpace(memory))
-            facts.Add(memory);
-        if (interactionPeerCount > 0)
-            facts.Add($"tương tác qua reply với {interactionPeerCount} thành viên");
-        if (memberActivity is { MessageCount: > 0 })
-            facts.Add($"{memberActivity.MessageCount} tin nhắn/12 tháng");
-        if (memberActivity is { VotedPollCount: > 0 })
-            facts.Add($"{memberActivity.VotedPollCount} poll");
-
-        var detail = facts.Count == 0
-            ? "Cảm ơn bạn đã là một phần của nhóm."
-            : $"Bott nhớ: {string.Join(" • ", facts.Take(3))}.";
-        var endings = new[]
-        {
-            "Tuổi mới vui khỏe và còn quẩy nhiều kèo cùng anh em nha!",
-            "Chúc tuổi mới nhiều năng lượng, nhiều niềm vui và tiếp tục cháy sân cùng ZYRO nha!",
-            "Mong tuổi mới đầy pin, toàn kèo vui và có thêm thật nhiều kỷ niệm với nhóm nha!"
-        };
-        var ending = endings[userId.Aggregate(0, (sum, character) => sum + character) % endings.Length];
-        var greeting = $"Chúc mừng sinh nhật {displayName}! {detail} {ending}";
+        var greeting = BuildFriendlyGreeting(displayName, userId);
         var songQuery = configuration["ZaloBot:Ambient:Birthday:SongQuery"]?.Trim();
         var songArtist = configuration["ZaloBot:Ambient:Birthday:SongArtist"]?.Trim();
         var songTrackId = configuration["ZaloBot:Ambient:Birthday:SongTrackId"]?.Trim();
@@ -335,120 +269,16 @@ public sealed class ZaloBirthdayService(
             string.IsNullOrWhiteSpace(songTrackId) ? null : songTrackId);
     }
 
-    private async Task<string?> FindBirthdayMemoryAsync(
-        string connectionId,
-        string groupId,
-        string userId,
-        DateTimeOffset since,
-        CancellationToken cancellationToken)
+    internal static string BuildFriendlyGreeting(string displayName, string userId)
     {
-        var messages = await db.ZaloGroupMessages
-            .AsNoTracking()
-            .Where(item =>
-                item.ZaloConnectionId == connectionId &&
-                item.GroupId == groupId &&
-                item.SenderId == userId &&
-                !item.IsFromBot &&
-                item.SentAt >= since &&
-                item.Content != null)
-            .OrderByDescending(item => item.SentAt)
-            .Select(item => item.Content)
-            .Take(80)
-            .ToListAsync(cancellationToken);
-        return TrySelectBirthdayMemory(messages, out var memory) ? memory : null;
-    }
-
-    internal static bool TrySelectBirthdayMemory(IEnumerable<string?> messages, out string memory)
-    {
-        memory = string.Empty;
-        foreach (var raw in messages)
+        var endings = new[]
         {
-            var text = string.Join(' ', (raw ?? string.Empty).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-            if (text.Length < 8 || text.StartsWith("@bott", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("http://", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("https://", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("www.", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var normalized = ZaloBotIntelligence.Normalize(text);
-            var tokens = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
-            if (tokens.Contains("vote"))
-                memory = "hay bàn chuyện vote cùng nhóm";
-            else if (tokens.Contains("keo") || tokens.Contains("san"))
-                memory = "hay nhắc chuyện kèo/sân trong group";
-            else if (tokens.Contains("team") || tokens.Contains("tran") || tokens.Contains("set"))
-                memory = "hay bàn chuyện team/trận";
-            else if (tokens.Contains("bong") || tokens.Contains("choi") || tokens.Contains("danh"))
-                memory = "hay nói chuyện bóng chuyền";
-            else
-                continue;
-            return true;
-        }
-        return false;
-    }
-
-    private async Task<int> CountInteractionPeersAsync(
-        ZaloProactiveTarget target,
-        string userId,
-        DateTimeOffset since,
-        CancellationToken cancellationToken)
-    {
-        var graph = new ZaloMessageGraphStore(db);
-        var allRelations = await graph.LoadReplyRelationsAsync(
-            target.ConnectionId,
-            target.GroupId,
-            cancellationToken);
-        var peers = allRelations.Values
-            .Where(relation => relation.CreatedAt >= since)
-            .Where(relation => NormalizeId(relation.QuotedSenderId) == userId)
-            .Select(relation => relation.FromMessageId)
-            .ToHashSet(StringComparer.Ordinal);
-
-        var inboundSenders = peers.Count == 0
-            ? new List<string>()
-            : await db.ZaloGroupMessages
-                .AsNoTracking()
-                .Where(message =>
-                    message.ZaloConnectionId == target.ConnectionId &&
-                    message.GroupId == target.GroupId &&
-                    peers.Contains(message.MessageId))
-                .Select(message => message.SenderId)
-                .ToListAsync(cancellationToken);
-        var outboundPeers = (await graph.LoadReplyRelationsForSenderAsync(
-                target.ConnectionId,
-                target.GroupId,
-                userId,
-                cancellationToken))
-            .Values
-            .Where(relation => relation.CreatedAt >= since)
-            .Select(relation => relation.QuotedSenderId);
-
-        return inboundSenders
-            .Concat(outboundPeers)
-            .Select(NormalizeId)
-            .Where(id =>
-                id.Length > 0 &&
-                id != userId &&
-                id != NormalizeId(target.AccountId))
-            .Distinct(StringComparer.Ordinal)
-            .Count();
-    }
-
-    private static string DescribeDuration(DateTimeOffset start, DateTimeOffset end)
-    {
-        var startDate = start.ToOffset(VietnamOffset).Date;
-        var endDate = end.ToOffset(VietnamOffset).Date;
-        var months = Math.Max(0, (endDate.Year - startDate.Year) * 12 + endDate.Month - startDate.Month);
-        if (endDate.Day < startDate.Day && months > 0) months--;
-        if (months >= 12)
-        {
-            var years = months / 12;
-            var remaining = months % 12;
-            return remaining == 0 ? $"{years} năm" : $"{years} năm {remaining} tháng";
-        }
-        if (months > 0) return $"{months} tháng";
-        var days = Math.Max(1, (endDate - startDate).Days);
-        return $"{days} ngày";
+            $"Chúc mừng sinh nhật {displayName} nha ❤️ Tuổi mới chúc nhiều sức khỏe, vui vẻ, gặp nhiều may mắn. Hôm nay cứ vui hết mình nha!",
+            $"Sinh nhật vui vẻ nha {displayName} 🎉 Thêm tuổi mới rồi, mong mọi chuyện nhẹ nhàng, thuận lợi, ngày nào cũng có tiếng cười. Có dịp lại quẩy cùng anh em nha ❤️",
+            $"Happy birthday {displayName} nha 🥳 Chúc tuổi mới khỏe mạnh, vui vẻ, làm gì cũng suôn sẻ và gặp toàn người thương mình. Có một ngày thật vui nha!"
+        };
+        var ending = endings[userId.Aggregate(0, (sum, character) => sum + character) % endings.Length];
+        return ending;
     }
 
     private static string NormalizeId(string? value)
