@@ -489,19 +489,26 @@ zalo.MapGet("/connections/{connectionId}/groups/{groupId}/birthdays", async (
     int? month,
     VolleyDraftDbContext db,
     ZaloIntegrationService service,
+    IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
     var userId = httpContext.User.GetUserId();
-    if (userId is null) return Results.Unauthorized();
+    var internalKey = configuration["Zalo:BirthdayQueryKey"]?.Trim();
+    var internalRequest = !string.IsNullOrWhiteSpace(internalKey) &&
+                          httpContext.Request.Headers["x-zalo-birthday-key"] == internalKey;
+    if (userId is null && !internalRequest) return Results.Unauthorized();
 
     var targetMonth = month ?? DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7)).Month;
     if (targetMonth is < 1 or > 12)
         return Results.BadRequest(new { error = "month must be between 1 and 12" });
 
-    var ownsConnection = await db.ZaloConnections
-        .AsNoTracking()
-        .AnyAsync(item => item.Id == connectionId && item.AdminUserId == userId, cancellationToken);
-    if (!ownsConnection) return Results.NotFound();
+    if (!internalRequest)
+    {
+        var ownsConnection = await db.ZaloConnections
+            .AsNoTracking()
+            .AnyAsync(item => item.Id == connectionId && item.AdminUserId == userId, cancellationToken);
+        if (!ownsConnection) return Results.NotFound();
+    }
 
     var members = await db.ZaloGroupMembers
         .AsNoTracking()
@@ -557,7 +564,7 @@ zalo.MapGet("/connections/{connectionId}/groups/{groupId}/birthdays", async (
         visibleProfileCount = profiles.Count,
         birthdays
     });
-});
+}).AllowAnonymous();
 zalo.MapPost("/greeting-tests/preview", async (
     HttpContext httpContext,
     ZaloGreetingTestPreviewRequest request,
