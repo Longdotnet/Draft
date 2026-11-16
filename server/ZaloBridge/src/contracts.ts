@@ -41,6 +41,12 @@ export type BridgeMember = {
   avatarUrl: string | null;
 };
 
+export type BridgeUserProfile = BridgeMember & {
+  birthDate: string | null;
+  birthDateUnix: number | null;
+  isFriend: boolean | null;
+};
+
 export type BridgeGroupMemberDirectory = {
   groupId: string;
   groupName: string;

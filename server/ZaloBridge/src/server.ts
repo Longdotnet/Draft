@@ -42,6 +42,7 @@ import {
   getPoll,
   getPolls,
   getQrLogin,
+  getUserProfiles,
   sendGroupMessage,
   sendGroupVideo,
   undoGroupMessage,
@@ -267,6 +268,24 @@ app.post("/v1/group-members", async (request, response) => {
       `members:${normalizedMemberKey}`,
       () => getMembers(credentials, memberIds),
       "members.resolve",
+    ),
+  });
+});
+
+app.post("/v1/user-profiles", async (request, response) => {
+  const credentials = credentialsFrom(request);
+  const memberIds = Array.isArray(request.body?.memberIds) ? request.body.memberIds.map(String) : [];
+  if (memberIds.length > 500) {
+    response.status(400).json({ error: "A maximum of 500 member IDs is allowed" });
+    return;
+  }
+  const normalizedMemberKey = [...new Set(memberIds)].sort().join(",");
+  response.json({
+    profiles: await zaloProviderTrafficGovernor.coalesceReadWithCredentials(
+      credentials,
+      `profiles:${normalizedMemberKey}`,
+      () => getUserProfiles(credentials, memberIds),
+      "profiles.resolve",
     ),
   });
 });

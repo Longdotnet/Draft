@@ -280,6 +280,18 @@ public sealed partial class ZaloBotService(
                 return new BotAnswer(conversationEvidence.Text, null, conversationEvidence.Intent, conversationEvidence.AiCalled, ProtectedTerms: conversationEvidence.ProtectedTerms);
         }
 
+        if (!hasActivePendingControlOwner)
+        {
+            var birthdayAnswer = await memberIntelligence.TryHandleBirthdayQueryAsync(
+                activeConnectionId,
+                groupId,
+                incoming,
+                question,
+                cancellationToken);
+            if (birthdayAnswer is not null)
+                return new BotAnswer(birthdayAnswer.Text, null, birthdayAnswer.Intent, birthdayAnswer.AiCalled);
+        }
+
         var sessions = await LoadSessionSnapshotsAsync(connectionIds, groupId, incoming.SenderId, cancellationToken);
         if (sessions.Count == 0)
         {

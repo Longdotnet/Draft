@@ -93,6 +93,13 @@ internal sealed record ZaloTrendMusicRenderEnvelope(
     ZaloTrendMusicRenderSpec Spec,
     string? SongQuery = null);
 
+internal sealed record ZaloBirthdayVideoPlan(
+    string ZaloUserId,
+    string DisplayName,
+    string GreetingText,
+    string? ArtworkUrl,
+    string? SongQuery = null);
+
 internal sealed record ZaloTrendMusicRenderCacheEntry(
     string CacheKey,
     string SongQuery,
@@ -1176,6 +1183,64 @@ public sealed class ZaloTrendMusicService(
         return true;
     }
 
+    internal async Task<bool> TryScheduleBirthdayAsync(
+        ZaloProactiveTarget target,
+        DateOnly localDate,
+        ZaloBirthdayVideoPlan birthday,
+        CancellationToken cancellationToken = default)
+    {
+        var settings = ZaloTrendMusicSettings.FromConfiguration(configuration);
+        if (!TrendMusicInternalAuthorization.IsConfigured(configuration))
+            return false;
+
+        var userId = SanitizeId(birthday.ZaloUserId);
+        if (userId.Length == 0) return false;
+        var date = localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var idempotencyKey = $"trend-music:birthday:{target.ConnectionId}:{target.GroupId}:{localDate:yyyyMMdd}:{userId}";
+        var spec = new ZaloTrendMusicRenderSpec(
+            "birthday",
+            GreetingEnabled: true,
+            GreetingText: CleanOverrideText(birthday.GreetingText, 220) ?? $"Chúc mừng sinh nhật {birthday.DisplayName}!",
+            DisplayTitle: CleanOverrideText($"Happy Birthday {birthday.DisplayName}", 120),
+            DisplayArtist: "ZYRO Volleyball Club",
+            ArtworkUrl: IsHttpsUrl(birthday.ArtworkUrl) ? birthday.ArtworkUrl!.Trim() : null,
+            ShowLogo: settings.ShowZyroLogo,
+            CanonicalGreetingText: CleanOverrideText(birthday.GreetingText, 220));
+
+        var inserted = await DispatchOrQueueRenderAsync(
+            settings,
+            target,
+            date,
+            idempotencyKey,
+            new ZaloTrendMusicRenderEnvelope(
+                [],
+                spec,
+                string.IsNullOrWhiteSpace(birthday.SongQuery) ? null : CleanOverrideText(birthday.SongQuery, 120)),
+            cancellationToken,
+            forceQueue: true);
+        if (inserted && settings.CanDirectDispatch)
+        {
+            try
+            {
+                await renderDispatcher.WakeQueueWorkerAsync(
+                    settings.GitHubToken,
+                    settings.GitHubRepository,
+                    settings.GitHubWorkflow,
+                    settings.GitHubRef,
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Birthday render worker wake failed; queued fallback remains Group={GroupId} User={UserId}",
+                    target.GroupId,
+                    birthday.ZaloUserId);
+            }
+        }
+        return true;
+    }
+
     private async Task<IReadOnlyList<ZaloTrendMusicCandidate>> LoadDailyCandidatesCachedAsync(
         ZaloTrendMusicSettings settings,
         DateTimeOffset now,
@@ -1466,7 +1531,7 @@ public sealed class ZaloTrendMusicService(
                     ? 2
                     : ZaloSocialPresenceSettings.FromConfiguration(configuration).MinBotIntervalMinutes),
                 cancellationToken);
-            if (!duplicateManual)
+            if (duplicatePeriod is "morning" or "night")
             {
                 await jobs.MarkSentAsync(
                     target.ConnectionId,
@@ -1489,7 +1554,8 @@ public sealed class ZaloTrendMusicService(
             throw new InvalidOperationException("Trend music callback claim is stale or invalid.");
 
         var now = DateTimeOffset.UtcNow;
-        if (IsExplicitManualTest(request.IdempotencyKey))
+        var birthdayRender = PeriodFromIdempotencyKey(request.IdempotencyKey) == "birthday";
+        if (IsExplicitManualTest(request.IdempotencyKey) || birthdayRender)
         {
             // An operator-triggered test is intentionally immediate. Do not let an
             // unrelated ambient/community lane hold the shared proactive cooldown
@@ -1537,16 +1603,17 @@ public sealed class ZaloTrendMusicService(
 
             providerAccepted = true;
             var period = PeriodFromIdempotencyKey(request.IdempotencyKey);
+            var birthdaySubject = period == "birthday" ? BirthdaySubjectFromIdempotencyKey(request.IdempotencyKey) : null;
             await proactiveStore.RecordAsync(new ZaloProactiveMessageHistoryData(
                 Guid.NewGuid().ToString("N"),
                 target.ConnectionId,
                 target.GroupId,
                 request.LocalDate,
                 ZaloProactiveLane.TrendMusic,
-                period == "night" ? "NightVideo" : period == "manual" ? "ManualVideo" : "MorningVideo",
-                $"song:{SanitizeId(request.CandidateId)}",
-                null,
-                request.Artist,
+                period == "night" ? "NightVideo" : period == "manual" ? "ManualVideo" : period == "birthday" ? "BirthdayVideo" : "MorningVideo",
+                period == "birthday" ? $"birthday:{birthdaySubject}" : $"song:{SanitizeId(request.CandidateId)}",
+                birthdaySubject,
+                period == "birthday" ? null : request.Artist,
                 caption,
                 now,
                 response.MessageId,
@@ -1558,9 +1625,9 @@ public sealed class ZaloTrendMusicService(
                 target.ConnectionId,
                 target.GroupId,
                 request.IdempotencyKey,
-                now.AddMinutes(isManualTest ? 2 : cooldownMinutes),
+                now.AddMinutes(isManualTest || period == "birthday" ? 2 : cooldownMinutes),
                 cancellationToken);
-            if (!isManualTest)
+            if (period is "morning" or "night")
             {
                 await jobs.MarkSentAsync(
                     target.ConnectionId,
@@ -1803,7 +1870,7 @@ public sealed class ZaloTrendMusicService(
         // curated DailyRhythm phrase in history so exact-match duplicate/repeat policy
         // remains compatible with ZaloDailyGreetingPhraseCatalog.IsKind().
         var greeting = GreetingHistoryText(request);
-        if (period == "manual" || greeting is null) return;
+        if (period is not ("morning" or "night") || greeting is null) return;
         await proactiveStore.RecordAsync(new ZaloProactiveMessageHistoryData(
             Guid.NewGuid().ToString("N"),
             target.ConnectionId,
@@ -2469,6 +2536,8 @@ public sealed class ZaloTrendMusicService(
     {
         var period = PeriodFromIdempotencyKey(request.IdempotencyKey);
         if (period is "morning" or "night") return string.Empty;
+        if (period == "birthday")
+            return GreetingHistoryText(request) is { Length: > 0 } greeting ? $"🎂 {greeting}" : "🎂 Chúc mừng sinh nhật!";
         return $"🎵 {request.Title.Trim()} — {request.Artist.Trim()}";
     }
 
@@ -2487,8 +2556,17 @@ public sealed class ZaloTrendMusicService(
     {
         var value = idempotencyKey?.Trim() ?? string.Empty;
         if (IsManualRenderKey(value)) return "manual";
+        if (value.StartsWith("trend-music:birthday:", StringComparison.Ordinal)) return "birthday";
         if (value.EndsWith(":night", StringComparison.Ordinal)) return "night";
         return "morning";
+    }
+
+    private static string? BirthdaySubjectFromIdempotencyKey(string? idempotencyKey)
+    {
+        var value = idempotencyKey?.Trim() ?? string.Empty;
+        if (!value.StartsWith("trend-music:birthday:", StringComparison.Ordinal)) return null;
+        var separator = value.LastIndexOf(':');
+        return separator >= 0 && separator + 1 < value.Length ? value[(separator + 1)..] : null;
     }
 
     private static bool IsManualRenderKey(string? idempotencyKey)
@@ -2725,6 +2803,8 @@ public sealed class ZaloTrendMusicWorker(
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
+                await scope.ServiceProvider.GetRequiredService<ZaloBirthdayService>()
+                    .ReconcileAsync(stoppingToken);
                 await scope.ServiceProvider.GetRequiredService<ZaloTrendMusicService>()
                     .ReconcileAsync(stoppingToken);
             }

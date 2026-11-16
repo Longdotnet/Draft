@@ -7,6 +7,7 @@ export const GOVERNED_ZALO_READ_METHODS = new Set([
   "getListBoard",
   "getPollDetail",
   "getGroupMembersInfo",
+  "getUserInfo",
   "getGroupChatHistory",
   "getAvatarUrlProfile",
   "getFullAvatar",

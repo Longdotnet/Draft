@@ -96,6 +96,7 @@ builder.Services.AddHttpClient("TrendMusicGitHub", client => client.Timeout = Ti
 builder.Services.AddHttpClient("ZaloQuotedMedia", client => client.Timeout = TimeSpan.FromSeconds(20))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddScoped<ZaloTrendMusicService>();
+builder.Services.AddScoped<ZaloBirthdayService>();
 builder.Services.AddScoped<ZaloTrendMusicRenderDispatcher>();
 builder.Services.AddHostedService<ZaloListenerWorker>();
 builder.Services.AddHostedService<ZaloReminderWorker>();

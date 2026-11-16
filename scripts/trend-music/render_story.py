@@ -410,6 +410,8 @@ def curated_story_background(spec: dict, candidate: dict) -> pathlib.Path | None
     root = pathlib.Path(__file__).resolve().parents[2] / "server" / "VolleyDraft.Api" / "Assets" / "SocialCards"
     if period == "morning":
         pool = [root / f"social-card-{index:02d}-hd.png" for index in range(1, 5)]
+    elif period == "birthday":
+        pool = [root / f"social-card-{index:02d}-hd.png" for index in range(1, 5)]
     elif period == "night":
         # Keep bedtime stories on calm bedroom/night imagery. night-card-01 is
         # an in-match volleyball action shot and clashes with the sleep copy.

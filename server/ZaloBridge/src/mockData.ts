@@ -3,6 +3,7 @@ import type {
   BridgeHistoricalMessage,
   BridgeMember,
   BridgePoll,
+  BridgeUserProfile,
   ZaloCredentials,
 } from "./contracts.js";
 
@@ -46,6 +47,13 @@ export const mockMembers: BridgeMember[] = memberIds.map((id, index) => ({
   displayName: `Người chơi ${index + 1}`,
   zaloName: `Player ${index + 1}`,
   avatarUrl: `https://api.dicebear.com/9.x/initials/svg?seed=Player-${index + 1}`,
+}));
+
+export const mockUserProfiles: BridgeUserProfile[] = mockMembers.map((member, index) => ({
+  ...member,
+  birthDate: `1995-${index % 2 === 0 ? "11" : "10"}-${String((index % 27) + 1).padStart(2, "0")}`,
+  birthDateUnix: null,
+  isFriend: index % 3 === 0,
 }));
 
 export const mockHistoricalMessages: BridgeHistoricalMessage[] = [

@@ -1249,6 +1249,24 @@ public sealed class ZaloIntegrationService(
             connection.Id == connectionId && connection.AdminUserId == adminUserId);
     }
 
+    internal async Task<IReadOnlyList<BridgeUserProfile>> GetUserProfilesAsync(
+        string connectionId,
+        IReadOnlyList<string> memberIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (memberIds.Count == 0) return [];
+        var connection = await db.ZaloConnections
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item =>
+                item.Id == connectionId && item.Status == ZaloConnectionStatus.Connected,
+                cancellationToken);
+        if (connection is null) return [];
+        return await bridge.GetUserProfilesAsync(
+            ReadCredentials(connection),
+            memberIds,
+            cancellationToken);
+    }
+
     private JsonElement ReadCredentials(ZaloConnection connection)
     {
         using var document = JsonDocument.Parse(credentialProtector.Unprotect(connection.EncryptedCredentials));

@@ -145,6 +145,18 @@ public sealed class ZaloBridgeClient
         return (await ReadAsync<BridgeMembersResponse>(response)).Members;
     }
 
+    public async Task<IReadOnlyList<BridgeUserProfile>> GetUserProfilesAsync(
+        JsonElement credentials,
+        IReadOnlyList<string> memberIds,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "v1/user-profiles",
+            new { credentials, memberIds },
+            cancellationToken);
+        return (await ReadAsync<BridgeUserProfilesResponse>(response)).Profiles;
+    }
+
     public async Task<BridgeListenerResponse> StartListenerAsync(
         string accountId,
         JsonElement credentials,
@@ -692,6 +704,15 @@ public sealed record BridgePoll(
 public sealed record BridgePollOption(string Id, string Content, int VoteCount, IReadOnlyList<string> VoterIds);
 public sealed record BridgeMembersResponse(IReadOnlyList<BridgeMember> Members);
 public sealed record BridgeMember(string ZaloUserId, string DisplayName, string? ZaloName, string? AvatarUrl);
+public sealed record BridgeUserProfilesResponse(IReadOnlyList<BridgeUserProfile> Profiles);
+public sealed record BridgeUserProfile(
+    string ZaloUserId,
+    string DisplayName,
+    string? ZaloName,
+    string? AvatarUrl,
+    string? BirthDate,
+    long? BirthDateUnix,
+    bool? IsFriend);
 public sealed record BridgeMessageQuote(
     string? MessageId,
     string? SenderId,

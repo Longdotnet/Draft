@@ -25,6 +25,7 @@ import type {
   BridgeMessageHistoryProbe,
   BridgeMention,
   BridgePoll,
+  BridgeUserProfile,
   IncomingGroupMessageEvent,
   GroupMembershipChangedEvent,
   GroupPresenceSignalEvent,
@@ -44,6 +45,7 @@ import {
   mockHistoricalMessages,
   mockMembers,
   mockPolls,
+  mockUserProfiles,
 } from "./mockData.js";
 import {
   normalizeId,
@@ -87,6 +89,9 @@ type MinimalZaloApi = AvatarProfileApi & {
   }>;
   getPollDetail(pollId: string): Promise<Record<string, unknown>>;
   getGroupMembersInfo(ids: string[]): Promise<{ profiles?: Record<string, Record<string, unknown>> }>;
+  getUserInfo(ids: string[]): Promise<{
+    changed_profiles?: Record<string, Record<string, unknown>>;
+  }>;
   getGroupChatHistory(groupId: string, count?: number): Promise<{
     lastActionId?: string;
     lastActionIdOther?: string;
@@ -1357,6 +1362,49 @@ export async function getMembers(credentials: ZaloCredentials, memberIds: string
     });
   }
   return enriched;
+}
+
+export async function getUserProfiles(
+  credentials: ZaloCredentials,
+  memberIds: string[],
+): Promise<BridgeUserProfile[]> {
+  const uniqueIds = [...new Set(memberIds.map(normalizeMemberId).filter(Boolean))];
+  if (mockMode) return mockUserProfiles.filter((profile) => uniqueIds.includes(profile.zaloUserId));
+
+  const api = await getApi(credentials);
+  const profiles = new Map<string, BridgeUserProfile>();
+  for (let offset = 0; offset < uniqueIds.length; offset += 50) {
+    const batch = uniqueIds.slice(offset, offset + 50);
+    try {
+      const response = await api.getUserInfo(batch);
+      for (const [profileKey, raw] of Object.entries(response.changed_profiles ?? {})) {
+        const zaloUserId = normalizeMemberId(raw.userId || raw.id || raw.uid || profileKey);
+        if (!zaloUserId || !uniqueIds.includes(zaloUserId)) continue;
+        const rawBirthDate = typeof raw.sdob === "string" ? raw.sdob.trim() : "";
+        const rawDob = typeof raw.dob === "number"
+          ? raw.dob
+          : typeof raw.dob === "string" && raw.dob.trim() !== ""
+            ? Number(raw.dob)
+            : Number.NaN;
+        profiles.set(zaloUserId, {
+          zaloUserId,
+          displayName: String(raw.displayName || raw.dName || raw.zaloName || `Zalo ${zaloUserId}`),
+          zaloName: raw.zaloName ? String(raw.zaloName) : null,
+          avatarUrl: raw.avatar ? String(raw.avatar) : null,
+          birthDate: rawBirthDate || null,
+          birthDateUnix: Number.isFinite(rawDob) && rawDob > 0 ? Math.trunc(rawDob) : null,
+          isFriend: raw.isFr === undefined || raw.isFr === null ? null : Number(raw.isFr) === 1,
+        });
+      }
+    } catch (error) {
+      logZaloOperationFailure("getUserInfo.profiles", error, {
+        memberCount: batch.length,
+        offset,
+      });
+      if (isZaloRateLimitError(error)) throw error;
+    }
+  }
+  return uniqueIds.flatMap((id) => profiles.has(id) ? [profiles.get(id)!] : []);
 }
 
 function readMemberIds(value: unknown): string[] {
