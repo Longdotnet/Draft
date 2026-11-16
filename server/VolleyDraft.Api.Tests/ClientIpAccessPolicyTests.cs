@@ -49,6 +49,7 @@ public sealed class ClientIpAccessPolicyTests
     [InlineData("/api/public/sessions/session-1/team-card.png")]
     [InlineData("/api/internal/zyro-mapping/groups")]
     [InlineData("/api/internal/zyro-mapping/groups/connection-1/group-1/members")]
+    [InlineData("/api/zalo/connections/connection-1/groups/group-1/birthdays")]
     public void InfrastructureGetPathsBypassBrowserIpGate(string path)
     {
         var context = CreateRequest(path, HttpMethods.Get);

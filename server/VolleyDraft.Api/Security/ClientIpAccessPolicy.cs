@@ -87,6 +87,11 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
             return true;
         }
 
+        if (HttpMethods.IsGet(httpContext.Request.Method) && IsBirthdayReadPath(path))
+        {
+            return true;
+        }
+
         if (!HttpMethods.IsGet(httpContext.Request.Method))
         {
             return false;
@@ -194,5 +199,19 @@ public sealed class ClientIpAccessPolicy(IConfiguration configuration)
                !string.IsNullOrWhiteSpace(segments[4]) &&
                !string.IsNullOrWhiteSpace(segments[5]) &&
                segments[6].Equals("members", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBirthdayReadPath(PathString path)
+    {
+        var segments = (path.Value ?? string.Empty)
+            .Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 7 &&
+               segments[0].Equals("api", StringComparison.OrdinalIgnoreCase) &&
+               segments[1].Equals("zalo", StringComparison.OrdinalIgnoreCase) &&
+               segments[2].Equals("connections", StringComparison.OrdinalIgnoreCase) &&
+               !string.IsNullOrWhiteSpace(segments[3]) &&
+               segments[4].Equals("groups", StringComparison.OrdinalIgnoreCase) &&
+               !string.IsNullOrWhiteSpace(segments[5]) &&
+               segments[6].Equals("birthdays", StringComparison.OrdinalIgnoreCase);
     }
 }
