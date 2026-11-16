@@ -482,6 +482,82 @@ zalo.MapGet("/connections/{connectionId}/groups", async (
         ? Results.Unauthorized()
         : (await service.GetGroupsAsync(userId, connectionId)).ToHttpResult();
 });
+zalo.MapGet("/connections/{connectionId}/groups/{groupId}/birthdays", async (
+    HttpContext httpContext,
+    string connectionId,
+    string groupId,
+    int? month,
+    VolleyDraftDbContext db,
+    ZaloIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    var userId = httpContext.User.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
+    var targetMonth = month ?? DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7)).Month;
+    if (targetMonth is < 1 or > 12)
+        return Results.BadRequest(new { error = "month must be between 1 and 12" });
+
+    var ownsConnection = await db.ZaloConnections
+        .AsNoTracking()
+        .AnyAsync(item => item.Id == connectionId && item.AdminUserId == userId, cancellationToken);
+    if (!ownsConnection) return Results.NotFound();
+
+    var members = await db.ZaloGroupMembers
+        .AsNoTracking()
+        .Where(item =>
+            item.ZaloConnectionId == connectionId &&
+            item.GroupId == groupId &&
+            item.IsCurrentMember)
+        .Select(item => new { item.ZaloUserId, item.DisplayName })
+        .ToListAsync(cancellationToken);
+
+    static string NormalizeZaloId(string? value)
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        return normalized.EndsWith("_0", StringComparison.Ordinal) ? normalized[..^2] : normalized;
+    }
+
+    var profiles = members.Count == 0
+        ? Array.Empty<BridgeUserProfile>()
+        : await service.GetUserProfilesAsync(
+            connectionId,
+            members.Select(item => item.ZaloUserId).ToArray(),
+            cancellationToken);
+    var nameById = members.ToDictionary(
+        item => NormalizeZaloId(item.ZaloUserId),
+        item => item.DisplayName,
+        StringComparer.Ordinal);
+    var birthdays = profiles
+        .Select(profile => ZaloMemberIntelligenceBotService.TryParseBirthday(profile, out var birthday)
+            ? new
+            {
+                UserId = NormalizeZaloId(profile.ZaloUserId),
+                DisplayName = nameById.GetValueOrDefault(NormalizeZaloId(profile.ZaloUserId)) ?? profile.DisplayName,
+                Birthday = birthday,
+                profile.IsFriend
+            }
+            : null)
+        .Where(item => item is not null && item.Birthday.Month == targetMonth)
+        .Select(item => item!)
+        .OrderBy(item => item.Birthday.Day)
+        .ThenBy(item => item.DisplayName)
+        .Select(item => new
+        {
+            date = item.Birthday.ToString("dd/MM"),
+            displayName = item.DisplayName,
+            isFriend = item.IsFriend
+        })
+        .ToArray();
+
+    return Results.Ok(new
+    {
+        month = targetMonth,
+        currentMemberCount = members.Count,
+        visibleProfileCount = profiles.Count,
+        birthdays
+    });
+});
 zalo.MapPost("/greeting-tests/preview", async (
     HttpContext httpContext,
     ZaloGreetingTestPreviewRequest request,
