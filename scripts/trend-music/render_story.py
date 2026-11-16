@@ -28,7 +28,9 @@ HEIGHT = 1920
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 MAX_DOWNLOAD_SECONDS = 75
 MAX_INLINE_VIDEO_BYTES = 8 * 1024 * 1024
-REQUESTED_VIDEO_TARGET_BYTES = int(7.25 * 1024 * 1024)
+VIDEO_TARGET_BYTES = int(7.25 * 1024 * 1024)
+APPLE_MUSIC_HOST = "music.apple.com"
+APPLE_AUDIO_HOST = "audio-ssl.itunes.apple.com"
 FFMPEG = ""
 
 class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -104,10 +106,6 @@ def fade_out_start(seconds: float) -> str:
     return format_seconds(max(0.0, DURATION_SECONDS - seconds))
 
 
-def requested_song_render() -> bool:
-    return env("IDEMPOTENCY_KEY", required=False).startswith("trend-music:request:")
-
-
 def ffprobe_binary() -> str:
     configured = env("TREND_MUSIC_FFPROBE", required=False)
     if configured:
@@ -123,7 +121,7 @@ def ffprobe_binary() -> str:
 def probe_media_duration_seconds(path: pathlib.Path) -> float:
     ffprobe = ffprobe_binary()
     if not ffprobe:
-        raise RuntimeError("ffprobe is required to preserve requested-song media duration")
+        raise RuntimeError("ffprobe is required to preserve media duration")
     result = subprocess.run(
         [
             ffprobe,
@@ -151,9 +149,7 @@ def requested_media_duration_seconds(media_duration: float) -> float:
     return media_duration
 
 
-def requested_audio_bitrate_kbps() -> int:
-    if not requested_song_render():
-        return 128
+def audio_bitrate_kbps() -> int:
     if DURATION_SECONDS <= 90:
         return 128
     if DURATION_SECONDS <= 180:
@@ -161,19 +157,17 @@ def requested_audio_bitrate_kbps() -> int:
     return 80
 
 
-def requested_video_bitrate_kbps(default_kbps: int) -> int:
-    if not requested_song_render():
-        return default_kbps
-    total_budget_kbps = REQUESTED_VIDEO_TARGET_BYTES * 8 / max(DURATION_SECONDS, 1.0) / 1000
-    audio_kbps = requested_audio_bitrate_kbps()
+def video_bitrate_kbps(default_kbps: int) -> int:
+    total_budget_kbps = VIDEO_TARGET_BYTES * 8 / max(DURATION_SECONDS, 1.0) / 1000
+    audio_kbps = audio_bitrate_kbps()
     # Leave room for MP4 mux/container overhead and rate-control spikes.
     calculated = int(total_budget_kbps - audio_kbps - 24)
     return max(48, min(default_kbps, calculated))
 
 
 def bitrate_args(default_video_kbps: int, default_audio_kbps: int = 128) -> list[str]:
-    video_kbps = requested_video_bitrate_kbps(default_video_kbps)
-    audio_kbps = requested_audio_bitrate_kbps() if requested_song_render() else default_audio_kbps
+    video_kbps = video_bitrate_kbps(default_video_kbps)
+    audio_kbps = audio_bitrate_kbps() if DURATION_SECONDS > DEFAULT_DURATION_SECONDS else default_audio_kbps
     maxrate_kbps = max(video_kbps, int(video_kbps * 1.08))
     bufsize_kbps = max(video_kbps * 2, 96)
     return [
@@ -187,14 +181,62 @@ def bitrate_args(default_video_kbps: int, default_audio_kbps: int = 128) -> list
 
 def configure_duration_for_audio(audio: pathlib.Path) -> None:
     global DURATION_SECONDS
-    if not requested_song_render():
-        return
     media_duration = probe_media_duration_seconds(audio)
     DURATION_SECONDS = requested_media_duration_seconds(media_duration)
     print(
-        "requested-song duration "
+        "audio duration "
         f"source={format_seconds(media_duration)}s render={format_seconds(DURATION_SECONDS)}s"
     )
+
+
+def apple_music_preview_from_html(html: str, track_id: str) -> str | None:
+    if not track_id:
+        return None
+    match = re.search(
+        rf'"id":"track-lockup - [^"]* - {re.escape(track_id)}".{{0,16000}}?"previewUrl":"([^"]+)"',
+        html,
+        re.DOTALL,
+    )
+    if match is None:
+        return None
+    raw = match.group(1)
+    try:
+        url = json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        url = raw.replace("\\/", "/")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https" or (parsed.hostname or "").lower() != APPLE_AUDIO_HOST:
+        return None
+    return url
+
+
+def apple_music_extended_preview(candidate: dict) -> str | None:
+    source_url = str(candidate.get("sourceUrl") or "").strip()
+    parsed = urllib.parse.urlparse(source_url)
+    if parsed.scheme.lower() != "https" or (parsed.hostname or "").lower() != APPLE_MUSIC_HOST:
+        return None
+    candidate_id = str(candidate.get("id") or "").strip()
+    track_id = candidate_id.removeprefix("itunes-") if candidate_id.startswith("itunes-") else ""
+    if not track_id.isdigit():
+        track_id = (urllib.parse.parse_qs(parsed.query).get("i") or [""])[0]
+    if not track_id.isdigit():
+        return None
+
+    request = urllib.request.Request(
+        source_url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; VolleyDraft-TrendMusic/1.0)"},
+    )
+    try:
+        with HTTPS_OPENER.open(request, timeout=30) as response:
+            if (urllib.parse.urlparse(response.geturl()).hostname or "").lower() != APPLE_MUSIC_HOST:
+                return None
+            html = response.read(2 * 1024 * 1024 + 1)
+            if len(html) > 2 * 1024 * 1024:
+                return None
+        return apple_music_preview_from_html(html.decode("utf-8", errors="ignore"), track_id)
+    except Exception as exc:
+        print(f"Apple Music extended preview unavailable; using lookup preview: {type(exc).__name__}: {exc}")
+        return None
 
 def clean_story_text(value: str, limit: int) -> str:
     normalized = unicodedata.normalize("NFC", value)
@@ -563,7 +605,8 @@ def render_audio_candidate(candidate: dict, spec: dict, work: pathlib.Path, outp
     if local_audio is not None:
         shutil.copy2(local_audio, audio)
     else:
-        download(candidate["mediaUrl"], audio, candidate.get("sourceUrl"))
+        media_url = apple_music_extended_preview(candidate) or candidate["mediaUrl"]
+        download(media_url, audio, candidate.get("sourceUrl"))
     configure_duration_for_audio(audio)
     artwork_url = str(spec.get("artworkUrl") or candidate.get("artworkUrl") or "").strip()
     local_artwork = local_candidate_file(candidate, "artworkPath")

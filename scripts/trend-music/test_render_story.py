@@ -21,15 +21,47 @@ class StoryRenderContractTests(unittest.TestCase):
         self.assertEqual(60.0, render_story.requested_media_duration_seconds(60.0))
         self.assertEqual(187.2, render_story.requested_media_duration_seconds(187.2))
 
-    def test_requested_song_bitrate_scales_down_instead_of_cutting_duration(self) -> None:
+    def test_automatic_story_preserves_apple_preview_duration(self) -> None:
+        original_duration = render_story.DURATION_SECONDS
+        original_probe = render_story.probe_media_duration_seconds
+        original_key = os.environ.get("IDEMPOTENCY_KEY")
+        try:
+            os.environ["IDEMPOTENCY_KEY"] = "trend-music:daily:test"
+            render_story.DURATION_SECONDS = render_story.DEFAULT_DURATION_SECONDS
+            render_story.probe_media_duration_seconds = lambda _: 30.024
+
+            render_story.configure_duration_for_audio(pathlib.Path("preview.m4a"))
+
+            self.assertAlmostEqual(30.024, render_story.DURATION_SECONDS, places=3)
+        finally:
+            render_story.DURATION_SECONDS = original_duration
+            render_story.probe_media_duration_seconds = original_probe
+            if original_key is None:
+                os.environ.pop("IDEMPOTENCY_KEY", None)
+            else:
+                os.environ["IDEMPOTENCY_KEY"] = original_key
+
+    def test_apple_music_page_prefers_extended_track_preview(self) -> None:
+        html = (
+            '{"id":"track-lockup - 6808519782 - 6808519787","title":"LAVIEM",'
+            '"previewUrl":"https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/'
+            'v4/example/mzaf_example.plus.aac.ep.m4a"}'
+        )
+
+        self.assertEqual(
+            "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/example/mzaf_example.plus.aac.ep.m4a",
+            render_story.apple_music_preview_from_html(html, "6808519787"),
+        )
+
+    def test_long_preview_bitrate_scales_down_instead_of_cutting_duration(self) -> None:
         original_duration = render_story.DURATION_SECONDS
         original_key = os.environ.get("IDEMPOTENCY_KEY")
         try:
             os.environ["IDEMPOTENCY_KEY"] = "trend-music:request:test"
             render_story.DURATION_SECONDS = 45.0
-            bitrate_45 = render_story.requested_video_bitrate_kbps(1700)
+            bitrate_45 = render_story.video_bitrate_kbps(1700)
             render_story.DURATION_SECONDS = 180.0
-            bitrate_180 = render_story.requested_video_bitrate_kbps(1700)
+            bitrate_180 = render_story.video_bitrate_kbps(1700)
         finally:
             render_story.DURATION_SECONDS = original_duration
             if original_key is None:
