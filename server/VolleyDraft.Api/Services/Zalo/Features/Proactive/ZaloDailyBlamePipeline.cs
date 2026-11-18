@@ -150,7 +150,9 @@ internal static class ZaloRoastContextBuilder
         {
             var exactReplyCount = item.NearbyReplies.Count(reply => reply.StartsWith("REPLY ·", StringComparison.Ordinal));
             var nearbyOnlyCount = item.NearbyReplies.Count - exactReplyCount;
-            var baseScore = 48 + Math.Min(30, exactReplyCount * 15) + Math.Min(6, nearbyOnlyCount * 3);
+            var baseScore = exactReplyCount > 0
+                ? 84 + Math.Min(24, exactReplyCount * 18) + Math.Min(4, nearbyOnlyCount * 2)
+                : 42 + Math.Min(8, nearbyOnlyCount * 4);
             yield return new ZaloRoastAngle(
                 $"counter-reply:{item.MessageId}",
                 ZaloRoastAngleKind.CounterReply,

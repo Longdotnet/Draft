@@ -82,6 +82,98 @@ public sealed class ZaloDailyBlameServiceTests
     }
 
     [Fact]
+    public void Exact_reply_beats_repeated_block_pattern_with_realistic_history()
+    {
+        var target = new ZaloDailyBlameTarget("nguyen", "Đặng Thế Nguyễn", "audit");
+        var now = DateTimeOffset.UtcNow;
+        var evidence = new[]
+        {
+            Evidence("kpi", "nguyen", "Đặng Thế Nguyễn", "@Thanh Long Hôm qua lần đầu vượt KPI 10 block :))). Hãy coi chừng tôi", now.AddDays(-2),
+                replies: ["REPLY · Thanh Long: có tui anh nghĩ anh block tui à", "NEARBY · Thanh Long: anh là cơ bản"]),
+            Evidence("b1", "nguyen", "Đặng Thế Nguyễn", "Nay block hết hong chừa nhỏ nào :))))", now.AddDays(-8)),
+            Evidence("b2", "nguyen", "Đặng Thế Nguyễn", "Nay là hai bàn tay đếm không đủ số block", now.AddDays(-7)),
+            Evidence("b3", "nguyen", "Đặng Thế Nguyễn", "đặng còn block em :)))))", now.AddDays(-2))
+        };
+
+        var context = ZaloRoastContextBuilder.Build(target, evidence, [], now);
+
+        Assert.Equal("counter-reply:kpi", context.SelectedAngle.Id);
+    }
+
+    [Fact]
+    public void Grounded_fallback_for_counter_reply_uses_the_reply_not_unrelated_logs()
+    {
+        var target = new ZaloDailyBlameTarget("nguyen", "Đặng Thế Nguyễn", "audit");
+        var evidence = Evidence(
+            "kpi",
+            "nguyen",
+            "Đặng Thế Nguyễn",
+            "@Thanh Long Hôm qua lần đầu vượt KPI 10 block :))). Hãy coi chừng tôi",
+            DateTimeOffset.UtcNow,
+            replies: ["REPLY · Thanh Long: có tui anh nghĩ anh block tui à"]);
+        var angle = new ZaloRoastAngle(
+            "counter-reply:kpi",
+            ZaloRoastAngleKind.CounterReply,
+            100,
+            "counter",
+            [evidence],
+            ["exact_counter_reply"]);
+
+        var section = ZaloDailyBlameService.BuildFallbackSection(target, angle, DateTimeOffset.UtcNow);
+
+        Assert.Contains("KPI 10 block", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("có tui anh nghĩ anh block tui à", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain('@', section.Text);
+        Assert.DoesNotContain("Hai dòng log đứng cạnh nhau", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(["kpi"], section.EvidenceIds);
+    }
+
+    [Fact]
+    public void Grounded_fallback_for_contradiction_keeps_both_sides_of_the_same_rule()
+    {
+        var target = new ZaloDailyBlameTarget("pin", "Pin", "audit");
+        var angle = new ZaloRoastAngle(
+            "contradiction:love-vs-volleyball",
+            ZaloRoastAngleKind.Contradiction,
+            100,
+            "love contradiction",
+            [
+                Evidence("old", "pin", "Pin", "Dẹp hết bồ bịch j banh bóng quan trọng hơn", DateTimeOffset.UtcNow.AddDays(-5)),
+                Evidence("new", "pin", "Pin", "mai tớ đi chơi vs bồ nhó, ai ế ở nhà đánh banh", DateTimeOffset.UtcNow.AddDays(-1))
+            ],
+            ["contradiction"]);
+
+        var section = ZaloDailyBlameService.BuildFallbackSection(target, angle, DateTimeOffset.UtcNow);
+
+        Assert.Contains("Dẹp hết bồ bịch", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("đi chơi vs bồ", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Hai dòng log đứng cạnh nhau", section.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Grounded_fallback_for_pattern_uses_multiple_same_topic_samples()
+    {
+        var target = new ZaloDailyBlameTarget("truc", "Thanh Trúc", "audit");
+        var angle = new ZaloRoastAngle(
+            "pattern:money",
+            ZaloRoastAngleKind.RepeatedPattern,
+            80,
+            "money pattern",
+            [
+                Evidence("m1", "truc", "Thanh Trúc", "@Bott thu tiền 30k/người ngày 15/11"),
+                Evidence("m2", "truc", "Thanh Trúc", "@Bott thu tiền 30k/người ngày 14/11"),
+                Evidence("m3", "truc", "Thanh Trúc", "hqua thu đủ slot rồi á bé. Nên c chuyển lại e rồi")
+            ],
+            ["repeated_pattern", "money"]);
+
+        var section = ZaloDailyBlameService.BuildFallbackSection(target, angle, DateTimeOffset.UtcNow);
+
+        Assert.Contains("thu tiền 30k/người", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("thu đủ slot", section.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pattern", section.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Contradiction_requires_followup_to_happen_after_claim()
     {
         var target = new ZaloDailyBlameTarget("u1", "A", "audit");

@@ -69,7 +69,7 @@ internal sealed record ZaloDailyBlameSettings(
             section.GetValue("SendEnabled", false),
             Clean(section["GroupId"]),
             Math.Clamp(section.GetValue("LookbackDays", 30), 7, 90),
-            Math.Clamp(section.GetValue("MaxEvidencePerTarget", 12), 4, 20),
+            Math.Clamp(section.GetValue("MaxEvidencePerTarget", 24), 4, 80),
             Math.Clamp(section.GetValue("StickerChancePercent", 70), 0, 100),
             Math.Clamp(section.GetValue("PhotoChancePercent", 25), 0, 100),
             Math.Clamp(section.GetValue("ExtraTargetsPerDay", 2), 0, 6),
@@ -567,6 +567,12 @@ public sealed class ZaloDailyBlameService
         var rendered = section is null ? string.Empty : RenderTarget(section.Text, target);
         if (section is null || !IsSafeOutput(rendered))
         {
+            logger.LogInformation(
+                "Daily blame using grounded fallback Target={TargetName} Angle={AngleId} Kind={AngleKind} AiConfigured={AiConfigured}",
+                target.DisplayName,
+                context.SelectedAngle.Id,
+                context.SelectedAngle.Kind,
+                aiGateway.IsConfigured);
             section = BuildValidatedFallback(context, localNow);
             rendered = RenderTarget(section.Text, target);
         }
@@ -610,70 +616,110 @@ public sealed class ZaloDailyBlameService
         {
             var angle = context.RankedAngles[index];
             var candidateContext = context with { SelectedAngle = angle };
-            var section = BuildFallbackSection(
-                context.Target,
-                angle.Evidence,
-                localNow.AddDays(index));
+            var section = BuildFallbackSection(context.Target, angle, localNow.AddDays(index));
             if (ZaloRoastValidator.Validate(section, candidateContext).Accepted)
                 return section;
         }
 
-        return BuildFallbackSection(context.Target, [], localNow);
+        return BuildFallbackSection(
+            context.Target,
+            new ZaloRoastAngle(
+                "low-evidence",
+                ZaloRoastAngleKind.LowEvidence,
+                1,
+                "Log chưa đủ bằng chứng mạnh.",
+                [],
+                ["insufficient_evidence"]),
+            localNow);
     }
 
     internal static ZaloDailyBlameSection BuildFallbackSection(
         ZaloDailyBlameTarget target,
-        IReadOnlyList<ZaloDailyBlameEvidence> evidence,
+        ZaloRoastAngle angle,
         DateTimeOffset localNow)
     {
-        var targetSalt = target.ZaloUserId.Aggregate(0, (sum, character) => (sum + character) % 97);
-        var item = evidence.Count == 0
-            ? null
-            : evidence[(localNow.DayOfYear + targetSalt) % evidence.Count];
-        if (item is null)
+        if (angle.Evidence.Count == 0 || angle.Kind == ZaloRoastAngleKind.LowEvidence)
         {
-            string[] emptyVariants =
-            [
-                "[[TARGET]] hôm nay log mới ít tới mức NPC mở hồ sơ ra nghe tiếng gió. Không đủ bằng chứng thì NPC không bịa, nhưng suất kiểm toán vẫn giữ nguyên. Tạm coi đây là giấy triệu tập: ngày nào nói nhiều hơn thì ngày đó tự bổ sung chứng cứ. Né được punchline hôm nay chứ chưa thoát danh sách theo dõi =))",
-                "[[TARGET]] hôm nay chơi hệ im lặng, log mới không đủ chất liệu để NPC dựng cáo trạng cho đàng hoàng. Luật của phòng kiểm toán là thiếu chứng cứ thì không kết luận, nên hôm nay chỉ đóng dấu 'đang quan sát'. Nhưng yên tâm, quota một người một ngày vẫn còn nguyên, im lặng cũng được tính là một chiến thuật phòng thủ khá đáng ngờ =))",
-                "[[TARGET]] có vẻ đã phát hiện NPC đọc log nên hôm nay hồ sơ sạch bất thường. NPC tôn trọng dữ liệu: không có câu ngon thì không bịa thêm drama. Tuy nhiên việc sạch hồ sơ đúng ngày audit nghe cũng hơi giống người vừa thấy kiểm toán tới thì cất sổ vào ngăn kéo. Hôm nay cho qua nội dung, không cho qua điểm danh =))",
-                "[[TARGET]] hôm nay cung cấp quá ít dữ kiện, tới mức AI xịn cũng không thể biến không khí thành bằng chứng. NPC quyết định chơi đúng luật: không dựng chuyện, không chụp mũ, chỉ ghi nhận một sự thật là nhân vật này đã né camera dữ liệu khá thành công. Thành tích đó đáng khen, nhưng mai log mà dày lên thì phòng audit quay lại ngay =))",
-                "[[TARGET]] hôm nay hồ sơ mỏng hơn danh sách người chịu nhận lỗi sau một pha bóng hỏng. Không có evidence đủ mạnh thì NPC không ép roast cho có. Nhưng cơ chế daily blame không nghỉ phép: hôm nay coi như cảnh cáo bằng văn bản, mai ai tự nộp câu nào hay là câu đó được đưa lên bàn kiểm toán =))",
-                "[[TARGET]] hôm nay ít nói, và đây là lần hiếm hoi sự im lặng thực sự cứu được một người khỏi forensic roast. NPC đã rà log nhưng không thấy đủ chất liệu để kết án bằng punchline tử tế. Không sao, suất hôm nay chuyển thành thông báo giám sát: hệ thống vẫn đang chạy, chỉ là nghi phạm chưa tự cung cấp chứng cứ thôi =))",
-                "[[TARGET]] hôm nay khiến phòng NPC thất nghiệp tạm thời vì log gần đây quá hiền và quá ít. Tui không bịa thêm cho đủ KPI, nên biên bản hôm nay chỉ có một dòng: chưa đủ bằng chứng để roast sâu. Nhưng tên vẫn nằm đúng lịch kiểm toán hằng ngày, vì hệ thống này công bằng tới mức không ai được trốn ca =))"
-            ];
             return new ZaloDailyBlameSection(
                 target.ZaloUserId,
-                emptyVariants[(localNow.DayOfYear + targetSalt) % emptyVariants.Length],
+                "[[TARGET]] hôm nay log chưa có đủ một pha tự gáy, mâu thuẫn hay phản dame nào đủ mạnh để roast cho đáng. NPC không ghép đại hai câu vô nghĩa chỉ để đủ bài. Ca này ghi nhận là thiếu chứng cứ, còn khi log có chuyện thật thì hồ sơ sẽ tự nóng lên =))",
                 []);
         }
 
-        var quote = CleanContent(item.Content, 150).Replace('“', '\'').Replace('”', '\'');
-        var second = evidence.Count > 1
-            ? evidence[(localNow.DayOfYear + targetSalt + 1) % evidence.Count]
-            : null;
-        var secondQuote = second is null
-            ? null
-            : CleanContent(second.Content, 130).Replace('“', '\'').Replace('”', '\'');
-        var extra = secondQuote is null
-            ? ""
-            : $" Chưa hết, hồ sơ còn thêm câu “{secondQuote}”. Hai dòng log đứng cạnh nhau là đủ cho NPC khỏi phải sáng tác cốt truyện.";
-        var variant = (localNow.DayOfYear + targetSalt) % 7;
-        var text = variant switch
+        var evidenceIds = angle.Evidence
+            .Select(item => item.MessageId)
+            .Distinct(StringComparer.Ordinal)
+            .Take(4)
+            .ToArray();
+        var first = angle.Evidence[0];
+        var firstQuote = Quote(first.Content, 170);
+        var text = angle.Kind switch
         {
-            0 => $"[[TARGET]] tự để lại biên bản rất đẹp: “{quote}”.{extra} NPC không cần dựng chuyện vì hồ sơ hôm nay do chính chủ tự ký tên. Cái khó không phải tìm bằng chứng, cái khó là chọn câu nào đỡ gây bất lợi nhất cho bị can. Phòng truyền thông nếu muốn cứu thì nên tới sớm, chứ dữ liệu đã đóng dấu rồi =))",
-            1 => $"[[TARGET]] có một dòng log khá tự tin: “{quote}”.{extra} NPC đọc xong quyết định không sửa một chữ nào vì dữ liệu tự tố cáo thường đáng tin hơn lời biện hộ. Hôm nay không phải roast bằng tưởng tượng, đây là audit có chứng từ. Đáng sợ nhất là người viết chứng từ và người bị audit lại cùng một người =))",
-            2 => $"[[TARGET]] hôm nay bị gọi tên bởi chính câu mình từng nhắn: “{quote}”.{extra} Phòng NPC chỉ làm đúng quy trình: mở log, đối chiếu, rồi để câu chữ tự làm phần còn lại. Không cần thêm drama, không cần nhân chứng giả. Đây là kiểu hồ sơ mà luật sư đọc xong chỉ muốn hỏi thân chủ: lúc nhắn câu này mình có nghĩ tới ngày bị audit không =))",
-            3 => $"[[TARGET]] để lại dấu vân tay kỹ thuật số bằng câu “{quote}”.{extra} NPC thích những ca như này vì gần như không phải suy luận: bằng chứng nằm sẵn, timestamp có sẵn, người nói cũng xác định rõ. Hôm nay bản roast chỉ là phần phụ chú cho chính lịch sử chat. Tự cung cấp nguyên liệu rồi trách đầu bếp nấu ngon thì hơi khó nha =))",
-            4 => $"[[TARGET]] bước vào phiên kiểm toán với bằng chứng mở màn: “{quote}”.{extra} NPC đã thử tìm một cách diễn giải có lợi hơn nhưng log không chịu hợp tác. Thành ra hôm nay mọi punchline đều có nguồn, mọi cái nhếch mép đều có căn cứ. Đây không gọi là bị bot dìm; đây gọi là quá khứ tự quay lại đòi phí bản quyền =))",
-            5 => $"[[TARGET]] hôm nay không thua vì NPC nghĩ ra câu hay, mà vì từng tự nhắn: “{quote}”.{extra} Khi evidence đủ rõ thì AI càng mạnh càng ít cần bịa. NPC chỉ nối các dấu chấm lại và phát hiện chính chủ đã vẽ sẵn gần hết bức tranh. Phần còn lại chỉ là ký biên bản và mời nhân vật chính đọc lại cho cả group nghe =))",
-            _ => $"[[TARGET]] được audit bằng một tài liệu do chính mình phát hành: “{quote}”.{extra} NPC xin ghi nhận tinh thần hợp tác vì không ai cung cấp bằng chứng chống lại mình nhiệt tình bằng chủ nhân của log. Hôm nay punchline không tới từ ác ý, nó tới từ việc đặt đúng hai câu cạnh nhau. Dữ liệu không biết cà khịa, nhưng nhìn lâu thì tự nhiên rất biết =))"
+            ZaloRoastAngleKind.Contradiction => BuildContradictionFallback(angle, firstQuote),
+            ZaloRoastAngleKind.CounterReply => BuildCounterReplyFallback(first, firstQuote),
+            ZaloRoastAngleKind.RepeatedPattern => BuildPatternFallback(angle),
+            _ => $"[[TARGET]] tự nộp nguyên vật liệu bằng câu “{firstQuote}”. Câu này tự thân đã đủ làm biên bản nên NPC không cần ghép thêm log cho có vẻ sâu sắc. Hồ sơ hôm nay gọn: chính chủ phát biểu, timestamp đóng dấu, phần còn lại là cả group tự chấm điểm độ tự huỷ =))"
         };
         return new ZaloDailyBlameSection(
             target.ZaloUserId,
             text,
-            second is null ? [item.MessageId] : [item.MessageId, second.MessageId]);
+            evidenceIds);
     }
+
+    private static string BuildContradictionFallback(ZaloRoastAngle angle, string firstQuote)
+    {
+        var second = angle.Evidence.Count > 1 ? angle.Evidence[1] : null;
+        if (second is null)
+            return $"[[TARGET]] tự để lại câu “{firstQuote}”. Log chưa đủ vế đối chiếu nên NPC chỉ ghi đúng một dòng, không chế thêm tình tiết. Nhưng riêng câu này cũng đã đủ mang mùi tự gáy để vào hồ sơ hôm nay =))";
+        var secondQuote = Quote(second.Content, 170);
+        return $"[[TARGET]] tự tạo một pha quay xe có timestamp: trước đó nói “{firstQuote}”, rồi log sau lại chốt “{secondQuote}”. Hai câu này có quan hệ rõ ràng chứ không phải NPC bốc đại hai tin nhắn đứng cạnh nhau. Phòng audit chỉ cần đặt vế A cạnh vế B là bản tự kiểm điểm tự viết xong; NPC còn chưa kịp thêm muối =))";
+    }
+
+    private static string BuildCounterReplyFallback(ZaloDailyBlameEvidence item, string firstQuote)
+    {
+        var exact = item.NearbyReplies
+            .Where(reply => reply.StartsWith("REPLY ·", StringComparison.Ordinal))
+            .Select(StripReplyPrefix)
+            .Where(reply => reply.Length > 0)
+            .Take(2)
+            .ToArray();
+        var nearby = item.NearbyReplies
+            .Where(reply => reply.StartsWith("NEARBY ·", StringComparison.Ordinal))
+            .Select(StripReplyPrefix)
+            .Where(reply => reply.Length > 0)
+            .Take(1)
+            .ToArray();
+        var counters = exact.Length > 0 ? exact : nearby;
+        if (counters.Length == 0)
+            return $"[[TARGET]] vừa phát hành thông cáo “{firstQuote}”. Không có reply đủ rõ để NPC gắn thêm lời người khác, nên hồ sơ dừng đúng ở câu chính chủ tự nói. Cũng may câu này tự tin đủ để tự đứng một mình trên bảng kiểm điểm =))";
+        var counterText = string.Join(" / ", counters.Select(reply => $"“{Quote(reply, 150)}”"));
+        var relation = exact.Length > 0 ? "reply trực tiếp" : "chat ngay sau đó";
+        return $"[[TARGET]] vừa phát hành thông cáo “{firstQuote}”. Chưa kịp đóng dấu thành tích thì {relation} đã đáp {counterText}. Đây mới đúng nghĩa audit có đối chứng: một bên tự gáy, một bên phản hồi ngay trong cùng mạch chat. NPC không cần dựng punchline nữa vì phần phản dame đã được group viết hộ rồi =))";
+    }
+
+    private static string BuildPatternFallback(ZaloRoastAngle angle)
+    {
+        var samples = angle.Evidence
+            .Take(3)
+            .Select(item => $"“{Quote(item.Content, 125)}”")
+            .ToArray();
+        var joined = string.Join(" → ", samples);
+        return $"[[TARGET]] không dính một câu lẻ, mà để lại hẳn một pattern: {joined}. Đây là chuỗi cùng một chủ đề lặp lại trong log, nên NPC roast vào thói quen thật chứ không ghép hai câu vô can. Một lần là tình cờ, lặp tới mức thành quy trình thì phòng audit xin phép gọi đó là nghiệp vụ =))";
+    }
+
+    private static string StripReplyPrefix(string value)
+    {
+        var separator = value.IndexOf(':');
+        return separator >= 0 && separator + 1 < value.Length
+            ? value[(separator + 1)..].Trim()
+            : value.Trim();
+    }
+
+    private static string Quote(string? value, int maxLength) =>
+        CleanContent(value, maxLength)
+            .Replace("@", string.Empty, StringComparison.Ordinal)
+            .Replace('“', '\'')
+            .Replace('”', '\'');
 
     internal static IReadOnlyList<BridgeOutgoingMention> BuildMentions(
         string text,
@@ -793,11 +839,25 @@ public sealed class ZaloDailyBlameService
     {
         var text = ZaloBotIntelligence.Normalize(content ?? string.Empty);
         var score = Math.Min(4, text.Length / 35);
-        string[] interesting = ["kpi", "block", "slot", "team", "vote", "share", "pass", "luoi", "bo", "de thuong", "hoc hanh", "dap", "thu tien", "sorry", "quay", "co ban"];
-        score += interesting.Count(token => text.Contains(token, StringComparison.Ordinal)) * 3;
+        string[] interesting =
+        [
+            "kpi", "block", "slot", "team", "vote", "share", "pass", "luoi", "bo", "bo bich",
+            "di choi vs bo", "the hien tot hon", "de thuong", "hoc hanh", "dap", "thu tien", "sorry", "quay", "co ban"
+        ];
+        score += interesting.Count(token => ContainsEvidenceToken(text, token)) * 3;
         if (text.Contains(":))", StringComparison.Ordinal) || text.Contains("=))", StringComparison.Ordinal) || text.Contains("🤣", StringComparison.Ordinal)) score += 2;
         if (text.Contains('@')) score += 1;
         return score;
+    }
+
+    private static bool ContainsEvidenceToken(string normalizedText, string token)
+    {
+        var normalizedToken = ZaloBotIntelligence.Normalize(token);
+        if (normalizedToken.Contains(' '))
+            return normalizedText.Contains(normalizedToken, StringComparison.Ordinal);
+        if (normalizedToken.Length >= 4)
+            return normalizedText.Contains(normalizedToken, StringComparison.Ordinal);
+        return $" {normalizedText} ".Contains($" {normalizedToken} ", StringComparison.Ordinal);
     }
 
     private static bool IsSafeEvidence(string? content)
