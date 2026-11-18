@@ -77,6 +77,7 @@ type BridgeSendResult = {
 
 type MinimalZaloApi = AvatarProfileApi & {
   getOwnId(): string;
+  getCookie(): { toJSON(): { cookies?: unknown[] } };
   leaveGroup(groupId: string, silent?: boolean): Promise<unknown>;
   fetchAccountInfo(): Promise<{ displayName?: string; zaloName?: string; avatar?: string }>;
   getAllGroups(): Promise<{ gridVerMap?: Record<string, string> }>;
@@ -1019,6 +1020,15 @@ async function runQrLogin(session: QrLoginSession) {
   try {
     const zalo = new Zalo({ logging: true, checkUpdate: false });
     const api = await zalo.loginQR({}, (event: MinimalQrEvent) => onQrEvent(session, event));
+    if (session.credentials) {
+      const finalCookies = api.getCookie().toJSON().cookies;
+      if (Array.isArray(finalCookies) && finalCookies.length > 0) {
+        session.credentials = {
+          ...session.credentials,
+          cookie: finalCookies,
+        };
+      }
+    }
     session.accountZaloId = normalizeMemberId(api.getOwnId());
     try {
       const account = await api.fetchAccountInfo();
