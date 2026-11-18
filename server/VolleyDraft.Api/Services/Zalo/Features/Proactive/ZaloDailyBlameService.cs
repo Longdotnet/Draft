@@ -43,8 +43,6 @@ internal sealed record ZaloDailyBlameSettings(
     bool Enabled,
     bool SendEnabled,
     string GroupId,
-    int StartHour,
-    int StartMinute,
     int LookbackDays,
     int MaxEvidencePerTarget,
     int StickerChancePercent,
@@ -70,8 +68,6 @@ internal sealed record ZaloDailyBlameSettings(
             section.GetValue("Enabled", false),
             section.GetValue("SendEnabled", false),
             Clean(section["GroupId"]),
-            Math.Clamp(section.GetValue("StartHour", 20), 0, 23),
-            Math.Clamp(section.GetValue("StartMinute", 0), 0, 59),
             Math.Clamp(section.GetValue("LookbackDays", 30), 7, 90),
             Math.Clamp(section.GetValue("MaxEvidencePerTarget", 12), 4, 20),
             Math.Clamp(section.GetValue("StickerChancePercent", 70), 0, 100),
@@ -143,16 +139,6 @@ public sealed class ZaloDailyBlameService
 
         var now = DateTimeOffset.UtcNow;
         var localNow = now.ToOffset(VietnamOffset);
-        var dueAt = new DateTimeOffset(
-            localNow.Year,
-            localNow.Month,
-            localNow.Day,
-            settings.StartHour,
-            settings.StartMinute,
-            0,
-            VietnamOffset);
-        if (localNow < dueAt) return 0;
-
         var target = (await new ZaloProactiveTargetResolver(db).GetTargetsAsync(cancellationToken))
             .FirstOrDefault(item => string.Equals(item.GroupId, settings.GroupId, StringComparison.Ordinal));
         if (target is null) return 0;
