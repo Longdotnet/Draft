@@ -10,6 +10,7 @@ namespace VolleyDraft.Api.Services;
 internal static class ZaloProactiveLane
 {
     public const string DailyGreeting = "daily_greeting";
+    public const string DailyBlame = "daily_blame";
     public const string SocialPresence = "social_presence";
     public const string Community = "community";
     public const string MemberIntegration = "member_integration";

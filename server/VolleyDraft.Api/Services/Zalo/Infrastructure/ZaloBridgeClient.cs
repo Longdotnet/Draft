@@ -471,6 +471,69 @@ public sealed class ZaloBridgeClient
         }
     }
 
+    internal async Task<bool> TrySendGroupStickerAsync(
+        string accountId,
+        string groupId,
+        ZaloStickerReaction reaction,
+        string? idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (scopeFactory is null) return false;
+
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+            var db = scope.ServiceProvider.GetRequiredService<VolleyDraftDbContext>();
+            var encryptedCredentials = await db.ZaloConnections
+                .AsNoTracking()
+                .Where(item => item.AccountZaloId == accountId && item.Status == ZaloConnectionStatus.Connected)
+                .OrderByDescending(item => item.UpdatedAt)
+                .Select(item => item.EncryptedCredentials)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(encryptedCredentials)) return false;
+
+            var plaintext = new ZaloCredentialProtector(configuration).Unprotect(encryptedCredentials);
+            using var credentialsDocument = JsonDocument.Parse(plaintext);
+            var credentials = credentialsDocument.RootElement.Clone();
+            using var response = await httpClient.PostAsJsonAsync(
+                "v1/group-stickers",
+                new
+                {
+                    accountId,
+                    groupId,
+                    credentials,
+                    reaction = ZaloStickerPolicy.ToWireValue(reaction),
+                    idempotencyKey
+                },
+                cancellationToken);
+            var result = await ReadAsync<BridgeSendStickerResponse>(response);
+            if (result.Sent)
+            {
+                logger.LogInformation(
+                    "Zalo explicit sticker sent Account={AccountId} Group={GroupId} Reaction={Reaction}",
+                    accountId,
+                    groupId,
+                    reaction);
+            }
+            return result.Sent;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Zalo explicit sticker failed Account={AccountId} Group={GroupId} Reaction={Reaction}",
+                accountId,
+                groupId,
+                reaction);
+            return false;
+        }
+    }
+
     private async Task TrySendExpressiveStickerAsync(
         string accountId,
         string groupId,

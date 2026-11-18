@@ -1271,6 +1271,22 @@ public static class DatabaseSchemaPatch
             """);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotImageAssets_AdminUserId_CreatedAt" ON "ZaloBotImageAssets" ("AdminUserId", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloMemberPhotoAssignments" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_ZaloMemberPhotoAssignments" PRIMARY KEY,
+                "ZaloConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "ZaloUserId" TEXT NOT NULL,
+                "ZaloBotImageAssetId" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                CONSTRAINT "FK_ZaloMemberPhotoAssignments_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_ZaloMemberPhotoAssignments_ZaloBotImageAssets_ZaloBotImageAssetId"
+                    FOREIGN KEY ("ZaloBotImageAssetId") REFERENCES "ZaloBotImageAssets" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMemberPhotoAssignments_Connection_Group_User" ON "ZaloMemberPhotoAssignments" ("ZaloConnectionId", "GroupId", "ZaloUserId");""");
     }
 
     private static async Task EnsurePostgresZaloBotImageTables(VolleyDraftDbContext db)
@@ -1290,6 +1306,22 @@ public static class DatabaseSchemaPatch
             """);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE INDEX IF NOT EXISTS "IX_ZaloBotImageAssets_AdminUserId_CreatedAt" ON "ZaloBotImageAssets" ("AdminUserId", "CreatedAt");""");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ZaloMemberPhotoAssignments" (
+                "Id" text NOT NULL CONSTRAINT "PK_ZaloMemberPhotoAssignments" PRIMARY KEY,
+                "ZaloConnectionId" text NOT NULL,
+                "GroupId" text NOT NULL,
+                "ZaloUserId" text NOT NULL,
+                "ZaloBotImageAssetId" text NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                CONSTRAINT "FK_ZaloMemberPhotoAssignments_ZaloConnections_ZaloConnectionId"
+                    FOREIGN KEY ("ZaloConnectionId") REFERENCES "ZaloConnections" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_ZaloMemberPhotoAssignments_ZaloBotImageAssets_ZaloBotImageAssetId"
+                    FOREIGN KEY ("ZaloBotImageAssetId") REFERENCES "ZaloBotImageAssets" ("Id") ON DELETE CASCADE
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ZaloMemberPhotoAssignments_Connection_Group_User" ON "ZaloMemberPhotoAssignments" ("ZaloConnectionId", "GroupId", "ZaloUserId");""");
     }
 
     private static async Task EnsureSqliteRequestedSongRenderCacheTables(VolleyDraftDbContext db)

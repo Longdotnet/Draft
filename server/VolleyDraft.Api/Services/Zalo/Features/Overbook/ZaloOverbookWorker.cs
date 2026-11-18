@@ -13,6 +13,7 @@ public sealed class ZaloOverbookWorker(
         var nextHeavyCycleAt = DateTimeOffset.MinValue;
         var nextMemberIntegrationCycleAt = DateTimeOffset.MinValue;
         var nextCommunityCycleAt = DateTimeOffset.MinValue;
+        var nextDailyBlameCycleAt = DateTimeOffset.MinValue;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -221,6 +222,33 @@ public sealed class ZaloOverbookWorker(
                 catch (Exception exception)
                 {
                     logger.LogError(exception, "Community nudge background cycle failed");
+                }
+            }
+
+            var dailyBlameNow = DateTimeOffset.UtcNow;
+            if (dailyBlameNow >= nextDailyBlameCycleAt)
+            {
+                nextDailyBlameCycleAt = dailyBlameNow.AddMinutes(2);
+                try
+                {
+                    await using var blameScope = scopeFactory.CreateAsyncScope();
+                    var services = blameScope.ServiceProvider;
+                    var blameSent = await new ZaloDailyBlameService(
+                            services.GetRequiredService<VolleyDraftDbContext>(),
+                            services.GetRequiredService<ZaloBridgeClient>(),
+                            services.GetRequiredService<ILogger<ZaloDailyBlameService>>(),
+                            services.GetRequiredService<IConfiguration>())
+                        .ProcessDueAsync(stoppingToken);
+                    if (blameSent > 0)
+                        logger.LogInformation("Daily blame lane sent {SentCount} message(s)", blameSent);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogError(exception, "Daily blame background cycle failed");
                 }
             }
 

@@ -17,6 +17,7 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
     public DbSet<ZaloBotConversationState> ZaloBotConversationStates => Set<ZaloBotConversationState>();
     public DbSet<ZaloConversationSummaryContext> ZaloConversationSummaryContexts => Set<ZaloConversationSummaryContext>();
     public DbSet<ZaloBotImageAsset> ZaloBotImageAssets => Set<ZaloBotImageAsset>();
+    public DbSet<ZaloMemberPhotoAssignment> ZaloMemberPhotoAssignments => Set<ZaloMemberPhotoAssignment>();
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<DraftSlot> DraftSlots => Set<DraftSlot>();
     public DbSet<DraftSlotPlayer> DraftSlotPlayers => Set<DraftSlotPlayer>();
@@ -362,6 +363,21 @@ public sealed partial class VolleyDraftDbContext(DbContextOptions<VolleyDraftDbC
             entity.HasOne(asset => asset.AdminUser)
                 .WithMany()
                 .HasForeignKey(asset => asset.AdminUserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ZaloMemberPhotoAssignment>(entity =>
+        {
+            entity.Property(assignment => assignment.GroupId).HasMaxLength(100);
+            entity.Property(assignment => assignment.ZaloUserId).HasMaxLength(100);
+            entity.HasIndex(assignment => new { assignment.ZaloConnectionId, assignment.GroupId, assignment.ZaloUserId }).IsUnique();
+            entity.HasOne(assignment => assignment.ZaloConnection)
+                .WithMany()
+                .HasForeignKey(assignment => assignment.ZaloConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(assignment => assignment.ImageAsset)
+                .WithMany()
+                .HasForeignKey(assignment => assignment.ZaloBotImageAssetId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
