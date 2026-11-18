@@ -83,6 +83,16 @@ internal sealed class ZaloProactiveMessageStore(VolleyDraftDbContext db)
                 "UpdatedAt" TEXT NOT NULL,
                 PRIMARY KEY ("ConnectionId", "GroupId")
             );
+
+            CREATE TABLE IF NOT EXISTS "ZaloProactiveLaneSendLease" (
+                "ConnectionId" TEXT NOT NULL,
+                "GroupId" TEXT NOT NULL,
+                "Lane" TEXT NOT NULL,
+                "LeaseUntil" TEXT NOT NULL,
+                "IdempotencyKey" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL,
+                PRIMARY KEY ("ConnectionId", "GroupId", "Lane")
+            );
             """;
 
         await using var command = await CreateCommandAsync(sql, cancellationToken);
@@ -148,6 +158,39 @@ internal sealed class ZaloProactiveMessageStore(VolleyDraftDbContext db)
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
+    public async Task<bool> TryAcquireLaneLeaseAsync(
+        string connectionId,
+        string groupId,
+        string lane,
+        string idempotencyKey,
+        DateTimeOffset now,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            INSERT INTO "ZaloProactiveLaneSendLease" (
+                "ConnectionId", "GroupId", "Lane", "LeaseUntil", "IdempotencyKey", "UpdatedAt")
+            VALUES (
+                @ConnectionId, @GroupId, @Lane, @LeaseUntil, @IdempotencyKey, @UpdatedAt)
+            ON CONFLICT ("ConnectionId", "GroupId", "Lane") DO UPDATE SET
+                "LeaseUntil" = excluded."LeaseUntil",
+                "IdempotencyKey" = excluded."IdempotencyKey",
+                "UpdatedAt" = excluded."UpdatedAt"
+            WHERE "ZaloProactiveLaneSendLease"."LeaseUntil" <= @Now;
+            """;
+
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        AddParameter(command, "@ConnectionId", CleanId(connectionId));
+        AddParameter(command, "@GroupId", CleanId(groupId));
+        AddParameter(command, "@Lane", CleanId(lane));
+        AddParameter(command, "@LeaseUntil", now.Add(leaseDuration).ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        AddParameter(command, "@IdempotencyKey", idempotencyKey);
+        AddParameter(command, "@UpdatedAt", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        AddParameter(command, "@Now", now.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
     public async Task CommitCooldownAsync(
         string connectionId,
         string groupId,
@@ -190,6 +233,30 @@ internal sealed class ZaloProactiveMessageStore(VolleyDraftDbContext db)
         await using var command = await CreateCommandAsync(sql, cancellationToken);
         AddParameter(command, "@ConnectionId", CleanId(connectionId));
         AddParameter(command, "@GroupId", CleanId(groupId));
+        AddParameter(command, "@IdempotencyKey", idempotencyKey);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ReleaseLaneLeaseAsync(
+        string connectionId,
+        string groupId,
+        string lane,
+        string idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureAsync(cancellationToken);
+        const string sql = """
+            DELETE FROM "ZaloProactiveLaneSendLease"
+            WHERE "ConnectionId" = @ConnectionId
+              AND "GroupId" = @GroupId
+              AND "Lane" = @Lane
+              AND "IdempotencyKey" = @IdempotencyKey;
+            """;
+
+        await using var command = await CreateCommandAsync(sql, cancellationToken);
+        AddParameter(command, "@ConnectionId", CleanId(connectionId));
+        AddParameter(command, "@GroupId", CleanId(groupId));
+        AddParameter(command, "@Lane", CleanId(lane));
         AddParameter(command, "@IdempotencyKey", idempotencyKey);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

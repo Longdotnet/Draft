@@ -158,9 +158,10 @@ public sealed class ZaloDailyBlameService
         if (blameTarget is null) return 0;
 
         var idempotencyKey = $"daily-blame:{target.ConnectionId}:{target.GroupId}:{localDate}:{blameTarget.ZaloUserId}";
-        if (!await proactiveStore.TryAcquireLeaseAsync(
+        if (!await proactiveStore.TryAcquireLaneLeaseAsync(
                 target.ConnectionId,
                 target.GroupId,
+                ZaloProactiveLane.DailyBlame,
                 idempotencyKey,
                 now,
                 SendLeaseDuration,
@@ -197,7 +198,12 @@ public sealed class ZaloDailyBlameService
                 cancellationToken);
             if (candidate is null)
             {
-                await proactiveStore.ReleaseLeaseAsync(target.ConnectionId, target.GroupId, idempotencyKey, cancellationToken);
+                await proactiveStore.ReleaseLaneLeaseAsync(
+                    target.ConnectionId,
+                    target.GroupId,
+                    ZaloProactiveLane.DailyBlame,
+                    idempotencyKey,
+                    cancellationToken);
                 return 0;
             }
 
@@ -212,7 +218,12 @@ public sealed class ZaloDailyBlameService
                 imageFileName: candidate.ImageFileName);
             if (!response.Sent)
             {
-                await proactiveStore.ReleaseLeaseAsync(target.ConnectionId, target.GroupId, idempotencyKey, cancellationToken);
+                await proactiveStore.ReleaseLaneLeaseAsync(
+                    target.ConnectionId,
+                    target.GroupId,
+                    ZaloProactiveLane.DailyBlame,
+                    idempotencyKey,
+                    cancellationToken);
                 return 0;
             }
 
@@ -232,7 +243,12 @@ public sealed class ZaloDailyBlameService
                 now,
                 response.MessageId,
                 idempotencyKey), cancellationToken);
-            await proactiveStore.ReleaseLeaseAsync(target.ConnectionId, target.GroupId, idempotencyKey, cancellationToken);
+            await proactiveStore.ReleaseLaneLeaseAsync(
+                target.ConnectionId,
+                target.GroupId,
+                ZaloProactiveLane.DailyBlame,
+                idempotencyKey,
+                cancellationToken);
 
             if (candidate.ImageBase64 is null && ShouldUseMedia(localDate, blameTarget.ZaloUserId, "sticker", settings.StickerChancePercent))
             {
@@ -264,7 +280,12 @@ public sealed class ZaloDailyBlameService
             {
                 try
                 {
-                    await proactiveStore.ReleaseLeaseAsync(target.ConnectionId, target.GroupId, idempotencyKey, cancellationToken);
+                    await proactiveStore.ReleaseLaneLeaseAsync(
+                        target.ConnectionId,
+                        target.GroupId,
+                        ZaloProactiveLane.DailyBlame,
+                        idempotencyKey,
+                        cancellationToken);
                 }
                 catch
                 {
