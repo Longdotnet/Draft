@@ -120,6 +120,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   const [totalDueInput, setTotalDueInput] = useState("");
   const [fundCoverageInput, setFundCoverageInput] = useState("");
   const [receivedInputs, setReceivedInputs] = useState<Record<string, string>>({});
+  const [pinnedEntryPositions, setPinnedEntryPositions] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(true);
   const [entryBusyId, setEntryBusyId] = useState<string | null>(null);
   const [savingAmount, setSavingAmount] = useState(false);
@@ -359,11 +360,29 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
 
   const sortedEntries = useMemo(() => {
     if (!settlement) return [];
-    return [...settlement.entries].sort((left, right) => {
+    const entries = [...settlement.entries].sort((left, right) => {
       if (left.isPaid !== right.isPaid) return left.isPaid ? 1 : -1;
       return entryName(left).localeCompare(entryName(right), "vi");
     });
-  }, [settlement]);
+    Object.entries(pinnedEntryPositions)
+      .sort((left, right) => left[1] - right[1])
+      .forEach(([entryId, position]) => {
+        const currentIndex = entries.findIndex((entry) => entry.id === entryId);
+        if (currentIndex < 0) return;
+        const [entry] = entries.splice(currentIndex, 1);
+        entries.splice(Math.min(position, entries.length), 0, entry);
+      });
+    return entries;
+  }, [pinnedEntryPositions, settlement]);
+
+  function unpinEntry(entryId: string) {
+    setPinnedEntryPositions((current) => {
+      if (!Object.prototype.hasOwnProperty.call(current, entryId)) return current;
+      const next = { ...current };
+      delete next[entryId];
+      return next;
+    });
+  }
 
   async function createSettlement() {
     const amount = Number(amountInput);
@@ -447,9 +466,10 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
   }
 
   async function updateEntry(entry: MatchSettlementEntryResponse, patch: { slotFactor?: MatchSettlementSlotFactor; isPaid?: boolean; actualPaidAmount?: number }) {
-    if (!settlement || entryBusyId) return;
+    if (!settlement || entryBusyId) return false;
     const slotFactor = patch.slotFactor ?? entry.slotFactor;
     const isPaid = patch.isPaid ?? entry.isPaid;
+    const paymentStatusChanged = patch.isPaid !== undefined && patch.isPaid !== entry.isPaid;
     const amountDue = settlement.amountPerFullSlot * slotFactor;
     let actualPaidAmount = 0;
     if (isPaid) {
@@ -462,7 +482,17 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       }
       if (!Number.isFinite(actualPaidAmount) || actualPaidAmount < amountDue) {
         setError(`Tiền thực nhận phải ít nhất ${formatMoney(amountDue)}. Sổ không dùng trạng thái đóng một phần.`);
-        return;
+        return false;
+      }
+    }
+    if (paymentStatusChanged) {
+      if (isPaid) {
+        const currentPosition = sortedEntries.findIndex((item) => item.id === entry.id);
+        if (currentPosition >= 0) {
+          setPinnedEntryPositions((current) => ({ ...current, [entry.id]: currentPosition }));
+        }
+      } else {
+        unpinEntry(entry.id);
       }
     }
     setEntryBusyId(entry.id);
@@ -497,10 +527,13 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       });
       const refreshed = await apiFetch<MatchSettlementResponse>(settlementPath(mode), { token: tokenFor(mode) });
       applySettlementSnapshot(refreshed);
+      return true;
     } catch (caught) {
       const updateError = caught instanceof Error ? caught.message : "Không cập nhật được người chơi.";
+      if (paymentStatusChanged && isPaid) unpinEntry(entry.id);
       await loadSettlement(false);
       setError((current) => current ?? updateError);
+      return false;
     } finally {
       setEntryBusyId(null);
     }
@@ -513,8 +546,12 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
       setError(`Tiền thực nhận của ${entryName(entry)} phải ít nhất ${formatMoney(entry.amountDue)}.`);
       return;
     }
-    if (value === entry.actualPaidAmount) return;
-    await updateEntry(entry, { actualPaidAmount: value });
+    if (value === entry.actualPaidAmount) {
+      unpinEntry(entry.id);
+      return;
+    }
+    const saved = await updateEntry(entry, { actualPaidAmount: value });
+    if (saved) unpinEntry(entry.id);
   }
 
   async function uploadPaymentQr(file: File) {
@@ -1005,6 +1042,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
           const name = entryName(entry);
           const amount = entry.amountDue;
           const isUpdating = entryBusyId === entry.id;
+          const isSortPinned = Object.prototype.hasOwnProperty.call(pinnedEntryPositions, entry.id);
           return (
             <article className={`settlement-player-card ${entry.isPaid ? "is-paid" : "is-unpaid"}`} key={entry.id} aria-busy={isUpdating}>
               <div className="settlement-player-main">
@@ -1044,7 +1082,7 @@ export function MatchSettlementFocus({ token, sessionId }: { token: string | nul
                     <span>đ</span>
                     <button
                       type="button"
-                      disabled={isUpdating || Number(receivedInputs[entry.id]) === entry.actualPaidAmount}
+                      disabled={isUpdating || (!isSortPinned && Number(receivedInputs[entry.id]) === entry.actualPaidAmount)}
                       onClick={() => void saveReceivedAmount(entry)}
                     >
                       Lưu
