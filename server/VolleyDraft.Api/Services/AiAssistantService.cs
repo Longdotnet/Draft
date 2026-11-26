@@ -494,7 +494,8 @@ public sealed partial class AiAssistantService(
         return $"Model hiện tại: {model ?? "chưa cấu hình"} qua {provider}. Bot không đọc được quota còn lại; admin xem mục Usage/Activity của nhà cung cấp. Các lệnh 1–6 không tốn lượt AI.";
     }
 
-    public async Task<string> AnswerAsync(ZaloAiContext context, CancellationToken cancellationToken = default)
+    public async Task<string> AnswerAsync(ZaloAiContext context, CancellationToken cancellationToken = default,
+        ZaloAiCallerScope? caller = null)
     {
         var model = configuration["Ai:Model"];
         if (!IsConfigured)
@@ -577,7 +578,7 @@ public sealed partial class AiAssistantService(
             }
         };
 
-        var completion = await CompleteViaGatewayAsync(payload, "general_answer", cancellationToken);
+        var completion = await CompleteViaGatewayAsync(payload, "general_answer", cancellationToken, caller);
         if (!completion.Success)
             return GetGeneralProviderFailureFallback(context.Question);
         if (IsTruncationFinishReason(completion.FinishReason))
@@ -704,7 +705,8 @@ public sealed partial class AiAssistantService(
     private async Task<LegacyAiCompletion> CompleteViaGatewayAsync(
         object payload,
         string operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ZaloAiCallerScope? caller = null)
     {
         try
         {
@@ -740,7 +742,7 @@ public sealed partial class AiAssistantService(
                     messages,
                     Temperature: temperature,
                     MaxTokens: maxTokens,
-                    CorrelationId: $"legacy:{operation}"),
+                    CorrelationId: $"legacy:{operation}", Caller: caller),
                 cancellationToken);
 
             if (result.Success)

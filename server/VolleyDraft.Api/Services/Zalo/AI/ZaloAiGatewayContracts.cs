@@ -29,6 +29,8 @@ public enum ZaloAiFailureKind
 
 public sealed record ZaloAiChatMessage(string Role, string Content);
 
+public sealed record ZaloAiCallerScope(string ConnectionId, string GroupId, string SenderId);
+
 public sealed record ZaloAiCompletionRequest(
     ZaloAiWorkload Workload,
     IReadOnlyList<ZaloAiChatMessage> Messages,
@@ -37,7 +39,8 @@ public sealed record ZaloAiCompletionRequest(
     string? ModelOverride = null,
     string? CorrelationId = null,
     bool? ReasoningEnabled = null,
-    bool UseAnswerBudget = false);
+    bool UseAnswerBudget = false,
+    ZaloAiCallerScope? Caller = null);
 
 public sealed record ZaloAiCompletionResult(
     bool Success,

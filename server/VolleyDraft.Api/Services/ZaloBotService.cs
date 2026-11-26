@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using VolleyDraft.Api.Contracts;
 using VolleyDraft.Api.Data;
 using VolleyDraft.Api.Models;
+using VolleyDraft.Api.Services.Zalo.AI;
 
 namespace VolleyDraft.Api.Services;
 
@@ -1134,7 +1135,8 @@ public sealed partial class ZaloBotService(
             return new BotAnswer(ZaloCommonReplyText.RateLimited(replyLanguage), null, ZaloBotIntent.GeneralChat);
         }
         return new BotAnswer(
-            await ai.AnswerAsync(aiContext, cancellationToken),
+            await ai.AnswerAsync(aiContext, cancellationToken,
+                new ZaloAiCallerScope(activeConnectionId, groupId, NormalizeId(incoming.SenderId))),
             null,
             ZaloBotIntent.GeneralChat,
             true,

@@ -11,10 +11,11 @@ public static class ZaloAiGatewayFactory
         HttpClient httpClient,
         IConfiguration configuration,
         ILogger logger) =>
-        new OpenAiCompatibleZaloAiGateway(
-            httpClient,
-            configuration,
-            new ForwardingLogger<OpenAiCompatibleZaloAiGateway>(logger));
+        new ChatGptPlanTextGateway(httpClient, configuration, logger,
+            new OpenAiCompatibleZaloAiGateway(
+                httpClient,
+                configuration,
+                new ForwardingLogger<OpenAiCompatibleZaloAiGateway>(logger)));
 
     private sealed class ForwardingLogger<T>(ILogger inner) : ILogger<T>
     {
