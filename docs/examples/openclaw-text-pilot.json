@@ -1,0 +1,22 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "port": 18789,
+    "auth": { "mode": "token" },
+    "controlUi": { "enabled": false },
+    "terminal": { "enabled": false },
+    "uploads": { "enabled": false },
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "openai/gpt-6-astra", "fallbacks": [] },
+      "skipBootstrap": true,
+      "contextInjection": "never",
+      "maxConcurrent": 1,
+      "heartbeat": { "every": "0m" }
+    }
+  },
+  "tools": { "deny": ["*"] }
+}

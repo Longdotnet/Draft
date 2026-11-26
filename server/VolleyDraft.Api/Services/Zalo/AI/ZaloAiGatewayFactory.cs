@@ -10,12 +10,14 @@ public static class ZaloAiGatewayFactory
     public static IZaloAiGateway Create(
         HttpClient httpClient,
         IConfiguration configuration,
-        ILogger logger) =>
-        new ChatGptPlanTextGateway(httpClient, configuration, logger,
-            new OpenAiCompatibleZaloAiGateway(
-                httpClient,
-                configuration,
-                new ForwardingLogger<OpenAiCompatibleZaloAiGateway>(logger)));
+        ILogger logger)
+    {
+        var forwardingLogger = new ForwardingLogger<OpenAiCompatibleZaloAiGateway>(logger);
+        var existing = new OpenAiCompatibleZaloAiGateway(httpClient, configuration, forwardingLogger);
+        if (configuration.GetValue("Ai:OpenClaw:Enabled", false))
+            return new OpenClawTextGateway(httpClient, configuration, forwardingLogger, existing);
+        return new ChatGptPlanTextGateway(httpClient, configuration, logger, existing);
+    }
 
     private sealed class ForwardingLogger<T>(ILogger inner) : ILogger<T>
     {
