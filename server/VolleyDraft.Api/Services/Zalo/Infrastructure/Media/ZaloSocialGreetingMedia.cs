@@ -256,6 +256,7 @@ internal sealed class ZaloSocialCardCopyGenerator
     }
 
     private bool IsAiConfigured() =>
+        !configuration.GetValue("Ai:Groq:Enabled", false) &&
         !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
         !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
         !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);

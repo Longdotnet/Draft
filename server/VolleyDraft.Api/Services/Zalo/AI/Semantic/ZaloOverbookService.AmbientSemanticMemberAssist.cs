@@ -33,10 +33,11 @@ public sealed partial class ZaloOverbookService
         // deterministic fast path had its chance. Keep this lane completely inert
         // when AI is not configured so existing ambient/read-only paths do not gain
         // new DB/role dependencies merely because the feature exists.
-        var semanticDraftConfigured =
-            !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
-            !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
-            !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
+        var semanticDraftConfigured = configuration.GetValue("Ai:Groq:Enabled", false)
+            ? !string.IsNullOrWhiteSpace(configuration["Ai:Groq:ApiKey"])
+            : !string.IsNullOrWhiteSpace(configuration["Ai:Endpoint"]) &&
+              !string.IsNullOrWhiteSpace(configuration["Ai:ApiKey"]) &&
+              !string.IsNullOrWhiteSpace(configuration["Ai:Model"]);
         if (semanticDraftConfigured &&
             await TryHandleContextFirstDraftPreparationAsync(
                 connectionId,

@@ -262,6 +262,158 @@ public sealed class ZaloAiGatewayTests
         Assert.Contains(logger.Messages, message => message.Contains("rate_limit_exceeded", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(ZaloAiWorkload.GeneralChat, false)]
+    [InlineData(ZaloAiWorkload.StructuredExtraction, true)]
+    public async Task Groq_UsesIsolatedProviderAndPayload(ZaloAiWorkload workload, bool structured)
+    {
+        var calls = 0;
+        var handler = new StubHandler(async request =>
+        {
+            calls++;
+            Assert.Equal("https://api.groq.com/openai/v1/chat/completions", request.RequestUri!.AbsoluteUri);
+            Assert.Equal("groq-test-key", request.Headers.Authorization!.Parameter);
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var root = json.RootElement;
+            Assert.Equal("openai/gpt-oss-120b", root.GetProperty("model").GetString());
+            Assert.Equal("low", root.GetProperty("reasoning_effort").GetString());
+            Assert.Equal(512, root.GetProperty("max_completion_tokens").GetInt32());
+            Assert.False(root.TryGetProperty("max_tokens", out _));
+            Assert.Equal(structured, root.TryGetProperty("response_format", out var format));
+            if (structured) Assert.Equal("json_object", format.GetProperty("type").GetString());
+            return GroqResponse("stop");
+        });
+        var configuration = GroqConfiguration();
+        var gateway = ZaloAiGatewayFactory.Create(new HttpClient(handler), configuration,
+            NullLogger<OpenAiCompatibleZaloAiGateway>.Instance);
+        var result = await gateway.CompleteAsync(new ZaloAiCompletionRequest(
+            workload, [new ZaloAiChatMessage("user", "Return a JSON object")], ModelOverride: "other-model"));
+        Assert.True(result.Success);
+        Assert.Equal("groq", result.Provider);
+        Assert.Equal("openai/gpt-oss-120b", result.Model);
+        Assert.Equal(1, calls);
+        Assert.False(result.UsedFallback);
+    }
+
+    [Fact]
+    public async Task Groq_MissingKeyNeverInheritsLegacyCredentials()
+    {
+        var gateway = CreateGateway(new StubHandler(_ => throw new InvalidOperationException("Unexpected HTTP call")),
+            GroqConfiguration(""));
+        Assert.False(gateway.IsConfigured);
+        var result = await gateway.CompleteAsync(GroqRequest());
+        Assert.Equal(ZaloAiFailureKind.NotConfigured, result.FailureKind);
+    }
+
+    [Fact]
+    public async Task Groq_RateLimitStopsSubsequentCallsAcrossGateways()
+    {
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            var response = ErrorResponse(HttpStatusCode.TooManyRequests, "rate_limit_exceeded", "limit");
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromHours(1));
+            return Task.FromResult(response);
+        });
+        var configuration = GroqConfiguration();
+        var first = await CreateGateway(handler, configuration).CompleteAsync(GroqRequest());
+        var second = await CreateGateway(handler, configuration).CompleteAsync(GroqRequest());
+        Assert.Equal(ZaloAiFailureKind.RateLimited, first.FailureKind);
+        Assert.Equal(ZaloAiFailureKind.RateLimited, second.FailureKind);
+        Assert.Equal(0, second.Attempts);
+        Assert.Equal(1, calls);
+    }
+
+    [Theory]
+    [InlineData(401, "invalid_api_key", ZaloAiFailureKind.AuthenticationFailed)]
+    [InlineData(402, "insufficient_quota", ZaloAiFailureKind.QuotaExceeded)]
+    [InlineData(503, "unavailable", ZaloAiFailureKind.ProviderUnavailable)]
+    public async Task Groq_NoRetryOrFallback(int status, string code, ZaloAiFailureKind expected)
+    {
+        var calls = 0;
+        var gateway = CreateGateway(new StubHandler(_ =>
+        {
+            calls++;
+            return Task.FromResult(ErrorResponse((HttpStatusCode)status, code, "detail"));
+        }), GroqConfiguration());
+        var result = await gateway.CompleteAsync(GroqRequest());
+        Assert.Equal(expected, result.FailureKind);
+        Assert.Equal(1, calls);
+        Assert.False(result.UsedFallback);
+    }
+
+    [Theory]
+    [InlineData("length")]
+    [InlineData("tool_calls")]
+    public async Task Groq_RejectsIncompleteResponses(string finishReason)
+    {
+        var gateway = CreateGateway(new StubHandler(_ => Task.FromResult(GroqResponse(finishReason))), GroqConfiguration());
+        var result = await gateway.CompleteAsync(GroqRequest());
+        Assert.Equal(ZaloAiFailureKind.InvalidResponse, result.FailureKind);
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task Groq_RespectsRequestBudgetAndExplicitPlainText()
+    {
+        var calls = 0;
+        var gateway = CreateGateway(new StubHandler(async request =>
+        {
+            calls++;
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            Assert.False(json.RootElement.TryGetProperty("response_format", out _));
+            return GroqResponse("stop");
+        }), GroqConfiguration());
+        using var scope = ZaloAiRequestBudget.Begin(preAnswerCalls: 1, answerCalls: 0);
+        var request = new ZaloAiCompletionRequest(ZaloAiWorkload.IntentClassification,
+            [new ZaloAiChatMessage("user", "Return vi")], RequireJsonObject: false);
+        Assert.True((await gateway.CompleteAsync(request)).Success);
+        var blocked = await gateway.CompleteAsync(request);
+        Assert.Equal("local_request_budget_exhausted", blocked.ProviderCode);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task Groq_GreetingCardsNeverCallLegacyProvider()
+    {
+        using var client = new HttpClient(new StubHandler(_ => throw new InvalidOperationException("Unexpected HTTP call")));
+        var config = GroqConfiguration();
+        var morning = new VolleyDraft.Api.Services.ZaloSocialCardCopyGenerator(config, NullLogger.Instance, client);
+        var night = new VolleyDraft.Api.Services.ZaloNightGreetingCardCopyGenerator(config, NullLogger.Instance, client);
+        var morningCopy = await morning.TryGenerateAsync("Test", VolleyDraft.Api.Services.ZaloDailyGreetingKind.Morning,
+            VolleyDraft.Api.Services.ZaloDailyGreetingMood.Warm, false, []);
+        var nightCopy = await night.TryGenerateAsync("Test", VolleyDraft.Api.Services.ZaloDailyGreetingMood.TenderRomantic, []);
+        Assert.NotNull(morningCopy);
+        Assert.NotNull(nightCopy);
+    }
+
+    private static IConfiguration GroqConfiguration(string key = "groq-test-key") => BuildConfiguration(new()
+    {
+        ["Ai:Groq:Enabled"] = "true",
+        ["Ai:Groq:ApiKey"] = key,
+        ["Ai:Endpoint"] = "https://primary.test/chat",
+        ["Ai:ApiKey"] = "legacy-key",
+        ["Ai:Model"] = "legacy-model",
+        ["Ai:Fallback:Endpoint"] = "https://fallback.test/chat",
+        ["Ai:Fallback:ApiKey"] = "fallback-key",
+        ["Ai:Fallback:Model"] = "fallback-model",
+        ["Ai:RetryCount"] = "2",
+        ["Ai:OpenClaw:Enabled"] = "true",
+        ["Ai:ChatGptPlan:Enabled"] = "true"
+    });
+
+    private static ZaloAiCompletionRequest GroqRequest() => new(
+        ZaloAiWorkload.GeneralChat, [new ZaloAiChatMessage("user", "ping")]);
+
+    private static HttpResponseMessage GroqResponse(string finishReason) => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent(JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { finish_reason = finishReason, message = new { content = "{}" } } }
+        }), Encoding.UTF8, "application/json")
+    };
+
     private static OpenAiCompatibleZaloAiGateway CreateGateway(
         HttpMessageHandler handler,
         IConfiguration configuration,

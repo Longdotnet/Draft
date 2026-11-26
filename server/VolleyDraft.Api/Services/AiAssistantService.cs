@@ -485,6 +485,10 @@ public sealed partial class AiAssistantService(
 
     public string GetPublicModelInfo()
     {
+        if (configuration.GetValue("Ai:Groq:Enabled", false))
+            return IsConfigured
+                ? "Model hiện tại: openai/gpt-oss-120b qua Groq. Bot không đọc được quota còn lại; admin xem Usage của Groq. Các lệnh 1–6 không tốn lượt AI."
+                : new AiProviderFailure(AiProviderFailureKind.NotConfigured).ToUserMessage();
         var model = configuration["Ai:Providers:0:Model"] ?? configuration["Ai:Model"];
         var endpoint = configuration["Ai:Providers:0:Endpoint"] ?? configuration["Ai:Endpoint"];
         var provider = Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) &&
@@ -742,7 +746,8 @@ public sealed partial class AiAssistantService(
                     messages,
                     Temperature: temperature,
                     MaxTokens: maxTokens,
-                    CorrelationId: $"legacy:{operation}", Caller: caller),
+                    CorrelationId: $"legacy:{operation}", Caller: caller,
+                    RequireJsonObject: operation == "reply_language" ? false : null),
                 cancellationToken);
 
             if (result.Success)

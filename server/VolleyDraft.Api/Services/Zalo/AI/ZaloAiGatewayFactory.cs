@@ -14,6 +14,8 @@ public static class ZaloAiGatewayFactory
     {
         var forwardingLogger = new ForwardingLogger<OpenAiCompatibleZaloAiGateway>(logger);
         var existing = new OpenAiCompatibleZaloAiGateway(httpClient, configuration, forwardingLogger);
+        if (configuration.GetValue("Ai:Groq:Enabled", false))
+            return existing;
         if (configuration.GetValue("Ai:OpenClaw:Enabled", false))
             return new OpenClawTextGateway(httpClient, configuration, forwardingLogger, existing);
         return new ChatGptPlanTextGateway(httpClient, configuration, logger, existing);

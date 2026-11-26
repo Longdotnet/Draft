@@ -30,6 +30,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     private readonly int _maxRateLimitProviderAttempts;
     private readonly string _healthScope;
     private readonly string _poolKey;
+    private readonly bool _groqOnly;
 
     public OpenAiCompatibleZaloAiGateway(
         HttpClient httpClient,
@@ -38,8 +39,9 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     {
         _httpClient = httpClient;
         _logger = logger;
+        _groqOnly = configuration.GetValue("Ai:Groq:Enabled", false);
         _providers = LoadProfiles(configuration);
-        _retryCount = Math.Clamp(configuration.GetValue("Ai:RetryCount", 0), 0, 2);
+        _retryCount = _groqOnly ? 0 : Math.Clamp(configuration.GetValue("Ai:RetryCount", 0), 0, 2);
         _defaultTimeout = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:TimeoutSeconds", 6), 3, 60));
         _workloadTimeouts = LoadWorkloadTimeouts(configuration, _defaultTimeout);
         _rateLimitCooldown = TimeSpan.FromSeconds(Math.Clamp(configuration.GetValue("Ai:RateLimitCooldownSeconds", 60), 5, 900));
@@ -65,6 +67,9 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     {
         if (_providers.Count == 0)
             return ZaloAiCompletionResult.NotConfigured(request.Workload);
+
+        if (_groqOnly)
+            request = request with { ModelOverride = null };
 
         var started = Stopwatch.StartNew();
         var totalAttempts = 0;
@@ -186,15 +191,17 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 {
                     ["model"] = model,
                     ["temperature"] = request.Temperature,
-                    ["max_tokens"] = request.MaxTokens,
+                    [_groqOnly ? "max_completion_tokens" : "max_tokens"] = _groqOnly ? Math.Clamp(request.MaxTokens, 512, 2048) : request.MaxTokens,
                     ["messages"] = request.Messages.Select(item => new
                     {
                         role = item.Role,
                         content = item.Content
                     }).ToArray()
                 };
-                if (RequiresJsonObject(request.Workload))
+                if (request.RequireJsonObject ?? RequiresJsonObject(request.Workload))
                     payload["response_format"] = new { type = "json_object" };
+                if (_groqOnly)
+                    payload["reasoning_effort"] = "low";
                 var reasoningEnabled = ResolveReasoningEnabled(model, request);
                 if (reasoningEnabled is not null)
                     payload["reasoning"] = new { enabled = reasoningEnabled.Value };
@@ -211,12 +218,13 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 if (!response.IsSuccessStatusCode)
                 {
                     var providerFailure = AiProviderFailure.FromHttp(response.StatusCode, body);
-                    if (GetEquivalentPrimaryIndexes(request).Length > 1)
+                    if (_groqOnly || GetEquivalentPrimaryIndexes(request).Length > 1)
                     {
                         if (providerFailure.Kind == AiProviderFailureKind.RateLimited)
                             MarkProviderCooldown(profile, ResolveRateLimitCooldown(response));
                         else if (providerFailure.Kind == AiProviderFailureKind.QuotaExceeded)
-                            MarkProviderCooldown(profile, _quotaCooldown);
+                            MarkProviderCooldown(profile, _groqOnly && response.Headers.RetryAfter is not null
+                                ? ResolveRateLimitCooldown(response) : _quotaCooldown);
                     }
 
                     lastFailure = Failure(providerFailure, profile, model, attempt, usedFallback);
@@ -232,7 +240,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
                 }
 
                 var completion = ExtractCompletion(body);
-                if (string.IsNullOrWhiteSpace(completion.Content))
+                if (string.IsNullOrWhiteSpace(completion.Content) || (_groqOnly && completion.FinishReason != "stop"))
                 {
                     var invalidResponse = new AiProviderFailure(
                         AiProviderFailureKind.InvalidResponse,
@@ -305,6 +313,14 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
 
     private static IReadOnlyList<ZaloAiProviderProfile> LoadProfiles(IConfiguration configuration)
     {
+        if (configuration.GetValue("Ai:Groq:Enabled", false))
+        {
+            var key = configuration["Ai:Groq:ApiKey"];
+            return string.IsNullOrWhiteSpace(key) ? [] :
+                [new ZaloAiProviderProfile("groq", "https://api.groq.com/openai/v1/chat/completions", key.Trim(),
+                    "openai/gpt-oss-120b", new Dictionary<ZaloAiWorkload, string>())];
+        }
+
         var configuredPool = LoadConfiguredProviderPool(configuration);
         if (configuredPool.Count > 0)
             return configuredPool;
@@ -464,6 +480,7 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
         ISet<int> attemptedProviderIndexes)
     {
         if (_providers.Count == 0) return -1;
+        if (_groqOnly && IsProviderCoolingDown(_providers[0])) return -1;
 
         var rotationIndexes = GetEquivalentPrimaryIndexes(request);
 
@@ -606,13 +623,13 @@ public sealed class OpenAiCompatibleZaloAiGateway : IZaloAiGateway
     {
         var retryAfter = response.Headers.RetryAfter;
         if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
-            return ClampCooldown(delta);
+            return _groqOnly ? delta : ClampCooldown(delta);
 
         if (retryAfter?.Date is { } date)
         {
             var until = date - DateTimeOffset.UtcNow;
             if (until > TimeSpan.Zero)
-                return ClampCooldown(until);
+                return _groqOnly ? until : ClampCooldown(until);
         }
 
         return _rateLimitCooldown;

@@ -40,7 +40,8 @@ public sealed record ZaloAiCompletionRequest(
     string? CorrelationId = null,
     bool? ReasoningEnabled = null,
     bool UseAnswerBudget = false,
-    ZaloAiCallerScope? Caller = null);
+    ZaloAiCallerScope? Caller = null,
+    bool? RequireJsonObject = null);
 
 public sealed record ZaloAiCompletionResult(
     bool Success,

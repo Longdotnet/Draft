@@ -17,6 +17,32 @@ The help response is sent with line breaks. These commands still work without an
 
 ## Local AI config
 
+### Groq-only mode (opt-in)
+
+Create an API key in a Groq **Free** organization at https://console.groq.com/keys.
+Do not upgrade billing. Set these server-side environment variables (never commit a key):
+
+```text
+Ai__Groq__Enabled=true
+Ai__Groq__ApiKey=<Groq Free API key>
+```
+
+This mode replaces the entire AI provider pool and disables the experimental OpenClaw
+and ChatGPT-plan wrappers. It uses only `https://api.groq.com/openai/v1/chat/completions`
+with `openai/gpt-oss-120b`, low reasoning effort, bounded completion tokens and JSON
+object mode for existing structured workloads. No retries or alternate paid models
+are attempted. Missing credentials fail closed; quota/rate errors use existing cooldown
+and feature-level deterministic handling. Only enable after checking the account is
+still Free and authorizing the data sent to Groq. An API key alone does not prove billing
+status. Disabling the flag restores the previous provider routing.
+
+The morning/night greeting card copy generators use their existing deterministic text
+fallback in Groq-only mode rather than calling the legacy AI endpoint. Image providers
+are configured separately and are not switched by this text-only setting.
+
+Live limits: https://console.groq.com/docs/rate-limits. Rate limits are organization-wide;
+separate keys do not create separate free quotas. Do not use additional accounts to bypass limits.
+
 The text/semantic AI path uses an ordered provider pool. Feature code still talks only to `IZaloAiGateway`; it does not choose a concrete provider or model.
 
 The repository defaults currently try these OpenRouter slots in order:
