@@ -17,7 +17,5 @@
       "maxConcurrent": 1
     }
   },
-  "plugins": { "allow": ["openai"], "entries": { "openai": { "enabled": true } } },
-  "update": { "checkOnStart": false },
   "tools": { "deny": ["*"] }
 }
