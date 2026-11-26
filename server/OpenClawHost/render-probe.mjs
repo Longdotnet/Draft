@@ -18,13 +18,15 @@ writeFileSync(config, JSON.stringify({
     http: { endpoints: { chatCompletions: { enabled: false } } },
   },
   agents: { defaults: { skipBootstrap: true, contextInjection: 'never', maxConcurrent: 1 } },
+  plugins: { allow: ['openai'], entries: { openai: { enabled: true } } },
+  update: { checkOnStart: false },
   tools: { deny: ['*'] },
 }), { mode: 0o600 });
 
 const child = spawn(process.execPath, ['/app/openclaw.mjs', 'gateway'], {
   env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production',
     OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: config,
-    OPENCLAW_GATEWAY_TOKEN: randomBytes(32).toString('hex') },
+    OPENCLAW_GATEWAY_TOKEN: randomBytes(32).toString('hex'), OPENCLAW_NO_AUTO_UPDATE: '1' },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
 const server = createServer(async (req, res) => {
