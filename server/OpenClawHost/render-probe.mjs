@@ -17,7 +17,7 @@ writeFileSync(config, JSON.stringify({
     uploads: { enabled: false },
     http: { endpoints: { chatCompletions: { enabled: false } } },
   },
-  agents: { defaults: { skipBootstrap: true, contextInjection: 'never', maxConcurrent: 1, heartbeat: { every: '0m' } } },
+  agents: { defaults: { skipBootstrap: true, contextInjection: 'never', maxConcurrent: 1 } },
   tools: { deny: ['*'] },
 }), { mode: 0o600 });
 

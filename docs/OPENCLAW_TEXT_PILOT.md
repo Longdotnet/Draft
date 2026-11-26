@@ -41,7 +41,8 @@ random `OPENCLAW_GATEWAY_TOKEN` (at least 32 random bytes); never commit it.
    an available subscription model if the template's model is unavailable. No API key
    or fallback model should be configured in this OpenClaw instance.
 4. Recheck configuration after login, especially `tools.deny`, empty model fallbacks,
-   uploads, terminal and heartbeat. Run `openclaw config validate` and
+   uploads, terminal and any enabled automations. The legacy `agents.defaults.heartbeat`
+   key is no longer accepted by this release. Run `openclaw config validate` and
    `openclaw security audit --deep`. Start the gateway with `openclaw gateway` using
    the dedicated service account and persistent state. Configure service supervision.
 5. Verify a real text request locally, using the gateway token as the Bearer credential,
